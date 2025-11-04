@@ -320,6 +320,7 @@ class ContentIndexer:
         self.status.progress = round(processed / total, 2)
     
     def get_or_create_index(self) -> VectorStoreIndex:
+        # 검색하려는 경우 호출
         if self.index is None:
             self.index = VectorStoreIndex.from_vector_store(
                 vector_store=ChromaVectorStore(
