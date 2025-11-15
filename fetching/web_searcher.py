@@ -1,14 +1,9 @@
 import asyncio
 import logging
 from typing import List, Optional
-import httpx
-import aiohttp
-import ssl
-import certifi
-from bs4 import BeautifulSoup
 
 from core.models import DocumentModel
-from environments.config import AppConfig, NotionConfig
+from environments.config import AppConfig
 from fetching.notion import NotionSearcher
 from fetching.tistory import TistorySearcher
 

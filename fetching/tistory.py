@@ -2,7 +2,7 @@ import asyncio
 import ssl
 import logging
 from typing import Optional, Dict, List
-
+from environments.config import AppConfig
 import aiohttp
 import certifi
 from bs4 import BeautifulSoup
