@@ -1,0 +1,24 @@
+# MCP
+mcp>=0.9.0
+
+# Server & Dependencies
+fastapi>=0.110.0
+uvicorn>=0.29.0
+httpx>=0.27.0
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+certifi>=2024.2.2
+python-dotenv>=1.0.0
+pydantic>=2.6.0
+tenacity>=8.2.0
+
+# LLamaIndex (Stable stack)
+llama-index>=0.10.30
+llama-index-core>=0.10.30
+llama-index-vector-stores-chroma>=0.1.4
+
+# Vector Store (Chroma)
+chromadb>=0.4.24
+
+# Others
+numpy>=1.26.0
