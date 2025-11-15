@@ -4,19 +4,19 @@ MCP Content Search is an MCP-based content indexing and search server built with
 
 ## ✨ Features
 
-- Content Indexing: Automatically builds and maintains a vector index using Chroma and LlamaIndex.
-- Semantic Search: Provides high-quality retrieval over indexed content.
-- Tool Registration: Exposes indexing and search functionalities through MCP tools.
-- Configurable Environment: Uses an external configuration system and modular architecture for flexibility.
+- Dynamic auto-fallback search (Local DB ➝ Web ➝ Auto-index)
+- Vector-based semantic search via LlamaIndex + ChromaDB
+- Real-time web search for Notion & Tistory
+- HTML crawling for sites without APIs
+- MCP tool exposure for seamless integration with AI clients
 
-## Architecture
+## 🛠️ MCP Tools
 
-- **FastMCP** server as the core runtime
-- **ChromaVectorStore** for vector embedding storage
-- **LlamaIndex StorageContext** for managing index state
-- **ContentIndexer** for ingesting and updating indexed data
-- **SearchService** for semantic and hybrid search
-- Tool binding layer exposing indexing/search via MCP
+- search_content — Dynamic search (local → web)
+- search_notion — Forced Notion-only search
+- search_tistory — Forced Tistory-only search
+- trigger_index_all_content — Run full indexing in background
+- get_index_status — Check indexing progress
 
 ## Directory Structure
 
@@ -24,32 +24,35 @@ MCP Content Search is an MCP-based content indexing and search server built with
 mcp-content-search/
 │
 ├── environments/
-│   ├── config.py             # AppConfig, NotionConfig, setup_chroma
-│   └── token.py              # load environment variables
+│   ├── config.py             # AppConfig, NotionConfig, setup_chroma()
+│   └── token.py              # API keys, environment variables
 │
 ├── core/
-│   ├── models.py
-│   └── utils.py
+│   ├── models.py             # IndexState, DocumentModel, statuses
+│   └── utils.py              # ContentHasher, helpers
 │
 ├── indexing/
-│   ├── converter.py          # DocumentConverter
-│   ├── manager.py            # IndexManager
-│   └── indexer.py            # ContentIndexer
+│   ├── converter.py          # Convert Notion/Tistory → unified format
+│   ├── manager.py            # Handles index life-cycle
+│   └── indexer.py            # Index documents into Chroma
 │
 ├── fetching/
-│   ├── notion.py             # NotionAPIClient, NotionPageProcessor
-│   ├── tistory.py            # TistoryPostExtractor, fetch_post
-│   └── fetcher.py            # DocumentFetcher
+│   ├── notion.py             # Notion API client + processors
+│   ├── tistory.py            # Tistory RSS extractor + HTML parser
+│   ├── fetcher.py            # Unified fetcher for full indexing
+│   └── web_searcher.py       # Notion/Tistory real-time search
 │
 ├── search/
-│   └── service.py            # SearchService
+│   ├── dynamic_search.py     # Local-first auto-fallback search
+│   └── service.py            # Local Chroma search only
 │
 ├── api/
-│   └── tools.py              # register_tools, MCP tools
+│   └── tools.py              # MCP tool handlers (search, indexing, status)
 │
-├── main.py
+├── main.py                   # Application entry point
 ├── requirements.txt
 └── README.md
+
 ```
 
 # 📝 Module Overview
@@ -84,19 +87,21 @@ mcp-content-search/
 
 ## 🌐 `fetching/` — Data Fetching Layer
 
-| File         | Description             | Key Components                           |
-| ------------ | ----------------------- | ---------------------------------------- |
-| `notion.py`  | Notion integration      | `NotionAPIClient`, `NotionPageProcessor` |
-| `tistory.py` | Tistory blog crawler    | `TistoryPostExtractor`, `fetch_post()`   |
-| `fetcher.py` | Unified fetch interface | `DocumentFetcher`                        |
+| File              | Description                                       | Key Components                                             |
+| ----------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| `notion.py`       | Notion integration                                | `NotionAPIClient`, `NotionPageProcessor`, `NotionSearcher` |
+| `tistory.py`      | Tistory blog crawler                              | `TistoryPostExtractor`, `TistorySearcher`                  |
+| `fetcher.py`      | Unified fetch interface used for indexing         | `DocumentFetcher`                                          |
+| `web_searcher.py` | Unified search interface for real-time web search | `WebSearcher`                                              |
 
 ---
 
 ## 🔍 `search/` — Search Service
 
-| File         | Description     | Key Components  |
-| ------------ | --------------- | --------------- |
-| `service.py` | Semantic search | `SearchService` |
+| File                | Description                                                                                | Key Components         |
+| ------------------- | ------------------------------------------------------------------------------------------ | ---------------------- |
+| `dynamic_search.py` | Semantic search via index DB or web, After web search, the results are indexed to index DB | `DynamicSearchService` |
+| `service.py`        | Semantic search via index DB                                                               | `SearchService`        |
 
 ---
 
@@ -117,23 +122,23 @@ mcp-content-search/
 
 ---
 
-# 🔄 Dependency Flow
+# 🔄 Architecture of MCP Tools
 
 ```
-main.py
-  ↓
-  ├─→ environments/config.py   (load configs)
-  ├─→ indexing/indexer.py      (create ContentIndexer)
-  ├─→ search/service.py        (create SearchService)
-  └─→ api/tools.py             (register MCP tools)
-        ↓
-        ├─→ fetching/fetcher.py
-        │     ├─→ fetching/notion.py
-        │     └─→ fetching/tistory.py
-        ├─→ indexing/indexer.py
-        │     ├─→ indexing/manager.py
-        │     └─→ indexing/converter.py
-        └─→ search/service.py
+(Client)
+   ↓
+[FastMCP]
+   ↓ calls tool
+[api/tools.py]
+   ↓
+DynamicSearchService  →  SearchService (local search)
+   ↓ fallback
+WebSearcher (Notion/Tistory)
+   ↓
+Background Indexing
+   ↓
+ContentIndexer → Chroma → LlamaIndex
+
 ```
 
 ---

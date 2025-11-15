@@ -66,6 +66,84 @@ class TistoryPostExtractor:
             for ad in tag.select(ad_selector):
                 ad.decompose()
 
+class TistorySearcher:
+    """Tistory real-time search"""
+    
+    def __init__(self, blog_name: str, config: AppConfig):
+        self.blog_name = blog_name
+        self.config = config
+        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
+    
+    async def search(self, query: str, max_results: int = 10) -> List[DocumentModel]:
+        """Tistory에서 검색"""
+        if not self.blog_name:
+            logger.warning("Tistory blog name not set")
+            return []
+        
+        try:
+            documents = []
+            search_url = f"https://{self.blog_name}.tistory.com/search/{query}"
+            
+            async with aiohttp.ClientSession() as session:
+                # 검색 결과 페이지 가져오기
+                async with session.get(search_url, ssl=self.ssl_context) as response:
+                    if response.status != 200:
+                        return []
+                    
+                    html = await response.text()
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # 포스트 링크 추출
+                    post_links = self._extract_post_links(soup)
+                    logger.info(f"Tistory: {len(post_links)} posts found for '{query}'")
+                    
+                    for link in post_links[:max_results]:
+                        post_id = self._extract_post_id(link)
+                        if not post_id:
+                            continue
+                        
+                        post_data = await fetch_post(
+                            session, 
+                            self.blog_name, 
+                            post_id,
+                            self.config.request_timeout
+                        )
+                        
+                        if post_data:
+                            documents.append(DocumentModel(**post_data))
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Tistory search error: {e}")
+            return []
+    
+    @staticmethod
+    def _extract_post_links(soup: BeautifulSoup) -> List[str]:
+        """검색 결과에서 포스트 링크 추출"""
+        links = []
+        selectors = [
+            "a.link_post",
+            "a.article-title", 
+            "div.post-item a",
+            "div.search-result a"
+        ]
+        
+        for selector in selectors:
+            for a in soup.select(selector):
+                href = a.get("href")
+                if href and "/search/" not in href:
+                    links.append(href)
+        
+        return list(set(links))
+    
+    @staticmethod
+    def _extract_post_id(url: str) -> Optional[int]:
+        """URL에서 포스트 ID 추출"""
+        import re
+        match = re.search(r"/(\d+)$", url)
+        return int(match.group(1)) if match else None
+
 
 async def fetch_post(
     session: aiohttp.ClientSession, 

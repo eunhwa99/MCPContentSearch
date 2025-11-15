@@ -38,14 +38,14 @@ def create_app() -> FastMCP:
     indexer = ContentIndexer(config, chroma_collection, storage_context)
     search_service = SearchService(config, indexer)
     
-    # 🆕 웹 검색기
+    # 웹 검색기
     web_searcher = WebSearcher(
         notion_api_key=NOTION_API_KEY,
         tistory_blog_name=TISTORY_BLOG_NAME,
         config=config
     )
     
-    # 🆕 동적 검색 서비스
+    # 동적 검색 서비스
     dynamic_search = DynamicSearchService(
         local_search=search_service,
         web_searcher=web_searcher,

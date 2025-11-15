@@ -174,6 +174,56 @@ class NotionPageProcessor:
             date=page.get("created_time", "")
         )
 
+class NotionSearcher:
+    """Notion real-time search"""
+    
+    def __init__(self, api_key: str, config: AppConfig):
+        self.api_key = api_key
+        self.config = config
+        self.notion_config = NotionConfig(api_key=api_key) if api_key else None
+    
+    async def search(self, query: str, max_results: int = 10) -> List[DocumentModel]:
+        """Notion search"""
+        if not self.api_key or not self.notion_config:
+            logger.warning("Notion API key not set")
+            return []
+        
+        try:
+            client = NotionAPIClient(self.notion_config, self.config)
+            processor = NotionPageProcessor(self.notion_config)
+            
+            documents = []
+            
+            async with httpx.AsyncClient(timeout=self.config.request_timeout) as http_client:
+                # Notion search API with keyword query
+                response = await http_client.post(
+                    f"{self.notion_config.base_url}/search",
+                    headers=client.headers,
+                    json={
+                        "query": query,  # keyword search
+                        "filter": {"property": "object", "value": "page"},
+                        "page_size": min(max_results, 100),
+                        "sort": {"direction": "descending", "timestamp": "last_edited_time"}
+                    }
+                )
+                
+                response.raise_for_status()
+                results = response.json().get("results", [])
+                
+                logger.info(f"Notion: {len(results)} pages found for '{query}'")
+                
+                for page in results[:max_results]:
+                    content = await client.fetch_block_content(http_client, page["id"])
+                    if content:
+                        doc = processor.build_document(page, content)
+                        documents.append(doc)
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Notion search error: {e}")
+            return []
+
 
 async def fetch_notion_pages(api_key: str, app_config: AppConfig) -> List[DocumentModel]:
     """Notion 페이지 가져오기"""
