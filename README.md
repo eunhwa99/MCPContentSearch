@@ -1,18 +1,35 @@
-# 📁 완성된 프로젝트 파일 구조
+# MCP Content Search
 
-## 🗂️ 디렉토리 구조
+MCP Content Search is an MCP-based content indexing and search server built with LlamaIndex, ChromaDB, and a custom tool API.
+
+## ✨ Features
+
+- Content Indexing: Automatically builds and maintains a vector index using Chroma and LlamaIndex.
+- Semantic Search: Provides high-quality retrieval over indexed content.
+- Tool Registration: Exposes indexing and search functionalities through MCP tools.
+- Configurable Environment: Uses an external configuration system and modular architecture for flexibility.
+
+## Architecture
+
+- **FastMCP** server as the core runtime
+- **ChromaVectorStore** for vector embedding storage
+- **LlamaIndex StorageContext** for managing index state
+- **ContentIndexer** for ingesting and updating indexed data
+- **SearchService** for semantic and hybrid search
+- Tool binding layer exposing indexing/search via MCP
+
+## Directory Structure
 
 ```
 mcp-content-search/
 │
 ├── environments/
 │   ├── config.py             # AppConfig, NotionConfig, setup_chroma
-│   └── token.py              # 환경 변수 로드
+│   └── token.py              # load environment variables
 │
 ├── core/
-│   ├── exceptions.py         # 모든 커스텀 예외 클래스
-│   ├── models.py             # Pydantic 데이터 모델
-│   └── utils.py              # ContentHasher 유틸리티
+│   ├── models.py
+│   └── utils.py
 │
 ├── indexing/
 │   ├── converter.py          # DocumentConverter
@@ -22,80 +39,93 @@ mcp-content-search/
 ├── fetching/
 │   ├── notion.py             # NotionAPIClient, NotionPageProcessor
 │   ├── tistory.py            # TistoryPostExtractor, fetch_post
-│   └── fetcher.py            # DocumentFetcher (통합)
+│   └── fetcher.py            # DocumentFetcher
 │
 ├── search/
 │   └── service.py            # SearchService
 │
 ├── api/
-│   └── tools.py              # register_tools, MCP 도구 정의
+│   └── tools.py              # register_tools, MCP tools
 │
-├── main.py                   # 애플리케이션 진입점
+├── main.py
 ├── requirements.txt
-├── .env
 └── README.md
 ```
 
-## 📝 각 파일의 역할
+# 📝 Module Overview
 
-### 🔧 environments/ - 환경 설정
+## 🔧 `environments/` — Configuration Layer
 
-| 파일        | 역할           | 주요 클래스/함수                              |
-| ----------- | -------------- | --------------------------------------------- |
-| `config.py` | 앱 설정 관리   | `AppConfig`, `NotionConfig`, `setup_chroma()` |
-| `token.py`  | 환경 변수 로드 | `NOTION_API_KEY`, `TISTORY_BLOG_NAME`         |
+| File        | Description          | Key Components                                |
+| ----------- | -------------------- | --------------------------------------------- |
+| `config.py` | Application settings | `AppConfig`, `NotionConfig`, `setup_chroma()` |
+| `token.py`  | Env variable loader  | `NOTION_API_KEY`, `TISTORY_BLOG_NAME`, etc.   |
 
-### 🎯 core/ - 핵심 기능
+---
 
-| 파일            | 역할        | 주요 클래스/함수                                     |
-| --------------- | ----------- | ---------------------------------------------------- |
-| `exceptions.py` | 예외 정의   | `ContentSearchError`, `IndexingError`, `APIError` 등 |
-| `models.py`     | 데이터 모델 | `DocumentModel`, `IndexStatusModel`, `IndexState`    |
-| `utils.py`      | 유틸리티    | `ContentHasher`                                      |
+## 🎯 `core/` — Core Models & Utilities
 
-### 📚 indexing/ - 인덱싱
+| File        | Description       | Key Components                                    |
+| ----------- | ----------------- | ------------------------------------------------- |
+| `models.py` | Data structures   | `DocumentModel`, `IndexStatusModel`, `IndexState` |
+| `utils.py`  | Utility functions | `ContentHasher`                                   |
 
-| 파일           | 역할        | 주요 클래스/함수    |
-| -------------- | ----------- | ------------------- |
-| `converter.py` | 문서 변환   | `DocumentConverter` |
-| `manager.py`   | 인덱스 관리 | `IndexManager`      |
-| `indexer.py`   | 인덱싱 실행 | `ContentIndexer`    |
+---
 
-### 🌐 fetching/ - 데이터 수집
+## 📚 `indexing/` — Indexing Pipeline
 
-| 파일         | 역할           | 주요 클래스/함수                         |
-| ------------ | -------------- | ---------------------------------------- |
-| `notion.py`  | Notion API     | `NotionAPIClient`, `NotionPageProcessor` |
-| `tistory.py` | Tistory 크롤링 | `TistoryPostExtractor`, `fetch_post()`   |
-| `fetcher.py` | 통합 수집      | `DocumentFetcher`                        |
+| File           | Description             | Key Components      |
+| -------------- | ----------------------- | ------------------- |
+| `converter.py` | Document transformation | `DocumentConverter` |
+| `manager.py`   | Manager for indexing    | `IndexManager`      |
+| `indexer.py`   | Index content.          | `ContentIndexer`    |
 
-### 🔍 search/ - 검색
+---
 
-| 파일         | 역할        | 주요 클래스/함수 |
-| ------------ | ----------- | ---------------- |
-| `service.py` | 검색 서비스 | `SearchService`  |
+## 🌐 `fetching/` — Data Fetching Layer
 
-### 🔌 api/ - API 레이어
+| File         | Description             | Key Components                           |
+| ------------ | ----------------------- | ---------------------------------------- |
+| `notion.py`  | Notion integration      | `NotionAPIClient`, `NotionPageProcessor` |
+| `tistory.py` | Tistory blog crawler    | `TistoryPostExtractor`, `fetch_post()`   |
+| `fetcher.py` | Unified fetch interface | `DocumentFetcher`                        |
 
-| 파일       | 역할     | 주요 클래스/함수                    |
-| ---------- | -------- | ----------------------------------- |
-| `tools.py` | MCP 도구 | `register_tools()`, MCP 도구 함수들 |
+---
 
-### 🚀 main.py - 진입점
+## 🔍 `search/` — Search Service
 
-| 역할                        | 주요 함수              |
-| --------------------------- | ---------------------- |
-| 애플리케이션 초기화 및 실행 | `create_app()`, `main` |
+| File         | Description     | Key Components  |
+| ------------ | --------------- | --------------- |
+| `service.py` | Semantic search | `SearchService` |
 
-## 🔄 의존성 흐름
+---
+
+## 🔌 `api/` — MCP Tools Layer
+
+| File       | Description       | Key Components                    |
+| ---------- | ----------------- | --------------------------------- |
+| `tools.py` | MCP tool exposure | `register_tools()`, tool handlers |
+
+---
+
+## 🚀 `main.py` — Application Entry Point
+
+| Function       | Description               |
+| -------------- | ------------------------- |
+| `create_app()` | Initialize app components |
+| `main`         | Start MCP server          |
+
+---
+
+# 🔄 Dependency Flow
 
 ```
 main.py
   ↓
-  ├─→ environments/config.py (설정 로드)
-  ├─→ indexing/indexer.py (인덱서 생성)
-  ├─→ search/service.py (검색 서비스 생성)
-  └─→ api/tools.py (MCP 도구 등록)
+  ├─→ environments/config.py   (load configs)
+  ├─→ indexing/indexer.py      (create ContentIndexer)
+  ├─→ search/service.py        (create SearchService)
+  └─→ api/tools.py             (register MCP tools)
         ↓
         ├─→ fetching/fetcher.py
         │     ├─→ fetching/notion.py
@@ -106,28 +136,36 @@ main.py
         └─→ search/service.py
 ```
 
-## 🚀 실행 방법
+---
+
+# 🚀 Running the Project
+
+Install dependencies:
 
 ```bash
-# 기존과 동일
+pip install -r requirements.txt
+```
+
+Start the MCP server:
+
+```bash
 python main.py
-
-# 또는
-python -m mcp_content_search.main
 ```
 
-## 📦 requirements.txt
+The application will:
 
-```txt
-fastmcp
-llama-index
-llama-index-vector-stores-chroma
-chromadb
-httpx
-aiohttp
-beautifulsoup4
-certifi
-pydantic
-python-dotenv
-tenacity
-```
+1. Load configuration
+2. Initialize Chroma vector store
+3. Prepare indexing and search services
+4. Register MCP tools
+5. Start the server
+
+---
+
+# 📌 Notes
+
+- Ensure all required API keys (e.g., Notion, Tistory) are set in the environment.
+- ChromaDB directory is configured via `AppConfig`.
+- You can extend the system by adding new data fetchers or custom MCP tools.
+
+---
