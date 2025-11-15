@@ -174,3 +174,16 @@ The application will:
 - You can extend the system by adding new data fetchers or custom MCP tools.
 
 ---
+
+# Demo
+<img width="800" height="1000" alt="Image" src="https://github.com/user-attachments/assets/b256eb1e-9126-4778-94a8-dda4ff807e0f" />
+
+### When enough posts exist in the local index DB (**found 3 results in local DB**)
+
+<img width="1000" height="140" alt="Image" src="https://github.com/user-attachments/assets/79c20cf1-daaa-4954-b1b0-a47aecff7125" />
+
+### When local results are insufficient (**Insufficient results (2/3), searching web...**) 
+
+<img width="1232" height="194" alt="Image" src="https://github.com/user-attachments/assets/aa6f0291-a572-4488-9d7a-119dccdc52c3" />
+
+<img width="1352" height="118" alt="Image" src="https://github.com/user-attachments/assets/ec54b53e-126f-4241-b979-04938aeaae7f" />
