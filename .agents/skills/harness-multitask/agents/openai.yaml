@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Multitask"
+  short_description: "Split independent work safely"
+  default_prompt: "$harness-multitask를 사용해 독립 태스크, 파일 소유권, branch/worktree, PR 경계를 나누세요."

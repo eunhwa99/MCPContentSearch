@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Engineering"
+  short_description: "Orchestrate MCPContentSearch harness phases"
+  default_prompt: "$harness-engineering를 사용해 MCPContentSearch 변경을 plan-first, review-gated 방식으로 진행하세요."

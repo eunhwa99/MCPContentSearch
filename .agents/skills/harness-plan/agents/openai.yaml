@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Plan"
+  short_description: "Plan MCPContentSearch changes"
+  default_prompt: "$harness-plan을 사용해 요청을 acceptance criteria, 변경 범위, 검증 계획, 리스크로 구체화하세요."
