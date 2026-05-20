@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Implement"
+  short_description: "Implement scoped MCPContentSearch changes"
+  default_prompt: "$harness-implement를 사용해 현재 plan에 맞는 가장 작은 production change를 적용하세요."

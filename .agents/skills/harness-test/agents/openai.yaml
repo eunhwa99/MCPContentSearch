@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Test"
+  short_description: "Run focused tests and classify failures"
+  default_prompt: "$harness-test를 사용해 focused verification을 추가/실행하고 실패를 분류하세요."

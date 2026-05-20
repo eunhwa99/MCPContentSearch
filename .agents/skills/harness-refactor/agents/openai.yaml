@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Refactor"
+  short_description: "Safe simplification after focused checks"
+  default_prompt: "$harness-refactor를 사용해 통과한 변경을 안전하게 단순화하고 local pattern에 맞추세요."
