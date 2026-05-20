@@ -14,7 +14,20 @@ dependencies = [
     "openai>=2.6.1",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]
+
 [tool.uv.workspace]
 members = [
     "myMcp",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: pure unit tests",
+    "integration: service integration tests without live external APIs",
+    "e2e: deterministic end-to-end tests using fake sources",
+    "live: opt-in live external API smoke tests",
 ]

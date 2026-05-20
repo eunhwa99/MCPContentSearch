@@ -8,6 +8,7 @@ class AppConfig:
     # ChromaDB
     chroma_db_path: Path = None
     collection_name: str = "content_collection"
+    metadata_db_path: Path = None
     
     # LlamaIndex
     cache_dir: str = ".llama_cache"
@@ -40,6 +41,12 @@ class AppConfig:
                 self, 
                 'chroma_db_path', 
                 Path.home() / ".mcp_content_search" / "chroma_db"
+            )
+        if self.metadata_db_path is None:
+            object.__setattr__(
+                self,
+                'metadata_db_path',
+                Path.home() / ".mcp_content_search" / "contextwiki_metadata.sqlite3"
             )
 
 

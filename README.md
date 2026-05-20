@@ -1,6 +1,6 @@
-# MCP Content Search
+# ContextWiki
 
-MCP Content Search is an MCP-based content indexing and search server built with LlamaIndex, ChromaDB, and a custom tool API.
+ContextWiki is an MCP-first knowledge backend that indexes personal/work knowledge sources and lets AI agents search, fetch, and answer with citations. It evolves the original MCP Content Search project into a production-oriented backend with source sync state, incremental ingestion, citation metadata, and deterministic verification.
 
 ## ✨ Features
 
@@ -9,6 +9,11 @@ MCP Content Search is an MCP-based content indexing and search server built with
 - Real-time web search for Notion & Tistory
 - HTML crawling for sites without APIs
 - MCP tool exposure for seamless integration with AI clients
+- Source metadata for Notion and Tistory
+- Incremental source sync with per-job status
+- SQLite metadata store for sources, jobs, documents, and citation chunks
+- Citation-oriented context search and fetch
+- Grounded answer generation that returns insufficient evidence instead of unsupported claims
 
 ## 🛠️ MCP Tools
 
@@ -17,6 +22,12 @@ MCP Content Search is an MCP-based content indexing and search server built with
 - search_tistory — Forced Tistory-only search
 - trigger_index_all_content — Run full indexing in background
 - get_index_status — Check indexing progress
+- list_sources — List configured ContextWiki sources
+- sync_source — Run incremental sync for one source
+- get_sync_status — Check source/job sync status
+- search_context — Return citation-ready structured context
+- fetch_context — Fetch a document or chunk by id
+- answer_with_citations — Answer only from retrieved chunks and include citations
 
 ## Directory Structure
 
@@ -44,7 +55,12 @@ mcp-content-search/
 │
 ├── search/
 │   ├── dynamic_search.py     # Local-first auto-fallback search
+│   ├── context_service.py    # Citation-ready structured context search
+│   ├── answer_service.py     # Citation-grounded answer generation
 │   └── service.py            # Local Chroma search only
+│
+├── storage/
+│   └── metadata_store.py     # SQLite source/job/document/chunk metadata
 │
 ├── api/
 │   └── tools.py              # MCP tool handlers (search, indexing, status)
@@ -101,7 +117,17 @@ mcp-content-search/
 | File                | Description                                                                                | Key Components         |
 | ------------------- | ------------------------------------------------------------------------------------------ | ---------------------- |
 | `dynamic_search.py` | Semantic search via index DB or web, After web search, the results are indexed to index DB | `DynamicSearchService` |
+| `context_service.py` | Structured context search with citation metadata | `ContextSearchService` |
+| `answer_service.py` | Evidence-gated citation answers | `CitationAnswerService` |
 | `service.py`        | Semantic search via index DB                                                               | `SearchService`        |
+
+---
+
+## 🧾 `storage/` — Metadata Store
+
+| File                | Description                                                  | Key Components    |
+| ------------------- | ------------------------------------------------------------ | ----------------- |
+| `metadata_store.py` | SQLite metadata for sources, sync jobs, documents, and chunks | `MetadataStore`   |
 
 ---
 
@@ -164,6 +190,30 @@ The application will:
 3. Prepare indexing and search services
 4. Register MCP tools
 5. Start the server
+
+---
+
+# ✅ Verification
+
+Required verification includes compile checks plus unit, integration, and fake E2E tests:
+
+```bash
+scripts/verify_all.sh
+```
+
+The required test path excludes live external API smoke tests:
+
+```bash
+uv run pytest -m "not live"
+```
+
+Live API smoke tests are optional and must be explicitly enabled:
+
+```bash
+RUN_LIVE_E2E=1 uv run pytest -m live
+```
+
+This keeps CI deterministic while still allowing manual checks against real Notion, Tistory, GitHub, or web sources before demos/releases.
 
 ---
 

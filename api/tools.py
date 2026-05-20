@@ -20,7 +20,12 @@ def register_tools(
     indexer: ContentIndexer,
     search_service: SearchService,
     dynamic_search: DynamicSearchService,
-    web_searcher: WebSearcher
+    web_searcher: WebSearcher,
+    ingestion_service=None,
+    context_search_service=None,
+    answer_service=None,
+    metadata_store=None,
+    source_registry=None,
 ):
     """MCP 도구 등록"""
     
@@ -182,6 +187,107 @@ def register_tools(
             상태 정보
         """
         return indexer.status.model_dump()
+
+    # ================================================================
+    # ContextWiki MVP 도구
+    # ================================================================
+
+    @mcp.tool()
+    async def list_sources() -> dict:
+        """등록된 ContextWiki source 목록 조회"""
+        if metadata_store is None:
+            return {"sources": []}
+        return {
+            "sources": [
+                source.model_dump(mode="json")
+                for source in metadata_store.list_sources()
+            ]
+        }
+
+    @mcp.tool()
+    async def sync_source(source_id: str) -> dict:
+        """특정 source incremental sync 실행"""
+        if ingestion_service is None:
+            return {"status": "error", "message": "ingestion service is not configured"}
+        try:
+            job = await ingestion_service.sync_source(source_id)
+            return job.model_dump(mode="json")
+        except Exception as e:
+            logger.error(f"Sync source error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    @mcp.tool()
+    async def get_sync_status(source_id: str = "") -> dict:
+        """source 및 sync job 상태 조회"""
+        if metadata_store is None:
+            return {"sources": []}
+
+        if source_id:
+            source = metadata_store.get_source(source_id)
+            latest_job = metadata_store.get_latest_sync_job(source_id)
+            return {
+                "source": source.model_dump(mode="json") if source else None,
+                "latest_job": latest_job.model_dump(mode="json") if latest_job else None,
+            }
+
+        statuses = []
+        for source in metadata_store.list_sources():
+            latest_job = metadata_store.get_latest_sync_job(source.source_id)
+            statuses.append(
+                {
+                    "source": source.model_dump(mode="json"),
+                    "latest_job": latest_job.model_dump(mode="json") if latest_job else None,
+                }
+            )
+        return {"sources": statuses}
+
+    @mcp.tool()
+    async def search_context(query: str, filters: dict = None, top_k: int = 10) -> dict:
+        """Citation 가능한 structured context 검색"""
+        if context_search_service is None:
+            return {"query": query, "results": []}
+        result = await context_search_service.search_context(query, filters=filters, top_k=top_k)
+        return {
+            "query": result["query"],
+            "results": [
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                for item in result["results"]
+            ],
+        }
+
+    @mcp.tool()
+    async def fetch_context(document_id: str = "", chunk_id: str = "") -> dict:
+        """문서 또는 chunk context 원문 조회"""
+        if metadata_store is None:
+            return {"status": "error", "message": "metadata store is not configured"}
+        if not document_id and not chunk_id:
+            return {"status": "error", "message": "document_id or chunk_id is required"}
+
+        if chunk_id:
+            chunk = metadata_store.get_chunk(chunk_id)
+            return {
+                "chunk": chunk.model_dump(mode="json") if chunk else None,
+            }
+
+        document = metadata_store.get_document(document_id)
+        chunks = metadata_store.list_chunks_for_document(document_id)
+        return {
+            "document": document.model_dump(mode="json") if document else None,
+            "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
+        }
+
+    @mcp.tool()
+    async def answer_with_citations(question: str, filters: dict = None, top_k: int = 5) -> dict:
+        """검색된 chunk 근거만 사용해 citation 포함 답변 생성"""
+        if answer_service is None:
+            return {
+                "question": question,
+                "answer": "Citation answer service is not configured.",
+                "evidence_status": "insufficient",
+                "citations": [],
+                "used_chunks": [],
+            }
+        return await answer_service.answer_with_citations(question, filters=filters, top_k=top_k)
 # ================================================================
 # 헬퍼 함수
 # ================================================================
@@ -207,4 +313,3 @@ async def _index_background(indexer: ContentIndexer, documents: list):
         logger.info(f"✅ Indexed {len(documents)} documents")
     except Exception as e:
         logger.error(f"❌ Indexing failed: {e}")
-
