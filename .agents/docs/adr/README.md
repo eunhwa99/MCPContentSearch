@@ -27,6 +27,7 @@ File names should be numbered and descriptive:
 | ADR | Status | Topic |
 | --- | --- | --- |
 | [0001](0001-layered-mcp-content-search-architecture.md) | accepted | Layered MCP content search architecture |
+| [0002](0002-contextwiki-metadata-and-citation-store.md) | accepted | ContextWiki metadata and citation store |
 
 ## When to Add or Update ADRs
 

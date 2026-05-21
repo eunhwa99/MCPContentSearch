@@ -10,6 +10,12 @@ from indexing.indexer import ContentIndexer
 from search.service import SearchService
 from search.dynamic_search import DynamicSearchService
 from fetching.web_searcher import WebSearcher
+from fetching.connectors import NotionSourceConnector, SourceRegistry, TistorySourceConnector
+from indexing.chunker import DocumentChunker
+from indexing.ingestion_service import IngestionService
+from search.answer_service import CitationAnswerService
+from search.context_service import ContextSearchService
+from storage.metadata_store import MetadataStore
 from api.tools import register_tools
 
 # 로깅 설정
@@ -37,6 +43,7 @@ def create_app() -> FastMCP:
     # 기본 서비스
     indexer = ContentIndexer(config, chroma_collection, storage_context)
     search_service = SearchService(config, indexer)
+    metadata_store = MetadataStore(config.metadata_db_path)
     
     # 웹 검색기
     web_searcher = WebSearcher(
@@ -52,12 +59,41 @@ def create_app() -> FastMCP:
         indexer=indexer,
         min_threshold=3  # 로컬에 3개 미만이면 웹 검색
     )
+
+    # ContextWiki source/sync/search 서비스
+    source_registry = SourceRegistry([
+        NotionSourceConnector(NOTION_API_KEY, config),
+        TistorySourceConnector(TISTORY_BLOG_NAME, config),
+    ])
+    ingestion_service = IngestionService(
+        metadata_store=metadata_store,
+        source_registry=source_registry,
+        chunker=DocumentChunker(),
+        indexer=indexer,
+    )
+    context_search = ContextSearchService(
+        metadata_store=metadata_store,
+        indexer=indexer,
+        config=config,
+    )
+    answer_service = CitationAnswerService(context_search)
     
     # FastMCP 서버
     mcp = FastMCP("content-search-server")
     
     # 도구 등록
-    register_tools(mcp, indexer, search_service, dynamic_search, web_searcher)
+    register_tools(
+        mcp,
+        indexer,
+        search_service,
+        dynamic_search,
+        web_searcher,
+        ingestion_service=ingestion_service,
+        context_search_service=context_search,
+        answer_service=answer_service,
+        metadata_store=metadata_store,
+        source_registry=source_registry,
+    )
     
     logger.info("✅ Application initialized with dynamic search")
     

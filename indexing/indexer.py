@@ -115,6 +115,12 @@ class ContentIndexer:
                 storage_context=self.storage_context
             )
         return self.index
+
+    def delete_documents_by_ids(self, document_ids: List[str]):
+        """Delete indexed chunks/documents by stored Chroma doc_id metadata."""
+        for document_id in document_ids:
+            self.collection.delete(where={"doc_id": document_id})
+            logger.info(f"Deleted indexed document: {document_id}")
     
     def _update_status(self, **kwargs):
         for key, value in kwargs.items():
