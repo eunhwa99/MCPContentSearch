@@ -42,8 +42,8 @@ def create_app() -> FastMCP:
     
     # 기본 서비스
     indexer = ContentIndexer(config, chroma_collection, storage_context)
-    search_service = SearchService(config, indexer)
     metadata_store = MetadataStore(config.metadata_db_path)
+    search_service = SearchService(config, indexer, metadata_store=metadata_store)
     
     # 웹 검색기
     web_searcher = WebSearcher(

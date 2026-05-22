@@ -73,7 +73,7 @@ class ContentIndexer:
                 new_docs.append(converter.to_llama_document(doc))
             elif manager.is_updated(doc):
                 update_count += 1
-                manager.delete_document(doc.id)
+                manager.delete_document(doc)
                 new_docs.append(converter.to_llama_document(doc))
             
             if i % self.config.progress_log_interval == 0:
@@ -116,10 +116,28 @@ class ContentIndexer:
             )
         return self.index
 
-    def delete_documents_by_ids(self, document_ids: List[str]):
+    def delete_documents_by_ids(self, document_ids: List[str], source_id: str = ""):
         """Delete indexed chunks/documents by stored Chroma doc_id metadata."""
         for document_id in document_ids:
-            self.collection.delete(where={"doc_id": document_id})
+            if source_id:
+                self.collection.delete(
+                    where={
+                        "$and": [
+                            {"doc_id": document_id},
+                            {"source_id": source_id},
+                            {"contextwiki_managed": "true"},
+                        ]
+                    }
+                )
+                logger.info(
+                    "Deleted managed indexed document: %s from %s",
+                    document_id,
+                    source_id,
+                )
+                continue
+            self.collection.delete(
+                where={"$and": [{"doc_id": document_id}, {"contextwiki_managed": {"$ne": "true"}}]}
+            )
             logger.info(f"Deleted indexed document: {document_id}")
     
     def _update_status(self, **kwargs):

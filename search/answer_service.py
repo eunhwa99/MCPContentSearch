@@ -33,6 +33,9 @@ class CitationAnswerService:
                 "chunk_id": item.chunk_id,
                 "title": item.title,
                 "url": item.url,
+                "path": item.path,
+                "line_start": item.line_start,
+                "line_end": item.line_end,
             }
             for item in evidence
         ]

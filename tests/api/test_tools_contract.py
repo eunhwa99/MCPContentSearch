@@ -72,6 +72,36 @@ class FakeMetadataStore:
         return []
 
 
+class FakeTombstonedMetadataStore(FakeMetadataStore):
+    def get_document(self, document_id):
+        return Dumpable(
+            {
+                "document_id": document_id,
+                "content": "deleted content",
+                "deleted_at": "2026-05-22T00:00:00Z",
+            },
+            deleted_at="2026-05-22T00:00:00Z",
+        )
+
+
+class RecoveringStatusMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        super().__init__()
+        self.source = Dumpable(
+            {"source_id": "source_fake", "sync_status": "running"},
+            source_id="source_fake",
+        )
+        self.recovered = Dumpable(
+            {"source_id": "source_fake", "sync_status": "failed"},
+            source_id="source_fake",
+        )
+        self.job = Dumpable({"job_id": "job-stale", "status": "failed"})
+
+    def get_latest_sync_job(self, source_id):
+        self.source = self.recovered
+        return self.job
+
+
 class FakeContextSearch:
     async def search_context(self, query, filters=None, top_k=10):
         return {
@@ -119,6 +149,23 @@ def test_sync_source_returns_structured_error_for_unknown_source():
     assert "Unknown source" in result["message"]
 
 
+def test_fetch_context_hides_tombstoned_documents():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=FakeTombstonedMetadataStore(),
+    )
+
+    result = asyncio.run(mcp.tools["fetch_context"](document_id="deleted-doc"))
+
+    assert result["document"] is None
+    assert result["chunks"] == []
+
+
 def test_contextwiki_mcp_tools_are_registered():
     mcp = FakeMCP()
     register_tools(
@@ -161,3 +208,23 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert search["results"][0]["chunk_id"] == "chunk-1"
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
     assert answer["evidence_status"] == "grounded"
+
+
+def test_get_sync_status_returns_source_after_status_recovery():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=RecoveringStatusMetadataStore(),
+    )
+
+    single = asyncio.run(mcp.tools["get_sync_status"]("source_fake"))
+    all_sources = asyncio.run(mcp.tools["get_sync_status"]())
+
+    assert single["source"]["sync_status"] == "failed"
+    assert single["latest_job"]["status"] == "failed"
+    assert all_sources["sources"][0]["source"]["sync_status"] == "failed"
+    assert all_sources["sources"][0]["latest_job"]["status"] == "failed"

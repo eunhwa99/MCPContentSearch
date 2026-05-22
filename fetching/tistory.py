@@ -173,8 +173,11 @@ async def fetch_post(
             
             return {
                 "id": f"tistory_{post_id}",
+                "document_id": f"{blog_name}:{post_id}",
+                "external_id": f"{blog_name}:{post_id}",
                 "title": title,
                 "url": url,
+                "canonical_url": url,
                 "date": date,
                 "content": content,
                 "platform": "Tistory"

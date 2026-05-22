@@ -11,6 +11,7 @@ class SourceConnector(ABC):
     """공통 source connector 인터페이스."""
 
     source: SourceModel
+    supports_stale_cleanup: bool = False
 
     @abstractmethod
     async def fetch_documents(self) -> list[DocumentModel]:
@@ -33,6 +34,8 @@ class SourceRegistry:
 
 
 class NotionSourceConnector(SourceConnector):
+    supports_stale_cleanup = True
+
     def __init__(self, api_key: str, config: AppConfig):
         self.api_key = api_key
         self.config = config
@@ -51,7 +54,9 @@ class NotionSourceConnector(SourceConnector):
             doc.model_copy(
                 update={
                     "source_id": self.source.source_id,
-                    "document_id": doc.document_id or doc.id,
+                    "document_id": doc.external_id or doc.document_id or doc.id,
+                    "external_id": doc.external_id or doc.document_id or doc.id,
+                    "canonical_url": doc.canonical_url or doc.url,
                     "path": doc.path or doc.title,
                     "updated_at": doc.updated_at or doc.date,
                 }
@@ -61,6 +66,8 @@ class NotionSourceConnector(SourceConnector):
 
 
 class TistorySourceConnector(SourceConnector):
+    supports_stale_cleanup = False
+
     def __init__(self, blog_name: str, config: AppConfig):
         self.blog_name = blog_name
         self.config = config
@@ -85,7 +92,9 @@ class TistorySourceConnector(SourceConnector):
             doc.model_copy(
                 update={
                     "source_id": self.source.source_id,
-                    "document_id": doc.document_id or doc.id,
+                    "document_id": doc.external_id or doc.document_id or doc.id,
+                    "external_id": doc.external_id or doc.document_id or doc.id,
+                    "canonical_url": doc.canonical_url or doc.url,
                     "path": doc.path or doc.url,
                     "updated_at": doc.updated_at or doc.date,
                 }

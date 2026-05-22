@@ -58,7 +58,8 @@ class NotionAPIClient:
         self, 
         client: httpx.AsyncClient, 
         block_id: str,
-        depth: int = 0
+        depth: int = 0,
+        strict: bool = False,
     ) -> str:
         """블록 컨텐츠 재귀 추출"""
         if depth > self.app_config.notion_max_depth:
@@ -67,8 +68,10 @@ class NotionAPIClient:
         
         try:
             blocks = await self._fetch_blocks(client, block_id)
-            return await self._extract_text_recursive(client, blocks, depth)
+            return await self._extract_text_recursive(client, blocks, depth, strict)
         except Exception as e:
+            if strict:
+                raise
             logger.debug(f"Failed to fetch block {block_id}: {e}")
             return ""
     
@@ -108,7 +111,8 @@ class NotionAPIClient:
         self,
         client: httpx.AsyncClient,
         blocks: List[dict],
-        depth: int
+        depth: int,
+        strict: bool = False,
     ) -> str:
         """재귀적 텍스트 추출"""
         content_parts = []
@@ -126,7 +130,7 @@ class NotionAPIClient:
             
             if block.get("has_children", False):
                 child_content = await self.fetch_block_content(
-                    client, block["id"], depth + 1
+                    client, block["id"], depth + 1, strict=strict
                 )
                 if child_content:
                     content_parts.append(child_content)
@@ -165,13 +169,18 @@ class NotionPageProcessor:
     
     def build_document(self, page: dict, content: str) -> DocumentModel:
         """DocumentModel 생성"""
+        page_id = page["id"]
         return DocumentModel(
-            id=f"notion_{page['id']}",
+            id=f"notion_{page_id}",
+            document_id=page_id,
+            external_id=page_id,
             platform="Notion",
             title=self.extract_title(page.get("properties", {})),
             content=content,
             url=page.get("url", ""),
-            date=page.get("created_time", "")
+            canonical_url=page.get("url", ""),
+            date=page.get("created_time", ""),
+            updated_at=page.get("last_edited_time", page.get("created_time", "")),
         )
 
 class NotionSearcher:
@@ -243,7 +252,7 @@ async def fetch_notion_pages(api_key: str, app_config: AppConfig) -> List[Docume
             logger.info(f"Found {len(raw_pages)} Notion pages")
             
             for idx, page in enumerate(raw_pages, 1):
-                content = await api_client.fetch_block_content(client, page["id"])
+                content = await api_client.fetch_block_content(client, page["id"], strict=True)
                 document = processor.build_document(page, content)
                 documents.append(document)
                 
