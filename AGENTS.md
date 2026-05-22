@@ -9,9 +9,10 @@
 - File-changing work starts with branch preflight. Do not edit target files on `main`; create or use a `feature/...` branch or isolated worktree first.
 - After branch preflight and before non-plan target edits, create or update a plan document under `docs/plan/`.
 - After code-changing work, always run the relevant test or verification command before review. Use the repo-local commands in this file and `.agents/docs/harness-engineering.md`, not plugin-default paths such as `docs/superpowers/...`.
-- After verification and before final handoff for any code, configuration, documentation, or skill change, run `$subagent-review-loop`: spawn fresh subagent reviews until the newest reviewer reports no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
+- After verification and before PR delivery for any code, configuration, documentation, or skill change, run `$subagent-review-loop`: spawn exactly five fresh reviewer subagents per pass and repeat until all five reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
+- After the final clean `$subagent-review-loop` pass, proceed to commit, push, and create a `main`-base PR by default. This is the standing repository workflow unless the user explicitly asks for local-only work or a safety blocker prevents PR delivery.
 - If the user gives multiple independent tasks, split them during planning. Use separate worker ownership and branch/worktree boundaries when parallel work is allowed.
-- Do not commit, push, create PRs, or reply on GitHub unless the user explicitly asks.
+- Do not reply on GitHub, watch PRs, or push follow-up PR changes unless the user explicitly delegates that work.
 
 ## Project Structure
 
@@ -51,7 +52,7 @@ If `uv run ...` fails because the local environment or workspace metadata is not
 - For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory credentials.
 - For indexing/search changes, verify local-only behavior without touching user data when possible. Avoid deleting or resetting local Chroma state without explicit user approval.
 - For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory checks require user approval and should not expose tokens.
-- Verification must happen before `$subagent-review-loop`; if review findings require edits, rerun the affected verification before starting a fresh review pass.
+- Verification must happen before `$subagent-review-loop`; if review findings require edits, rerun the affected verification before starting a fresh five-reviewer pass.
 
 ## Security and Configuration
 

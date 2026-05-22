@@ -13,6 +13,7 @@ Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is a
 - Working branch: `feature/contextwiki-mvp-planning`.
 - Worktree state before writing this plan: clean.
 - No runtime code has been changed for this roadmap.
+- 2026-05-22 update: reviewed from isolated branch `feature/review-roadmap-hij` in `/private/tmp/MCPContentSearch-roadmap-hij` because the primary worktree had unrelated docs changes. This update is docs-only.
 
 ## Current Capability Check
 
@@ -27,10 +28,13 @@ Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is a
 | Local-first fallback search | checked | `DynamicSearchService` falls back from local search to web search. |
 | Full indexing trigger | checked | Existing MCP tool can start background full indexing. |
 | Basic index status | checked | Existing `IndexStatusModel` reports one global indexing state. |
-| Document content hash detection | partial | Existing `IndexManager` compares document hashes, but source/job/chunk metadata is missing. |
-| Source/job/status persistence | missing | Needed for ContextWiki MVP. |
-| Chunk metadata persistence | missing | Needed for citations and context fetching. |
-| Citation-grounded answers | missing | Needed for the primary portfolio story. |
+| Document content hash detection | checked | Existing metadata and indexing paths compare content hashes for changed-document decisions. |
+| Source/job/status persistence | checked | MVP A added SQLite source and sync job metadata. |
+| Chunk metadata persistence | checked | MVP A added citation-ready chunk metadata and chunk ids. |
+| Source-aware chunking | missing | Needed before GitHub connector work can produce useful code citations. |
+| Document identity lifecycle | partial | Current IDs/content hashes cover updates, but connector-heavy sync needs `external_id`, `canonical_url`, `last_seen_at`, and `deleted_at`. |
+| Source-wide stale document cleanup | partial | Changed-document stale chunks are handled in MVP A, but disappeared documents from a successful source sync still need tombstone/cleanup handling. |
+| Citation-grounded answers | checked | MVP A added `answer_with_citations` with citation validation and insufficient-evidence behavior. |
 | Evaluation/observability | missing | Planned after MVP A. |
 | Auto Wiki | missing | Planned after source/search/citation core stabilizes. |
 | Resume/JD assistant | missing | Planned as an application layer on top of ContextWiki. |
@@ -44,7 +48,7 @@ Non-goals for this roadmap:
 - Do not implement runtime code in this document.
 - Do not store API tokens or local Chroma content in docs.
 - Do not inspect or migrate existing local Chroma data.
-- Do not commit, push, or create a PR unless explicitly requested.
+- After the 2026-05-22 workflow update, final clean `$subagent-review-loop` verification proceeds to commit, push, and PR creation by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 ## Files Likely to Change
 
@@ -52,6 +56,7 @@ Current docs-only planning files:
 
 - `docs/plan/2026-05-20-contextwiki-roadmap.md`
 - `docs/plan/2026-05-20-contextwiki-mvp-a.md`
+- `docs/plan/2026-05-22-roadmap-hij-review.md`
 
 Likely future implementation areas by phase:
 
@@ -62,6 +67,9 @@ Likely future implementation areas by phase:
 - Phase E: API/deployment modules, runtime configuration, health checks, and deployment docs.
 - Phase F: resume/JD assistant application-layer modules and MCP tools.
 - Phase G: upload/file parsing modules and ingestion tests.
+- Phase H: storage/search/API security metadata, ACL filters, audit logging, secret-reference handling, and deletion/tombstone policy tests.
+- Phase I: ingestion worker/queue modules, retry/backoff/idempotency helpers, document identity hardening, source-aware chunking, stale cleanup, and connector load tests.
+- Phase J: reranking/query-rewriting modules, grounded answer generation, citation verification, eval fixtures, and quality-tuning reports.
 
 ## Acceptance Criteria
 
@@ -71,6 +79,7 @@ Likely future implementation areas by phase:
 - The roadmap defines a shared verification policy: unit, integration, and fake E2E tests are mandatory; live external API smoke tests are optional and opt-in.
 - The roadmap preserves the repository architecture constraints from `.agents/docs/architecture.md` and ADR 0001.
 - The roadmap identifies when a new ADR is needed.
+- The roadmap records which Phase H/I/J items are true later hardening and which are Phase B prerequisites.
 
 ## Roadmap Overview
 
@@ -99,16 +108,37 @@ Goal: Expand ContextWiki from personal documents/blog posts into codebase and do
 Included:
 
 - GitHub repository ingestion.
-- Commit SHA based change detection.
+- Commit or blob SHA based change detection stored separately from stable document identity.
 - Path and line-range exact citations for code files.
+- Minimum source-aware chunking:
+  - Markdown: heading-based chunks.
+  - Code: line-range chunks suitable for file/line citations.
+  - Plain text: continue using the current character chunker.
 - Generic website/docs URL ingestion.
 - Sitemap or bounded crawler support.
 - Robots/rate-limit safety and source-level crawl configuration.
+- Minimum document identity hardening:
+  - `external_id`: connector-native stable id across revisions, such as GitHub `owner/repo:path` plus branch/ref when needed.
+  - `canonical_url`: stable citation URL for the document or file.
+  - `last_seen_at`: updated during successful source syncs.
+  - `deleted_at`: soft-delete/tombstone marker for documents that disappeared from a successful source sync.
+  - Version metadata, such as commit SHA or blob SHA, should be stored separately from `external_id` for change detection and citation precision.
+- Source-wide stale cleanup:
+  - After a successful full source sync, mark documents not seen in that sync as deleted or remove their active chunks from retrieval.
+  - Continue deleting stale old chunks for changed documents.
+  - Do not tombstone documents after partial connector failures or incomplete crawls.
 
 Expected impact:
 
 - Makes ContextWiki credible for backend/codebase Q&A.
 - Enables architecture and implementation evidence from real repositories.
+- Prevents deleted/moved GitHub files from continuing to appear in search results.
+
+Minimum Phase B gate:
+
+- GitHub connector work should not start with only character chunking. The first GitHub slice must include line-range code chunks even if function/class-aware code chunking waits for a later hardening phase.
+- GitHub/Web connector work should not ship without `last_seen_at`/`deleted_at` lifecycle support, because source deletion/move behavior is common and stale chunks become immediately user-visible.
+- Fingerprint-level duplicate detection can wait; connector-native identity plus canonical URL and tombstones are the required minimum.
 
 ### Phase C: Auto Wiki
 
@@ -198,6 +228,72 @@ Expected impact:
 
 - Broadens data coverage while reusing the same source/job/chunk model.
 
+### Phase H: Security, Permissions, and Data Governance
+
+Goal: Make ContextWiki safe for private, multi-source, and eventually remote use.
+
+Included:
+
+- ACL-aware retrieval.
+- Tenant/source isolation.
+- Token and secret handling.
+- Audit logs for source sync, search, fetch, answer, and deletion/tombstone events.
+- Deletion and tombstone policy.
+
+Expected impact:
+
+- Makes private-source retrieval defensible before broad remote/API use.
+- Keeps source isolation explicit as the system grows beyond a personal local MCP server.
+
+Dependency note:
+
+- Full ACL and tenant models can wait until remote/multi-user deployment work, but source isolation and auth-reference-only secret handling remain mandatory from Phase A/B onward.
+- Phase E remote/API work should not become a shared or multi-user deployment without the relevant Phase H controls.
+
+### Phase I: Production Ingestion Hardening
+
+Goal: Make connector sync reliable under real source churn and repeated runs.
+
+Included:
+
+- Worker queue.
+- Retry/backoff.
+- Idempotency.
+- Document identity hardening.
+- Source-aware chunking.
+- Stale document cleanup.
+
+Expected impact:
+
+- Converts connector ingestion from a demo sync path into a production-style pipeline.
+- Makes GitHub/Web/PDF connectors safer when documents move, disappear, or change frequently.
+
+Dependency note:
+
+- Phase B must include minimum document identity, line-range code chunking, and source-wide stale cleanup.
+- Phase I can deepen those foundations with queueing, backoff policy, fingerprint dedup, function/class-aware code chunking, and larger-scale cleanup jobs.
+
+### Phase J: Retrieval and Answer Quality
+
+Goal: Improve answer precision, citation trust, and measurable retrieval quality after the connector base is stable.
+
+Included:
+
+- Reranking.
+- Query rewriting.
+- Citation verification.
+- LLM grounded answer generation.
+- Eval-driven tuning.
+
+Expected impact:
+
+- Moves ContextWiki from "retrieves relevant chunks" to "reliably answers with verifiable evidence."
+- Uses Phase D evaluation foundations to tune retrieval and answer behavior instead of guessing.
+
+Dependency note:
+
+- Phase J should build on Phase D evaluation and observability. Reranking/query rewriting should be measured against golden questions, citation correctness, and insufficient-evidence behavior.
+
 ## Architecture/ADR Constraints
 
 - Preserve ADR 0001 layered boundaries:
@@ -208,7 +304,8 @@ Expected impact:
   - `fetching/`: Notion/Tistory/external source retrieval.
   - `core/`: shared models, exceptions, utilities.
   - `environments/`: configuration and secret access.
-- Adding SQLite metadata persistence and citation contracts changes long-term persistence architecture. Phase A should add an ADR before or alongside implementation.
+- Phase A added ADR 0002 for SQLite metadata persistence and citation contracts, satisfying the roadmap requirement to document that long-term persistence decision.
+- Adding `external_id`, `canonical_url`, `last_seen_at`, `deleted_at`, version metadata, ACL metadata, or audit-log tables changes long-term metadata and governance contracts. The implementation plan should extend ADR 0002 or add a new ADR before runtime schema changes.
 - Local ChromaDB data must not be deleted, reset, or inspected without explicit approval.
 - API tokens should be referenced by environment variable names, not stored in SQLite or docs.
 
@@ -279,6 +376,12 @@ All implementation phases should follow this testing policy:
 - Mitigation: Ship Phase A first, then build GitHub/Website, Auto Wiki, and Eval on top of stable source/job/chunk contracts.
 - Risk: New SQLite metadata could drift from Chroma state.
 - Mitigation: Phase A must define document/chunk identity, idempotent upsert behavior, and retry semantics.
+- Risk: GitHub/Web connectors can leave deleted or moved documents searchable.
+- Mitigation: Phase B must add `last_seen_at`/`deleted_at` and source-wide stale cleanup or tombstone behavior.
+- Risk: Character-only chunks make code citations too weak for backend/codebase Q&A.
+- Mitigation: Phase B must include at least code line-range chunks and Markdown heading chunks; function/class-aware chunking can wait for Phase I.
+- Risk: Remote/API deployment can expose private source content without governance controls.
+- Mitigation: Phase E shared or multi-user deployment requires relevant Phase H controls first.
 - Rollback: Docs-only rollback removes this roadmap file. Runtime rollback is phase-specific and must be documented in each implementation plan.
 
 ## Progress Log
@@ -288,5 +391,7 @@ All implementation phases should follow this testing policy:
 | Branch preflight | completed | Created `feature/contextwiki-mvp-planning` from `origin/main`. | `git fetch origin main`, `git switch -c feature/contextwiki-mvp-planning origin/main` |
 | Roadmap planning | completed | Split ContextWiki into full roadmap phases and identified Phase A as the first implementation slice. | This file |
 | Legacy cleanup policy | completed | Added roadmap-level policy for legacy MCP tools, ContextWiki canonical tools, and Chroma/SQLite dev reset safety. | `Migration and Legacy Cleanup Policy` |
+| Roadmap H/I/J assessment | completed | Added Phase H/I/J and moved minimum source-aware chunking, document identity lifecycle, and stale cleanup gates into Phase B. | `docs/plan/2026-05-22-roadmap-hij-review.md` |
+| Roadmap H/I/J verification | completed | Docs-only checks passed for the H/I/J roadmap update. | `rg --files AGENTS.md .agents/docs .agents/skills docs/plan`, `git status --short`, `git diff --check` |
 | Focused verification | completed | Docs-only checks passed, including no-output whitespace checks for untracked plan files. | `rg --files AGENTS.md .agents/docs .agents/skills docs/plan`, `git status --short --branch`, `git diff --check`, `git diff --no-index --check /dev/null docs/plan/2026-05-20-contextwiki-roadmap.md` |
-| Review | completed | Fresh follow-up review completed after the testing-policy update; final reviewer reported no actionable findings. | Prior final pass by subagent `019e4500-3727-7f31-b753-060567ff61ec`; follow-up finding by subagent `019e450a-8a76-7eb3-9c47-ae2b84e80d1d`; final pass by subagent `019e450c-76c9-75d1-b073-70f41170aff0` |
+| Original roadmap review | completed | Fresh follow-up review completed for the original 2026-05-20 roadmap after the testing-policy update; final reviewer reported no actionable findings. | Prior final pass by subagent `019e4500-3727-7f31-b753-060567ff61ec`; follow-up finding by subagent `019e450a-8a76-7eb3-9c47-ae2b84e80d1d`; final pass by subagent `019e450c-76c9-75d1-b073-70f41170aff0` |

@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Integrate"
   short_description: "Final verification and $subagent-review-loop"
-  default_prompt: "$harness-integrate를 사용해 최종 검증, 최종 $subagent-review-loop gate, no-commit delivery report를 준비하세요."
+  default_prompt: "$harness-integrate를 사용해 최종 검증, 최종 5인 $subagent-review-loop gate, PR delivery를 준비하세요."

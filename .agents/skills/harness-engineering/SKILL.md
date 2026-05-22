@@ -1,6 +1,6 @@
 ---
 name: harness-engineering
-description: Orchestrates MCPContentSearch harness work for implementation, fixes, refactors, tests, docs, planning, review gates, retry loops, and no-commit delivery.
+description: Orchestrates MCPContentSearch harness work for implementation, fixes, refactors, tests, docs, planning, review gates, retry loops, and PR delivery.
 ---
 
 # Harness Engineering
@@ -25,13 +25,14 @@ Run phases and gates in this order:
 7. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
 8. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
 9. Final review gate: `.agents/skills/harness-review/SKILL.md`, invoking `$subagent-review-loop`
+10. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 Implementation and test lanes may run in parallel when ownership is disjoint and the active tool policy allows delegation. Code-changing work must run relevant tests or verification before any review gate.
 
 ## Loop Rules
 
-Treat implementation, testing, review, refactor, integration, and final review as a retryable loop. Review gates must use `$subagent-review-loop`: run relevant verification first, spawn fresh subagent reviews until no actionable findings remain, and rerun affected verification before each new review pass after fixes.
+Treat implementation, testing, review, refactor, integration, and final review as a retryable loop. Review gates must use `$subagent-review-loop`: run relevant verification first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification before each new review pass after fixes.
 
 Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store, fetching/network, async/background, config/secrets, test-quality, and docs-only.
 
-If `$subagent-review-loop` cannot run because subagent review is unavailable or unauthorized, stop and report the blocker instead of silently using self-review. Do not commit, push, create PRs, or respond on GitHub unless the user explicitly asks.
+If `$subagent-review-loop` cannot run because subagent review is unavailable or unauthorized, stop and report the blocker instead of silently using self-review. Do not respond on GitHub, watch PRs, or push follow-up PR changes unless the user explicitly delegates that work. For file-changing harness work, the repository standing workflow is to commit, push, and create a PR after the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work.
