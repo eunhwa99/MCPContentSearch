@@ -29,4 +29,4 @@ Avoid unrelated cleanup. Do not inspect or mutate local Chroma data unless the p
 
 Leave changes ready for the test lane and review gate. If returning from a failure, record the first actionable failure and the changed code path in the plan progress log.
 
-Do not commit unless the user explicitly asks.
+Do not commit from the implementation lane. Final commit, push, and PR delivery happen only after verification, integration, and the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work or a safety blocker prevents delivery.

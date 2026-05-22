@@ -32,6 +32,7 @@ Run phases in this order. `harness-implement` and `harness-test` may run as para
 7. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
 8. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
 9. Final review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
+10. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 `.agents/skills/harness-engineering/SKILL.md` is the orchestrator for the full loop.
 
@@ -100,12 +101,13 @@ repeat:
   run integration verification
   run final review gate using $subagent-review-loop
   if final review finds actionable issues, update plan and return to implementation/test
+  after the final clean review pass, commit, push, and create a PR
 until complete or blocked
 ```
 
 ## Review Gates
 
-Review gates use `$subagent-review-loop` and code-review stance. Each review pass must use a newly spawned subagent, and the loop continues until the newest reviewer reports no actionable findings. Findings are prioritized by correctness, regressions, missing tests, data loss, security, MCP contract mismatch, async/concurrency issues, architecture/ADR violations, and change size.
+Review gates use `$subagent-review-loop` and code-review stance. Each review pass must use exactly five newly spawned reviewer subagents, and the loop continues until all five reviewers in the newest pass report no actionable findings. Findings are prioritized by correctness, regressions, missing tests, data loss, security, MCP contract mismatch, async/concurrency issues, architecture/ADR violations, and change size.
 
 Use review lenses that fit the change:
 
@@ -156,7 +158,7 @@ uv run pytest
 
 MCP tool changes should include an import/startup smoke when it can run without real credentials or without mutating user Chroma data. External live checks against Notion or Tistory require user approval.
 
-Verification must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification before starting the next fresh subagent review pass.
+Verification must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification before starting the next fresh five-reviewer subagent review pass.
 
 ## Delivery
 
@@ -167,4 +169,6 @@ Final reports include:
 - Verification commands and results
 - Review status and any subagent-review limitation
 - Known blockers or skipped checks
-- Commit/push/PR status
+- Commit, push, and PR status, including the PR URL after successful delivery
+
+After the final clean `$subagent-review-loop` pass, do not stop at local completion. Use `.agents/docs/github-workflow.md` to stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR by default. If the user explicitly requested local-only work, or if auth, permissions, network, branch safety, or review availability blocks PR delivery, report that blocker instead of silently skipping the PR.

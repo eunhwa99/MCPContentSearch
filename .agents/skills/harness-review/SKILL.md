@@ -12,7 +12,7 @@ Run this gate with `$subagent-review-loop`:
 - After implementation and test lanes are merged.
 - After integration verification and before final response.
 
-Before starting this gate, relevant verification must already have run. If actionable findings exist, update the plan, return to implementation/test, rerun the affected verification, then start a new fresh subagent review pass. Stop only when the newest fresh reviewer reports no actionable findings.
+Before starting this gate, relevant verification must already have run. If actionable findings exist, update the plan, return to implementation/test, rerun the affected verification, then start a new fresh five-reviewer subagent review pass. Stop only when all five reviewers in the newest pass report no actionable findings.
 
 ## Input
 
@@ -23,13 +23,13 @@ Read the plan, local diff, `.agents/docs/harness-engineering.md`, `.agents/docs/
 Use `$subagent-review-loop` exactly:
 
 1. Finish the local change and run relevant verification first.
-2. Spawn a new subagent for review.
-3. Give the reviewer task-local context: requirements, changed files, relevant docs, and verification output.
-4. Ask for findings first, ordered by severity, with file and line references.
+2. Spawn exactly five new reviewer subagents for the pass.
+3. Give each reviewer task-local context: requirements, changed files, relevant docs, and verification output.
+4. Ask each reviewer for findings first, ordered by severity, with file and line references.
 5. Fix every actionable finding.
 6. Rerun affected verification.
-7. Spawn another fresh subagent.
-8. Repeat until the newest reviewer reports no actionable findings.
+7. Spawn another fresh five-reviewer pass.
+8. Repeat until all five reviewers in the newest pass report no actionable findings.
 
 If subagent review is unavailable or unauthorized, do not replace it silently. Stop and report the blocker. Continue with self-review only after explicit user approval to bypass `$subagent-review-loop`.
 
@@ -59,4 +59,4 @@ Produce a checklist:
 | Change size/staging | pass/fail/n/a | Split or stacked PR need |
 | Docs-only policy | pass/fail/n/a | Path listing, status, diff check |
 
-Findings must include file path, reason, and suggested fix. The final handoff must state the verification command and that the final fresh `$subagent-review-loop` review had no actionable findings. If the loop was explicitly bypassed by user approval, state that instead.
+Findings must include file path, reason, and suggested fix. After the final clean review pass, return to integration/PR delivery instead of stopping at local completion. The final handoff must state the verification command, that the final fresh five-reviewer `$subagent-review-loop` pass had no actionable findings, and the PR URL or PR delivery blocker. If the loop was explicitly bypassed by user approval, state that instead.

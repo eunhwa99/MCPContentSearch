@@ -1,6 +1,6 @@
 ---
 name: harness-integrate
-description: Integration verification phase for MCPContentSearch changes and final no-commit delivery reporting.
+description: Integration verification phase for MCPContentSearch changes, final review gate, and PR delivery.
 ---
 
 # Harness Integrate
@@ -36,15 +36,17 @@ Live Notion/Tistory validation requires user approval. Do not print tokens.
 
 ## Completion
 
-If integration verification passes, run the final `$subagent-review-loop` review gate before final response. If review findings require edits, rerun the affected verification and then start a fresh subagent review pass.
+If integration verification passes, run the final `$subagent-review-loop` review gate before PR delivery. If review findings require edits, rerun the affected verification and then start a fresh five-reviewer subagent review pass.
+
+After the final clean `$subagent-review-loop` pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
 Final response should include:
 
 - Plan document path.
 - Changed files.
 - Verification commands and results.
-- `$subagent-review-loop` status, including whether the final fresh reviewer reported no actionable findings.
+- `$subagent-review-loop` status, including whether all five reviewers in the final fresh pass reported no actionable findings.
 - Skipped checks or blockers.
 - Commit/push/PR status.
 
-Do not commit, push, or create PRs unless the user explicitly asks.
+Do not reply on GitHub, monitor the PR, or push follow-up PR changes unless the user explicitly delegates that work.
