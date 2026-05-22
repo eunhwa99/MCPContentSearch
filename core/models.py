@@ -77,14 +77,20 @@ class DocumentModel(BaseModel):
     date: str = ""
     source_id: str = ""
     document_id: str = ""
+    external_id: str = ""
+    canonical_url: str = ""
     path: str = ""
     updated_at: str = ""
+    last_seen_at: str = ""
+    last_seen_sync_id: str = ""
+    deleted_at: str = ""
+    version_id: str = ""
     content_hash: str = ""
     chunk_id: str = ""
     chunk_index: Optional[int] = None
     line_start: Optional[int] = None
     line_end: Optional[int] = None
-    
+
     model_config = ConfigDict(frozen=True)
 
 
@@ -115,6 +121,7 @@ class ChunkModel(BaseModel):
             title=self.title,
             content=self.text,
             url=self.url,
+            canonical_url=self.url,
             platform=platform or self.source_id,
             path=self.path,
             updated_at=self.updated_at,

@@ -39,6 +39,8 @@ def test_answer_service_uses_only_returned_context_as_citations():
         title="ContextWiki",
         url="https://notion.so/doc-1",
         path="ContextWiki",
+        line_start=12,
+        line_end=18,
         score=0.92,
         preview="ContextWiki is an MCP knowledge backend.",
         text="ContextWiki is an MCP knowledge backend.",
@@ -52,5 +54,14 @@ def test_answer_service_uses_only_returned_context_as_citations():
     answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
 
     assert answer["evidence_status"] == "grounded"
-    assert answer["citations"] == [{"chunk_id": "chunk-1", "title": "ContextWiki", "url": "https://notion.so/doc-1"}]
+    assert answer["citations"] == [
+        {
+            "chunk_id": "chunk-1",
+            "title": "ContextWiki",
+            "url": "https://notion.so/doc-1",
+            "path": "ContextWiki",
+            "line_start": 12,
+            "line_end": 18,
+        }
+    ]
     assert "ContextWiki is an MCP knowledge backend." in answer["answer"]

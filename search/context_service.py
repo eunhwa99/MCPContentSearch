@@ -94,11 +94,12 @@ class ContextSearchService:
 
         index = self.indexer.get_or_create_index()
         base_limit = max(top_k, top_k * self.config.search_multiplier)
-        limits = [base_limit, base_limit * 2, base_limit * 4, base_limit * 8]
+        max_limit = self._max_retrieval_limit(base_limit)
         seen = set()
         candidates = []
+        limit = base_limit
 
-        for limit in limits:
+        while limit <= max_limit:
             retriever = VectorIndexRetriever(
                 index=index,
                 similarity_top_k=limit,
@@ -110,12 +111,14 @@ class ContextSearchService:
                 chunk_id = node.metadata.get("chunk_id") or node.metadata.get("doc_id")
                 if not chunk_id or chunk_id in seen:
                     continue
-                seen.add(chunk_id)
                 chunk = self.metadata_store.get_chunk(chunk_id)
                 if not chunk:
                     continue
+                if not self._managed_hit_matches_chunk(node.metadata, chunk):
+                    continue
                 if source_ids and chunk.source_id not in source_ids:
                     continue
+                seen.add(chunk_id)
                 candidates.append(
                     {
                         "chunk_id": chunk_id,
@@ -124,8 +127,26 @@ class ContextSearchService:
                 )
                 if len(candidates) >= top_k:
                     return candidates
+            if len(nodes) < limit:
+                break
+            next_limit = min(limit * 2, max_limit)
+            if next_limit == limit:
+                break
+            limit = next_limit
 
         return candidates
+
+    @staticmethod
+    def _managed_hit_matches_chunk(metadata: dict[str, Any], chunk) -> bool:
+        if metadata.get("contextwiki_managed") != "true":
+            return False
+        source_id = metadata.get("source_id")
+        document_id = metadata.get("document_id")
+        if source_id != chunk.source_id:
+            return False
+        if document_id != chunk.document_id:
+            return False
+        return True
 
     @staticmethod
     def _metadata_filters(source_ids: list[str] | None):
@@ -172,3 +193,12 @@ class ContextSearchService:
     @staticmethod
     def _preview(text: str, length: int = 240) -> str:
         return text if len(text) <= length else text[:length].rstrip() + "..."
+
+    def _max_retrieval_limit(self, base_limit: int) -> int:
+        collection = getattr(self.indexer, "collection", None)
+        if collection is not None and hasattr(collection, "count"):
+            try:
+                return max(base_limit, int(collection.count()))
+            except Exception:
+                pass
+        return max(base_limit, base_limit * 64)

@@ -75,7 +75,7 @@ class RecordingIndexer:
     async def index_documents(self, documents):
         self.documents.extend(documents)
 
-    def delete_documents_by_ids(self, document_ids):
+    def delete_documents_by_ids(self, document_ids, source_id=""):
         return None
 
 

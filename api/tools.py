@@ -223,8 +223,8 @@ def register_tools(
             return {"sources": []}
 
         if source_id:
-            source = metadata_store.get_source(source_id)
             latest_job = metadata_store.get_latest_sync_job(source_id)
+            source = metadata_store.get_source(source_id)
             return {
                 "source": source.model_dump(mode="json") if source else None,
                 "latest_job": latest_job.model_dump(mode="json") if latest_job else None,
@@ -233,6 +233,7 @@ def register_tools(
         statuses = []
         for source in metadata_store.list_sources():
             latest_job = metadata_store.get_latest_sync_job(source.source_id)
+            source = metadata_store.get_source(source.source_id) or source
             statuses.append(
                 {
                     "source": source.model_dump(mode="json"),
@@ -270,6 +271,11 @@ def register_tools(
             }
 
         document = metadata_store.get_document(document_id)
+        if document and getattr(document, "deleted_at", ""):
+            return {
+                "document": None,
+                "chunks": [],
+            }
         chunks = metadata_store.list_chunks_for_document(document_id)
         return {
             "document": document.model_dump(mode="json") if document else None,
