@@ -6,24 +6,39 @@ This document defines branch, commit, push, PR, and PR-watch policy for `MCPCont
 
 ## Branch Policy
 
-- Feature work starts from `main`.
+- Feature work starts from the latest `main`.
 - Use `feature/...` branch names.
 - File-changing work must pass branch preflight before target edits.
 - Do not edit target files directly on `main`.
-- If `main` is clean, create a `feature/...` branch.
-- If `main` is dirty, protect user changes by using an isolated worktree or asking before changing branch state.
-- If already on `feature/...`, work there unless the worktree has unrelated changes.
-- If network is available, verify freshness with `git fetch origin main`. If network is restricted, record that freshness was not checked.
+- Start every new task by checking `git status --short`, `git branch -vv`, and `git worktree list`.
+- If the current worktree is dirty, do not switch branches, pull, or delete branches there. If network is available, fetch `origin/main`, then protect user changes by creating an isolated worktree with a fresh `feature/...` branch from `origin/main`. If network is restricted, record the freshness blocker and ask before creating an isolated branch from a possibly stale `origin/main`.
+- If the current worktree is clean, switch to `main`, fetch `origin/main`, and fast-forward local `main` before creating the task branch. If network is restricted, record that freshness was not checked.
+- For clean worktrees, delete only safe existing local non-`main` work branches before creating the new task branch. For dirty-start isolated worktrees, run cleanup only from the isolated worktree after its fresh task branch exists, never from the original dirty worktree. This cleanup deletes only local branch refs, never remote branches.
+- Do not force-delete a local branch with local-only commits unless the user explicitly approves discarding that work. If a branch is checked out in another worktree, inspect `git worktree list` and detach/remove that worktree only with user approval; otherwise report the blocker.
+- Create a fresh `feature/...` branch from updated `main` for each task. Reusing an existing `feature/...` branch is allowed only when the user explicitly asks to continue that branch.
 
 Example:
 
 ```bash
+# Always inspect first.
+git status --short
+git branch -vv
+git worktree list
+
+# Dirty worktree path: fetch, then create an isolated fresh feature branch; otherwise ask before switching/pulling/deleting.
+git fetch origin main
+git worktree add -b feature/short-description ../MCPContentSearch-short origin/main
+
+# Clean worktree path:
 git switch main
+git fetch origin main
 git pull --ff-only origin main
+git branch -d feature/merged-local-branch
+# If a branch is unmerged or checked out elsewhere, stop and resolve the safety check before cleanup.
 git switch -c feature/short-description
 ```
 
-Do not run destructive commands or delete local data without explicit user approval.
+Do not run destructive commands or delete local data without explicit user approval. The branch cleanup above applies only to local Git branch refs for new task setup.
 
 ## Commit Policy
 

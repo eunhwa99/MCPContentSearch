@@ -15,7 +15,7 @@ During planning, read `.agents/docs/architecture.md` and `.agents/docs/adr/READM
 
 Run phases and gates in this order:
 
-0. Branch preflight: current branch, worktree state, and `main`/feature branch safety.
+0. Branch preflight: when the worktree is clean, update local `main` from `origin/main`, clean only safe local non-`main` work branches using `.agents/docs/github-workflow.md` safeguards, create a fresh `feature/...` task branch, and record worktree safety. Preserve local-only commits and linked-worktree branches unless the user explicitly approves cleanup.
 1. Plan document: create or update `docs/plan/YYYY-MM-DD-short-task-name.md`.
 2. `.agents/skills/harness-plan/SKILL.md`
 3. `.agents/skills/harness-multitask/SKILL.md`, if multiple tasks need decomposition.
@@ -31,7 +31,7 @@ Implementation and test lanes may run in parallel when ownership is disjoint and
 
 ## Loop Rules
 
-Treat implementation, testing, review, refactor, integration, and final review as a retryable loop. Review gates must use `$subagent-review-loop`: run relevant verification first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification before each new review pass after fixes.
+Treat implementation, testing, review, refactor, integration, and final review as a retryable loop. Every new task must start from an updated `main` and a fresh `feature/...` branch after safe local non-`main` branch cleanup, unless the user explicitly asks to continue an existing branch. If the worktree is dirty, fetch `origin/main` when network is available, create an isolated worktree with a fresh `feature/...` branch from `origin/main`, and ask or report a blocker before switching, pulling, or deleting branches in the dirty worktree. Review gates must use `$subagent-review-loop`: run relevant verification first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification before each new review pass after fixes.
 
 Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store, fetching/network, async/background, config/secrets, test-quality, and docs-only.
 

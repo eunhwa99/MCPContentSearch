@@ -42,11 +42,14 @@ Before editing target files:
 
 1. Run `git status --short`.
 2. Run `git branch --show-current`.
-3. If network is available, run `git fetch origin main`.
-4. Do not edit target files on `main`.
-5. If on clean `main`, create a `feature/...` branch from `main`.
-6. If on dirty `main`, do not overwrite user changes. Prefer an isolated worktree from `origin/main` or ask the user if isolation is not available.
-7. If already on a `feature/...` branch, work there unless the worktree contains unrelated user changes.
+3. Run `git branch -vv` and `git worktree list` so local branch cleanup is safe and linked worktrees are visible.
+4. If the current worktree is dirty, do not switch branches, pull, or delete branches there. If network is available, run `git fetch origin main`, then create an isolated worktree with a fresh `feature/...` branch from `origin/main`. If network or isolation is unavailable, record the blocker and ask the user before changing branch state.
+5. If the current worktree is clean, switch to `main`.
+6. If network is available, run `git fetch origin main` and `git pull --ff-only origin main` after reaching `main`. If network is restricted, record that freshness was not checked.
+7. Delete only safe existing local non-`main` work branches before creating the new task branch, or from the isolated worktree after creating its fresh task branch when the original worktree is dirty. Delete only local refs, never remote branches. Prefer `git branch -d`; use `git branch -D` only after confirming there are no local-only commits or the user explicitly approves discarding them. Do not delete branches checked out in linked worktrees without resolving or reporting the worktree state.
+8. Do not edit target files on `main`.
+9. Create a fresh `feature/...` branch from updated `main` for every new task.
+10. Reuse an existing `feature/...` branch only when the user explicitly asks to continue that branch.
 
 Never run destructive cleanup such as `git reset --hard`, `git checkout -- <file>`, deleting local Chroma data, removing caches, or resetting local credentials unless the user explicitly asks.
 
@@ -88,7 +91,7 @@ Use this control loop:
 read repository instructions
 read harness and GitHub workflow
 read architecture and relevant ADRs
-run branch preflight
+run branch preflight with GitHub workflow dirty/clean worktree safeguards
 write or update docs/plan plan
 run planning phase
 if needed, run multitask phase
