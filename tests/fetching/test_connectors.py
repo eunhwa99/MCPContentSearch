@@ -5,7 +5,13 @@ import pytest
 from core.models import DocumentModel
 from environments.config import AppConfig
 from fetching import connectors as connector_module
-from fetching.connectors import NotionSourceConnector, TistorySourceConnector
+from fetching.connectors import (
+    GitHubSourceConnector,
+    NotionSourceConnector,
+    TistorySourceConnector,
+    WebsiteSourceConnector,
+    build_source_registry,
+)
 from storage.metadata_store import MetadataStore
 
 
@@ -70,3 +76,42 @@ def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):
     assert document.document_id == "devlog:7"
     assert persisted.external_id == "devlog:7"
     assert persisted.canonical_url == "https://devlog.tistory.com/7"
+
+
+def test_build_source_registry_includes_phase_b_sources():
+    config = AppConfig(
+        github_repositories=("eunhwa99/MCPContentSearch@main",),
+        web_seed_urls=("https://docs.example.com",),
+    )
+
+    registry = build_source_registry(
+        config=config,
+        notion_api_key="notion-secret",
+        tistory_blog_name="devlog",
+        github_token="github-secret",
+        github_http_client=object(),
+        web_http_client=object(),
+    )
+    sources = {source.source_id: source for source in registry.list_sources()}
+
+    assert set(sources) == {
+        "source_github",
+        "source_notion",
+        "source_tistory",
+        "source_web",
+    }
+    assert isinstance(registry.get_connector("source_github"), GitHubSourceConnector)
+    assert isinstance(registry.get_connector("source_web"), WebsiteSourceConnector)
+    assert sources["source_github"].enabled is True
+    assert sources["source_github"].auth_ref == "env:GITHUB_TOKEN"
+    assert sources["source_web"].enabled is True
+    assert sources["source_web"].auth_ref == "env:CONTEXTWIKI_WEB_URLS"
+
+
+def test_github_connector_uses_validated_custom_token_env_ref():
+    connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_token_env_var="CONTEXTWIKI_GITHUB_TOKEN"),
+    )
+
+    assert connector.source.auth_ref == "env:CONTEXTWIKI_GITHUB_TOKEN"

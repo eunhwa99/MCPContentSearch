@@ -273,6 +273,31 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
     assert result["results"][0].source_id == "source_target"
 
 
+def test_search_context_returns_chunk_version_id(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "doc-github",
+        "github-chunk",
+        "source_github",
+        "README.md",
+        "ContextWiki citations include blob versions.",
+        version_id="blob-version-123",
+    )
+    documents = [store.get_chunk("github-chunk").to_document_model()]
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=documents).search_context(
+            "ContextWiki citations",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].version_id == "blob-version-123"
+
+
 def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
@@ -390,7 +415,16 @@ def seed_source(store, source_id, source_type, name):
     )
 
 
-def seed_document_chunks(store, document_id, chunk_id, source_id, title, text):
+def seed_document_chunks(
+    store,
+    document_id,
+    chunk_id,
+    source_id,
+    title,
+    text,
+    *,
+    version_id="",
+):
     store.upsert_document_and_replace_chunks(
         DocumentModel(
             id=document_id,
@@ -401,6 +435,7 @@ def seed_document_chunks(store, document_id, chunk_id, source_id, title, text):
             url=f"https://example.com/{document_id}",
             platform="Test",
             path=title,
+            version_id=version_id,
         ),
         [
             ChunkModel(
@@ -411,6 +446,7 @@ def seed_document_chunks(store, document_id, chunk_id, source_id, title, text):
                 text=text,
                 chunk_index=0,
                 content_hash=chunk_id,
+                version_id=version_id,
             )
         ],
     )

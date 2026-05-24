@@ -3,8 +3,10 @@ from typing import Iterable
 
 from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
+from fetching.github import GitHubRepositoryFetcher
 from fetching.notion import fetch_notion_pages
 from fetching.tistory import fetch_tistory_posts
+from fetching.web_docs import WebsiteDocsFetcher
 
 
 class SourceConnector(ABC):
@@ -101,3 +103,113 @@ class TistorySourceConnector(SourceConnector):
             )
             for doc in documents
         ]
+
+
+class GitHubSourceConnector(SourceConnector):
+    supports_stale_cleanup = True
+
+    def __init__(
+        self,
+        repositories: tuple[str, ...],
+        config: AppConfig,
+        *,
+        token: str = "",
+        http_client=None,
+    ):
+        self.repositories = tuple(repositories)
+        self.config = config
+        self.fetcher = GitHubRepositoryFetcher(
+            self.repositories,
+            config,
+            token=token,
+            http_client=http_client,
+        )
+        self.source = SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=bool(self.repositories),
+            auth_ref=f"env:{config.github_token_env_var}",
+            sync_status=SyncStatus.IDLE,
+        )
+
+    async def fetch_documents(self) -> list[DocumentModel]:
+        if not self.source.enabled:
+            return []
+        try:
+            documents = await self.fetcher.fetch_documents()
+        except Exception:
+            self.supports_stale_cleanup = False
+            raise
+        else:
+            self.supports_stale_cleanup = self.fetcher.snapshot_complete
+            return documents
+
+
+class WebsiteSourceConnector(SourceConnector):
+    supports_stale_cleanup = True
+
+    def __init__(
+        self,
+        seed_urls: tuple[str, ...],
+        config: AppConfig,
+        *,
+        http_client=None,
+    ):
+        self.seed_urls = tuple(seed_urls)
+        self.config = config
+        self.fetcher = WebsiteDocsFetcher(
+            self.seed_urls,
+            config,
+            http_client=http_client,
+        )
+        self.seed_urls = self.fetcher.seed_urls
+        self.source = SourceModel(
+            source_id="source_web",
+            source_type=SourceType.WEB,
+            name="Website Docs",
+            enabled=bool(self.seed_urls),
+            auth_ref="env:CONTEXTWIKI_WEB_URLS",
+            sync_status=SyncStatus.IDLE,
+        )
+
+    async def fetch_documents(self) -> list[DocumentModel]:
+        if not self.source.enabled:
+            return []
+        try:
+            documents = await self.fetcher.fetch_documents()
+        except Exception:
+            self.supports_stale_cleanup = False
+            raise
+        else:
+            self.supports_stale_cleanup = self.fetcher.snapshot_complete
+            return documents
+
+
+def build_source_registry(
+    *,
+    config: AppConfig,
+    notion_api_key: str,
+    tistory_blog_name: str,
+    github_token: str = "",
+    github_http_client=None,
+    web_http_client=None,
+) -> SourceRegistry:
+    """Build the production source registry with all configured ContextWiki connectors."""
+    return SourceRegistry(
+        [
+            NotionSourceConnector(notion_api_key, config),
+            TistorySourceConnector(tistory_blog_name, config),
+            GitHubSourceConnector(
+                config.github_repositories,
+                config,
+                token=github_token,
+                http_client=github_http_client,
+            ),
+            WebsiteSourceConnector(
+                config.web_seed_urls,
+                config,
+                http_client=web_http_client,
+            ),
+        ]
+    )

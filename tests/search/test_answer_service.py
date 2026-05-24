@@ -41,6 +41,7 @@ def test_answer_service_uses_only_returned_context_as_citations():
         path="ContextWiki",
         line_start=12,
         line_end=18,
+        version_id="page-version-1",
         score=0.92,
         preview="ContextWiki is an MCP knowledge backend.",
         text="ContextWiki is an MCP knowledge backend.",
@@ -62,6 +63,7 @@ def test_answer_service_uses_only_returned_context_as_citations():
             "path": "ContextWiki",
             "line_start": 12,
             "line_end": 18,
+            "version_id": "page-version-1",
         }
     ]
     assert "ContextWiki is an MCP knowledge backend." in answer["answer"]

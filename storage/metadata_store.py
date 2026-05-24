@@ -89,6 +89,7 @@ class MetadataStore:
                     chunk_index INTEGER NOT NULL,
                     line_start INTEGER,
                     line_end INTEGER,
+                    version_id TEXT NOT NULL DEFAULT '',
                     content_hash TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -125,6 +126,13 @@ class MetadataStore:
                 "sync_jobs",
                 {
                     "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            self._ensure_columns(
+                conn,
+                "chunks",
+                {
+                    "version_id": "TEXT NOT NULL DEFAULT ''",
                 },
             )
 
@@ -1198,8 +1206,8 @@ class MetadataStore:
             """
             INSERT INTO chunks (
                 chunk_id, document_id, source_id, title, text, url, path,
-                chunk_index, line_start, line_end, content_hash, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                chunk_index, line_start, line_end, version_id, content_hash, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -1213,6 +1221,7 @@ class MetadataStore:
                     chunk.chunk_index,
                     chunk.line_start,
                     chunk.line_end,
+                    chunk.version_id,
                     chunk.content_hash,
                     chunk.updated_at,
                 )
@@ -1301,6 +1310,7 @@ class MetadataStore:
             chunk_index=row["chunk_index"],
             line_start=row["line_start"],
             line_end=row["line_end"],
+            version_id=row["version_id"],
             content_hash=row["content_hash"],
             updated_at=row["updated_at"],
         )

@@ -18,6 +18,7 @@ def test_chunker_creates_stable_citation_metadata():
         platform="Tistory",
         path="/42",
         updated_at="2026-05-20T00:00:00Z",
+        version_id="page-version-42",
     )
 
     chunker = DocumentChunker(max_chars=80, overlap_chars=10)
@@ -31,6 +32,7 @@ def test_chunker_creates_stable_citation_metadata():
     assert first[0].document_id == "tistory_42"
     assert first[0].source_id == "source_tistory"
     assert first[0].url == "https://example.tistory.com/42"
+    assert first[0].version_id == "page-version-42"
     assert first[0].line_start == 1
     assert first[0].line_end >= first[0].line_start
 

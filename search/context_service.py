@@ -54,6 +54,7 @@ class ContextSearchService:
                     text=chunk.text,
                     line_start=chunk.line_start,
                     line_end=chunk.line_end,
+                    version_id=chunk.version_id,
                     updated_at=chunk.updated_at,
                 )
             )

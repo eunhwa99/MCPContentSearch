@@ -15,12 +15,12 @@ Add or update the smallest useful verification for the changed behavior. This ph
 
 Preferred checks by change type:
 
-- Docs-only `AGENTS.md`, `.agents/`, `docs/plan`: path listing, `git status --short`, `git diff --check`.
-- Python syntax safety: `python -m compileall api core environments fetching indexing search main.py`.
+- Docs-only `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`: path listing, `git status --short --branch`, `git diff --check`, `git diff --cached --check`.
+- Python syntax safety: `python -m compileall api core environments fetching indexing search storage main.py`.
 - Unit behavior: `uv run pytest` when tests exist.
 - MCP tool contracts: focused tests or smoke around `register_tools` and tool handlers.
-- Search/indexing: temp Chroma path or mocked collection. Avoid user Chroma data.
-- Fetching/network: mocked HTTP/API responses. Live Notion/Tistory checks require user approval.
+- Search/indexing/storage: temp Chroma path, temp SQLite path, or mocked collection. Avoid user Chroma data and SQLite metadata.
+- Fetching/network: mocked HTTP/API responses. Live Notion/Tistory/GitHub/Web checks require user approval.
 
 Use uv when it is available and healthy. If uv fails because local setup is broken, record the blocker and run a dependency-free fallback when useful.
 

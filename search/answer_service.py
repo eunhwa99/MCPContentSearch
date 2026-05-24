@@ -36,6 +36,7 @@ class CitationAnswerService:
                 "path": item.path,
                 "line_start": item.line_start,
                 "line_end": item.line_end,
+                "version_id": item.version_id,
             }
             for item in evidence
         ]
