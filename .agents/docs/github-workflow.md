@@ -60,6 +60,9 @@ git diff --check
 git diff --cached --check
 ```
 
+Stage the relevant docs-only files before `git diff --cached --check`; new
+untracked docs and plan files are not checked by the cached diff until staged.
+
 Python/runtime changes:
 
 ```bash

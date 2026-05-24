@@ -20,14 +20,23 @@ For read-only explanations, command-output checks, or code reviews, use only the
 
 ## Phase and Gate Order
 
-Run phases in this order. `harness-implement` and `harness-test` may run as parallel lanes when tool policy and file ownership allow it. Code-changing work must always pass through the test lane before any review gate.
+Run phases in this order. The main agent is the harness orchestrator: it owns
+the plan, worker persona design, delegation, result synthesis, integration,
+review routing, and final delivery. `harness-implement` and `harness-test` may
+run as parallel lanes when tool policy and file ownership allow it.
+Code-changing work must always pass through the test lane before any review
+gate.
 
 0. Branch preflight: follow `.agents/docs/github-workflow.md`.
 1. Plan document: create or update `docs/plan/YYYY-MM-DD-short-task-name.md`.
 2. `.agents/skills/harness-plan/SKILL.md`
-3. `.agents/skills/harness-multitask/SKILL.md`, only when multiple tasks need decomposition.
-4. Implementation lane: `.agents/skills/harness-implement/SKILL.md`
-5. Test lane: `.agents/skills/harness-test/SKILL.md`
+3. Subagent orchestration design: choose bounded implementation, testing,
+   documentation, or integration worker personas when delegation is available;
+   use `.agents/skills/harness-multitask/SKILL.md` when work needs splitting.
+4. Implementation lane: `.agents/skills/harness-implement/SKILL.md`, delegated
+   to worker personas when useful and safe.
+5. Test lane: `.agents/skills/harness-test/SKILL.md`, delegated to a distinct
+   verification persona when useful and safe.
 6. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
 7. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
 8. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
@@ -75,13 +84,44 @@ Review gates must check that the diff does not violate architecture docs or acce
 
 ## Multi-task Orchestration
 
-When the user provides multiple tasks:
+When the user provides multiple tasks, or a single task naturally splits into
+independent implementation, testing, documentation, or integration ownership:
 
 - Split by independent behavior, module ownership, and PR boundary.
 - Do not treat tasks as independent if they change the same MCP tool contract, shared config, Chroma/indexing behavior, SQLite lifecycle/tombstone metadata, external source connector contract, or the same public module interface.
 - Assign independent tasks to disjoint file ownership when subagent or parallel work is allowed.
 - Use stacked PR planning when tasks have contract or ordering dependencies.
 - The main agent owns integration, conflict resolution, final verification, and final report.
+
+## Main-Agent Orchestration
+
+The main agent should minimize human intervention while keeping safety gates
+explicit. After branch preflight and plan creation, the main agent should:
+
+- Inspect the plan and update it when the requested work, repo state, or
+  verification results change.
+- Define task-specific worker personas for implementation, tests,
+  documentation, refactor, or integration. Each persona needs a bounded goal,
+  owned files or modules, required context, non-goals, acceptance criteria, and
+  expected verification.
+- Delegate work to subagents when the active tool policy allows it and file
+  ownership is clear. Tell workers not to commit, push, open PRs, change
+  unrelated files, inspect secrets, mutate local Chroma/SQLite data, or bypass
+  repo-local harness rules unless explicitly authorized.
+- Collect worker outputs, inspect the diff directly, resolve conflicts, and
+  decide whether more implementation, test, docs, or integration work is
+  needed before review.
+- Route actionable issues to the responsible worker persona, or to a fresh
+  replacement worker with the same ownership boundary if the original worker is
+  unavailable. Update the plan before retrying.
+- Ask the user only for unsafe ambiguity, credentials, destructive operations,
+  local data mutation, unavailable delegation/review tools, or external
+  approval. Do not ask for routine implementation choices that can be decided
+  from repo docs, architecture, ADRs, and the plan.
+
+Implementation/execution worker subagents and `$subagent-review-loop` reviewer
+subagents are separate roles. Workers may edit within their assigned boundary
+when delegated. Reviewers inspect only and must not edit files.
 
 ## Retry Loop
 
@@ -94,16 +134,26 @@ read architecture and relevant ADRs
 run branch preflight with GitHub workflow dirty/clean worktree safeguards
 write or update docs/plan plan
 run planning phase
+design worker personas and task ownership
 if needed, run multitask phase
 repeat:
-  run implementation and test lanes where possible
+  delegate implementation/test/docs/integration work to bounded worker personas where possible
+  collect worker results, inspect the diff, and synthesize the main-agent result
   run middle review gate using $subagent-review-loop
-  if review finds actionable issues, update plan and return to implementation/test
+  if main-agent review or subagent review finds actionable issues:
+    update plan
+    route each issue to the responsible worker persona or a fresh replacement
+    rerun affected verification
+    continue the loop
   run refactor phase
   rerun focused verification
   run integration verification
   run final review gate using $subagent-review-loop
-  if final review finds actionable issues, update plan and return to implementation/test
+  if final review finds actionable issues:
+    update plan
+    route each issue to the responsible worker persona or a fresh replacement
+    rerun affected verification
+    continue the loop
   after the final clean review pass, commit, push, and create a PR
 until complete or blocked
 ```
@@ -152,6 +202,9 @@ git status --short --branch
 git diff --check
 git diff --cached --check
 ```
+
+Stage the relevant docs-only files before running `git diff --cached --check`;
+otherwise the cached check does not cover new untracked docs or plan files.
 
 Python code changes use the smallest useful check first:
 
