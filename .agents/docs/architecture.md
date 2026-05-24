@@ -187,7 +187,7 @@ Domain exceptions live in `core/exceptions.py`.
 
 Use the smallest useful check first.
 
-- Docs-only changes: path listing, `git status --short --branch`, `git diff --check`, and `git diff --cached --check`.
+- Docs-only changes: path listing, `git status --short --branch`, `git diff --check`, then stage the relevant docs-only files and run `git diff --cached --check` so new docs and plan files are covered.
 - Syntax/import safety: `python -m compileall api core environments fetching indexing search storage main.py`.
 - Unit tests: `uv run pytest` when tests exist.
 - MCP contract: focused tests or smoke checks around `register_tools` and tool functions.

@@ -15,7 +15,7 @@ Add or update the smallest useful verification for the changed behavior. This ph
 
 Preferred checks by change type:
 
-- Docs-only `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`: path listing, `git status --short --branch`, `git diff --check`, `git diff --cached --check`.
+- Docs-only `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`: path listing, `git status --short --branch`, `git diff --check`, then stage the relevant docs-only files and run `git diff --cached --check` so new files are covered.
 - Python syntax safety: `python -m compileall api core environments fetching indexing search storage main.py`.
 - Unit behavior: `uv run pytest` when tests exist.
 - MCP tool contracts: focused tests or smoke around `register_tools` and tool handlers.

@@ -12,7 +12,12 @@ Run this gate with `$subagent-review-loop`:
 - After implementation and test lanes are merged.
 - After integration verification and before final response.
 
-Before starting this gate, relevant verification must already have run. If actionable findings exist, update the plan, return to implementation/test, rerun the affected verification, then start a new fresh five-reviewer subagent review pass. Stop only when all five reviewers in the newest pass report no actionable findings.
+Before starting this gate, relevant verification must already have run. If
+actionable findings exist, update the plan, route each issue to the responsible
+implementation, test, docs, refactor, or integration worker persona or a fresh
+replacement with the same ownership boundary, rerun the affected verification,
+then start a new fresh five-reviewer subagent review pass. Stop only when all
+five reviewers in the newest pass report no actionable findings.
 
 ## Input
 
@@ -26,7 +31,10 @@ Use `$subagent-review-loop` exactly:
 2. Spawn exactly five new reviewer subagents for the pass.
 3. Give each reviewer task-local context: requirements, changed files, relevant docs, and verification output.
 4. Ask each reviewer for findings first, ordered by severity, with file and line references.
-5. Fix every actionable finding.
+5. Fix every actionable finding. When delegation is available and safe, assign
+   it back to the responsible worker persona or a fresh replacement; if the main
+   agent fixes it directly because delegation is unavailable or unsafe, record
+   that reason in the plan.
 6. Rerun affected verification.
 7. Spawn another fresh five-reviewer pass.
 8. Repeat until all five reviewers in the newest pass report no actionable findings.
