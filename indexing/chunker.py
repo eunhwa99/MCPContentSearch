@@ -304,6 +304,7 @@ class DocumentChunker:
             chunk_index=chunk_index,
             line_start=line_start,
             line_end=line_end,
+            version_id=document.version_id,
             content_hash=content_hash,
             updated_at=document.updated_at or document.date,
         )

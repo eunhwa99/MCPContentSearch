@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Barrier
 
 import pytest
@@ -21,9 +22,10 @@ def _mark_job_running(
     store: MetadataStore,
     job_id: str,
     *,
-    started_at: str = "2026-05-22T00:00:00+00:00",
+    started_at: str | None = None,
     heartbeat_at: str = "",
 ):
+    started_at = started_at or datetime.now(timezone.utc).isoformat()
     with store._connect() as conn:
         conn.execute(
             """
@@ -90,6 +92,7 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
         chunk_index=0,
         content_hash="abc123",
         updated_at="2026-05-20T00:00:00Z",
+        version_id="page-version-1",
     )
     store.replace_document_chunks("notion_page_1", [chunk])
 
@@ -97,6 +100,7 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
     assert store.get_latest_sync_job("source_notion").status == SyncJobStatus.SUCCEEDED
     assert store.get_document("notion_page_1").title == "Architecture Note"
     assert store.get_chunk(chunk.chunk_id).document_id == "notion_page_1"
+    assert store.get_chunk(chunk.chunk_id).version_id == "page-version-1"
     assert store.list_chunks_for_document("notion_page_1") == [chunk]
 
 
@@ -749,6 +753,66 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
     assert row["last_seen_sync_id"] == ""
     assert row["deleted_at"] == ""
     assert row["version_id"] == ""
+
+
+def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with store._connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE documents (
+                document_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                url TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                date TEXT NOT NULL,
+                path TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                content_hash TEXT NOT NULL
+            );
+            CREATE TABLE chunks (
+                chunk_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                text TEXT NOT NULL,
+                url TEXT NOT NULL,
+                path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                line_start INTEGER,
+                line_end INTEGER,
+                content_hash TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO documents (
+                document_id, source_id, title, content, url, platform,
+                date, path, updated_at, content_hash
+            ) VALUES (
+                'legacy-doc', 'source_legacy', 'Legacy', 'legacy content',
+                'https://example.com/legacy', 'Legacy', '', 'Legacy',
+                '2026-05-20T00:00:00Z', 'hash'
+            );
+            INSERT INTO chunks (
+                chunk_id, document_id, source_id, title, text, url, path,
+                chunk_index, line_start, line_end, content_hash, updated_at
+            ) VALUES (
+                'legacy-chunk', 'legacy-doc', 'source_legacy', 'Legacy',
+                'legacy content', 'https://example.com/legacy', 'Legacy',
+                0, 1, 1, 'hash', '2026-05-20T00:00:00Z'
+            );
+            """
+        )
+
+    store.ensure_schema()
+
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+
+    assert "version_id" in columns
+    assert store.get_chunk("legacy-chunk").version_id == ""
 
 
 def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path):

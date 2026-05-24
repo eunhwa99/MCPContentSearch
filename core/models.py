@@ -106,6 +106,7 @@ class ChunkModel(BaseModel):
     chunk_index: int = Field(ge=0)
     line_start: Optional[int] = None
     line_end: Optional[int] = None
+    version_id: str = ""
     content_hash: str
     updated_at: str = ""
 
@@ -129,6 +130,7 @@ class ChunkModel(BaseModel):
             chunk_index=self.chunk_index,
             line_start=self.line_start,
             line_end=self.line_end,
+            version_id=self.version_id,
         )
 
 
@@ -146,6 +148,7 @@ class ContextSearchResult(BaseModel):
     text: str = ""
     line_start: Optional[int] = None
     line_end: Optional[int] = None
+    version_id: str = ""
     updated_at: str = ""
 
     model_config = ConfigDict(frozen=True)
