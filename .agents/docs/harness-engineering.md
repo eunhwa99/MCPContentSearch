@@ -51,7 +51,7 @@ Before editing target files:
 9. Create a fresh `feature/...` branch from updated `main` for every new task.
 10. Reuse an existing `feature/...` branch only when the user explicitly asks to continue that branch.
 
-Never run destructive cleanup such as `git reset --hard`, `git checkout -- <file>`, deleting local Chroma data, removing caches, or resetting local credentials unless the user explicitly asks.
+Never run destructive cleanup such as `git reset --hard`, `git checkout -- <file>`, deleting local Chroma data, deleting local SQLite metadata, removing caches, or resetting local credentials unless the user explicitly asks.
 
 ## Plan Document
 
@@ -78,7 +78,7 @@ Review gates must check that the diff does not violate architecture docs or acce
 When the user provides multiple tasks:
 
 - Split by independent behavior, module ownership, and PR boundary.
-- Do not treat tasks as independent if they change the same MCP tool contract, shared config, Chroma/indexing behavior, or the same public module interface.
+- Do not treat tasks as independent if they change the same MCP tool contract, shared config, Chroma/indexing behavior, SQLite lifecycle/tombstone metadata, external source connector contract, or the same public module interface.
 - Assign independent tasks to disjoint file ownership when subagent or parallel work is allowed.
 - Use stacked PR planning when tasks have contract or ordering dependencies.
 - The main agent owns integration, conflict resolution, final verification, and final report.
@@ -115,12 +115,17 @@ Review gates use `$subagent-review-loop` and code-review stance. Each review pas
 Use review lenses that fit the change:
 
 - MCP contract lens: tool names, parameters, return shapes, async behavior, error messages, and README/client documentation.
-- Indexing/vector-store lens: deduplication, content hashes, Chroma mutations, LlamaIndex usage, local data safety, and rollback risk.
-- Fetching/network lens: Notion/Tistory API behavior, timeouts, retries, rate limits, credential handling, and partial failure handling.
+- Indexing/vector-store/storage lens: deduplication, content hashes, Chroma
+  mutations, LlamaIndex usage, SQLite lifecycle/citation metadata, tombstones,
+  local data safety, and rollback risk.
+- Fetching/network lens: external source connector behavior, timeouts, retries,
+  rate limits, credential handling, partial snapshots, and partial failure
+  handling.
 - Async/background lens: `asyncio.create_task`, status reporting, swallowed exceptions, and caller-visible completion semantics.
 - Config/secrets lens: environment variables, token handling, `.env`, local data paths, and logging.
 - Test-quality lens: focused tests, compile/import checks, mocked external APIs, and smoke checks.
-- Docs-only lens: path references, skill names, phase order, and whitespace checks.
+- Docs-only lens: path references, skill names, phase order, whitespace checks,
+  and staged diff checks.
 
 When subagent review is unavailable due to tool policy or the user did not authorize delegation, do not pretend it ran. Stop and report the blocker. Continue with local self-review only if the user explicitly approves bypassing `$subagent-review-loop`.
 
@@ -138,28 +143,33 @@ Local, fixable failures return to implementation/test after updating the plan. R
 
 ## Verification Standards
 
-Docs-only changes limited to `AGENTS.md`, `.agents/`, and `docs/plan/` use:
+Docs-only changes limited to `AGENTS.md`, `README.md`, `.agents/`, and
+`docs/**/*.md` use:
 
 ```bash
-rg --files AGENTS.md .agents/docs .agents/skills docs/plan
-git status --short
+rg --files AGENTS.md README.md docs .agents/docs .agents/skills
+git status --short --branch
 git diff --check
+git diff --cached --check
 ```
 
 Python code changes use the smallest useful check first:
 
 ```bash
-python -m compileall api core environments fetching indexing search main.py
+python -m compileall api core environments fetching indexing search storage main.py
 ```
 
 Prefer uv when the local uv workspace is healthy:
 
 ```bash
-uv run python -m compileall api core environments fetching indexing search main.py
+uv run python -m compileall api core environments fetching indexing search storage main.py
 uv run pytest
 ```
 
-MCP tool changes should include an import/startup smoke when it can run without real credentials or without mutating user Chroma data. External live checks against Notion or Tistory require user approval.
+MCP tool changes should include an import/startup smoke when it can run without
+real credentials or without mutating user Chroma data or SQLite metadata.
+External live checks against Notion, Tistory, GitHub, or configured website/docs
+sources require user approval.
 
 Verification must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification before starting the next fresh five-reviewer subagent review pass.
 

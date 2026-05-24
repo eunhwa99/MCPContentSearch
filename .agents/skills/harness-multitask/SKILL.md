@@ -20,7 +20,7 @@ Each task needs:
 - Verification scope.
 - Expected PR boundary, if PRs are requested.
 
-Do not split tasks as independent when they modify the same MCP tool contract, shared config, Chroma/indexing semantics, external fetcher contract, or public response shape.
+Do not split tasks as independent when they modify the same MCP tool contract, shared config, Chroma/indexing semantics, SQLite lifecycle/tombstone metadata, external source connector contract, or public response shape.
 
 ## Worker Boundaries
 

@@ -17,13 +17,15 @@ Follow existing module boundaries:
 
 - MCP contract and tool formatting in `api/`.
 - Search orchestration in `search/`.
-- Chroma/LlamaIndex writes and indexing status in `indexing/`.
-- Notion/Tistory behavior in `fetching/`.
+- Chroma/LlamaIndex writes, source-aware chunking, and indexing status in `indexing/`.
+- External source connector behavior in `fetching/`.
+- SQLite lifecycle and citation metadata in `storage/`.
 - Shared models/errors/utilities in `core/`.
 - Configuration in `environments/`.
 - Composition in `main.py`.
 
-Avoid unrelated cleanup. Do not inspect or mutate local Chroma data unless the plan and user approval allow it. Do not expose secrets.
+Avoid unrelated cleanup. Do not inspect or mutate local Chroma data or SQLite
+metadata unless the plan and user approval allow it. Do not expose secrets.
 
 ## Output
 

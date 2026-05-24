@@ -54,15 +54,16 @@ Commit-time checks should match the change:
 Docs-only:
 
 ```bash
-rg --files AGENTS.md .agents/docs .agents/skills docs/plan
-git status --short
+rg --files AGENTS.md README.md docs .agents/docs .agents/skills
+git status --short --branch
 git diff --check
+git diff --cached --check
 ```
 
 Python/runtime changes:
 
 ```bash
-python -m compileall api core environments fetching indexing search main.py
+python -m compileall api core environments fetching indexing search storage main.py
 uv run pytest
 ```
 

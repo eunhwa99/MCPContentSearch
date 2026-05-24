@@ -16,23 +16,24 @@ Run the most valuable final verification for the change.
 Docs-only:
 
 ```bash
-rg --files AGENTS.md .agents/docs .agents/skills docs/plan
-git status --short
+rg --files AGENTS.md README.md docs .agents/docs .agents/skills
+git status --short --branch
 git diff --check
+git diff --cached --check
 ```
 
 Python code:
 
 ```bash
-python -m compileall api core environments fetching indexing search main.py
+python -m compileall api core environments fetching indexing search storage main.py
 uv run pytest
 ```
 
-MCP contract changes should include a startup/import or tool-registration smoke when it can run without live credentials and without mutating user Chroma data.
+MCP contract changes should include a startup/import or tool-registration smoke when it can run without live credentials and without mutating user Chroma data or SQLite metadata.
 
-Indexing/search changes should avoid user data by using temp Chroma paths, mocks, or clearly documented dry checks.
+Indexing/search/storage changes should avoid user data by using temp Chroma paths, temp SQLite paths, mocks, or clearly documented dry checks.
 
-Live Notion/Tistory validation requires user approval. Do not print tokens.
+Live Notion/Tistory/GitHub/Web validation requires user approval. Do not print tokens.
 
 ## Completion
 

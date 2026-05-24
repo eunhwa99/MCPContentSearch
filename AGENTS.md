@@ -9,6 +9,7 @@
 - File-changing work starts with branch preflight from the latest `main`: if the worktree is clean, switch to `main`, fast-forward it from `origin/main` when network is available, delete only safe local non-`main` work branches using `.agents/docs/github-workflow.md` safeguards, then create a fresh `feature/...` branch before target edits.
 - If the starting worktree is dirty, do not switch, pull, or delete branches there. Fetch `origin/main` when network is available, then create an isolated worktree with a fresh `feature/...` branch from `origin/main`; if fetch or isolation is unavailable, ask or report the blocker. Preserve local-only commits and linked-worktree branches unless the user explicitly approves cleanup. Do not edit target files on `main`.
 - After branch preflight and before non-plan target edits, create or update a plan document under `docs/plan/`.
+- Keep `docs/contextwiki-core-understanding.md` updated when changes affect ContextWiki source connectors, source sync, document identity, chunking, tombstones, retrieval, citation metadata, or answer behavior. This note is the maintained human explanation layer and should not drift behind README, architecture docs, ADRs, or implementation.
 - After code-changing work, always run the relevant test or verification command before review. Use the repo-local commands in this file and `.agents/docs/harness-engineering.md`, not plugin-default paths such as `docs/superpowers/...`.
 - After verification and before PR delivery for any code, configuration, documentation, or skill change, run `$subagent-review-loop`: spawn exactly five fresh reviewer subagents per pass and repeat until all five reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
 - After the final clean `$subagent-review-loop` pass, proceed to commit, push, and create a `main`-base PR by default. This is the standing repository workflow unless the user explicitly asks for local-only work or a safety blocker prevents PR delivery.
@@ -17,46 +18,49 @@
 
 ## Project Structure
 
-This repository is a Python MCP content search server built around FastMCP, LlamaIndex, and ChromaDB.
+This repository is a Python MCP content search server built around FastMCP,
+LlamaIndex, ChromaDB, and SQLite metadata storage.
 
 - `main.py`: application composition and FastMCP server startup.
 - `api/`: MCP tool registration and tool handlers.
 - `core/`: shared models, exceptions, and utility code.
 - `environments/`: runtime configuration and secret/environment loading.
-- `fetching/`: Notion, Tistory, and unified document fetching/searching.
-- `indexing/`: document conversion, dedup/update detection, and vector indexing.
-- `search/`: local Chroma/LlamaIndex search and dynamic local-to-web fallback.
+- `fetching/`: Notion, Tistory, GitHub, website/docs, and unified document fetching/searching.
+- `indexing/`: document conversion, chunking, dedup/update detection, and vector indexing.
+- `search/`: local Chroma/LlamaIndex search, dynamic local-to-web fallback, ContextWiki retrieval, and citation answer scaffolding.
+- `storage/`: SQLite source/job/document/chunk lifecycle metadata and active retrieval checks.
+- `docs/contextwiki-core-understanding.md`: maintained learning note for the current ContextWiki data flow, source connector behavior, lifecycle metadata, retrieval gate, and limitations.
 - `docs/plan/`: plan documents written before file-changing harness work.
 - `.agents/`: local harness docs, phase skills, and ADRs.
 
 ## Development Commands
 
 - `python main.py`: start the MCP server in the current environment.
-- `python -m compileall api core environments fetching indexing search main.py`: syntax-check project modules without contacting external services.
-- `uv run python -m compileall api core environments fetching indexing search main.py`: same check through uv when the uv environment is healthy.
+- `python -m compileall api core environments fetching indexing search storage main.py`: syntax-check project modules without contacting external services.
+- `uv run python -m compileall api core environments fetching indexing search storage main.py`: same check through uv when the uv environment is healthy.
 - `uv run pytest`: preferred test command once tests exist.
 
 If `uv run ...` fails because the local environment or workspace metadata is not ready, report the failure and run the closest dependency-free check, such as `python -m compileall ...`.
 
 ## Coding Style
 
-- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, configuration, and core models.
-- Do not move secrets into logs, docs, tests, or plan files. Treat `environments/token.py`, environment variables, API keys, and local Chroma contents as sensitive.
+- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, storage, configuration, and core models.
+- Do not move secrets into logs, docs, tests, or plan files. Treat `environments/token.py`, environment variables, API keys, local Chroma contents, and local SQLite metadata as sensitive.
 - Keep MCP tool response shapes stable unless the user requested a contract change.
 - Use async boundaries deliberately. Do not create background tasks that hide critical failures unless the caller contract explicitly treats the work as background work.
 - Add comments only where they explain non-obvious async, indexing, vector-store, or external API behavior.
 
 ## Testing and Verification
 
-- For docs/instruction-only changes limited to `AGENTS.md`, `.agents/`, and `docs/plan/`, use lightweight verification: path listing, `git status --short`, and `git diff --check`.
+- For docs/instruction-only changes limited to `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`, use lightweight verification: path listing, `git status --short --branch`, `git diff --check`, and `git diff --cached --check`.
 - For Python code changes, run the smallest relevant test or import/syntax check first, then broaden to `uv run pytest` when tests exist.
-- For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory credentials.
-- For indexing/search changes, verify local-only behavior without touching user data when possible. Avoid deleting or resetting local Chroma state without explicit user approval.
-- For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory checks require user approval and should not expose tokens.
+- For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory/GitHub/Web credentials.
+- For indexing/search/storage changes, verify local-only behavior without touching user data when possible. Avoid deleting or resetting local Chroma state or SQLite metadata without explicit user approval.
+- For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory/GitHub/Web checks require user approval and should not expose tokens.
 - Verification must happen before `$subagent-review-loop`; if review findings require edits, rerun the affected verification before starting a fresh five-reviewer pass.
 
 ## Security and Configuration
 
 - Do not commit secrets, local database files, Chroma data, cache directories, or `.env` contents.
-- External APIs include Notion and Tistory. Network-dependent validation is optional unless the user explicitly requests it.
-- Local ChromaDB data may contain indexed user content. Do not inspect, delete, or migrate it without a plan and user-visible rationale.
+- External APIs include Notion, Tistory, GitHub, and configured website/docs sources. Network-dependent validation is optional unless the user explicitly requests it.
+- Local ChromaDB data and SQLite metadata may contain indexed user content. Do not inspect, delete, or migrate them without explicit user approval, a plan, and user-visible rationale.

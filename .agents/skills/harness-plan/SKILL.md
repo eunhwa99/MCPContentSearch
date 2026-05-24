@@ -35,8 +35,9 @@ The plan must include:
 - Integration or smoke scenario when needed.
 - Whether the change is docs-only.
 - MCP tool contract documentation updates when tool behavior changes.
-- Local ChromaDB data impact, if any.
-- External Notion/Tistory credential or network requirements, if any.
+- Local ChromaDB or SQLite metadata impact, if any.
+- External source connector credential or network requirements, including
+  Notion, Tistory, GitHub, and website/docs, if any.
 - Risks, open questions, environment requirements, and rollback point.
 - Architecture/ADR constraints.
 - PR split or stacked PR plan if PRs are requested.
@@ -46,6 +47,8 @@ The plan must include:
 
 If `docs/plan/...` does not exist for file-changing work, stop and create it first.
 
-Use conservative assumptions when safe and record them. Ask one short question only when a wrong assumption could cause data loss, expose secrets, change MCP contracts unexpectedly, or mutate user Chroma data.
+Use conservative assumptions when safe and record them. Ask one short question
+only when a wrong assumption could cause data loss, expose secrets, change MCP
+contracts unexpectedly, or mutate user Chroma data or SQLite metadata.
 
 Each step must be self-contained enough for a future agent to execute without hidden conversation context. Include files to read, previous outputs, explicit boundaries, and executable acceptance criteria.

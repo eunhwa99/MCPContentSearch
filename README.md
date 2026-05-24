@@ -9,11 +9,11 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - Real-time web search for Notion & Tistory
 - HTML crawling for sites without APIs
 - MCP tool exposure for seamless integration with AI clients
-- Source metadata for Notion and Tistory
+- Source metadata for Notion, Tistory, GitHub, and website/docs sources
 - Incremental source sync with per-job status
 - SQLite metadata store for sources, jobs, documents, and citation chunks
 - Citation-oriented context search and fetch
-- Grounded answer generation that returns insufficient evidence instead of unsupported claims
+- Evidence-gated citation answer responses that return insufficient evidence instead of unsupported claims
 - GitHub repository ingestion with stable file identities, blob version metadata, and code line citations
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
 
@@ -36,6 +36,12 @@ Phase B source ids:
 - `source_github` — configured with `CONTEXTWIKI_GITHUB_REPOSITORIES`
 - `source_web` — configured with `CONTEXTWIKI_WEB_URLS`
 
+## 📖 Project Docs
+
+- [`docs/contextwiki-core-understanding.md`](docs/contextwiki-core-understanding.md) — maintained learning note for explaining ContextWiki's data flow, source connectors, lifecycle metadata, retrieval gate, and current limitations.
+- [`docs/plan/`](docs/plan/) — phase plans and verification logs.
+- [`.agents/docs/adr/`](.agents/docs/adr/) — accepted architecture decisions.
+
 ## Directory Structure
 
 ```
@@ -51,7 +57,9 @@ mcp-content-search/
 │   └── utils.py              # ContentHasher, helpers
 │
 ├── indexing/
-│   ├── converter.py          # Convert Notion/Tistory → unified format
+│   ├── chunker.py            # Source-aware citation chunking
+│   ├── ingestion_service.py  # ContextWiki source sync and incremental indexing
+│   ├── converter.py          # Convert DocumentModel → LlamaIndex document
 │   ├── manager.py            # Handles index life-cycle
 │   └── indexer.py            # Index documents into Chroma
 │
@@ -67,14 +75,18 @@ mcp-content-search/
 ├── search/
 │   ├── dynamic_search.py     # Local-first auto-fallback search
 │   ├── context_service.py    # Citation-ready structured context search
-│   ├── answer_service.py     # Citation-grounded answer generation
+│   ├── answer_service.py     # Evidence-gated citation answer responses
 │   └── service.py            # Local Chroma search only
 │
 ├── storage/
 │   └── metadata_store.py     # SQLite source/job/document/chunk metadata
 │
 ├── api/
-│   └── tools.py              # MCP tool handlers (search, indexing, status)
+│   └── tools.py              # MCP tool handlers (search, source sync, context, status)
+│
+├── docs/
+│   ├── contextwiki-core-understanding.md  # Maintained architecture learning note
+│   └── plan/                 # Harness plans and verification logs
 │
 ├── main.py                   # Application entry point
 ├── requirements.txt
@@ -105,11 +117,13 @@ mcp-content-search/
 
 ## 📚 `indexing/` — Indexing Pipeline
 
-| File           | Description             | Key Components      |
-| -------------- | ----------------------- | ------------------- |
-| `converter.py` | Document transformation | `DocumentConverter` |
-| `manager.py`   | Manager for indexing    | `IndexManager`      |
-| `indexer.py`   | Index content.          | `ContentIndexer`    |
+| File                   | Description                               | Key Components      |
+| ---------------------- | ----------------------------------------- | ------------------- |
+| `chunker.py`           | Source-aware citation chunking             | `DocumentChunker`   |
+| `ingestion_service.py` | Source sync and incremental indexing       | `IngestionService`  |
+| `converter.py`         | DocumentModel to LlamaIndex document metadata | `DocumentConverter` |
+| `manager.py`           | Manager for indexing                       | `IndexManager`      |
+| `indexer.py`           | Index content into Chroma                  | `ContentIndexer`    |
 
 ---
 
@@ -165,6 +179,8 @@ mcp-content-search/
 
 # 🔄 Architecture of MCP Tools
 
+Legacy dynamic search flow:
+
 ```
 (Client)
    ↓
@@ -180,6 +196,25 @@ Background Indexing
    ↓
 ContentIndexer → Chroma → LlamaIndex
 
+```
+
+ContextWiki source and retrieval flow:
+
+```
+(Client)
+   ↓
+[FastMCP]
+   ↓ calls tool
+[api/tools.py]
+   ├─ list_sources / get_sync_status → MetadataStore (SQLite)
+   ├─ sync_source → IngestionService → SourceRegistry/connector
+   │                   ↓
+   │               MetadataStore source registration/sync guard → connector fetch → DocumentChunker
+   │                                                    ↓
+   │                                            ContentIndexer → Chroma
+   ├─ search_context → ContextSearchService → Chroma candidates → MetadataStore validation
+   ├─ fetch_context → MetadataStore document/chunk hydration
+   └─ answer_with_citations → CitationAnswerService → validated evidence
 ```
 
 ---
@@ -202,9 +237,10 @@ The application will:
 
 1. Load configuration
 2. Initialize Chroma vector store
-3. Prepare indexing and search services
-4. Register MCP tools
-5. Start the server
+3. Initialize SQLite metadata store
+4. Prepare indexing, source sync, and search services
+5. Register MCP tools
+6. Start the server
 
 ---
 
@@ -248,7 +284,8 @@ The required test path excludes live external API smoke tests:
 uv run pytest -m "not live"
 ```
 
-Live API smoke tests are optional and must be explicitly enabled:
+Live API smoke tests are deferred/non-default. When live tests are added or
+expanded, they must be explicitly enabled:
 
 ```bash
 RUN_LIVE_E2E=1 uv run pytest -m live
@@ -262,6 +299,7 @@ This keeps CI deterministic while still allowing manual checks against real Noti
 
 - Ensure all required API keys (e.g., Notion, Tistory) are set in the environment.
 - ChromaDB directory is configured via `AppConfig`.
+- SQLite metadata path is configured via `AppConfig`.
 - You can extend the system by adding new data fetchers or custom MCP tools.
 
 ---
