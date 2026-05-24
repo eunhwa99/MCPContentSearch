@@ -19,7 +19,7 @@
 ## Project Structure
 
 This repository is a Python MCP content search server built around FastMCP,
-LlamaIndex, ChromaDB, and SQLite metadata storage.
+LlamaIndex, ChromaDB, SQLite metadata storage, and read-only Auto Wiki generation.
 
 - `main.py`: application composition and FastMCP server startup.
 - `api/`: MCP tool registration and tool handlers.
@@ -29,6 +29,7 @@ LlamaIndex, ChromaDB, and SQLite metadata storage.
 - `indexing/`: document conversion, chunking, dedup/update detection, and vector indexing.
 - `search/`: local Chroma/LlamaIndex search, dynamic local-to-web fallback, ContextWiki retrieval, and citation answer scaffolding.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata and active retrieval checks.
+- `wiki/`: read-only Auto Wiki generation from active ContextWiki search results.
 - `docs/contextwiki-core-understanding.md`: maintained learning note for the current ContextWiki data flow, source connector behavior, lifecycle metadata, retrieval gate, and limitations.
 - `docs/plan/`: plan documents written before file-changing harness work.
 - `.agents/`: local harness docs, phase skills, and ADRs.
@@ -36,15 +37,15 @@ LlamaIndex, ChromaDB, and SQLite metadata storage.
 ## Development Commands
 
 - `python main.py`: start the MCP server in the current environment.
-- `python -m compileall api core environments fetching indexing search storage main.py`: syntax-check project modules without contacting external services.
-- `uv run python -m compileall api core environments fetching indexing search storage main.py`: same check through uv when the uv environment is healthy.
+- `python -m compileall api core environments fetching indexing search storage wiki main.py`: syntax-check project modules without contacting external services.
+- `uv run python -m compileall api core environments fetching indexing search storage wiki main.py`: same check through uv when the uv environment is healthy.
 - `uv run pytest`: preferred test command once tests exist.
 
 If `uv run ...` fails because the local environment or workspace metadata is not ready, report the failure and run the closest dependency-free check, such as `python -m compileall ...`.
 
 ## Coding Style
 
-- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, storage, configuration, and core models.
+- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, storage, wiki, configuration, and core models.
 - Do not move secrets into logs, docs, tests, or plan files. Treat `environments/token.py`, environment variables, API keys, local Chroma contents, and local SQLite metadata as sensitive.
 - Keep MCP tool response shapes stable unless the user requested a contract change.
 - Use async boundaries deliberately. Do not create background tasks that hide critical failures unless the caller contract explicitly treats the work as background work.

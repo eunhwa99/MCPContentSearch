@@ -245,12 +245,26 @@ Current ContextWiki tools:
 | `search_context(query, filters, top_k)` | query/filter/top_k | structured chunk results | find evidence |
 | `fetch_context(document_id, chunk_id)` | document or chunk id | original document/chunk | inspect evidence |
 | `answer_with_citations(question, filters, top_k)` | question/filter/top_k | answer + citations | answer from evidence |
+| `generate_wiki_page(topic, filters, top_k)` | topic/filter/top_k | Markdown wiki page + citations/backlinks | generate a read-only Auto Wiki page from evidence |
 
 `model_dump(mode="json")` means:
 
 ```text
 Convert Pydantic models into JSON-safe dict/list values for MCP responses.
 ```
+
+---
+
+
+### Auto Wiki Generation
+
+`generate_wiki_page(topic, filters, top_k)` is the first Phase C surface. It does not persist wiki pages and does not call external connectors directly. The tool delegates to `WikiGenerationService`, which delegates to `ContextSearchService`, then emits a stable response with:
+
+```text
+topic, status, title, markdown, sections, citations, backlinks, used_chunks
+```
+
+The generated page is citation-gated: low-score or missing evidence returns `status="insufficient_evidence"` instead of creating a weak wiki page. `backlinks` are derived from the distinct source documents represented by the used chunks.
 
 ---
 

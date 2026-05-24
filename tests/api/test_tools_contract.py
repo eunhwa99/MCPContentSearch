@@ -132,6 +132,20 @@ class FakeAnswerService:
         }
 
 
+class FakeWikiService:
+    async def generate_wiki_page(self, topic, filters=None, top_k=8):
+        return {
+            "topic": topic,
+            "status": "generated",
+            "title": f"{topic} Wiki",
+            "markdown": "# ContextWiki Wiki\n\nContextWiki evidence [C1]\n",
+            "sections": [{"heading": "Overview", "content": "ContextWiki evidence [C1]"}],
+            "citations": [{"marker": "C1", "chunk_id": "chunk-1"}],
+            "backlinks": [{"document_id": "doc-1", "chunk_ids": ["chunk-1"]}],
+            "used_chunks": ["chunk-1"],
+        }
+
+
 def test_sync_source_returns_structured_error_for_unknown_source():
     mcp = FakeMCP()
     register_tools(
@@ -183,6 +197,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "search_context",
         "fetch_context",
         "answer_with_citations",
+        "generate_wiki_page",
     }.issubset(mcp.tools)
 
 
@@ -197,17 +212,38 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
         metadata_store=FakeMetadataStore(),
         context_search_service=FakeContextSearch(),
         answer_service=FakeAnswerService(),
+        wiki_service=FakeWikiService(),
     )
 
     status = asyncio.run(mcp.tools["get_sync_status"]())
     search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id="chunk-1"))
     answer = asyncio.run(mcp.tools["answer_with_citations"]("What is ContextWiki?"))
+    wiki = asyncio.run(mcp.tools["generate_wiki_page"]("ContextWiki"))
 
     assert status["sources"][0]["source"]["source_id"] == "source_fake"
     assert search["results"][0]["chunk_id"] == "chunk-1"
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
     assert answer["evidence_status"] == "grounded"
+    assert wiki["status"] == "generated"
+    assert wiki["citations"][0]["chunk_id"] == "chunk-1"
+
+
+def test_generate_wiki_page_returns_configured_error_without_service():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+    )
+
+    result = asyncio.run(mcp.tools["generate_wiki_page"]("ContextWiki"))
+
+    assert result["status"] == "not_configured"
+    assert result["citations"] == []
+    assert "not configured" in result["message"]
 
 
 def test_get_sync_status_returns_source_after_status_recovery():

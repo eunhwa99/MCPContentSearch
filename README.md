@@ -16,6 +16,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - Evidence-gated citation answer responses that return insufficient evidence instead of unsupported claims
 - GitHub repository ingestion with stable file identities, blob version metadata, and code line citations
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
+- Read-only Auto Wiki page generation from active ContextWiki chunks with citations and backlinks
 
 ## 🛠️ MCP Tools
 
@@ -30,6 +31,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - search_context — Return citation-ready structured context
 - fetch_context — Fetch a document or chunk by id
 - answer_with_citations — Answer only from retrieved chunks and include citations
+- generate_wiki_page — Generate a citation-backed Markdown wiki page from indexed ContextWiki evidence
 
 Phase B source ids:
 
@@ -77,6 +79,9 @@ mcp-content-search/
 │   ├── context_service.py    # Citation-ready structured context search
 │   ├── answer_service.py     # Evidence-gated citation answer responses
 │   └── service.py            # Local Chroma search only
+│
+├── wiki/
+│   └── service.py            # Read-only Auto Wiki generation over ContextWiki search results
 │
 ├── storage/
 │   └── metadata_store.py     # SQLite source/job/document/chunk metadata
@@ -152,6 +157,14 @@ mcp-content-search/
 
 ---
 
+## 🧭 `wiki/` — Auto Wiki Layer
+
+| File         | Description                                     | Key Components          |
+| ------------ | ----------------------------------------------- | ----------------------- |
+| `service.py` | Citation-backed wiki page generation over active ContextWiki search results | `WikiGenerationService` |
+
+---
+
 ## 🧾 `storage/` — Metadata Store
 
 | File                | Description                                                  | Key Components    |
@@ -214,7 +227,8 @@ ContextWiki source and retrieval flow:
    │                                            ContentIndexer → Chroma
    ├─ search_context → ContextSearchService → Chroma candidates → MetadataStore validation
    ├─ fetch_context → MetadataStore document/chunk hydration
-   └─ answer_with_citations → CitationAnswerService → validated evidence
+   ├─ answer_with_citations → CitationAnswerService → validated evidence
+   └─ generate_wiki_page → WikiGenerationService → ContextSearchService → Markdown + citations + backlinks
 ```
 
 ---
