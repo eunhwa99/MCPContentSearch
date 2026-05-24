@@ -117,3 +117,18 @@ def test_web_crawl_delay_env_must_be_valid_finite_float(monkeypatch, value):
 
     with pytest.raises(ValueError, match="CONTEXTWIKI_WEB_CRAWL_DELAY_SECONDS"):
         AppConfig()
+
+
+def test_wiki_llm_model_is_required_for_enabled_openai_provider():
+    with pytest.raises(ValueError, match="CONTEXTWIKI_WIKI_LLM_MODEL"):
+        AppConfig(wiki_llm_enabled=True, wiki_llm_provider="openai", wiki_llm_model="")
+
+
+def test_wiki_llm_model_is_not_required_for_unsupported_provider_fallback():
+    config = AppConfig(
+        wiki_llm_enabled=True,
+        wiki_llm_provider="anthropic",
+        wiki_llm_model="",
+    )
+
+    assert config.wiki_llm_provider == "anthropic"

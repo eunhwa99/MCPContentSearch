@@ -81,7 +81,8 @@ mcp-content-search/
 │   └── service.py            # Local Chroma search only
 │
 ├── wiki/
-│   └── service.py            # Read-only Auto Wiki generation over ContextWiki search results
+│   ├── service.py            # Read-only Auto Wiki generation over ContextWiki search results
+│   └── synthesis.py          # Optional opt-in LLM wiki synthesis provider
 │
 ├── storage/
 │   └── metadata_store.py     # SQLite source/job/document/chunk metadata
@@ -92,6 +93,10 @@ mcp-content-search/
 ├── docs/
 │   ├── contextwiki-core-understanding.md  # Maintained architecture learning note
 │   └── plan/                 # Harness plans and verification logs
+│
+├── scripts/
+│   ├── smoke_generate_wiki_page.py  # FastMCP wiki generation smoke checks
+│   └── verify_all.sh                # Compile + non-live test suite
 │
 ├── main.py                   # Application entry point
 ├── requirements.txt
@@ -159,9 +164,10 @@ mcp-content-search/
 
 ## 🧭 `wiki/` — Auto Wiki Layer
 
-| File         | Description                                     | Key Components          |
-| ------------ | ----------------------------------------------- | ----------------------- |
-| `service.py` | Citation-backed wiki page generation over active ContextWiki search results | `WikiGenerationService` |
+| File           | Description                                     | Key Components          |
+| -------------- | ----------------------------------------------- | ----------------------- |
+| `service.py`   | Citation-backed wiki page generation over active ContextWiki search results | `WikiGenerationService` |
+| `synthesis.py` | Optional opt-in LLM synthesis for more natural citation-backed wiki pages | `OpenAIWikiSynthesizer`, `build_wiki_synthesizer` |
 
 ---
 
@@ -275,6 +281,18 @@ Notion and Tistory keep using the existing environment variables. Phase B adds o
 | `CONTEXTWIKI_WEB_CRAWL_DELAY_SECONDS` | Delay between page fetches. Defaults to `0.2`. |
 | `CONTEXTWIKI_WEB_USER_AGENT` | User agent for GitHub/Web connector requests. |
 
+Auto Wiki can optionally use an LLM to turn citation-ready evidence into more
+natural Markdown. This is disabled by default because evidence may contain
+private source content.
+
+| Variable | Purpose |
+| --- | --- |
+| `CONTEXTWIKI_WIKI_LLM_ENABLED` | Set to `true` to enable LLM synthesis for `generate_wiki_page`. Defaults to `false`. |
+| `OPENAI_API_KEY` | OpenAI API key read only when wiki LLM synthesis is enabled. |
+| `CONTEXTWIKI_WIKI_LLM_MODEL` | OpenAI model for wiki synthesis. Defaults to `gpt-4.1-mini`; override as needed. |
+| `CONTEXTWIKI_WIKI_LLM_TIMEOUT` | LLM request timeout in seconds. Defaults to `20`. |
+| `CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS` | Maximum characters per evidence chunk sent to the LLM. Defaults to `1200`. |
+
 Run a configured Phase B sync through the existing MCP tool:
 
 ```text
@@ -292,20 +310,45 @@ Required verification includes compile checks plus unit, integration, and fake E
 scripts/verify_all.sh
 ```
 
+Wiki-generation PRs should also run the safe FastMCP smoke. This uses a fake
+source, temporary Chroma/SQLite under `/private/tmp`, actual `FastMCP`
+registration, and `call_tool("generate_wiki_page", ...)`; it writes Markdown
+under `/private/tmp/contextwiki-wiki-smoke` by default.
+
+```bash
+python scripts/smoke_generate_wiki_page.py --mode fake
+```
+
 The required test path excludes live external API smoke tests:
 
 ```bash
 uv run pytest -m "not live"
 ```
 
-Live API smoke tests are deferred/non-default. When live tests are added or
-expanded, they must be explicitly enabled:
+Live API smoke tests are non-default and must be explicitly enabled. For wiki
+generation, run the live GitHub smoke only when network is available and an
+appropriate public or approved repository source exists. The command uses
+temporary Chroma/SQLite and writes generated Markdown under `/private/tmp` by
+default. It skips gracefully when no repository is configured or the source is
+unavailable, and it must not print raw secrets or tokens.
+
+```bash
+python scripts/smoke_generate_wiki_page.py \
+  --mode github \
+  --github-repository owner/repo@main \
+  --topic README \
+  --require-generated
+```
+
+Live pytest markers, when added or expanded, must also stay explicitly enabled:
 
 ```bash
 RUN_LIVE_E2E=1 uv run pytest -m live
 ```
 
-This keeps CI deterministic while still allowing manual checks against real Notion, Tistory, GitHub, or web sources before demos/releases.
+This keeps CI deterministic while still making live smoke part of manual PR
+validation for MCP/wiki changes when network access and an appropriate source
+are available.
 
 ---
 

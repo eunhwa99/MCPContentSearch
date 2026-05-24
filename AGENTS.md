@@ -40,6 +40,8 @@ LlamaIndex, ChromaDB, SQLite metadata storage, and read-only Auto Wiki generatio
 - `python -m compileall api core environments fetching indexing search storage wiki main.py`: syntax-check project modules without contacting external services.
 - `uv run python -m compileall api core environments fetching indexing search storage wiki main.py`: same check through uv when the uv environment is healthy.
 - `uv run pytest`: preferred test command once tests exist.
+- `python scripts/smoke_generate_wiki_page.py --mode fake`: safe FastMCP smoke for `generate_wiki_page` using fake source data, temporary Chroma/SQLite under `/private/tmp`, and Markdown output under `/private/tmp/contextwiki-wiki-smoke`.
+- `python scripts/smoke_generate_wiki_page.py --mode github --github-repository owner/repo@main --topic README --require-generated`: optional live GitHub wiki smoke when network access and an approved source are available.
 
 If `uv run ...` fails because the local environment or workspace metadata is not ready, report the failure and run the closest dependency-free check, such as `python -m compileall ...`.
 
@@ -56,6 +58,7 @@ If `uv run ...` fails because the local environment or workspace metadata is not
 - For docs/instruction-only changes limited to `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`, use lightweight verification: path listing, `git status --short --branch`, `git diff --check`, and `git diff --cached --check`.
 - For Python code changes, run the smallest relevant test or import/syntax check first, then broaden to `uv run pytest` when tests exist.
 - For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory/GitHub/Web credentials.
+- For MCP/wiki generation changes, always consider live-smoke coverage during PR validation: run the safe fake wiki smoke whenever appropriate, and run the optional live GitHub wiki smoke only when network access, user approval, and an appropriate source are available. Live smoke must use temporary Chroma/SQLite paths, write Markdown under `/private/tmp` or a caller-provided output directory, skip gracefully when the source is unavailable, and avoid printing secrets or raw tokens.
 - For indexing/search/storage changes, verify local-only behavior without touching user data when possible. Avoid deleting or resetting local Chroma state or SQLite metadata without explicit user approval.
 - For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory/GitHub/Web checks require user approval and should not expose tokens.
 - Verification must happen before `$subagent-review-loop`; if review findings require edits, rerun the affected verification before starting a fresh five-reviewer pass.
@@ -64,4 +67,5 @@ If `uv run ...` fails because the local environment or workspace metadata is not
 
 - Do not commit secrets, local database files, Chroma data, cache directories, or `.env` contents.
 - External APIs include Notion, Tistory, GitHub, and configured website/docs sources. Network-dependent validation is optional unless the user explicitly requests it.
+- Auto Wiki LLM synthesis is opt-in because it can send retrieved source evidence to an external model. Keep it disabled in deterministic/local smoke tests unless the user explicitly requests live LLM validation.
 - Local ChromaDB data and SQLite metadata may contain indexed user content. Do not inspect, delete, or migrate them without explicit user approval, a plan, and user-visible rationale.
