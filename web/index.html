@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ContextWiki Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>ContextWiki Local Console</h1>
+          <p>Exercise answer, wiki, and smoke endpoints against the local Phase C.5 API.</p>
+        </div>
+        <div class="status-stack" aria-live="polite">
+          <span id="healthBadge" class="badge badge-warn">Checking API</span>
+          <span id="statusText" class="muted">Idle</span>
+        </div>
+      </header>
+
+      <section class="control-grid" aria-label="Console controls">
+        <form id="queryForm" class="panel input-panel">
+          <div class="field">
+            <label for="questionInput">Question</label>
+            <textarea id="questionInput" rows="5" placeholder="What changed in ContextWiki Phase C?"></textarea>
+          </div>
+
+          <div class="field">
+            <label for="topicInput">Wiki topic</label>
+            <input id="topicInput" type="text" placeholder="ContextWiki Auto Wiki" />
+          </div>
+
+          <div class="inline-actions">
+            <button id="answerButton" type="button">Answer</button>
+            <button id="wikiButton" type="button">Generate Wiki</button>
+            <button id="fakeSmokeButton" type="button">Fake Smoke</button>
+            <button id="githubSmokeButton" type="button">GitHub Smoke</button>
+          </div>
+        </form>
+
+        <aside class="panel filter-panel" aria-label="Request filters">
+          <div class="panel-heading">
+            <h2>Filters</h2>
+            <button id="refreshButton" type="button" class="secondary">Refresh Sources</button>
+          </div>
+
+          <fieldset class="source-types">
+            <legend>Source types</legend>
+            <label><input type="checkbox" name="sourceType" value="github" /> GitHub</label>
+            <label><input type="checkbox" name="sourceType" value="notion" /> Notion</label>
+            <label><input type="checkbox" name="sourceType" value="tistory" /> Tistory</label>
+            <label><input type="checkbox" name="sourceType" value="web" /> Web/docs</label>
+          </fieldset>
+
+          <div class="field compact">
+            <label for="sourceIdInput">source_id</label>
+            <input id="sourceIdInput" type="text" placeholder="source_github" />
+          </div>
+
+          <div class="field compact">
+            <label for="topKInput">top_k</label>
+            <input id="topKInput" type="number" min="1" max="20" step="1" placeholder="answer 5 / wiki 8" />
+          </div>
+
+          <div class="field compact">
+            <label for="githubRepositoryInput">GitHub repository</label>
+            <input id="githubRepositoryInput" type="text" placeholder="owner/repo" />
+          </div>
+
+          <label class="toggle">
+            <input id="requireGeneratedInput" type="checkbox" />
+            <span>Require generated smoke output</span>
+          </label>
+        </aside>
+      </section>
+
+      <section class="workspace-grid" aria-label="Results workspace">
+        <section class="panel result-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Result</h2>
+              <p id="resultMeta" class="muted">No request has run yet.</p>
+            </div>
+            <div class="download-actions">
+              <button id="downloadMarkdownButton" type="button" class="secondary" disabled>Download Markdown</button>
+              <button id="downloadJsonButton" type="button" class="secondary" disabled>Download JSON</button>
+            </div>
+          </div>
+
+          <div class="tabs" role="tablist" aria-label="Result views">
+            <button id="answerTab" class="tab active" type="button" data-tab="answer" role="tab" aria-selected="true" aria-controls="answerPane">Answer</button>
+            <button id="markdownTab" class="tab" type="button" data-tab="markdown" role="tab" aria-selected="false" aria-controls="markdownPane" tabindex="-1">Markdown</button>
+            <button id="jsonTab" class="tab" type="button" data-tab="json" role="tab" aria-selected="false" aria-controls="jsonPane" tabindex="-1">JSON</button>
+          </div>
+
+          <article id="answerPane" class="tab-pane active" role="tabpanel" aria-labelledby="answerTab">
+            <p class="empty">Run an answer, wiki, or smoke request to inspect the response.</p>
+          </article>
+          <pre id="markdownPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="markdownTab" hidden></pre>
+          <pre id="jsonPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
+        </section>
+
+        <aside class="evidence-stack">
+          <section class="panel">
+            <h2>Citations</h2>
+            <div id="citationsList" class="list empty">No citations yet.</div>
+          </section>
+          <section class="panel">
+            <h2>Backlinks</h2>
+            <div id="backlinksList" class="list empty">No backlinks yet.</div>
+          </section>
+          <section class="panel">
+            <h2>Used Chunks</h2>
+            <div id="chunksList" class="list empty">No used chunks yet.</div>
+          </section>
+          <section class="panel">
+            <h2>Sources</h2>
+            <div id="sourcesList" class="list empty">Sources have not loaded yet.</div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

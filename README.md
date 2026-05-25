@@ -17,6 +17,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - GitHub repository ingestion with stable file identities, blob version metadata, and code line citations
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
 - Read-only Auto Wiki page generation from active ContextWiki chunks with citations and backlinks
+- Local-only web test console for manually exercising answer/wiki/smoke flows through HTTP
 
 ## 🛠️ MCP Tools
 
@@ -83,6 +84,14 @@ mcp-content-search/
 ├── wiki/
 │   ├── service.py            # Read-only Auto Wiki generation over ContextWiki search results
 │   └── synthesis.py          # Optional opt-in LLM wiki synthesis provider
+│
+├── web_console/
+│   └── app.py                # Local FastAPI wrapper for browser manual testing
+│
+├── web/
+│   ├── index.html            # Local Web Test Console shell
+│   ├── app.js                # Console API calls and download helpers
+│   └── styles.css            # Console styling
 │
 ├── storage/
 │   └── metadata_store.py     # SQLite source/job/document/chunk metadata
@@ -262,6 +271,39 @@ The application will:
 5. Register MCP tools
 6. Start the server
 
+Start the local Phase C.5 web test console:
+
+```bash
+uv run uvicorn web_console.app:create_default_app --factory --host 127.0.0.1 --port 8765
+```
+
+Then open `http://127.0.0.1:8765`.
+
+The web console is local-only developer tooling, not a production UI. It serves
+static files from `web/` and calls these local HTTP endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/health` | Check console availability. |
+| `GET /api/sources` | List configured ContextWiki sources from SQLite metadata. |
+| `POST /api/answer` | Call `answer_with_citations` through the HTTP wrapper. |
+| `POST /api/wiki/generate` | Call `generate_wiki_page` through the HTTP wrapper. |
+| `POST /api/smoke/fake` | Run deterministic fake wiki smoke with temporary storage. |
+| `POST /api/smoke/github` | Run optional GitHub smoke, skipping gracefully when not configured. |
+
+The console does not add authentication, deployment, multi-user state, or
+server-side generated page persistence. It rejects non-loopback clients by
+default. `CONTEXTWIKI_WEB_CONSOLE_ALLOW_REMOTE=true` only bypasses the client
+IP check for explicit proxy/test experiments; `Host`, `Origin`, and `Referer`
+must still resolve to loopback. Markdown and JSON downloads happen in the
+browser from the response payload, and HTTP smoke endpoints clean up temporary
+Markdown files before returning.
+
+The local server boundary does not make every operation offline:
+`generate_wiki_page` follows the existing opt-in wiki LLM configuration, and
+the GitHub smoke endpoint performs live network work only when explicitly
+invoked and configured.
+
 ---
 
 # ⚙️ ContextWiki Source Configuration
@@ -304,10 +346,12 @@ sync_source("source_web")
 
 # ✅ Verification
 
-Required verification includes compile checks plus unit, integration, and fake E2E tests:
+Required verification includes compile checks plus unit, integration, fake E2E
+tests, and `node --check` for the local web console JavaScript. Install Node.js
+before running the required script.
 
 ```bash
-scripts/verify_all.sh
+./scripts/verify_all.sh
 ```
 
 Wiki-generation PRs should also run the safe FastMCP smoke. This uses a fake
