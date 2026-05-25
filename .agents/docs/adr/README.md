@@ -30,6 +30,7 @@ File names should be numbered and descriptive:
 | [0002](0002-contextwiki-metadata-and-citation-store.md) | accepted | ContextWiki metadata and citation store |
 | [0003](0003-contextwiki-phase-b0-identity-and-chunking.md) | accepted | ContextWiki Phase B-0 identity lifecycle and source-aware chunking |
 | [0004](0004-contextwiki-phase-b-connectors.md) | accepted | ContextWiki Phase B GitHub and website/docs connectors |
+| [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | accepted | ContextWiki Auto Wiki LLM synthesis boundary |
 
 ## When to Add or Update ADRs
 

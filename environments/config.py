@@ -41,6 +41,18 @@ def _float_env(name: str, default: float) -> float:
     return value
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 def _require_positive_int(name: str, value: int):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer")
@@ -134,6 +146,28 @@ class AppConfig:
         )
     )
 
+    # Auto Wiki LLM synthesis. Disabled by default because source evidence may
+    # include private user content and should only leave the machine by opt-in.
+    wiki_llm_enabled: bool = field(
+        default_factory=lambda: _bool_env("CONTEXTWIKI_WIKI_LLM_ENABLED", False)
+    )
+    wiki_llm_provider: str = field(
+        default_factory=lambda: os.getenv("CONTEXTWIKI_WIKI_LLM_PROVIDER", "openai")
+        .strip()
+        .lower()
+    )
+    wiki_llm_model: str = field(
+        default_factory=lambda: os.getenv("CONTEXTWIKI_WIKI_LLM_MODEL", "gpt-4.1-mini")
+        .strip()
+    )
+    wiki_llm_api_key_env_var: str = "OPENAI_API_KEY"
+    wiki_llm_timeout: float = field(
+        default_factory=lambda: _float_env("CONTEXTWIKI_WIKI_LLM_TIMEOUT", 20.0)
+    )
+    wiki_llm_max_evidence_chars: int = field(
+        default_factory=lambda: _int_env("CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS", 1200)
+    )
+
     def __post_init__(self):
         _require_positive_int("github_max_files", self.github_max_files)
         _require_positive_int("github_max_file_bytes", self.github_max_file_bytes)
@@ -141,6 +175,23 @@ class AppConfig:
         _require_positive_int("web_max_response_bytes", self.web_max_response_bytes)
         _require_non_negative("web_crawl_delay_seconds", self.web_crawl_delay_seconds)
         _require_safe_env_var_name("github_token_env_var", self.github_token_env_var)
+        _require_safe_env_var_name(
+            "wiki_llm_api_key_env_var",
+            self.wiki_llm_api_key_env_var,
+        )
+        _require_non_negative("wiki_llm_timeout", self.wiki_llm_timeout)
+        _require_positive_int(
+            "wiki_llm_max_evidence_chars",
+            self.wiki_llm_max_evidence_chars,
+        )
+        if (
+            self.wiki_llm_enabled
+            and self.wiki_llm_provider == "openai"
+            and not self.wiki_llm_model
+        ):
+            raise ValueError(
+                "CONTEXTWIKI_WIKI_LLM_MODEL must be set when wiki LLM is enabled"
+            )
         if self.chroma_db_path is None:
             object.__setattr__(
                 self,

@@ -245,12 +245,33 @@ Current ContextWiki tools:
 | `search_context(query, filters, top_k)` | query/filter/top_k | structured chunk results | find evidence |
 | `fetch_context(document_id, chunk_id)` | document or chunk id | original document/chunk | inspect evidence |
 | `answer_with_citations(question, filters, top_k)` | question/filter/top_k | answer + citations | answer from evidence |
+| `generate_wiki_page(topic, filters, top_k)` | topic/filter/top_k | Markdown wiki page + citations/backlinks | generate a read-only Auto Wiki page from evidence |
 
 `model_dump(mode="json")` means:
 
 ```text
 Convert Pydantic models into JSON-safe dict/list values for MCP responses.
 ```
+
+---
+
+
+### Auto Wiki Generation
+
+`generate_wiki_page(topic, filters, top_k)` is the first Phase C surface. It does not persist wiki pages and does not call external connectors directly. The tool delegates to `WikiGenerationService`, which delegates to `ContextSearchService`, then emits a stable response with:
+
+```text
+topic, status, title, markdown, sections, citations, backlinks, used_chunks
+```
+
+The generated page is citation-gated: low-score or missing evidence returns `status="insufficient_evidence"` instead of creating a weak wiki page. `backlinks` are derived from the distinct source documents represented by the used chunks.
+
+Auto Wiki also has an optional LLM synthesis layer. It is disabled by default
+and only wired into the app when `CONTEXTWIKI_WIKI_LLM_ENABLED=true` and the
+configured API key is available. When enabled, the LLM receives citation-ready
+evidence and must return Markdown/sections with the provided citation markers;
+if the provider fails or omits/changes required citations, ContextWiki falls
+back to deterministic evidence Markdown instead of returning ungrounded prose.
 
 ---
 
@@ -643,6 +664,7 @@ fetching/connectors.py
 environments/config.py
 environments/runtime_env.py
 api/tools.py
+wiki/synthesis.py
 ```
 
 `main.py` composes the application:
@@ -658,6 +680,8 @@ flowchart TD
     Ingestion["IngestionService"]
     ContextSearch["ContextSearchService"]
     Answer["CitationAnswerService"]
+    WikiSynth["Optional Wiki Synthesizer"]
+    Wiki["WikiGenerationService"]
     MCP["FastMCP"]
     Tools["register_tools"]
 
@@ -672,12 +696,17 @@ flowchart TD
     Store --> ContextSearch
     Indexer --> ContextSearch
     ContextSearch --> Answer
+    Runtime --> WikiSynth
+    Config --> WikiSynth
+    ContextSearch --> Wiki
+    WikiSynth --> Wiki
     MCP --> Tools
 ```
 
-GitHub secrets are read only at runtime through environment lookup. Source
-metadata stores environment references such as `env:GITHUB_TOKEN`, not raw
-tokens.
+GitHub and optional wiki LLM secrets are read only at runtime through
+environment lookup. Source metadata stores environment references such as
+`env:GITHUB_TOKEN`, not raw tokens. Wiki LLM synthesis is opt-in because it can
+send retrieved source evidence to an external model.
 
 ---
 
@@ -792,8 +821,10 @@ Still not implemented:
 Deferred or non-default validation:
 
 ```text
-- live external smoke tests are outside required/default verification and should
-  remain explicit opt-in when added or expanded
+- live external smoke tests are outside CI/default pytest verification
+- MCP/wiki PR validation should run the safe fake wiki smoke and run optional
+  live wiki smoke when network access, user approval, and an appropriate source
+  are available
 ```
 
 Document identity limitation:

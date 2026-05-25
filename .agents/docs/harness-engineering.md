@@ -209,13 +209,13 @@ otherwise the cached check does not cover new untracked docs or plan files.
 Python code changes use the smallest useful check first:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage main.py
+python -m compileall api core environments fetching indexing search storage wiki main.py
 ```
 
 Prefer uv when the local uv workspace is healthy:
 
 ```bash
-uv run python -m compileall api core environments fetching indexing search storage main.py
+uv run python -m compileall api core environments fetching indexing search storage wiki main.py
 uv run pytest
 ```
 
@@ -223,6 +223,28 @@ MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
 External live checks against Notion, Tistory, GitHub, or configured website/docs
 sources require user approval.
+
+MCP/wiki generation changes should include the safe FastMCP wiki smoke whenever
+appropriate:
+
+```bash
+python scripts/smoke_generate_wiki_page.py --mode fake
+```
+
+For PR validation, always consider whether live wiki smoke is appropriate. Run
+the optional GitHub live smoke only when network access is available, the user
+has approved the source, and an appropriate repository is configured. The live
+smoke must use temporary Chroma/SQLite paths, write Markdown under
+`/private/tmp` or a caller-provided output directory, skip gracefully when the
+source or network is unavailable, and avoid printing raw secrets or tokens:
+
+```bash
+python scripts/smoke_generate_wiki_page.py \
+  --mode github \
+  --github-repository owner/repo@main \
+  --topic README \
+  --require-generated
+```
 
 Verification must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification before starting the next fresh five-reviewer subagent review pass.
 

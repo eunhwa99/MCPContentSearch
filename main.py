@@ -17,6 +17,8 @@ from indexing.ingestion_service import IngestionService
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore
+from wiki.service import WikiGenerationService
+from wiki.synthesis import build_wiki_synthesizer
 from api.tools import register_tools
 
 # 로깅 설정
@@ -80,6 +82,19 @@ def create_app() -> FastMCP:
         config=config,
     )
     answer_service = CitationAnswerService(context_search)
+    wiki_llm_api_key = (
+        get_env_secret(config.wiki_llm_api_key_env_var)
+        if config.wiki_llm_enabled and config.wiki_llm_provider == "openai"
+        else ""
+    )
+    wiki_synthesizer = build_wiki_synthesizer(
+        config,
+        api_key=wiki_llm_api_key,
+    )
+    wiki_service = WikiGenerationService(
+        context_search,
+        llm_synthesizer=wiki_synthesizer,
+    )
 
     # FastMCP 서버
     mcp = FastMCP("content-search-server")
@@ -94,6 +109,7 @@ def create_app() -> FastMCP:
         ingestion_service=ingestion_service,
         context_search_service=context_search,
         answer_service=answer_service,
+        wiki_service=wiki_service,
         metadata_store=metadata_store,
         source_registry=source_registry,
     )

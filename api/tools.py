@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
 from environments.config import AppConfig
 from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
 from fetching.fetcher import DocumentFetcher
-from fetching.web_searcher import WebSearcher
-from indexing.indexer import ContentIndexer
-from search.service import SearchService
-from search.dynamic_search import DynamicSearchService
 from core.models import IndexState
+
+if TYPE_CHECKING:
+    from fetching.web_searcher import WebSearcher
+    from indexing.indexer import ContentIndexer
+    from search.dynamic_search import DynamicSearchService
+    from search.service import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,7 @@ def register_tools(
     ingestion_service=None,
     context_search_service=None,
     answer_service=None,
+    wiki_service=None,
     metadata_store=None,
     source_registry=None,
 ):
@@ -294,6 +300,38 @@ def register_tools(
                 "used_chunks": [],
             }
         return await answer_service.answer_with_citations(question, filters=filters, top_k=top_k)
+
+    @mcp.tool()
+    async def generate_wiki_page(topic: str, filters: dict = None, top_k: int = 8) -> dict:
+        """검색된 ContextWiki 근거로 citation-backed wiki page 생성"""
+        if wiki_service is None:
+            return {
+                "topic": topic,
+                "status": "not_configured",
+                "title": f"{topic} Wiki" if topic else "",
+                "markdown": "Wiki generation service is not configured.",
+                "sections": [],
+                "citations": [],
+                "backlinks": [],
+                "used_chunks": [],
+                "message": "Wiki generation service is not configured.",
+            }
+        try:
+            return await wiki_service.generate_wiki_page(topic, filters=filters, top_k=top_k)
+        except Exception:
+            logger.exception("Generate wiki page error")
+            return {
+                "topic": topic,
+                "status": "error",
+                "title": f"{topic} Wiki" if topic else "",
+                "markdown": "Wiki page generation failed.",
+                "sections": [],
+                "citations": [],
+                "backlinks": [],
+                "used_chunks": [],
+                "message": "Wiki page generation failed.",
+                "error_code": "wiki_generation_failed",
+            }
 # ================================================================
 # 헬퍼 함수
 # ================================================================

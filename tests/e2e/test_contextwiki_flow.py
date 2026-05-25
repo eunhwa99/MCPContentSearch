@@ -15,6 +15,7 @@ from indexing.ingestion_service import IngestionService
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore
+from wiki.service import WikiGenerationService
 
 
 class FakeConnector(SourceConnector):
@@ -107,6 +108,7 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
 
     context_search = ContextSearchService(metadata_store=store, retriever=indexer.documents)
     answer_service = CitationAnswerService(context_search=context_search, min_score=0.1, min_results=1)
+    wiki_service = WikiGenerationService(context_search)
     mcp = FakeMCP()
     register_tools(
         mcp,
@@ -117,6 +119,7 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
         ingestion_service=ingestion,
         context_search_service=context_search,
         answer_service=answer_service,
+        wiki_service=wiki_service,
         metadata_store=store,
         source_registry=registry,
     )
@@ -133,6 +136,13 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     chunk_id = search_result["results"][0]["chunk_id"]
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id=chunk_id))
     answer = asyncio.run(mcp.tools["answer_with_citations"]("How does ContextWiki answer?"))
+    wiki_page = asyncio.run(
+        mcp.tools["generate_wiki_page"](
+            "ContextWiki citations",
+            filters={"source_ids": ["source_fake_docs"]},
+            top_k=5,
+        )
+    )
     unsupported = asyncio.run(mcp.tools["answer_with_citations"]("What is the deployment region?"))
 
     assert sync_job["status"] == "succeeded"
@@ -141,6 +151,9 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     assert fetched["chunk"]["text"] == "ContextWiki syncs documents and answers with citations."
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == chunk_id
+    assert wiki_page["status"] == "generated"
+    assert wiki_page["citations"][0]["chunk_id"] == chunk_id
+    assert wiki_page["backlinks"][0]["document_id"] == "doc_contextwiki"
     assert unsupported["evidence_status"] == "insufficient"
 
 
@@ -195,6 +208,7 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
         )
         context_search = ContextSearchService(metadata_store=store, indexer=indexer, config=config)
         answer_service = CitationAnswerService(context_search=context_search, min_score=0.1, min_results=1)
+        wiki_service = WikiGenerationService(context_search)
         mcp = FakeMCP()
         register_tools(
             mcp,
@@ -205,6 +219,7 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
             ingestion_service=ingestion,
             context_search_service=context_search,
             answer_service=answer_service,
+            wiki_service=wiki_service,
             metadata_store=store,
             source_registry=registry,
         )
@@ -241,6 +256,13 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
                 top_k=1,
             )
         )
+        wiki_page = asyncio.run(
+            mcp.tools["generate_wiki_page"](
+                "ContextWiki citations",
+                filters={"source_id": "source_fake_docs"},
+                top_k=1,
+            )
+        )
         metadatas = chroma_collection.get(include=["metadatas"])["metadatas"]
 
         assert other_job["status"] == "succeeded"
@@ -253,5 +275,7 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
         assert fetched["chunk"]["text"] == "ContextWiki syncs documents and answers with citations."
         assert answer["evidence_status"] == "grounded"
         assert answer["used_chunks"] == [chunk_id]
+        assert wiki_page["status"] == "generated"
+        assert wiki_page["used_chunks"] == [chunk_id]
     finally:
         Settings.embed_model = previous_embed_model

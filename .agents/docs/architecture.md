@@ -12,14 +12,15 @@ Decision history is indexed in `.agents/docs/adr/README.md`. Read only ADRs that
 
 - MCP server: `main.py` creates a `FastMCP` server named `content-search-server`.
 - MCP tools: `api/tools.py` registers legacy search/indexing tools plus
-  ContextWiki source sync, context retrieval/fetch, citation answer, and status
-  tools.
+  ContextWiki source sync, context retrieval/fetch, citation answer, Auto Wiki,
+  and status tools.
 - Configuration: `environments/config.py` contains `AppConfig`, `NotionConfig`, source connector settings, and `setup_chroma`.
 - Secrets/environment loading: `environments/token.py`.
 - Shared models/errors/utilities: `core/`.
 - Fetching: `fetching/` provides legacy Notion/Tistory live search and ContextWiki source connectors for Notion, Tistory, GitHub, and website/docs content.
 - Indexing: `indexing/` chunks documents, detects unchanged or reindexed content, writes vectors to Chroma/LlamaIndex, and coordinates lifecycle metadata.
 - Search: `search/` provides legacy local search, dynamic local-to-web fallback, SQLite-gated context search, and citation answer scaffolding.
+- Wiki: `wiki/` generates read-only Auto Wiki pages from active ContextWiki search results with citations and backlinks.
 - Persistence: SQLite metadata via `storage/metadata_store.py` plus ChromaDB via `chromadb.PersistentClient`, defaulting to `~/.mcp_content_search/chroma_db`.
 
 ## Data Flow
@@ -94,6 +95,11 @@ answer_with_citations
 fetch_context
   -> MetadataStore direct document/chunk hydration
   -> document and chunk payload
+
+generate_wiki_page
+  -> WikiGenerationService
+  -> ContextSearchService
+  -> citation-gated Markdown, citations, and backlinks
 ```
 
 ## Module Responsibilities
@@ -105,6 +111,7 @@ fetch_context
 - `core`: stable shared data models, exception classes, and utility functions.
 - `environments`: configuration defaults, Chroma setup, API version constants, and environment-token access.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones, and active retrieval checks.
+- `wiki`: read-only Auto Wiki page generation over active ContextWiki search results.
 - `main.py`: dependency composition and server startup only.
 
 New behavior should start in the module that owns the relevant responsibility. Avoid adding cross-module shortcuts in `api/tools.py` when a service boundary is more appropriate.
@@ -129,6 +136,7 @@ ContextWiki tools:
 - `search_context(query: str, filters: dict = None, top_k: int = 10) -> dict`
 - `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
 - `answer_with_citations(question: str, filters: dict = None, top_k: int = 5) -> dict`
+- `generate_wiki_page(topic: str, filters: dict = None, top_k: int = 8) -> dict`
 
 When changing a tool:
 
@@ -188,7 +196,7 @@ Domain exceptions live in `core/exceptions.py`.
 Use the smallest useful check first.
 
 - Docs-only changes: path listing, `git status --short --branch`, `git diff --check`, then stage the relevant docs-only files and run `git diff --cached --check` so new docs and plan files are covered.
-- Syntax/import safety: `python -m compileall api core environments fetching indexing search storage main.py`.
+- Syntax/import safety: `python -m compileall api core environments fetching indexing search storage wiki main.py`.
 - Unit tests: `uv run pytest` when tests exist.
 - MCP contract: focused tests or smoke checks around `register_tools` and tool functions.
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mock collection; avoid user data.
