@@ -197,6 +197,14 @@ def _build_mcp_app(config: AppConfig, registry: SourceRegistry) -> FastMCP:
     return mcp
 
 
+def _get_embed_model_state(settings) -> Any:
+    return settings._embed_model
+
+
+def _restore_embed_model_state(settings, previous_embed_model: Any) -> None:
+    settings._embed_model = previous_embed_model
+
+
 async def _run_with_temp_app(
     *,
     mode: str,
@@ -211,7 +219,7 @@ async def _run_with_temp_app(
 
     from environments.config import AppConfig
 
-    previous_embed_model = Settings.embed_model
+    previous_embed_model = _get_embed_model_state(Settings)
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
         with tempfile.TemporaryDirectory(
@@ -274,7 +282,7 @@ async def _run_with_temp_app(
                 "used_chunks": len(wiki.get("used_chunks", [])),
             }
     finally:
-        Settings.embed_model = previous_embed_model
+        _restore_embed_model_state(Settings, previous_embed_model)
 
 
 class FakeRegistryFactory:

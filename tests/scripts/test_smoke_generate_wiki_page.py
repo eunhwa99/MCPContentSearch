@@ -1,6 +1,8 @@
 import pytest
 
+from scripts.smoke_generate_wiki_page import _get_embed_model_state
 from scripts.smoke_generate_wiki_page import _redact
+from scripts.smoke_generate_wiki_page import _restore_embed_model_state
 from scripts.smoke_generate_wiki_page import _suppress_sync_error_logs
 
 
@@ -38,3 +40,18 @@ def test_suppress_sync_error_logs_restores_logger_levels():
 
     assert logger.level == original_level
     assert api_logger.level == original_api_level
+
+
+def test_embed_model_state_helpers_do_not_resolve_default_embed_model():
+    class FakeSettings:
+        _embed_model = "previous"
+
+        @property
+        def embed_model(self):
+            raise AssertionError("embed_model getter should not be resolved")
+
+    assert _get_embed_model_state(FakeSettings) == "previous"
+
+    _restore_embed_model_state(FakeSettings, None)
+
+    assert FakeSettings._embed_model is None
