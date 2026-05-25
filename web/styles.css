@@ -231,6 +231,10 @@ button:focus-visible {
   gap: 8px;
 }
 
+.compact-actions {
+  margin-top: 10px;
+}
+
 .source-types {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -366,6 +370,17 @@ button:focus-visible {
   color: #344054;
   font-size: 0.85rem;
   line-height: 1.45;
+}
+
+.source-item-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.source-sync-button {
+  min-width: 72px;
 }
 
 .error-box {

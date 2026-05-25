@@ -68,6 +68,15 @@
             <input id="githubRepositoryInput" type="text" placeholder="owner/repo" />
           </div>
 
+          <div class="field compact">
+            <label for="githubTargetInput">GitHub sync target</label>
+            <input id="githubTargetInput" type="text" placeholder="github.com/eunhwa99 or owner/repo@main" />
+          </div>
+
+          <div class="inline-actions compact-actions">
+            <button id="githubTargetSyncButton" type="button" class="secondary">Sync GitHub Target</button>
+          </div>
+
           <label class="toggle">
             <input id="requireGeneratedInput" type="checkbox" />
             <span>Require generated smoke output</span>

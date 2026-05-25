@@ -292,10 +292,21 @@ static files from `web/` and calls these local HTTP endpoints:
 | --- | --- |
 | `GET /api/health` | Check console availability. |
 | `GET /api/sources` | List configured ContextWiki sources from SQLite metadata. |
+| `GET /api/sources/{source_id}/sync-status` | Inspect one source and its latest sync job. |
+| `POST /api/sources/{source_id}/sync` | Run the existing configured ContextWiki source sync. |
+| `POST /api/github/sync` | Sync a GitHub target typed in the browser, including `owner/repo@branch`, GitHub repo URLs, or owner URLs such as `github.com/eunhwa99`. |
 | `POST /api/answer` | Call `answer_with_citations` through the HTTP wrapper. |
 | `POST /api/wiki/generate` | Call `generate_wiki_page` through the HTTP wrapper. |
 | `POST /api/smoke/fake` | Run deterministic fake wiki smoke with temporary storage. |
 | `POST /api/smoke/github` | Run optional GitHub smoke, skipping gracefully when not configured. |
+
+The Sources panel can trigger sync for configured sources. The GitHub target
+field accepts a single repository (`owner/repo@branch`), a GitHub repository URL,
+or a GitHub owner URL such as `github.com/eunhwa99`; owner URLs are expanded via
+the GitHub repository list API and synced as `source_github`. One-off browser
+GitHub target sync disables source-wide stale cleanup so a partial ad hoc target
+does not tombstone previously indexed GitHub documents. Private repositories
+require `GITHUB_TOKEN` in the server environment.
 
 The console does not add authentication, deployment, multi-user state, or
 server-side generated page persistence. It rejects non-loopback clients by
@@ -307,8 +318,8 @@ Markdown files before returning.
 
 The local server boundary does not make every operation offline:
 `generate_wiki_page` follows the existing opt-in wiki LLM configuration, and
-the GitHub smoke endpoint performs live network work only when explicitly
-invoked and configured.
+the GitHub sync and smoke endpoints perform live network work only when
+explicitly invoked and configured.
 
 ---
 

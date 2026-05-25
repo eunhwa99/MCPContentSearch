@@ -115,9 +115,11 @@ class GitHubSourceConnector(SourceConnector):
         *,
         token: str = "",
         http_client=None,
+        allow_stale_cleanup: bool = True,
     ):
         self.repositories = tuple(repositories)
         self.config = config
+        self.allow_stale_cleanup = allow_stale_cleanup
         self.fetcher = GitHubRepositoryFetcher(
             self.repositories,
             config,
@@ -142,7 +144,9 @@ class GitHubSourceConnector(SourceConnector):
             self.supports_stale_cleanup = False
             raise
         else:
-            self.supports_stale_cleanup = self.fetcher.snapshot_complete
+            self.supports_stale_cleanup = (
+                self.allow_stale_cleanup and self.fetcher.snapshot_complete
+            )
             return documents
 
 

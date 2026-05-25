@@ -1,5 +1,6 @@
 const state = {
   activeTab: "answer",
+  busy: false,
   lastPayload: null,
   lastKind: "",
   lastMarkdown: "",
@@ -13,11 +14,13 @@ const elements = {
   sourceIdInput: document.querySelector("#sourceIdInput"),
   topKInput: document.querySelector("#topKInput"),
   githubRepositoryInput: document.querySelector("#githubRepositoryInput"),
+  githubTargetInput: document.querySelector("#githubTargetInput"),
   requireGeneratedInput: document.querySelector("#requireGeneratedInput"),
   answerButton: document.querySelector("#answerButton"),
   wikiButton: document.querySelector("#wikiButton"),
   fakeSmokeButton: document.querySelector("#fakeSmokeButton"),
   githubSmokeButton: document.querySelector("#githubSmokeButton"),
+  githubTargetSyncButton: document.querySelector("#githubTargetSyncButton"),
   refreshButton: document.querySelector("#refreshButton"),
   downloadMarkdownButton: document.querySelector("#downloadMarkdownButton"),
   downloadJsonButton: document.querySelector("#downloadJsonButton"),
@@ -51,6 +54,14 @@ function bindEvents() {
   elements.wikiButton.addEventListener("click", () => runWiki());
   elements.fakeSmokeButton.addEventListener("click", () => runFakeSmoke());
   elements.githubSmokeButton.addEventListener("click", () => runGithubSmoke());
+  elements.githubTargetSyncButton.addEventListener("click", () => runGithubTargetSync());
+  elements.sourcesList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-sync-source-id]");
+    if (!button) {
+      return;
+    }
+    runSourceSync(button.dataset.syncSourceId);
+  });
   elements.refreshButton.addEventListener("click", () => {
     refreshHealth();
     refreshSources();
@@ -145,6 +156,28 @@ async function runGithubSmoke() {
   };
 
   await runAction("github smoke", "/api/smoke/github", body);
+}
+
+async function runGithubTargetSync() {
+  const target = elements.githubTargetInput.value.trim();
+  if (!target) {
+    showClientError("Enter a GitHub target before calling /api/github/sync.");
+    return;
+  }
+  await runAction("github sync", "/api/github/sync", { target });
+  await refreshSources();
+}
+
+async function runSourceSync(sourceId) {
+  if (!sourceId) {
+    return;
+  }
+  await runAction(
+    `sync ${sourceId}`,
+    `/api/sources/${encodeURIComponent(sourceId)}/sync`,
+    {},
+  );
+  await refreshSources();
 }
 
 async function runAction(kind, url, body) {
@@ -369,7 +402,46 @@ function renderSources(sources) {
     return;
   }
   elements.sourcesList.className = "list";
-  elements.sourcesList.innerHTML = sources.map((source, index) => buildItemHtml(source, index, "source")).join("");
+  elements.sourcesList.innerHTML = sources.map((source, index) => buildSourceHtml(source, index)).join("");
+  updateSourceSyncButtons();
+}
+
+function buildSourceHtml(source, index) {
+  if (typeof source !== "object" || source === null) {
+    return buildItemHtml(source, index, "source");
+  }
+
+  const title = firstString(source.name, source.source_id, `Source ${index + 1}`);
+  const meta = compactObject({
+    source_id: source.source_id,
+    type: source.source_type,
+    enabled: source.enabled,
+    status: source.sync_status,
+    last_synced_at: source.last_synced_at,
+  });
+  const body = firstString(source.last_error, source.auth_ref);
+  const canSync = Boolean(source.source_id && source.enabled !== false);
+
+  return `
+    <article class="item source-item">
+      <div class="source-item-main">
+        <div>
+          <div class="item-title">${escapeHtml(title)}</div>
+          ${meta ? `<div class="item-meta">${escapeHtml(meta)}</div>` : ""}
+          ${body ? `<div class="item-body">${escapeHtml(truncate(body, 180))}</div>` : ""}
+        </div>
+        <button
+          type="button"
+          class="secondary source-sync-button"
+          data-sync-source-id="${escapeHtml(source.source_id || "")}"
+          data-sync-enabled="${canSync ? "true" : "false"}"
+          ${canSync ? "" : "disabled"}
+        >
+          Sync
+        </button>
+      </div>
+    </article>
+  `;
 }
 
 function buildItemHtml(item, index, kind) {
@@ -438,19 +510,28 @@ function showClientError(message) {
 }
 
 function setBusy(isBusy, message = "") {
+  state.busy = isBusy;
   [
     elements.answerButton,
     elements.wikiButton,
     elements.fakeSmokeButton,
     elements.githubSmokeButton,
+    elements.githubTargetSyncButton,
     elements.refreshButton,
   ].forEach((button) => {
     button.disabled = isBusy;
   });
+  updateSourceSyncButtons();
 
   if (message) {
     setStatus(message);
   }
+}
+
+function updateSourceSyncButtons() {
+  document.querySelectorAll("[data-sync-source-id]").forEach((button) => {
+    button.disabled = state.busy || button.dataset.syncEnabled === "false";
+  });
 }
 
 function setHealth(level, message) {

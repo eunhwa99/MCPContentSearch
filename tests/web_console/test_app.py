@@ -5,7 +5,7 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from core.models import SourceModel, SourceType, SyncStatus
+from core.models import SourceModel, SourceType, SyncJobModel, SyncJobStatus, SyncStatus
 from web_console.app import ConsoleDependencies, create_console_app
 
 
@@ -61,6 +61,69 @@ class FakeMetadataStore:
             ),
         ]
 
+    def get_source(self, source_id):
+        return next(
+            (source for source in self.list_sources() if source.source_id == source_id),
+            None,
+        )
+
+    def get_latest_sync_job(self, source_id):
+        if source_id != "source_github":
+            return None
+        return SyncJobModel(
+            job_id="job-1",
+            source_id="source_github",
+            status=SyncJobStatus.SUCCEEDED,
+            total_documents=2,
+            processed_documents=1,
+            indexed_chunks=4,
+        )
+
+
+class FakeIngestionService:
+    def __init__(self):
+        self.calls = []
+
+    async def sync_source(self, source_id):
+        self.calls.append(source_id)
+        return SyncJobModel(
+            job_id="job-sync",
+            source_id=source_id,
+            status=SyncJobStatus.SUCCEEDED,
+            total_documents=3,
+            processed_documents=2,
+            indexed_chunks=5,
+        )
+
+
+class FakeGitHubSyncService:
+    def __init__(self):
+        self.calls = []
+
+    async def sync_target(self, target):
+        self.calls.append(target)
+        return {
+            "status": "succeeded",
+            "source_id": "source_github",
+            "target": target,
+            "repository_count": 2,
+            "repositories": [
+                "eunhwa99/algorithms@main",
+                "eunhwa99/neetcode@main",
+            ],
+            "stale_cleanup": "disabled",
+            "job": {
+                "job_id": "job-github",
+                "source_id": "source_github",
+                "status": "succeeded",
+                "total_documents": 7,
+                "processed_documents": 7,
+                "indexed_chunks": 12,
+                "skipped_documents": 0,
+                "error_message": "",
+            },
+        }
+
 
 class FakeSmokeRunner:
     def __init__(self):
@@ -115,20 +178,94 @@ class FailingMetadataStore:
     def list_sources(self):
         raise RuntimeError("sources failed with token=secret-value")
 
+    def get_source(self, source_id):
+        raise RuntimeError("source failed with token=secret-value")
+
+    def get_latest_sync_job(self, source_id):
+        raise RuntimeError("job failed with token=secret-value")
+
+
+class FailingIngestionService:
+    async def sync_source(self, source_id):
+        raise RuntimeError("sync failed with token=secret-value")
+
+
+class FailingGitHubSyncService:
+    async def sync_target(self, target):
+        raise RuntimeError("github sync failed with token=secret-value")
+
+
+class SecretMetadataStore(FakeMetadataStore):
+    def list_sources(self):
+        return [
+            SourceModel(
+                source_id="source_github",
+                source_type=SourceType.GITHUB,
+                name="MCPContentSearch",
+                sync_status=SyncStatus.FAILED,
+                auth_ref="token=secret-value",
+                last_error="source failed with token=secret-value",
+            ),
+        ]
+
+    def get_latest_sync_job(self, source_id):
+        return SyncJobModel(
+            job_id="job-secret",
+            source_id=source_id,
+            status=SyncJobStatus.FAILED,
+            error_message="sync failed with token=secret-value",
+        )
+
+
+class SecretJobIngestionService:
+    async def sync_source(self, source_id):
+        return SyncJobModel(
+            job_id="job-secret",
+            source_id=source_id,
+            status=SyncJobStatus.FAILED,
+            error_message="sync failed with token=secret-value",
+        )
+
+
+class SecretPayloadGitHubSyncService:
+    async def sync_target(self, target):
+        return {
+            "status": "failed",
+            "source_id": "source_github",
+            "target": target,
+            "job": {
+                "job_id": "job-secret",
+                "source_id": "source_github",
+                "status": "failed",
+                "error_message": "github sync failed with token=secret-value",
+            },
+        }
+
 
 def make_client():
     answer_service = FakeAnswerService()
     wiki_service = FakeWikiService()
+    ingestion_service = FakeIngestionService()
+    github_sync_service = FakeGitHubSyncService()
     smoke_runner = FakeSmokeRunner()
     app = create_console_app(
         ConsoleDependencies(
             answer_service=answer_service,
             wiki_service=wiki_service,
             metadata_store=FakeMetadataStore(),
+            ingestion_service=ingestion_service,
+            github_sync_service=github_sync_service,
             smoke_runner=smoke_runner,
         )
     )
-    return TestClient(app), answer_service, wiki_service, smoke_runner
+    return (
+        TestClient(app),
+        answer_service,
+        wiki_service,
+        smoke_runner,
+        ingestion_service,
+        github_sync_service,
+    )
 
 
 def make_unconfigured_client():
@@ -136,7 +273,7 @@ def make_unconfigured_client():
 
 
 def test_health_marks_console_as_local_only():
-    client, _, _, _ = make_client()
+    client, *_ = make_client()
 
     response = client.get("/api/health")
 
@@ -169,7 +306,7 @@ def test_rejects_loopback_client_with_untrusted_host():
 
 
 def test_rejects_post_with_untrusted_origin():
-    client, _, _, _ = make_client()
+    client, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -183,7 +320,7 @@ def test_rejects_post_with_untrusted_origin():
 
 def test_remote_override_still_rejects_untrusted_origin(monkeypatch):
     monkeypatch.setenv("CONTEXTWIKI_WEB_CONSOLE_ALLOW_REMOTE", "true")
-    client, _, _, _ = make_client()
+    client, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -217,7 +354,7 @@ def test_rejects_local_prefix_suffix_host():
 
 
 def test_rejects_local_prefix_suffix_origin():
-    client, _, _, _ = make_client()
+    client, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -239,7 +376,7 @@ def test_accepts_bracketed_ipv6_loopback_host():
 
 
 def test_sources_returns_metadata_store_sources():
-    client, _, _, _ = make_client()
+    client, *_ = make_client()
 
     response = client.get("/api/sources")
 
@@ -278,8 +415,222 @@ def test_sources_endpoint_returns_structured_failure_without_logging_secret(capl
     assert "token=secret-value" not in caplog.text
 
 
+def test_sources_endpoint_redacts_persisted_source_errors():
+    app = create_console_app(ConsoleDependencies(metadata_store=SecretMetadataStore()))
+    client = TestClient(app)
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sources"][0]["last_error"] == "Source sync failed. See server logs for details."
+    assert body["sources"][0]["auth_ref"] == "redacted"
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+
+
+def test_source_sync_status_returns_source_and_latest_job():
+    client, *_ = make_client()
+
+    response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 200
+    assert response.json()["source"]["source_id"] == "source_github"
+    assert response.json()["latest_job"]["job_id"] == "job-1"
+    assert response.json()["latest_job"]["indexed_chunks"] == 4
+
+
+def test_source_sync_status_returns_503_without_metadata_store():
+    client = make_unconfigured_client()
+
+    response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "metadata store is not configured"
+
+
+def test_source_sync_status_returns_structured_failure_without_logging_secret(caplog):
+    app = create_console_app(ConsoleDependencies(metadata_store=FailingMetadataStore()))
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source_id": "source_github",
+        "source": None,
+        "latest_job": None,
+        "status": "error",
+        "message": "Source sync status failed. See server logs for details.",
+    }
+    assert "secret-value" not in caplog.text
+    assert "token=secret-value" not in caplog.text
+
+
+def test_source_sync_status_redacts_persisted_source_and_job_errors():
+    app = create_console_app(ConsoleDependencies(metadata_store=SecretMetadataStore()))
+    client = TestClient(app)
+
+    response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"]["last_error"] == "Source sync failed. See server logs for details."
+    assert body["source"]["auth_ref"] == "redacted"
+    assert body["latest_job"]["error_message"] == "Sync failed. See server logs for details."
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+
+
+def test_source_sync_endpoint_delegates_to_ingestion_service():
+    client, *_, ingestion_service, _ = make_client()
+
+    response = client.post("/api/sources/source_github/sync", json={})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["indexed_chunks"] == 5
+    assert ingestion_service.calls == ["source_github"]
+
+
+def test_source_sync_endpoint_returns_503_without_ingestion_service():
+    client = make_unconfigured_client()
+
+    response = client.post("/api/sources/source_github/sync", json={})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "ingestion service is not configured"
+
+
+def test_source_sync_endpoint_returns_structured_failure_without_logging_secret(caplog):
+    app = create_console_app(
+        ConsoleDependencies(ingestion_service=FailingIngestionService())
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.post("/api/sources/source_github/sync", json={})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source_id": "source_github",
+        "status": "error",
+        "message": "Source sync failed. See server logs for details.",
+    }
+    assert "secret-value" not in caplog.text
+    assert "token=secret-value" not in caplog.text
+
+
+def test_source_sync_endpoint_redacts_returned_job_error():
+    app = create_console_app(
+        ConsoleDependencies(ingestion_service=SecretJobIngestionService())
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/sources/source_github/sync", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_message"] == "Sync failed. See server logs for details."
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+
+
+def test_github_target_sync_endpoint_delegates_to_service():
+    client, *_, github_sync_service = make_client()
+
+    response = client.post("/api/github/sync", json={"target": "github.com/eunhwa99"})
+
+    assert response.status_code == 200
+    assert response.json()["repository_count"] == 2
+    assert response.json()["repositories"] == [
+        "eunhwa99/algorithms@main",
+        "eunhwa99/neetcode@main",
+    ]
+    assert response.json()["stale_cleanup"] == "disabled"
+    assert github_sync_service.calls == ["github.com/eunhwa99"]
+
+
+def test_github_target_sync_endpoint_returns_503_without_service():
+    client = make_unconfigured_client()
+
+    response = client.post("/api/github/sync", json={"target": "github.com/eunhwa99"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "github sync service is not configured"
+
+
+def test_github_target_sync_endpoint_requires_target():
+    client, *_ = make_client()
+
+    response = client.post("/api/github/sync", json={"target": "   "})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "target is required"
+
+
+def test_github_target_sync_endpoint_returns_structured_failure_without_logging_secret(caplog):
+    app = create_console_app(
+        ConsoleDependencies(github_sync_service=FailingGitHubSyncService())
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.post("/api/github/sync", json={"target": "github.com/eunhwa99"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source_id": "source_github",
+        "status": "error",
+        "message": "GitHub target sync failed. See server logs for details.",
+    }
+    assert "secret-value" not in caplog.text
+    assert "token=secret-value" not in caplog.text
+
+
+def test_github_target_sync_endpoint_does_not_echo_secret_target_on_failure(caplog):
+    app = create_console_app(
+        ConsoleDependencies(github_sync_service=FailingGitHubSyncService())
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.post(
+            "/api/github/sync",
+            json={"target": "https://github.com/eunhwa99/repo?token=secret-value"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "target" not in body
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+    assert "secret-value" not in caplog.text
+    assert "token=secret-value" not in caplog.text
+
+
+def test_github_target_sync_endpoint_redacts_returned_target_and_job_error():
+    app = create_console_app(
+        ConsoleDependencies(github_sync_service=SecretPayloadGitHubSyncService())
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/github/sync",
+        json={"target": "https://github.com/eunhwa99/repo?token=secret-value"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target"] == "redacted"
+    assert body["job"]["error_message"] == "Sync failed. See server logs for details."
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+
+
 def test_answer_endpoint_normalizes_source_filters_and_calls_service():
-    client, answer_service, _, _ = make_client()
+    client, answer_service, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -303,7 +654,7 @@ def test_answer_endpoint_normalizes_source_filters_and_calls_service():
 
 
 def test_answer_endpoint_does_not_forward_source_types_filter():
-    client, answer_service, _, _ = make_client()
+    client, answer_service, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -324,7 +675,7 @@ def test_answer_endpoint_does_not_forward_source_types_filter():
 
 
 def test_answer_endpoint_uses_default_top_k_when_omitted():
-    client, answer_service, _, _ = make_client()
+    client, answer_service, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -342,7 +693,7 @@ def test_answer_endpoint_uses_default_top_k_when_omitted():
 
 
 def test_answer_endpoint_rejects_unmatched_source_type_filters():
-    client, answer_service, _, _ = make_client()
+    client, answer_service, *_ = make_client()
 
     response = client.post(
         "/api/answer",
@@ -415,7 +766,7 @@ def test_answer_endpoint_returns_structured_filter_failure_without_logging_secre
 
 
 def test_wiki_endpoint_returns_generation_payload():
-    client, _, wiki_service, _ = make_client()
+    client, _, wiki_service, *_ = make_client()
 
     response = client.post(
         "/api/wiki/generate",
@@ -434,7 +785,7 @@ def test_wiki_endpoint_returns_generation_payload():
 
 
 def test_wiki_endpoint_uses_default_top_k_when_omitted():
-    client, _, wiki_service, _ = make_client()
+    client, _, wiki_service, *_ = make_client()
 
     response = client.post(
         "/api/wiki/generate",
@@ -520,7 +871,7 @@ def test_wiki_endpoint_returns_structured_filter_failure_without_logging_secret(
 
 
 def test_smoke_endpoints_delegate_to_runner():
-    client, _, _, smoke_runner = make_client()
+    client, _, _, smoke_runner, *_ = make_client()
 
     fake = client.post("/api/smoke/fake", json={"topic": "ContextWiki"})
     github = client.post(

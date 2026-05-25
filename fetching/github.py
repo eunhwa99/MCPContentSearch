@@ -453,6 +453,140 @@ class GitHubRepositoryFetcher:
         )
 
 
+class GitHubRepositoryDiscovery:
+    """Resolve a GitHub repo or owner target into concrete repository specs."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        token: str = "",
+        http_client=None,
+    ):
+        self.config = config
+        self.token = token
+        self.http_client = http_client or GitHubHTTPClient(config.request_timeout)
+
+    async def discover_repository_specs(self, target: str) -> list[str]:
+        owner, repo, ref = parse_repository_or_owner_target(
+            target,
+            self.config.github_default_ref,
+        )
+        if repo:
+            return [f"{owner}/{repo}@{ref}"]
+
+        repositories = await self._fetch_owner_repositories(owner)
+        specs = []
+        seen = set()
+        for repository in repositories:
+            repo_owner = _repository_owner_login(repository) or owner
+            repo_name = repository.get("name")
+            default_branch = repository.get("default_branch") or self.config.github_default_ref
+            if not isinstance(repo_name, str) or not isinstance(default_branch, str):
+                continue
+            if not _valid_owner_repo_ref(repo_owner, repo_name, default_branch):
+                continue
+            key = (repo_owner.lower(), repo_name.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append(f"{repo_owner}/{repo_name}@{default_branch}")
+        return specs
+
+    async def _fetch_owner_repositories(self, owner: str) -> list[dict[str, Any]]:
+        public_repositories = await self._fetch_paginated_repositories(
+            f"https://api.github.com/users/{quote(owner, safe='')}/repos",
+            {"type": "owner", "sort": "full_name"},
+        )
+        if not self.token:
+            return public_repositories
+
+        owned_repositories = await self._fetch_paginated_repositories(
+            "https://api.github.com/user/repos",
+            {"visibility": "all", "affiliation": "owner", "sort": "full_name"},
+        )
+        return [
+            repository
+            for repository in [*public_repositories, *owned_repositories]
+            if (_repository_owner_login(repository) or "").lower() == owner.lower()
+        ]
+
+    async def _fetch_paginated_repositories(
+        self,
+        base_url: str,
+        query: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        repositories: list[dict[str, Any]] = []
+        for page in range(1, 101):
+            params = {"per_page": "100", "page": str(page), **query}
+            query_string = "&".join(
+                f"{quote(key, safe='')}={quote(value, safe='')}"
+                for key, value in params.items()
+            )
+            payload = await self.http_client.get_json(
+                f"{base_url}?{query_string}",
+                headers=self._headers(),
+            )
+            if not isinstance(payload, list):
+                raise RuntimeError("GitHub repository list response was invalid")
+            repositories.extend(item for item in payload if isinstance(item, dict))
+            if len(payload) < 100:
+                break
+        return repositories
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": self.config.web_user_agent,
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+
+def parse_repository_or_owner_target(
+    value: str,
+    default_ref: str = "main",
+) -> tuple[str, str, str]:
+    normalized = value.strip()
+    if normalized.lower().startswith("github.com/"):
+        normalized = f"https://{normalized}"
+    if "://" in normalized:
+        parsed = urlparse(normalized)
+        if parsed.username or parsed.password or _has_sensitive_query(parsed):
+            raise ValueError(
+                f"Invalid GitHub target: {_redact_url_credentials(normalized)}"
+            )
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() != "github.com":
+            raise ValueError(
+                f"Invalid GitHub target: {_redact_url_credentials(normalized)}"
+            )
+        if parsed.query or parsed.fragment:
+            raise ValueError(
+                f"Invalid GitHub target: {_redact_url_credentials(normalized)}"
+            )
+        pieces = [piece for piece in parsed.path.strip("/").split("/") if piece]
+        if len(pieces) == 1:
+            owner = pieces[0]
+            if not _valid_owner(owner):
+                raise ValueError(
+                    f"Invalid GitHub target: {_redact_url_credentials(value)}"
+                )
+            return owner, "", ""
+        if len(pieces) >= 2:
+            spec = parse_repository_spec(normalized, default_ref)
+            return spec.owner, spec.repo, spec.ref
+        raise ValueError(f"Invalid GitHub target: {_redact_url_credentials(value)}")
+
+    if "/" in normalized:
+        spec = parse_repository_spec(normalized, default_ref)
+        return spec.owner, spec.repo, spec.ref
+
+    if not _valid_owner(normalized):
+        raise ValueError(f"Invalid GitHub target: {_redact_url_credentials(value)}")
+    return normalized, "", ""
+
+
 def parse_repository_spec(value: str, default_ref: str = "main") -> GitHubRepositorySpec:
     normalized = value.strip()
     if "://" in normalized:
@@ -496,6 +630,20 @@ def parse_repository_spec(value: str, default_ref: str = "main") -> GitHubReposi
     ):
         raise ValueError(f"Invalid GitHub repository spec: {_redact_url_credentials(value)}")
     return GitHubRepositorySpec(owner=pieces[0], repo=pieces[1], ref=effective_ref)
+
+
+def _repository_owner_login(repository: dict[str, Any]) -> str:
+    owner = repository.get("owner")
+    login = owner.get("login") if isinstance(owner, dict) else ""
+    return login if isinstance(login, str) else ""
+
+
+def _valid_owner(owner: str) -> bool:
+    return (
+        bool(SAFE_OWNER_RE.match(owner))
+        and not _contains_credential_like_value(owner)
+        and owner not in {".", ".."}
+    )
 
 
 def _ensure_unique_repository_specs(specs: list[GitHubRepositorySpec]) -> None:

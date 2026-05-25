@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import os
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = REPO_ROOT / "web"
 logger = logging.getLogger(__name__)
+SAFE_AUTH_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
 
 
 class ConsoleQuery(BaseModel):
@@ -35,12 +37,80 @@ class SmokeRequest(BaseModel):
     require_generated: bool = False
 
 
+class GitHubSyncRequest(BaseModel):
+    target: str = ""
+
+
 @dataclass
 class ConsoleDependencies:
     answer_service: Any = None
     wiki_service: Any = None
     metadata_store: Any = None
+    ingestion_service: Any = None
+    github_sync_service: Any = None
     smoke_runner: Any = None
+
+
+class GitHubTargetSyncService:
+    """Run explicit GitHub target syncs without changing process environment."""
+
+    def __init__(
+        self,
+        *,
+        config: Any,
+        metadata_store: Any,
+        indexer: Any,
+        github_token: str = "",
+    ):
+        self.config = config
+        self.metadata_store = metadata_store
+        self.indexer = indexer
+        self.github_token = github_token
+
+    async def sync_target(self, target: str) -> dict[str, Any]:
+        from fetching.connectors import GitHubSourceConnector, SourceRegistry
+        from fetching.github import GitHubRepositoryDiscovery
+        from indexing.chunker import DocumentChunker
+        from indexing.ingestion_service import IngestionService
+
+        discovery = GitHubRepositoryDiscovery(
+            self.config,
+            token=self.github_token,
+        )
+        repositories = await discovery.discover_repository_specs(target)
+        if not repositories:
+            return {
+                "status": "skipped",
+                "source_id": "source_github",
+                "target": target,
+                "repository_count": 0,
+                "repositories": [],
+                "message": "No GitHub repositories were discovered for this target.",
+            }
+
+        connector = GitHubSourceConnector(
+            tuple(repositories),
+            self.config,
+            token=self.github_token,
+            allow_stale_cleanup=False,
+        )
+        service = IngestionService(
+            metadata_store=self.metadata_store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(),
+            indexer=self.indexer,
+            register_source_config=False,
+        )
+        job = await service.sync_source("source_github")
+        return {
+            "status": _sync_status_value(job),
+            "source_id": "source_github",
+            "target": _safe_github_target_for_display(target),
+            "repository_count": len(repositories),
+            "repositories": repositories,
+            "stale_cleanup": "disabled",
+            "job": _safe_sync_job_payload(job),
+        }
 
 
 class ScriptSmokeRunner:
@@ -145,6 +215,64 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
                 "sources": [],
                 "status": "error",
                 "message": "Source listing failed. See server logs for details.",
+            }
+
+    @app.get("/api/sources/{source_id}/sync-status")
+    async def source_sync_status(source_id: str) -> dict[str, Any]:
+        if dependencies.metadata_store is None:
+            raise HTTPException(status_code=503, detail="metadata store is not configured")
+        normalized_source_id = _normalize_text(source_id)
+        try:
+            return _source_sync_status(dependencies.metadata_store, normalized_source_id)
+        except Exception:
+            _log_suppressed_error("Source sync status failed")
+            return {
+                "source_id": normalized_source_id,
+                "source": None,
+                "latest_job": None,
+                "status": "error",
+                "message": "Source sync status failed. See server logs for details.",
+            }
+
+    @app.post("/api/sources/{source_id}/sync")
+    async def sync_source(source_id: str) -> dict[str, Any]:
+        if dependencies.ingestion_service is None:
+            raise HTTPException(status_code=503, detail="ingestion service is not configured")
+        normalized_source_id = _normalize_text(source_id)
+        if not normalized_source_id:
+            raise HTTPException(status_code=400, detail="source_id is required")
+        try:
+            job = await dependencies.ingestion_service.sync_source(normalized_source_id)
+            return _safe_sync_job_payload(job)
+        except HTTPException:
+            raise
+        except Exception:
+            _log_suppressed_error("Source sync failed")
+            return {
+                "source_id": normalized_source_id,
+                "status": "error",
+                "message": "Source sync failed. See server logs for details.",
+            }
+
+    @app.post("/api/github/sync")
+    async def sync_github_target(request: GitHubSyncRequest) -> dict[str, Any]:
+        if dependencies.github_sync_service is None:
+            raise HTTPException(status_code=503, detail="github sync service is not configured")
+        target = _normalize_text(request.target)
+        if not target:
+            raise HTTPException(status_code=400, detail="target is required")
+        try:
+            return _safe_github_sync_payload(
+                await dependencies.github_sync_service.sync_target(target)
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            _log_suppressed_error("GitHub target sync failed")
+            return {
+                "source_id": "source_github",
+                "status": "error",
+                "message": "GitHub target sync failed. See server logs for details.",
             }
 
     @app.post("/api/answer")
@@ -271,7 +399,7 @@ def create_default_app() -> FastAPI:
         tistory_blog_name=TISTORY_BLOG_NAME,
         github_token=get_env_secret(config.github_token_env_var),
     )
-    IngestionService(
+    ingestion_service = IngestionService(
         metadata_store=metadata_store,
         source_registry=source_registry,
         chunker=DocumentChunker(),
@@ -297,6 +425,13 @@ def create_default_app() -> FastAPI:
             answer_service=answer_service,
             wiki_service=wiki_service,
             metadata_store=metadata_store,
+            ingestion_service=ingestion_service,
+            github_sync_service=GitHubTargetSyncService(
+                config=config,
+                metadata_store=metadata_store,
+                indexer=indexer,
+                github_token=get_env_secret(config.github_token_env_var),
+            ),
             smoke_runner=ScriptSmokeRunner(),
         )
     )
@@ -330,9 +465,19 @@ def _list_sources(metadata_store: Any) -> list[dict[str, Any]]:
     if metadata_store is None:
         return []
     return [
-        _dump_model(source)
+        _safe_source_payload(source)
         for source in metadata_store.list_sources()
     ]
+
+
+def _source_sync_status(metadata_store: Any, source_id: str) -> dict[str, Any]:
+    source = metadata_store.get_source(source_id)
+    latest_job = metadata_store.get_latest_sync_job(source_id)
+    return {
+        "source_id": source_id,
+        "source": _safe_source_payload(source) if source else None,
+        "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
+    }
 
 
 def _dump_model(value: Any) -> dict[str, Any]:
@@ -341,6 +486,49 @@ def _dump_model(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return dict(value)
+
+
+def _sync_status_value(job: Any) -> str:
+    status = getattr(job, "status", "")
+    return getattr(status, "value", status) or ""
+
+
+def _safe_source_payload(source: Any) -> dict[str, Any]:
+    payload = _dump_model(source)
+    if payload.get("last_error"):
+        payload["last_error"] = "Source sync failed. See server logs for details."
+    auth_ref = payload.get("auth_ref")
+    if auth_ref and not SAFE_AUTH_REF_RE.match(str(auth_ref)):
+        payload["auth_ref"] = "redacted"
+    return payload
+
+
+def _safe_sync_job_payload(job: Any) -> dict[str, Any]:
+    payload = _dump_model(job)
+    if payload.get("error_message"):
+        payload["error_message"] = "Sync failed. See server logs for details."
+    return payload
+
+
+def _safe_github_sync_payload(payload: Any) -> dict[str, Any]:
+    safe_payload = _dump_model(payload)
+    if safe_payload.get("target"):
+        safe_payload["target"] = _safe_github_target_for_display(safe_payload["target"])
+    if safe_payload.get("job"):
+        safe_payload["job"] = _safe_sync_job_payload(safe_payload["job"])
+    return safe_payload
+
+
+def _safe_github_target_for_display(value: Any) -> str:
+    try:
+        from fetching.github import parse_repository_or_owner_target
+
+        owner, repo, ref = parse_repository_or_owner_target(str(value))
+    except Exception:
+        return "redacted"
+    if repo:
+        return f"{owner}/{repo}@{ref}"
+    return f"github.com/{owner}"
 
 
 def _build_filters(request: ConsoleQuery, metadata_store: Any) -> dict[str, Any]:
