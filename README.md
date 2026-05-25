@@ -253,13 +253,19 @@ ContextWiki source and retrieval flow:
 Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+uv sync --python 3.13
 ```
+
+Use Python 3.13 for local development. Python 3.14 is not currently supported
+because the Chroma dependency stack includes wheels, such as `onnxruntime`, that
+do not publish `cp314` artifacts for the locked version. If you use the fallback
+`pip install -r requirements.txt` path, run it from a Python 3.13 virtual
+environment.
 
 Start the MCP server:
 
 ```bash
-python main.py
+uv run --python 3.13 python main.py
 ```
 
 The application will:
@@ -274,7 +280,7 @@ The application will:
 Start the local Phase C.5 web test console:
 
 ```bash
-uv run uvicorn web_console.app:create_default_app --factory --host 127.0.0.1 --port 8765
+uv run --python 3.13 uvicorn web_console.app:create_default_app --factory --host 127.0.0.1 --port 8765
 ```
 
 Then open `http://127.0.0.1:8765`.
