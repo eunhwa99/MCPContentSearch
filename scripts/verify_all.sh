@@ -7,7 +7,10 @@ cd "$REPO_ROOT"
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/uv-cache}"
 
-python -m compileall api core environments fetching indexing search storage wiki main.py
+python -m compileall api core environments fetching indexing search storage wiki web_console main.py
+
+command -v node >/dev/null 2>&1
+node --check web/app.js
 
 uv_workspace_healthy() {
   command -v uv >/dev/null 2>&1 && uv run python - <<'PY' >/dev/null 2>&1
