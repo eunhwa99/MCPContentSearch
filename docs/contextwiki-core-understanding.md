@@ -518,11 +518,22 @@ documents.deleted_at records when a document disappears from a cleanup-capable
 source after a complete successful sync.
 ```
 
+For GitHub, cleanup is limited to the repository document-id prefixes fetched by
+the connector, such as `github:eunhwa99/mcpcontentsearch:`. This keeps an
+explicit configured repo sync from tombstoning documents that were indexed by a
+separate Web Console target sync under the same `source_github` source id.
+The repo must still be part of the current GitHub connector scope for its
+missing files to be tombstoned; removing a previously configured repo from
+`CONTEXTWIKI_GITHUB_REPOSITORIES` intentionally leaves its old documents active
+until a future provenance-aware cleanup or an explicit manual cleanup plan is
+added.
+
 Example:
 
 ```text
 GitHub file api/tools.py is deleted
--> next complete cleanup-capable successful GitHub sync does not see that external_id
+-> next complete cleanup-capable successful GitHub sync for that configured repo
+   does not see that external_id
 -> documents.deleted_at is set
 -> active search excludes it
 -> if stale Chroma vectors remain, SQLite validation blocks them

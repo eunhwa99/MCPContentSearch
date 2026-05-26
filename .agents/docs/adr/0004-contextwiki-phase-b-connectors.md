@@ -35,6 +35,15 @@ Both connectors produce `DocumentModel` records that satisfy the Phase B-0 lifec
 
 GitHub ingestion uses the GitHub tree/blob API or equivalent mocked client behavior, filters to bounded text/code/markdown files, stores blob SHA as `version_id`, and uses GitHub blob URLs as canonical citations.
 
+GitHub stale cleanup is scoped to the repository identities fetched by the
+current connector, such as `github:owner/repo:` document-id prefixes, rather
+than every document under `source_github`. This keeps a configured GitHub sync
+from tombstoning documents indexed by a separate one-off or ad hoc GitHub target
+sync that shares the canonical `source_github` id. A repository removed from the
+current configured repository list is therefore not automatically tombstoned by
+later configured syncs until a provenance-aware or explicit manual cleanup
+contract exists.
+
 Website/docs ingestion supports bounded same-origin crawling and sitemap URLs. It fetches and applies robots.txt disallow rules before page fetches, enforces a per-response byte cap, extracts readable text/title/canonical URLs, and uses canonical URLs as stable document identities.
 
 Connector fetches must fail the sync on required API/page fetch errors so source-wide tombstoning only runs after a complete bounded snapshot. Live external validation remains optional and must be explicitly requested.
@@ -43,7 +52,7 @@ Connector fetches must fail the sync on required API/page fetch errors so source
 
 - MCP tools can keep using `sync_source(source_id)` and `list_sources()` instead of adding connector-specific sync tools.
 - Phase B connector tests should mock HTTP/API responses and use temporary metadata/vector state.
-- GitHub/Web source cleanup can rely on existing `supports_stale_cleanup=True` only when the connector completed its bounded snapshot.
+- GitHub/Web source cleanup can rely on existing `supports_stale_cleanup=True` only when the connector completed its bounded snapshot. GitHub cleanup is additionally limited to the current connector's fetched repository identities; website cleanup remains source-wide for its configured crawl scope.
 - Large repositories and broad websites are intentionally limited by max file/page/response-size configuration until later queueing, retry/backoff, and observability phases.
 - Function/class-aware code chunking, advanced HTML readability extraction, retries, audit logs, ACLs, and live smoke tests remain later-phase work.
 

@@ -62,6 +62,18 @@ def test_github_http_client_streams_blob_json_with_byte_limit():
     assert result == payload
 
 
+def test_github_connector_exposes_repository_cleanup_prefixes():
+    connector = GitHubSourceConnector(
+        ("EUNHWA99/MCPContentSearch@main", "eunhwa99/LeetCode@master"),
+        AppConfig(),
+    )
+
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunhwa99/mcpcontentsearch:",
+        "github:eunhwa99/leetcode:",
+    )
+
+
 def test_github_http_client_rejects_blob_json_by_content_length():
     client = GitHubHTTPClient(
         timeout=1,

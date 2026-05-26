@@ -3,7 +3,7 @@ from typing import Iterable
 
 from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
-from fetching.github import GitHubRepositoryFetcher
+from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
 from fetching.tistory import fetch_tistory_posts
 from fetching.web_docs import WebsiteDocsFetcher
@@ -14,6 +14,7 @@ class SourceConnector(ABC):
 
     source: SourceModel
     supports_stale_cleanup: bool = False
+    cleanup_document_id_prefixes: tuple[str, ...] = ()
 
     @abstractmethod
     async def fetch_documents(self) -> list[DocumentModel]:
@@ -125,6 +126,10 @@ class GitHubSourceConnector(SourceConnector):
             config,
             token=token,
             http_client=http_client,
+        )
+        self.cleanup_document_id_prefixes = tuple(
+            repository_document_id_prefix(spec)
+            for spec in self.fetcher.repository_specs
         )
         self.source = SourceModel(
             source_id="source_github",

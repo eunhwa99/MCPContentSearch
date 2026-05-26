@@ -795,11 +795,15 @@ class MetadataStore:
         cleanup_missing_documents: bool,
         deleted_at: str,
         last_seen_sync_id: str = "",
+        cleanup_document_id_prefixes: Iterable[str] | None = None,
     ) -> tuple[SyncJobModel, list[str]]:
         """Atomically finalize a successful sync and optional stale cleanup."""
         self.ensure_schema()
         finished_at = _now()
         source_updated_at = _now()
+        cleanup_prefixes = tuple(
+            prefix for prefix in (cleanup_document_id_prefixes or ()) if prefix
+        )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current_job = conn.execute(
@@ -838,6 +842,7 @@ class MetadataStore:
                     last_seen_at,
                     deleted_at,
                     last_seen_sync_id,
+                    cleanup_prefixes,
                 )
 
             job_cursor = conn.execute(
@@ -1173,9 +1178,33 @@ class MetadataStore:
         last_seen_at: str,
         deleted_at: str,
         last_seen_sync_id: str = "",
+        document_id_prefixes: tuple[str, ...] = (),
     ) -> list[str]:
         marker_column = "last_seen_sync_id" if last_seen_sync_id else "last_seen_at"
         marker_value = last_seen_sync_id or last_seen_at
+        chunk_prefix_clause = ""
+        document_prefix_clause = ""
+        prefix_params: tuple[object, ...] = ()
+        if document_id_prefixes:
+            chunk_prefix_clause = (
+                "AND ("
+                + " OR ".join(
+                    "substr(d.document_id, 1, ?) = ?" for _ in document_id_prefixes
+                )
+                + ")"
+            )
+            document_prefix_clause = (
+                "AND ("
+                + " OR ".join(
+                    "substr(document_id, 1, ?) = ?" for _ in document_id_prefixes
+                )
+                + ")"
+            )
+            prefix_params = tuple(
+                item
+                for prefix in document_id_prefixes
+                for item in (len(prefix), prefix)
+            )
         chunk_rows = conn.execute(
             f"""
             SELECT c.chunk_id FROM chunks c
@@ -1184,9 +1213,10 @@ class MetadataStore:
             WHERE d.source_id = ?
               AND COALESCE(d.deleted_at, '') = ''
               AND COALESCE(d.{marker_column}, '') != ?
+              {chunk_prefix_clause}
             ORDER BY c.document_id, c.chunk_index
             """,
-            (source_id, marker_value),
+            (source_id, marker_value, *prefix_params),
         ).fetchall()
         conn.execute(
             f"""
@@ -1195,8 +1225,9 @@ class MetadataStore:
             WHERE source_id = ?
               AND COALESCE(deleted_at, '') = ''
               AND COALESCE({marker_column}, '') != ?
+              {document_prefix_clause}
             """,
-            (deleted_at, source_id, marker_value),
+            (deleted_at, source_id, marker_value, *prefix_params),
         )
         return [row["chunk_id"] for row in chunk_rows]
 

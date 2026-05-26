@@ -39,6 +39,10 @@ class PartialSnapshotConnector(FakeConnector):
     supports_stale_cleanup = False
 
 
+class ScopedCleanupConnector(FakeConnector):
+    cleanup_document_id_prefixes = ("github:eunhwa99/mcpcontentsearch:",)
+
+
 class SourceAConnector(FakeConnector):
     source = SourceModel(
         source_id="source_a",
@@ -862,6 +866,56 @@ def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repe
     assert store.get_document("kept").last_seen_sync_id == second.job_id
     assert store.get_document("removed").deleted_at == marker
     assert store.list_chunks_for_document("removed") == []
+    assert indexer.deleted_ids == [removed_chunk_id]
+
+
+def test_successful_full_sync_only_tombstones_scoped_documents(tmp_path):
+    kept = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:README.md",
+        source_id="source_fake",
+        title="README",
+        content="This configured repo document remains.",
+        url="https://example.com/readme",
+        platform="GitHub",
+        path="README.md",
+    )
+    removed = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:old.py",
+        source_id="source_fake",
+        title="Old",
+        content="This configured repo document disappears.",
+        url="https://example.com/old",
+        platform="GitHub",
+        path="old.py",
+    )
+    ad_hoc = DocumentModel(
+        id="github:eunhwa99/leetcode:graph.py",
+        source_id="source_fake",
+        title="Graph",
+        content="This ad hoc repo document should remain searchable.",
+        url="https://example.com/graph",
+        platform="GitHub",
+        path="graph.py",
+    )
+    connector = ScopedCleanupConnector([kept, removed, ad_hoc])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    asyncio.run(service.sync_source("source_fake"))
+    removed_chunk_id = store.list_chunks_for_document(removed.id)[0].chunk_id
+    connector.documents = [kept]
+    second = asyncio.run(service.sync_source("source_fake"))
+
+    assert second.status == SyncJobStatus.SUCCEEDED
+    assert store.get_document(removed.id).deleted_at
+    assert store.get_document(ad_hoc.id).deleted_at == ""
+    assert store.list_chunks_for_document(ad_hoc.id)
     assert indexer.deleted_ids == [removed_chunk_id]
 
 

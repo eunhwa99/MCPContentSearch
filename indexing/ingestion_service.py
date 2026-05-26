@@ -191,6 +191,11 @@ class IngestionService:
                 last_seen_at=last_seen_at,
                 last_seen_sync_id=last_seen_sync_id,
                 cleanup_missing_documents=getattr(connector, "supports_stale_cleanup", False),
+                cleanup_document_id_prefixes=getattr(
+                    connector,
+                    "cleanup_document_id_prefixes",
+                    (),
+                ),
                 deleted_at=_now(),
             )
             self._delete_vectors_best_effort(deleted_chunk_ids, source_id)

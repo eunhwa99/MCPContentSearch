@@ -632,6 +632,11 @@ def parse_repository_spec(value: str, default_ref: str = "main") -> GitHubReposi
     return GitHubRepositorySpec(owner=pieces[0], repo=pieces[1], ref=effective_ref)
 
 
+def repository_document_id_prefix(spec: GitHubRepositorySpec) -> str:
+    owner, repo = _repository_identity(spec)
+    return f"github:{owner}/{repo}:"
+
+
 def _repository_owner_login(repository: dict[str, Any]) -> str:
     owner = repository.get("owner")
     login = owner.get("login") if isinstance(owner, dict) else ""

@@ -473,6 +473,128 @@ def test_github_sync_skips_stale_cleanup_when_file_cap_is_exceeded(tmp_path):
     assert indexer.deleted_ids == []
 
 
+def test_github_configured_sync_preserves_ad_hoc_target_repo_documents(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+
+    first_configured_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(("README.md", "old.py")),
+    )
+    first_configured_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([first_configured_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    first_job = asyncio.run(first_configured_service.sync_source("source_github"))
+    stale_configured_document_id = "github:eunhwa99/mcpcontentsearch:old.py"
+    assert first_job.status == SyncJobStatus.SUCCEEDED
+    assert store.list_chunks_for_document(stale_configured_document_id)
+
+    ad_hoc_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/leetcode@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(("graph.py",)),
+        allow_stale_cleanup=False,
+    )
+    ad_hoc_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([ad_hoc_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+        register_source_config=False,
+    )
+
+    ad_hoc_job = asyncio.run(ad_hoc_service.sync_source("source_github"))
+    ad_hoc_document_id = "github:eunhwa99/leetcode:graph.py"
+    assert ad_hoc_job.status == SyncJobStatus.SUCCEEDED
+    assert ad_hoc_connector.supports_stale_cleanup is False
+    assert store.list_chunks_for_document(ad_hoc_document_id)
+
+    second_configured_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(("README.md",)),
+    )
+    second_configured_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([second_configured_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    second_job = asyncio.run(second_configured_service.sync_source("source_github"))
+
+    assert second_job.status == SyncJobStatus.SUCCEEDED
+    assert second_configured_connector.supports_stale_cleanup is True
+    assert store.get_document(stale_configured_document_id).deleted_at != ""
+    assert store.get_document(ad_hoc_document_id).deleted_at == ""
+    assert store.list_chunks_for_document(ad_hoc_document_id)
+
+
+def test_github_repo_cleanup_prefix_treats_underscore_literally(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+
+    first_configured_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/foo_bar@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(("old.py",)),
+    )
+    first_configured_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([first_configured_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    first_job = asyncio.run(first_configured_service.sync_source("source_github"))
+    configured_document_id = "github:eunhwa99/foo_bar:old.py"
+    assert first_job.status == SyncJobStatus.SUCCEEDED
+    assert store.list_chunks_for_document(configured_document_id)
+
+    ad_hoc_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/fooxbar@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(("graph.py",)),
+        allow_stale_cleanup=False,
+    )
+    ad_hoc_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([ad_hoc_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+        register_source_config=False,
+    )
+
+    ad_hoc_job = asyncio.run(ad_hoc_service.sync_source("source_github"))
+    ad_hoc_document_id = "github:eunhwa99/fooxbar:graph.py"
+    assert ad_hoc_job.status == SyncJobStatus.SUCCEEDED
+    assert store.list_chunks_for_document(ad_hoc_document_id)
+
+    second_configured_connector = GitHubSourceConnector(
+        repositories=("eunhwa99/foo_bar@main",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=TreeGitHubHTTP(()),
+    )
+    second_configured_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([second_configured_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    second_job = asyncio.run(second_configured_service.sync_source("source_github"))
+
+    assert second_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_document(configured_document_id).deleted_at != ""
+    assert store.get_document(ad_hoc_document_id).deleted_at == ""
+    assert store.list_chunks_for_document(ad_hoc_document_id)
+
+
 def test_github_sync_fails_without_stale_cleanup_for_missing_tree_payload(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     indexer = RecordingIndexer()
