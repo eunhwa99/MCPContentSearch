@@ -291,15 +291,9 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
             )
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
             _log_suppressed_error("Answer request failed")
-            return {
-                "question": question,
-                "answer": "Answer failed. See server logs for details.",
-                "evidence_status": "error",
-                "citations": [],
-                "used_chunks": [],
-            }
+            return _safe_answer_failure_payload(question, exc)
 
     @app.post("/api/wiki/generate")
     async def generate_wiki(request: ConsoleQuery) -> dict[str, Any]:
@@ -602,6 +596,39 @@ def _remote_console_allowed() -> bool:
 
 def _log_suppressed_error(message: str) -> None:
     logger.error("%s; details suppressed to avoid leaking secrets", message)
+
+
+def _safe_answer_failure_payload(question: str, exc: Exception) -> dict[str, Any]:
+    if _is_openai_authentication_error(exc):
+        return {
+            "question": question,
+            "answer": (
+                "Answer failed because the OpenAI API key was rejected. "
+                "Restart the local server with the correct .env or OPENAI_API_KEY."
+            ),
+            "evidence_status": "configuration_error",
+            "citations": [],
+            "used_chunks": [],
+        }
+    return {
+        "question": question,
+        "answer": "Answer failed. See server logs for details.",
+        "evidence_status": "error",
+        "citations": [],
+        "used_chunks": [],
+    }
+
+
+def _is_openai_authentication_error(exc: Exception) -> bool:
+    class_name = type(exc).__name__.lower()
+    module_name = type(exc).__module__.lower()
+    message = str(exc).lower()
+    status_code = getattr(exc, "status_code", None)
+    return (
+        status_code == 401
+        and ("authentication" in class_name or "api key" in message)
+        and ("openai" in module_name or "openai" in message or "api key" in message)
+    )
 
 
 def _is_local_host_header(value: str) -> bool:

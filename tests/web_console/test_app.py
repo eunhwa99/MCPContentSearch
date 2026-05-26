@@ -169,6 +169,15 @@ class FailingAnswerService:
         raise RuntimeError("answer failed with token=secret-value")
 
 
+class AuthenticationError(RuntimeError):
+    status_code = 401
+
+
+class OpenAIAuthFailingAnswerService:
+    async def answer_with_citations(self, question, filters=None, top_k=5):
+        raise AuthenticationError("Incorrect API key provided: sk-proj-secret-value")
+
+
 class FailingWikiService:
     async def generate_wiki_page(self, topic, filters=None, top_k=8):
         raise RuntimeError("wiki failed with token=secret-value")
@@ -736,6 +745,33 @@ def test_answer_endpoint_returns_structured_failure_without_logging_secret(caplo
     }
     assert "secret-value" not in caplog.text
     assert "token=secret-value" not in caplog.text
+
+
+def test_answer_endpoint_returns_safe_configuration_hint_for_openai_auth_failure(caplog):
+    app = create_console_app(
+        ConsoleDependencies(
+            answer_service=OpenAIAuthFailingAnswerService(),
+            metadata_store=FakeMetadataStore(),
+        )
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.post("/api/answer", json={"question": "What is ContextWiki?"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "question": "What is ContextWiki?",
+        "answer": (
+            "Answer failed because the OpenAI API key was rejected. "
+            "Restart the local server with the correct .env or OPENAI_API_KEY."
+        ),
+        "evidence_status": "configuration_error",
+        "citations": [],
+        "used_chunks": [],
+    }
+    assert "secret-value" not in response.text
+    assert "secret-value" not in caplog.text
 
 
 def test_answer_endpoint_returns_structured_filter_failure_without_logging_secret(caplog):

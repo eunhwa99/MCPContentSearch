@@ -317,9 +317,12 @@ browser from the response payload, and HTTP smoke endpoints clean up temporary
 Markdown files before returning.
 
 The local server boundary does not make every operation offline:
-`generate_wiki_page` follows the existing opt-in wiki LLM configuration, and
-the GitHub sync and smoke endpoints perform live network work only when
-explicitly invoked and configured.
+Answer/Search over the real vector index may call the configured embedding
+provider during retrieval, so the server needs the same valid embedding
+environment, such as `OPENAI_API_KEY`, unless a local/mock embedding model is
+configured. `generate_wiki_page` follows the existing opt-in wiki LLM
+configuration, and the GitHub sync and smoke endpoints perform live network
+work only when explicitly invoked and configured.
 
 ---
 
@@ -347,7 +350,7 @@ private source content.
 | Variable | Purpose |
 | --- | --- |
 | `CONTEXTWIKI_WIKI_LLM_ENABLED` | Set to `true` to enable LLM synthesis for `generate_wiki_page`. Defaults to `false`. |
-| `OPENAI_API_KEY` | OpenAI API key read only when wiki LLM synthesis is enabled. |
+| `OPENAI_API_KEY` | OpenAI API key used by OpenAI-backed embeddings during Answer/Search retrieval, and by wiki LLM synthesis when `CONTEXTWIKI_WIKI_LLM_ENABLED=true`. |
 | `CONTEXTWIKI_WIKI_LLM_MODEL` | OpenAI model for wiki synthesis. Defaults to `gpt-4.1-mini`; override as needed. |
 | `CONTEXTWIKI_WIKI_LLM_TIMEOUT` | LLM request timeout in seconds. Defaults to `20`. |
 | `CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS` | Maximum characters per evidence chunk sent to the LLM. Defaults to `1200`. |
