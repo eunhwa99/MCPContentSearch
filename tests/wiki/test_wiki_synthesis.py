@@ -7,7 +7,8 @@ from wiki.synthesis import OpenAIWikiSynthesizer, build_wiki_synthesizer
 pytestmark = pytest.mark.unit
 
 
-def test_build_wiki_synthesizer_is_disabled_by_default():
+def test_build_wiki_synthesizer_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CONTEXTWIKI_WIKI_LLM_ENABLED", raising=False)
     config = AppConfig()
 
     assert build_wiki_synthesizer(config, api_key="secret") is None

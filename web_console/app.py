@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 import ipaddress
 import logging
@@ -106,6 +106,7 @@ class ConsoleDependencies:
     github_sync_service: Any = None
     codex_answer_service: Any = None
     smoke_runner: Any = None
+    auto_sync_source_ids: tuple[str, ...] = ()
 
 
 class GitHubTargetSyncService:
@@ -539,12 +540,49 @@ class ScriptSmokeRunner:
         return _without_persisted_output_path(result)
 
 
+def _console_lifespan(dependencies: ConsoleDependencies):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        task = _schedule_startup_auto_sync_task(app, dependencies)
+        try:
+            yield
+        finally:
+            if task and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    return lifespan
+
+
+def _schedule_startup_auto_sync_task(
+    app: FastAPI,
+    dependencies: ConsoleDependencies,
+) -> asyncio.Task | None:
+    source_ids = app.state.contextwiki_auto_sync_source_ids
+    if not source_ids or dependencies.ingestion_service is None:
+        return None
+    task = asyncio.create_task(
+        _run_startup_auto_sync_sources(
+            dependencies.ingestion_service,
+            source_ids,
+        )
+    )
+    app.state.contextwiki_auto_sync_task = task
+    return task
+
+
 def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
     app = FastAPI(
         title="ContextWiki Local Web Test Console",
         description="Local-only HTTP wrapper over ContextWiki services.",
         version="0.1.0",
+        lifespan=_console_lifespan(dependencies),
     )
+    app.state.contextwiki_auto_sync_source_ids = _normalize_auto_sync_source_ids(
+        dependencies.auto_sync_source_ids
+    )
+    app.state.contextwiki_auto_sync_task = None
 
     @app.middleware("http")
     async def enforce_loopback_clients(request, call_next):
@@ -810,6 +848,7 @@ def create_default_app() -> FastAPI:
     from wiki.synthesis import build_wiki_synthesizer
 
     config = AppConfig()
+    notion_api_key = _configured_notion_api_key(NOTION_API_KEY)
     chroma_collection = setup_chroma(config)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -819,7 +858,7 @@ def create_default_app() -> FastAPI:
     metadata_store = MetadataStore(config.metadata_db_path)
     search_service = SearchService(config, indexer, metadata_store=metadata_store)
     web_searcher = WebSearcher(
-        notion_api_key=NOTION_API_KEY,
+        notion_api_key=notion_api_key,
         tistory_blog_name=TISTORY_BLOG_NAME,
         config=config,
     )
@@ -831,7 +870,7 @@ def create_default_app() -> FastAPI:
     )
     source_registry = build_source_registry(
         config=config,
-        notion_api_key=NOTION_API_KEY,
+        notion_api_key=notion_api_key,
         tistory_blog_name=TISTORY_BLOG_NAME,
         github_token=get_env_secret(config.github_token_env_var),
     )
@@ -867,7 +906,8 @@ def create_default_app() -> FastAPI:
             ingestion_service=ingestion_service,
             indexer=indexer,
             github_token=get_env_secret(config.github_token_env_var),
-            notion_api_key=NOTION_API_KEY,
+            notion_api_key=notion_api_key,
+            auto_sync_source_ids=config.contextwiki_auto_sync_sources,
         )
     )
 
@@ -883,6 +923,7 @@ def _build_console_dependencies(
     indexer: Any,
     github_token: str,
     notion_api_key: str,
+    auto_sync_source_ids: tuple[str, ...] = (),
 ) -> ConsoleDependencies:
     github_sync_service = GitHubTargetSyncService(
         config=config,
@@ -915,6 +956,7 @@ def _build_console_dependencies(
         target_sync_service=target_sync_service,
         github_sync_service=github_sync_service,
         smoke_runner=ScriptSmokeRunner(),
+        auto_sync_source_ids=auto_sync_source_ids,
     )
 
 
@@ -1286,6 +1328,31 @@ def _safe_sync_job_payload(job: Any) -> dict[str, Any]:
     if payload.get("error_message"):
         payload["error_message"] = "Sync failed. See server logs for details."
     return payload
+
+
+def _normalize_auto_sync_source_ids(values: Any) -> tuple[str, ...]:
+    return tuple(_dedupe(_normalize_list(values)))
+
+
+async def _run_startup_auto_sync_sources(
+    ingestion_service: Any,
+    source_ids: tuple[str, ...],
+) -> None:
+    for source_id in source_ids:
+        try:
+            await ingestion_service.sync_source(source_id)
+        except Exception as exc:
+            _log_suppressed_error(f"Startup auto-sync failed for {source_id}", exc)
+
+
+def _configured_notion_api_key(canonical_value: str) -> str:
+    if canonical_value:
+        return canonical_value
+    for name in ("NOTION_API_KEY", "NOTION_TOKEN", "NOTION_API_TOKEN", "notion_token"):
+        value = os.getenv(name, "")
+        if value:
+            return value
+    return ""
 
 
 def _citation_payload(item: Any) -> dict[str, Any]:

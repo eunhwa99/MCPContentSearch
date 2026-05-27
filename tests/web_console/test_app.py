@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 import signal
 import subprocess
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from web_console.app import (
     REPO_ROOT,
     create_console_app,
     _codex_sandbox_profile,
+    _configured_notion_api_key,
     _redact_prompt_text,
     _run_codex_cli,
     _safe_codex_failure_message,
@@ -137,6 +139,22 @@ class FakeIngestionService:
             total_documents=3,
             processed_documents=2,
             indexed_chunks=5,
+        )
+
+
+class SlowRecordingIngestionService(FakeIngestionService):
+    def __init__(self):
+        super().__init__()
+        self.completed_calls = []
+
+    async def sync_source(self, source_id):
+        self.calls.append(source_id)
+        await asyncio.sleep(0.01)
+        self.completed_calls.append(source_id)
+        return SyncJobModel(
+            job_id=f"job-{source_id}",
+            source_id=source_id,
+            status=SyncJobStatus.SUCCEEDED,
         )
 
 
@@ -680,6 +698,82 @@ def test_source_sync_endpoint_redacts_returned_job_error():
     assert body["error_message"] == "Sync failed. See server logs for details."
     assert "secret-value" not in str(body)
     assert "token=secret-value" not in str(body)
+
+
+def _wait_for_sync_completion(service, expected_calls):
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if service.completed_calls == expected_calls:
+            return
+        time.sleep(0.01)
+    assert service.completed_calls == expected_calls
+
+
+def test_startup_auto_sync_schedules_default_configured_sources():
+    ingestion_service = SlowRecordingIngestionService()
+    app = create_console_app(
+        ConsoleDependencies(
+            ingestion_service=ingestion_service,
+            auto_sync_source_ids=(
+                "source_github",
+                "source_notion",
+                "source_tistory",
+            ),
+        )
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        _wait_for_sync_completion(
+            ingestion_service,
+            ["source_github", "source_notion", "source_tistory"],
+        )
+
+
+def test_startup_auto_sync_empty_source_list_does_not_schedule_sync():
+    ingestion_service = SlowRecordingIngestionService()
+    app = create_console_app(
+        ConsoleDependencies(
+            ingestion_service=ingestion_service,
+            auto_sync_source_ids=(),
+        )
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        time.sleep(0.03)
+
+    assert ingestion_service.calls == []
+
+
+def test_startup_auto_sync_does_not_require_ingestion_service():
+    app = create_console_app(
+        ConsoleDependencies(
+            ingestion_service=None,
+            auto_sync_source_ids=("source_github",),
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("alias", ["NOTION_TOKEN", "NOTION_API_TOKEN", "notion_token"])
+def test_configured_notion_api_key_accepts_local_aliases(monkeypatch, alias):
+    for key in ("NOTION_API_KEY", "NOTION_TOKEN", "NOTION_API_TOKEN", "notion_token"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(alias, "notion-alias-secret")
+
+    assert _configured_notion_api_key("") == "notion-alias-secret"
+
+
+def test_configured_notion_api_key_prefers_canonical_value(monkeypatch):
+    monkeypatch.setenv("NOTION_TOKEN", "upper-alias-secret")
+    monkeypatch.setenv("notion_token", "lower-alias-secret")
+
+    assert _configured_notion_api_key("canonical-notion-secret") == "canonical-notion-secret"
 
 
 def test_github_target_sync_endpoint_delegates_to_service():

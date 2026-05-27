@@ -318,6 +318,16 @@ available document/chunk progress. If the same source is already syncing, a
 one-off target sync reports `already_running` and follows the active source job
 instead of claiming that the newly typed target started.
 
+On startup, the local web console schedules configured-source sync for GitHub,
+Notion, and Tistory by default (`source_github`, `source_notion`, and
+`source_tistory`). This uses the existing source sync service in the background,
+so server startup is not blocked and progress is still inspected through
+`/api/sources` and `/api/sources/{source_id}/sync-status`. Set
+`CONTEXTWIKI_AUTO_SYNC_SOURCES` to a comma/newline-separated source ID list to
+override the startup set; set it to an empty string to disable startup auto-sync
+entirely. Missing credentials or disabled sources are handled by the existing
+sync status/error paths.
+
 The console does not add authentication, deployment, multi-user state, or
 server-side generated page persistence. It rejects non-loopback clients by
 default. `CONTEXTWIKI_WEB_CONSOLE_ALLOW_REMOTE=true` only bypasses the client
@@ -356,9 +366,11 @@ The local server boundary does not make every operation offline:
 Answer/Search over the real vector index may call the configured embedding
 provider during retrieval, so the server needs the same valid embedding
 environment, such as `OPENAI_API_KEY`, unless a local/mock embedding model is
-configured. `generate_wiki_page` follows the existing opt-in wiki LLM
+configured. Startup auto-sync may contact configured GitHub, Notion, and Tistory
+sources by default unless `CONTEXTWIKI_AUTO_SYNC_SOURCES` is disabled or
+overridden. `generate_wiki_page` follows the existing opt-in wiki LLM
 configuration, Codex CLI Answer may invoke local Codex authentication and
-external model behavior depending on the user's CLI setup, and GitHub sync/smoke
+external model behavior depending on the user's CLI setup, and smoke endpoints
 plus Target Sync for GitHub, Notion, or Web URL perform live network work only
 when explicitly invoked and configured.
 
@@ -375,6 +387,8 @@ Notion and Tistory keep using the existing environment variables. Phase B adds o
 | `CONTEXTWIKI_GITHUB_DEFAULT_REF` | Default Git ref for repository specs. Defaults to `main`. |
 | `CONTEXTWIKI_GITHUB_MAX_FILES` | Maximum text/code files fetched per configured repository per sync. Defaults to `200`. |
 | `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES` | Maximum GitHub file size fetched. Defaults to `512000`. |
+| `CONTEXTWIKI_AUTO_SYNC_SOURCES` | Optional startup auto-sync source IDs. Defaults to `source_github,source_notion,source_tistory`; set to an empty string to disable. |
+| `NOTION_API_KEY` | Canonical Notion integration token env var. The local web console also accepts compatibility aliases `NOTION_TOKEN`, `NOTION_API_TOKEN`, and `notion_token`, but source metadata still stores only `env:NOTION_API_KEY`. |
 | `CONTEXTWIKI_WEB_URLS` | Comma-separated website/docs seed URLs or sitemap URLs. |
 | `CONTEXTWIKI_WEB_MAX_PAGES` | Maximum non-sitemap document page responses fetched per website/docs sync. Defaults to `50`. |
 | `CONTEXTWIKI_WEB_MAX_RESPONSE_BYTES` | Maximum response body bytes read per website/docs request. Defaults to `1048576`. |

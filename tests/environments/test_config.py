@@ -95,6 +95,40 @@ def test_phase_b_source_lists_parse_comma_newline_and_whitespace(monkeypatch):
     )
 
 
+def test_contextwiki_auto_sync_sources_default_to_configured_core_sources(monkeypatch):
+    monkeypatch.delenv("CONTEXTWIKI_AUTO_SYNC_SOURCES", raising=False)
+
+    config = AppConfig()
+
+    assert config.contextwiki_auto_sync_sources == (
+        "source_github",
+        "source_notion",
+        "source_tistory",
+    )
+
+
+def test_contextwiki_auto_sync_sources_override_parses_list(monkeypatch):
+    monkeypatch.setenv(
+        "CONTEXTWIKI_AUTO_SYNC_SOURCES",
+        " source_notion,\n source_github ,, ",
+    )
+
+    config = AppConfig()
+
+    assert config.contextwiki_auto_sync_sources == (
+        "source_notion",
+        "source_github",
+    )
+
+
+def test_contextwiki_auto_sync_sources_empty_env_disables(monkeypatch):
+    monkeypatch.setenv("CONTEXTWIKI_AUTO_SYNC_SOURCES", "")
+
+    config = AppConfig()
+
+    assert config.contextwiki_auto_sync_sources == ()
+
+
 @pytest.mark.parametrize(
     "name",
     [

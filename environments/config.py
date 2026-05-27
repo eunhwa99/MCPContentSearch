@@ -11,11 +11,22 @@ SECRET_LIKE_ENV_VALUE_RE = re.compile(
     r"^(?:GH[POUSR]_[A-Z0-9_]+|GITHUB_PAT_[A-Z0-9_]+|(?:AKIA|ASIA)[A-Z0-9]{16})$",
     re.IGNORECASE,
 )
+DEFAULT_CONTEXTWIKI_AUTO_SYNC_SOURCES = (
+    "source_github",
+    "source_notion",
+    "source_tistory",
+)
 
 
 def _split_env(name: str) -> tuple[str, ...]:
     value = os.getenv(name, "")
     return tuple(item.strip() for item in value.replace("\n", ",").split(",") if item.strip())
+
+
+def _split_env_with_default(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    if name not in os.environ:
+        return default
+    return _split_env(name)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -166,6 +177,14 @@ class AppConfig:
     )
     wiki_llm_max_evidence_chars: int = field(
         default_factory=lambda: _int_env("CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS", 1200)
+    )
+
+    # Local Web Console startup sync. Empty env value intentionally disables it.
+    contextwiki_auto_sync_sources: tuple[str, ...] = field(
+        default_factory=lambda: _split_env_with_default(
+            "CONTEXTWIKI_AUTO_SYNC_SOURCES",
+            DEFAULT_CONTEXTWIKI_AUTO_SYNC_SOURCES,
+        )
     )
 
     def __post_init__(self):
