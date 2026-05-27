@@ -297,6 +297,7 @@ static files from `web/` and calls these local HTTP endpoints:
 | `POST /api/targets/sync` | Sync a one-off target selected in the browser as GitHub, Notion, or Web URL. |
 | `POST /api/github/sync` | Sync a GitHub target typed in the browser, including `owner/repo@branch`, GitHub repo URLs, or owner URLs such as `github.com/eunhwa99`. |
 | `POST /api/answer` | Call `answer_with_citations` through the HTTP wrapper. |
+| `POST /api/answer/codex` | Experimental local Codex CLI answer mode over retrieved ContextWiki chunks. |
 | `POST /api/wiki/generate` | Call `generate_wiki_page` through the HTTP wrapper. |
 | `POST /api/smoke/fake` | Run deterministic fake wiki smoke with temporary storage. |
 | `POST /api/smoke/github` | Run optional GitHub smoke, skipping gracefully when not configured. |
@@ -319,17 +320,42 @@ The console does not add authentication, deployment, multi-user state, or
 server-side generated page persistence. It rejects non-loopback clients by
 default. `CONTEXTWIKI_WEB_CONSOLE_ALLOW_REMOTE=true` only bypasses the client
 IP check for explicit proxy/test experiments; `Host`, `Origin`, and `Referer`
-must still resolve to loopback. Markdown and JSON downloads happen in the
-browser from the response payload, and HTTP smoke endpoints clean up temporary
+must still resolve to loopback. Markdown downloads use rendered answer/Markdown
+content instead of falling back to raw JSON, JSON panes/downloads use the
+browser's sanitized result state, and HTTP smoke endpoints clean up temporary
 Markdown files before returning.
+
+The Answer mode selector defaults to ContextWiki Answer. Codex CLI Answer is an
+explicit local developer option that retrieves bounded ContextWiki chunks first,
+redacts obvious secret-looking strings from the prompt, and keeps citations/used
+chunks from the retrieval result instead of trusting generated citation metadata.
+The HTTP wrapper supplies only bounded/redacted prompt fields as evidence, starts
+`codex exec` from a temporary working directory with an allowlisted environment,
+`--ephemeral`, `--ignore-user-config`, and `--ignore-rules`, and disables Codex
+shell/browser/computer/plugin/multi-agent and related tool feature flags for the
+invocation when supported. `CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC=true` can
+experimentally wrap the subprocess in a macOS `sandbox-exec` profile; when that
+flag is set and `sandbox-exec` is unavailable, the request fails closed with a
+safe configuration error instead of silently weakening the requested hardening.
+The wrapper is off by default because it can block local Codex runtimes.
+Temporary output and sandbox files are deleted after the request. This is still
+not an OS/container sandbox proof: `/api/answer/codex` is only a local
+HTTP/subprocess wrapper, while the Codex CLI runtime may use external model
+behavior and process the bounded evidence under the user's Codex configuration.
+This mode is best-effort prompt isolation for local testing rather than a
+production answer service. If `codex` is missing, times out, or exits
+unsuccessfully, the console returns a safe failure payload and the user can
+switch back to ContextWiki Answer.
 
 The local server boundary does not make every operation offline:
 Answer/Search over the real vector index may call the configured embedding
 provider during retrieval, so the server needs the same valid embedding
 environment, such as `OPENAI_API_KEY`, unless a local/mock embedding model is
 configured. `generate_wiki_page` follows the existing opt-in wiki LLM
-configuration, and GitHub sync/smoke plus Target Sync for GitHub, Notion, or
-Web URL perform live network work only when explicitly invoked and configured.
+configuration, Codex CLI Answer may invoke local Codex authentication and
+external model behavior depending on the user's CLI setup, and GitHub sync/smoke
+plus Target Sync for GitHub, Notion, or Web URL perform live network work only
+when explicitly invoked and configured.
 
 ---
 

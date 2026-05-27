@@ -223,6 +223,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus,
 button:focus-visible {
   outline: 3px solid rgba(37, 99, 235, 0.18);

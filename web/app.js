@@ -15,6 +15,7 @@ const elements = {
   healthBadge: document.querySelector("#healthBadge"),
   statusText: document.querySelector("#statusText"),
   questionInput: document.querySelector("#questionInput"),
+  answerModeSelect: document.querySelector("#answerModeSelect"),
   topicInput: document.querySelector("#topicInput"),
   sourceIdInput: document.querySelector("#sourceIdInput"),
   topKInput: document.querySelector("#topKInput"),
@@ -118,11 +119,11 @@ async function refreshHealth() {
 
 async function refreshSources() {
   try {
-    const payload = await requestJson("/api/sources");
+    const payload = sanitizePayload(await requestJson("/api/sources"));
     renderSources(normalizeArray(payload.sources || payload.items || payload.data || payload));
   } catch (error) {
     renderSources([]);
-    elements.sourcesList.textContent = error.message;
+    elements.sourcesList.textContent = redactSensitiveString(error.message);
     elements.sourcesList.className = "list empty";
   }
 }
@@ -130,7 +131,7 @@ async function refreshSources() {
 async function runAnswer() {
   const question = elements.questionInput.value.trim();
   if (!question) {
-    showClientError("Enter a question before calling /api/answer.");
+    showClientError("Enter a question before running an answer request.");
     return;
   }
 
@@ -139,9 +140,12 @@ async function runAnswer() {
     ...buildRequestOptions(),
     top_k: readTopK(),
   };
+  const isCodexMode = elements.answerModeSelect.value === "codex";
+  const url = isCodexMode ? "/api/answer/codex" : "/api/answer";
+  const kind = isCodexMode ? "codex answer" : "answer";
 
   clearInactiveSyncProgress();
-  await runAction("answer", "/api/answer", body);
+  await runAction(kind, url, body);
 }
 
 async function runWiki() {
@@ -247,9 +251,10 @@ async function runAction(kind, url, body) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    renderResult(kind, payload);
-    setStatus(actionStatusMessage(kind, payload));
-    return payload;
+    const safePayload = sanitizePayload(payload);
+    renderResult(kind, safePayload);
+    setStatus(actionStatusMessage(kind, safePayload));
+    return safePayload;
   } catch (error) {
     showClientError(error.message);
     setStatus(`Failed ${kind}.`);
@@ -270,10 +275,11 @@ async function requestJson(url, options = {}) {
     : await response.text();
 
   if (!response.ok) {
+    const safePayload = sanitizePayload(payload);
     const detail =
-      typeof payload === "string"
-        ? payload
-        : payload.detail || payload.error || payload.message || JSON.stringify(payload, null, 2);
+      typeof safePayload === "string"
+        ? safePayload
+        : safePayload.detail || safePayload.error || safePayload.message || JSON.stringify(safePayload, null, 2);
     throw new Error(`${response.status} ${response.statusText}: ${detail}`);
   }
 
@@ -331,15 +337,16 @@ function readTopic() {
 }
 
 function renderResult(kind, payload) {
-  const normalized = normalizeResult(payload);
+  const safePayload = sanitizePayload(payload);
+  const normalized = normalizeResult(safePayload);
   state.lastKind = kind;
-  state.lastPayload = payload;
-  state.lastMarkdown = normalized.markdown || normalized.answer || JSON.stringify(payload, null, 2);
+  state.lastPayload = safePayload;
+  state.lastMarkdown = normalized.markdown || normalized.answer || "";
 
   elements.resultMeta.textContent = `${kind} response received at ${new Date().toLocaleTimeString()}`;
   elements.answerPane.innerHTML = buildAnswerHtml(normalized, kind);
   elements.markdownPane.textContent = state.lastMarkdown || "";
-  elements.jsonPane.textContent = JSON.stringify(payload, null, 2);
+  elements.jsonPane.textContent = JSON.stringify(safePayload, null, 2);
   renderList(elements.citationsList, normalized.citations, "citation");
   renderList(elements.backlinksList, normalized.backlinks, "backlink");
   renderList(elements.chunksList, normalized.usedChunks, "chunk");
@@ -372,10 +379,49 @@ function normalizeResult(payload) {
   };
 }
 
+function sanitizePayload(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizePayload(item));
+  }
+  if (typeof value === "string") {
+    return redactSensitiveString(value);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      isSensitivePayloadKey(key) ? "redacted" : sanitizePayload(item),
+    ]),
+  );
+}
+
+function isSensitivePayloadKey(key) {
+  const normalized = String(key || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+  return /(^|[_-])(auth|authorization|bearer|cookie|credential|key|password|private_key|secret|session|token)([_-]|$)/i
+    .test(normalized);
+}
+
+function redactSensitiveString(value) {
+  return String(value)
+    .replace(/(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [REDACTED]")
+    .replace(/sk-(?:proj-)?[A-Za-z0-9_-]{8,}/gi, "[REDACTED]")
+    .replace(/gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+/gi, "[REDACTED]")
+    .replace(/([?&](?:auth|authorization|key|password|secret|session|sig|signature|token)=)[^&#\s]+/gi, "$1[REDACTED]")
+    .replace(/\b((?:access|api|auth|bearer|client|github|notion|openai|refresh|session|id)?[_-]?(?:key|password|secret|token))\s*[:=]\s*[^'"\s,;}]+/gi, "$1=[REDACTED]");
+}
+
 function actionSucceeded(payload) {
   const root = payload.result || payload.data || payload;
   const status = String(root.status || root.evidence_status || "").toLowerCase();
-  return !["error", "failed"].includes(status);
+  const codexStatus = String(root.codex_status || "").toLowerCase();
+  return !["error", "failed"].includes(status) &&
+    !["failed", "missing_cli", "timeout"].includes(codexStatus);
 }
 
 function actionStatusMessage(kind, payload) {
@@ -491,7 +537,11 @@ function buildSourceHtml(source, index) {
     status: source.sync_status,
     last_synced_at: source.last_synced_at,
   });
-  const body = firstString(source.last_error, source.auth_ref);
+  const body = source.last_error
+    ? String(source.last_error)
+    : source.auth_ref
+      ? "auth=configured"
+      : "";
   const canSync = Boolean(source.source_id && source.enabled !== false);
 
   return `
@@ -657,7 +707,9 @@ async function refreshSyncStatus(sourceId, token = state.syncPollToken) {
     return;
   }
   try {
-    const payload = await requestJson(`/api/sources/${encodeURIComponent(sourceId)}/sync-status`);
+    const payload = sanitizePayload(
+      await requestJson(`/api/sources/${encodeURIComponent(sourceId)}/sync-status`),
+    );
     if (token !== state.syncPollToken || sourceId !== state.activeSyncSourceId) {
       return;
     }
