@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ContextWiki Console</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260527-c5-clean-answer" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
           <h1>ContextWiki Local Console</h1>
-          <p>Exercise answer, wiki, and smoke endpoints against the local Phase C.5 API.</p>
+          <p>Ask indexed sources, inspect evidence, and sync local test targets.</p>
         </div>
         <div class="status-stack" aria-live="polite">
           <span id="healthBadge" class="badge badge-warn">Checking API</span>
@@ -29,21 +29,13 @@
           <div class="field compact answer-mode-field">
             <label for="answerModeSelect">Answer mode</label>
             <select id="answerModeSelect">
+              <option value="codex" selected>Codex CLI Answer</option>
               <option value="contextwiki">ContextWiki Answer</option>
-              <option value="codex">Codex CLI Answer</option>
             </select>
-          </div>
-
-          <div class="field">
-            <label for="topicInput">Wiki topic</label>
-            <input id="topicInput" type="text" placeholder="ContextWiki Auto Wiki" />
           </div>
 
           <div class="inline-actions">
             <button id="answerButton" type="button">Answer</button>
-            <button id="wikiButton" type="button">Generate Wiki</button>
-            <button id="fakeSmokeButton" type="button">Fake Smoke</button>
-            <button id="githubSmokeButton" type="button">GitHub Smoke</button>
           </div>
         </form>
 
@@ -68,12 +60,7 @@
 
           <div class="field compact">
             <label for="topKInput">top_k</label>
-            <input id="topKInput" type="number" min="1" max="20" step="1" placeholder="answer 5 / wiki 8" />
-          </div>
-
-          <div class="field compact">
-            <label for="githubRepositoryInput">GitHub repository</label>
-            <input id="githubRepositoryInput" type="text" placeholder="owner/repo" />
+            <input id="topKInput" type="number" min="1" max="20" step="1" placeholder="5" />
           </div>
 
           <div class="target-sync-box" aria-label="Target sync">
@@ -112,11 +99,6 @@
               <div id="syncProgressDetail" class="muted">Idle</div>
             </div>
           </div>
-
-          <label class="toggle">
-            <input id="requireGeneratedInput" type="checkbox" />
-            <span>Require generated smoke output</span>
-          </label>
         </aside>
       </section>
 
@@ -140,7 +122,7 @@
           </div>
 
           <article id="answerPane" class="tab-pane active" role="tabpanel" aria-labelledby="answerTab">
-            <p class="empty">Run an answer, wiki, or smoke request to inspect the response.</p>
+            <p class="empty">Ask a question to inspect the answer and evidence.</p>
           </article>
           <pre id="markdownPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="markdownTab" hidden></pre>
           <pre id="jsonPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
@@ -167,6 +149,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260527-c5-codex-answer"></script>
+    <script src="/static/app.js?v=20260527-c5-clean-answer"></script>
   </body>
 </html>

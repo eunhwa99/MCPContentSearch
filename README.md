@@ -17,7 +17,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - GitHub repository ingestion with stable file identities, blob version metadata, and code line citations
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
 - Read-only Auto Wiki page generation from active ContextWiki chunks with citations and backlinks
-- Local-only web test console for manually exercising answer/wiki/smoke flows through HTTP
+- Local-only web test console for asking indexed sources, syncing test targets, and inspecting citations
 
 ## 🛠️ MCP Tools
 
@@ -285,8 +285,10 @@ uv run --python 3.13 uvicorn web_console.app:create_default_app --factory --host
 
 Then open `http://127.0.0.1:8765`.
 
-The web console is local-only developer tooling, not a production UI. It serves
-static files from `web/` and calls these local HTTP endpoints:
+The web console is local-only developer tooling, not a production UI. The
+browser screen focuses on asking questions, inspecting evidence, downloading
+Markdown/JSON, and starting source sync. It serves static files from `web/` and
+calls these local HTTP endpoints:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -298,9 +300,9 @@ static files from `web/` and calls these local HTTP endpoints:
 | `POST /api/github/sync` | Sync a GitHub target typed in the browser, including `owner/repo@branch`, GitHub repo URLs, or owner URLs such as `github.com/eunhwa99`. |
 | `POST /api/answer` | Call `answer_with_citations` through the HTTP wrapper. |
 | `POST /api/answer/codex` | Experimental local Codex CLI answer mode over retrieved ContextWiki chunks. |
-| `POST /api/wiki/generate` | Call `generate_wiki_page` through the HTTP wrapper. |
-| `POST /api/smoke/fake` | Run deterministic fake wiki smoke with temporary storage. |
-| `POST /api/smoke/github` | Run optional GitHub smoke, skipping gracefully when not configured. |
+| `POST /api/wiki/generate` | Script/API-only wrapper for `generate_wiki_page`; not shown in the browser UI. |
+| `POST /api/smoke/fake` | Script/API-only deterministic fake wiki smoke with temporary storage. |
+| `POST /api/smoke/github` | Script/API-only optional GitHub smoke, skipping gracefully when not configured. |
 
 The Configured Sources panel can trigger sync for sources already registered by
 environment config. The Target Sync control is for one-off ad hoc targets:
@@ -325,10 +327,13 @@ content instead of falling back to raw JSON, JSON panes/downloads use the
 browser's sanitized result state, and HTTP smoke endpoints clean up temporary
 Markdown files before returning.
 
-The Answer mode selector defaults to ContextWiki Answer. Codex CLI Answer is an
-explicit local developer option that retrieves bounded ContextWiki chunks first,
-redacts obvious secret-looking strings from the prompt, and keeps citations/used
-chunks from the retrieval result instead of trusting generated citation metadata.
+The Answer mode selector defaults to Codex CLI Answer because the browser is
+meant for manual local evaluation of the final answer experience. ContextWiki
+Answer remains available as a fallback when the CLI is unavailable or when a raw
+citation-gated answer scaffold is useful. Codex CLI Answer retrieves bounded
+ContextWiki chunks first, redacts obvious secret-looking strings from the
+prompt, and keeps citations/used chunks from the retrieval result instead of
+trusting generated citation metadata.
 The HTTP wrapper supplies only bounded/redacted prompt fields as evidence, starts
 `codex exec` from a temporary working directory with an allowlisted environment,
 `--ephemeral`, `--ignore-user-config`, and `--ignore-rules`, and disables Codex

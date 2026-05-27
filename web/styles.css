@@ -361,7 +361,55 @@ button:focus-visible {
 }
 
 .answer-text {
-  white-space: pre-wrap;
+  display: grid;
+  gap: 12px;
+  max-width: 880px;
+}
+
+.answer-text p,
+.answer-text ul,
+.answer-text ol,
+.answer-text pre,
+.answer-text h4,
+.answer-text h5,
+.answer-text h6 {
+  margin: 0;
+}
+
+.answer-text ul,
+.answer-text ol {
+  padding-left: 22px;
+}
+
+.answer-text li + li {
+  margin-top: 5px;
+}
+
+.answer-text code {
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  background: #f2f4f7;
+  padding: 1px 4px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.88em;
+}
+
+.answer-text .answer-code {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #101828;
+  padding: 12px;
+}
+
+.answer-text .answer-code code {
+  display: block;
+  border: 0;
+  background: transparent;
+  color: #e5e7eb;
+  padding: 0;
+  white-space: pre;
 }
 
 .code-pane {

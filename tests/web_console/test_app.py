@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 import logging
 from pathlib import Path
 import signal
@@ -1901,6 +1902,31 @@ def test_web_app_routes_codex_mode_and_marks_codex_failures_failed():
     assert '"failed"' in script
 
 
+def test_web_index_defaults_to_codex_and_hides_smoke_wiki_controls():
+    html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert '<option value="codex" selected>Codex CLI Answer</option>' in html
+    assert html.index('value="codex"') < html.index('value="contextwiki"')
+    assert 'placeholder="5"' in html
+    assert "Ask a question to inspect the answer and evidence." in html
+
+    for removed in [
+        "Generate Wiki",
+        "Fake Smoke",
+        "GitHub Smoke",
+        "Wiki topic",
+        "GitHub repository",
+        "Require generated smoke output",
+        "wikiButton",
+        "fakeSmokeButton",
+        "githubSmokeButton",
+        "topicInput",
+        "githubRepositoryInput",
+        "requireGeneratedInput",
+    ]:
+        assert removed not in html
+
+
 def test_web_app_does_not_render_source_auth_ref_value():
     script = (REPO_ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
@@ -2000,6 +2026,83 @@ if (context.__result.lastPayload.sources[0].refreshToken !== "redacted") throw n
 if (context.__result.lastPayload.sources[0].nested.refresh_token !== "redacted") throw new Error("nested token not sanitized");
 if (context.__result.lastPayload.sources[0].nested.clientSecret !== "redacted") throw new Error("camel secret not sanitized");
 if (!context.__result.lastPayload.sources[0].nested.message.includes("Bearer [REDACTED]")) throw new Error("message not redacted");
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_renders_markdown_answer_structure():
+    script_path = REPO_ROOT / "web" / "app.js"
+    answer_text = (
+        "# Summary\n\n"
+        "Use **DFS** with `visited`.\n\n"
+        "- start from each node\n"
+        "- skip visited nodes\n\n"
+        "```java\n"
+        "List<Node> nodes = new ArrayList<>();\n"
+        "```\n\n"
+        "**<script>nope</script>**"
+    )
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll(selector) {{
+    if (selector === ".tab") return [{{ dataset: {{ tab: "answer" }}, addEventListener() {{}}, classList: {{ toggle() {{}} }}, setAttribute() {{}}, tabIndex: 0 }}];
+    if (selector === ".tab-pane") return [{{ id: "answerPane", classList: {{ toggle() {{}} }}, hidden: false, setAttribute() {{}} }}];
+    return [];
+  }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Blob: function Blob(parts, options) {{ this.parts = parts; this.options = options; }},
+  URL: {{ createObjectURL() {{ return "blob:test"; }}, revokeObjectURL() {{}} }},
+  Date,
+  document,
+  fetch: async () => ({{ ok: true, headers: {{ get: () => "application/json" }}, json: async () => ({{ status: "ok" }}) }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+context.__answer = {{ answer: {json.dumps(answer_text)} }};
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+vm.runInContext('renderResult("codex answer", globalThis.__answer); globalThis.__html = document.querySelector("#answerPane").innerHTML;', context);
+const html = context.__html;
+if (!html.includes("<h4>Summary</h4>")) throw new Error(html);
+if (!html.includes("<strong>DFS</strong>")) throw new Error(html);
+if (!html.includes("<code>visited</code>")) throw new Error(html);
+if (!html.includes("<ul>") || !html.includes("<li>start from each node</li>")) throw new Error(html);
+if (!html.includes('<pre class="answer-code"><code data-language="java">')) throw new Error(html);
+if (!html.includes("List&lt;Node&gt; nodes = new ArrayList&lt;&gt;();")) throw new Error(html);
+if (html.includes("<script>nope</script>")) throw new Error(html);
+if (!html.includes("<strong>&lt;script&gt;nope&lt;/script&gt;</strong>")) throw new Error(html);
 """
     subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
 

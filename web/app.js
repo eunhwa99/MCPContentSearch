@@ -16,17 +16,11 @@ const elements = {
   statusText: document.querySelector("#statusText"),
   questionInput: document.querySelector("#questionInput"),
   answerModeSelect: document.querySelector("#answerModeSelect"),
-  topicInput: document.querySelector("#topicInput"),
   sourceIdInput: document.querySelector("#sourceIdInput"),
   topKInput: document.querySelector("#topKInput"),
-  githubRepositoryInput: document.querySelector("#githubRepositoryInput"),
   targetSourceTypeSelect: document.querySelector("#targetSourceTypeSelect"),
   targetSyncInput: document.querySelector("#targetSyncInput"),
-  requireGeneratedInput: document.querySelector("#requireGeneratedInput"),
   answerButton: document.querySelector("#answerButton"),
-  wikiButton: document.querySelector("#wikiButton"),
-  fakeSmokeButton: document.querySelector("#fakeSmokeButton"),
-  githubSmokeButton: document.querySelector("#githubSmokeButton"),
   targetSyncButton: document.querySelector("#targetSyncButton"),
   refreshButton: document.querySelector("#refreshButton"),
   downloadMarkdownButton: document.querySelector("#downloadMarkdownButton"),
@@ -69,9 +63,6 @@ function bindEvents() {
   });
 
   elements.answerButton.addEventListener("click", () => runAnswer());
-  elements.wikiButton.addEventListener("click", () => runWiki());
-  elements.fakeSmokeButton.addEventListener("click", () => runFakeSmoke());
-  elements.githubSmokeButton.addEventListener("click", () => runGithubSmoke());
   elements.targetSourceTypeSelect.addEventListener("change", () => updateTargetPlaceholder());
   elements.targetSyncButton.addEventListener("click", () => runTargetSync());
   elements.sourcesList.addEventListener("click", (event) => {
@@ -146,43 +137,6 @@ async function runAnswer() {
 
   clearInactiveSyncProgress();
   await runAction(kind, url, body);
-}
-
-async function runWiki() {
-  const topic = readTopic();
-  if (!topic) {
-    showClientError("Enter a wiki topic before calling /api/wiki/generate.");
-    return;
-  }
-
-  const body = {
-    topic,
-    ...buildRequestOptions(),
-    top_k: readTopK(8),
-  };
-
-  clearInactiveSyncProgress();
-  await runAction("wiki", "/api/wiki/generate", body);
-}
-
-async function runFakeSmoke() {
-  const topic = readTopic();
-  const body = topic ? { topic } : {};
-  clearInactiveSyncProgress();
-  await runAction("fake smoke", "/api/smoke/fake", body);
-}
-
-async function runGithubSmoke() {
-  const topic = readTopic();
-  const repository = elements.githubRepositoryInput.value.trim();
-  const body = {
-    ...(topic ? { topic } : {}),
-    ...(repository ? { github_repository: repository } : {}),
-    require_generated: elements.requireGeneratedInput.checked,
-  };
-
-  clearInactiveSyncProgress();
-  await runAction("github smoke", "/api/smoke/github", body);
 }
 
 async function runTargetSync() {
@@ -332,10 +286,6 @@ function readTopK(fallback = 5) {
   return Math.min(Math.max(value, 1), 20);
 }
 
-function readTopic() {
-  return elements.topicInput.value.trim();
-}
-
 function renderResult(kind, payload) {
   const safePayload = sanitizePayload(payload);
   const normalized = normalizeResult(safePayload);
@@ -352,7 +302,7 @@ function renderResult(kind, payload) {
   renderList(elements.chunksList, normalized.usedChunks, "chunk");
   elements.downloadMarkdownButton.disabled = !state.lastMarkdown;
   elements.downloadJsonButton.disabled = !state.lastPayload;
-  setActiveTab(kind.includes("wiki") ? "markdown" : "answer");
+  setActiveTab("answer");
 }
 
 function normalizeResult(payload) {
@@ -495,10 +445,126 @@ function buildAnswerHtml(result, kind) {
     <div class="answer-block">
       <section>
         <h3>${escapeHtml(titleCase(kind))}</h3>
-        <div class="answer-text">${escapeHtml(text)}</div>
+        <div class="answer-text">${renderMarkdownLite(text)}</div>
       </section>
     </div>
   `;
+}
+
+function renderMarkdownLite(value) {
+  const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let listType = "";
+  let codeLines = [];
+  let codeLanguage = "";
+  let inFence = false;
+
+  const closeParagraph = () => {
+    if (!paragraph.length) {
+      return;
+    }
+    html.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+
+  const closeList = () => {
+    if (!listType) {
+      return;
+    }
+    html.push(`</${listType}>`);
+    listType = "";
+  };
+
+  const openList = (type) => {
+    closeParagraph();
+    if (listType === type) {
+      return;
+    }
+    closeList();
+    listType = type;
+    html.push(`<${type}>`);
+  };
+
+  const closeFence = () => {
+    html.push(
+      `<pre class="answer-code"><code${codeLanguage ? ` data-language="${escapeHtml(codeLanguage)}"` : ""}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    );
+    codeLines = [];
+    codeLanguage = "";
+    inFence = false;
+  };
+
+  lines.forEach((line) => {
+    const fenceMatch = line.match(/^```([\w.+-]*)\s*$/);
+    if (fenceMatch) {
+      if (inFence) {
+        closeFence();
+      } else {
+        closeParagraph();
+        closeList();
+        inFence = true;
+        codeLanguage = fenceMatch[1] || "";
+      }
+      return;
+    }
+
+    if (inFence) {
+      codeLines.push(line);
+      return;
+    }
+
+    if (!line.trim()) {
+      closeParagraph();
+      closeList();
+      return;
+    }
+
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      closeParagraph();
+      closeList();
+      const level = Math.min(headingMatch[1].length + 3, 6);
+      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`);
+      return;
+    }
+
+    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (bulletMatch) {
+      openList("ul");
+      html.push(`<li>${renderInlineMarkdown(bulletMatch[1].trim())}</li>`);
+      return;
+    }
+
+    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      openList("ol");
+      html.push(`<li>${renderInlineMarkdown(orderedMatch[1].trim())}</li>`);
+      return;
+    }
+
+    paragraph.push(line.trim());
+  });
+
+  if (inFence) {
+    closeFence();
+  }
+  closeParagraph();
+  closeList();
+
+  return html.join("") || `<p>${escapeHtml(String(value || ""))}</p>`;
+}
+
+function renderInlineMarkdown(value) {
+  return String(value || "")
+    .split(/(`[^`]*`)/g)
+    .map((segment) => {
+      if (segment.startsWith("`") && segment.endsWith("`")) {
+        return `<code>${escapeHtml(segment.slice(1, -1))}</code>`;
+      }
+      return escapeHtml(segment).replace(/\*\*([^*]+)\*\*/g, (_match, text) => `<strong>${text}</strong>`);
+    })
+    .join("");
 }
 
 function renderList(container, items, kind) {
@@ -635,9 +701,6 @@ function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   [
     elements.answerButton,
-    elements.wikiButton,
-    elements.fakeSmokeButton,
-    elements.githubSmokeButton,
     elements.targetSyncButton,
     elements.refreshButton,
   ].forEach((button) => {
