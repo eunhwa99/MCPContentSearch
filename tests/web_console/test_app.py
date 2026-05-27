@@ -1347,6 +1347,8 @@ def test_codex_cli_answer_service_skips_low_score_or_irrelevant_evidence():
     assert payload["answer_mode"] == "codex_cli"
     assert payload["codex_status"] == "skipped"
     assert payload["evidence_status"] == "insufficient"
+    assert "No indexed evidence was found" in payload["answer"]
+    assert "Sync a GitHub, Notion, or Web URL target" in payload["answer"]
     assert payload["citations"] == []
     assert payload["used_chunks"] == []
 
@@ -1365,6 +1367,8 @@ def test_codex_cli_answer_service_skips_cli_without_evidence():
     assert payload["answer_mode"] == "codex_cli"
     assert payload["codex_status"] == "skipped"
     assert payload["evidence_status"] == "insufficient"
+    assert "No indexed evidence was found" in payload["answer"]
+    assert "Sync a GitHub, Notion, or Web URL target" in payload["answer"]
     assert payload["citations"] == []
     assert payload["used_chunks"] == []
 
@@ -1906,6 +1910,7 @@ def test_web_index_defaults_to_codex_and_hides_smoke_wiki_controls():
     html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
     assert '<option value="codex" selected>Codex CLI Answer</option>' in html
+    assert '<option value="contextwiki">Raw ContextWiki Debug</option>' in html
     assert html.index('value="codex"') < html.index('value="contextwiki"')
     assert 'placeholder="5"' in html
     assert "Ask a question to inspect the answer and evidence." in html

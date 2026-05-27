@@ -329,7 +329,7 @@ Markdown files before returning.
 
 The Answer mode selector defaults to Codex CLI Answer because the browser is
 meant for manual local evaluation of the final answer experience. ContextWiki
-Answer remains available as a fallback when the CLI is unavailable or when a raw
+is labeled as a raw debug fallback when the CLI is unavailable or when a raw
 citation-gated answer scaffold is useful. Codex CLI Answer retrieves bounded
 ContextWiki chunks first, redacts obvious secret-looking strings from the
 prompt, and keeps citations/used chunks from the retrieval result instead of
@@ -350,7 +350,7 @@ behavior and process the bounded evidence under the user's Codex configuration.
 This mode is best-effort prompt isolation for local testing rather than a
 production answer service. If `codex` is missing, times out, or exits
 unsuccessfully, the console returns a safe failure payload and the user can
-switch back to ContextWiki Answer.
+switch back to the raw ContextWiki debug fallback.
 
 The local server boundary does not make every operation offline:
 Answer/Search over the real vector index may call the configured embedding

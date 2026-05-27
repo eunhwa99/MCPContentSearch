@@ -369,7 +369,11 @@ class CodexCliAnswerService:
         if not evidence:
             return _codex_answer_payload(
                 question,
-                "Insufficient evidence in indexed context to answer this question.",
+                (
+                    "No indexed evidence was found for this question. "
+                    "Sync a GitHub, Notion, or Web URL target that contains this topic, "
+                    "then ask again."
+                ),
                 "insufficient",
                 [],
                 [],
