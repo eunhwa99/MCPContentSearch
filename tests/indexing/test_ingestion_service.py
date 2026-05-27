@@ -43,6 +43,27 @@ class ScopedCleanupConnector(FakeConnector):
     cleanup_document_id_prefixes = ("github:eunhwa99/mcpcontentsearch:",)
 
 
+class ProgressRecordingMetadataStore(MetadataStore):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.progress_updates = []
+
+    def update_sync_job(self, job_id: str, **updates):
+        if {
+            "total_documents",
+            "processed_documents",
+            "indexed_chunks",
+            "skipped_documents",
+        }.intersection(updates):
+            self.progress_updates.append(dict(updates))
+        return super().update_sync_job(job_id, **updates)
+
+
+class FailingProgressMetadataStore(MetadataStore):
+    def update_sync_job(self, job_id: str, **updates):
+        raise RuntimeError("progress failed with token=secret-value")
+
+
 class SourceAConnector(FakeConnector):
     source = SourceModel(
         source_id="source_a",
@@ -819,6 +840,68 @@ def test_successful_full_sync_tombstones_missing_documents_and_deletes_vectors(t
     assert indexer.deleted_ids == [removed_chunk_id]
     assert store.get_document("kept").last_seen_at
     assert store.get_document("kept").deleted_at == ""
+
+
+def test_running_sync_records_document_progress(tmp_path):
+    first = DocumentModel(
+        id="first",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="GitHub",
+        path="first.md",
+    )
+    second = DocumentModel(
+        id="second",
+        source_id="source_fake",
+        title="Second",
+        content="Second document.",
+        url="https://example.com/second",
+        platform="GitHub",
+        path="second.md",
+    )
+    store = ProgressRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([first, second])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert store.progress_updates[0]["total_documents"] == 2
+    assert store.progress_updates[0]["processed_documents"] == 0
+    assert store.progress_updates[-1]["processed_documents"] == 2
+    assert store.progress_updates[-1]["indexed_chunks"] == 2
+
+
+def test_running_sync_progress_update_failure_logs_redacted_error(tmp_path, caplog):
+    document = DocumentModel(
+        id="first",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="GitHub",
+        path="first.md",
+    )
+    store = FailingProgressMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert "token=secret-value" not in caplog.text
+    assert "token=<redacted>" in caplog.text
 
 
 def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repeats(

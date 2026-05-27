@@ -41,12 +41,18 @@ class GitHubSyncRequest(BaseModel):
     target: str = ""
 
 
+class TargetSyncRequest(BaseModel):
+    source_type: str = ""
+    target: str = ""
+
+
 @dataclass
 class ConsoleDependencies:
     answer_service: Any = None
     wiki_service: Any = None
     metadata_store: Any = None
     ingestion_service: Any = None
+    target_sync_service: Any = None
     github_sync_service: Any = None
     smoke_runner: Any = None
 
@@ -68,6 +74,14 @@ class GitHubTargetSyncService:
         self.github_token = github_token
 
     async def sync_target(self, target: str) -> dict[str, Any]:
+        running_job = _running_sync_job(self.metadata_store, "source_github")
+        if running_job:
+            return _target_sync_already_running_payload(
+                "source_github",
+                "github",
+                running_job,
+            )
+
         from fetching.connectors import GitHubSourceConnector, SourceRegistry
         from fetching.github import GitHubRepositoryDiscovery
         from indexing.chunker import DocumentChunker
@@ -102,6 +116,12 @@ class GitHubTargetSyncService:
             register_source_config=False,
         )
         job = await service.sync_source("source_github")
+        if _sync_status_value(job) == "running":
+            return _target_sync_already_running_payload(
+                "source_github",
+                "github",
+                job,
+            )
         return {
             "status": _sync_status_value(job),
             "source_id": "source_github",
@@ -111,6 +131,158 @@ class GitHubTargetSyncService:
             "stale_cleanup": "disabled",
             "job": _safe_sync_job_payload(job),
         }
+
+
+class NotionTargetSyncService:
+    """Run explicit Notion page/database target syncs with configured credentials."""
+
+    def __init__(
+        self,
+        *,
+        config: Any,
+        metadata_store: Any,
+        indexer: Any,
+        notion_api_key: str = "",
+    ):
+        self.config = config
+        self.metadata_store = metadata_store
+        self.indexer = indexer
+        self.notion_api_key = notion_api_key
+
+    async def sync_target(self, target: str) -> dict[str, Any]:
+        from fetching.connectors import NotionSourceConnector, SourceRegistry
+        from fetching.notion import parse_notion_object_id
+        from indexing.chunker import DocumentChunker
+        from indexing.ingestion_service import IngestionService
+
+        object_id = parse_notion_object_id(target)
+        connector = _NotionTargetConnector(
+            NotionSourceConnector(self.notion_api_key, self.config).source,
+            self.notion_api_key,
+            self.config,
+            target,
+        )
+        service = IngestionService(
+            metadata_store=self.metadata_store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(),
+            indexer=self.indexer,
+            register_source_config=False,
+        )
+        job = await service.sync_source("source_notion")
+        if _sync_status_value(job) == "running":
+            return _target_sync_already_running_payload(
+                "source_notion",
+                "notion",
+                job,
+            )
+        return {
+            "status": _sync_status_value(job),
+            "source_id": "source_notion",
+            "target_type": "notion",
+            "target": f"notion:{object_id}",
+            "document_count": job.total_documents,
+            "stale_cleanup": "disabled",
+            "job": _safe_sync_job_payload(job),
+        }
+
+
+class WebTargetSyncService:
+    """Run explicit website target syncs without changing configured web sources."""
+
+    def __init__(
+        self,
+        *,
+        config: Any,
+        metadata_store: Any,
+        indexer: Any,
+    ):
+        self.config = config
+        self.metadata_store = metadata_store
+        self.indexer = indexer
+
+    async def sync_target(self, target: str) -> dict[str, Any]:
+        from fetching.connectors import SourceRegistry, WebsiteSourceConnector
+        from indexing.chunker import DocumentChunker
+        from indexing.ingestion_service import IngestionService
+
+        connector = WebsiteSourceConnector(
+            (target,),
+            self.config,
+            allow_stale_cleanup=False,
+        )
+        service = IngestionService(
+            metadata_store=self.metadata_store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(),
+            indexer=self.indexer,
+            register_source_config=False,
+        )
+        job = await service.sync_source("source_web")
+        if _sync_status_value(job) == "running":
+            return _target_sync_already_running_payload(
+                "source_web",
+                "web",
+                job,
+            )
+        return {
+            "status": _sync_status_value(job),
+            "source_id": "source_web",
+            "target_type": "web",
+            "target": _safe_url_for_display(target),
+            "stale_cleanup": "disabled",
+            "job": _safe_sync_job_payload(job),
+        }
+
+
+class TargetSyncService:
+    """Route one-off Web Console target syncs by source type."""
+
+    def __init__(
+        self,
+        *,
+        github_sync_service: Any,
+        notion_sync_service: Any,
+        web_sync_service: Any,
+    ):
+        self.github_sync_service = github_sync_service
+        self.notion_sync_service = notion_sync_service
+        self.web_sync_service = web_sync_service
+
+    async def sync_target(self, source_type: str, target: str) -> dict[str, Any]:
+        normalized_type = _normalize_target_source_type(source_type)
+        if normalized_type == "github":
+            return _safe_target_sync_payload(
+                "github",
+                await self.github_sync_service.sync_target(target),
+            )
+        if normalized_type == "notion":
+            return _safe_target_sync_payload(
+                "notion",
+                await self.notion_sync_service.sync_target(target),
+            )
+        if normalized_type == "web":
+            return _safe_target_sync_payload(
+                "web",
+                await self.web_sync_service.sync_target(target),
+            )
+        raise ValueError("Unsupported target source type")
+
+
+class _NotionTargetConnector:
+    supports_stale_cleanup = False
+    cleanup_document_id_prefixes: tuple[str, ...] = ()
+
+    def __init__(self, source: Any, api_key: str, config: Any, target: str):
+        self.source = source
+        self.api_key = api_key
+        self.config = config
+        self.target = target
+
+    async def fetch_documents(self):
+        from fetching.notion import fetch_notion_target
+
+        return await fetch_notion_target(self.api_key, self.config, self.target)
 
 
 class ScriptSmokeRunner:
@@ -275,6 +447,32 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
                 "message": "GitHub target sync failed. See server logs for details.",
             }
 
+    @app.post("/api/targets/sync")
+    async def sync_target(request: TargetSyncRequest) -> dict[str, Any]:
+        if dependencies.target_sync_service is None:
+            raise HTTPException(status_code=503, detail="target sync service is not configured")
+        source_type = _normalize_target_source_type(request.source_type)
+        target = _normalize_text(request.target)
+        if source_type not in {"github", "notion", "web"}:
+            raise HTTPException(status_code=400, detail="source_type must be github, notion, or web")
+        if not target:
+            raise HTTPException(status_code=400, detail="target is required")
+        try:
+            return _safe_target_sync_payload(
+                source_type,
+                await dependencies.target_sync_service.sync_target(source_type, target),
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            _log_suppressed_error("Target sync failed")
+            return {
+                "source_id": _source_id_for_target_type(source_type),
+                "target_type": source_type,
+                "status": "error",
+                "message": "Target sync failed. See server logs for details.",
+            }
+
     @app.post("/api/answer")
     async def answer(request: ConsoleQuery) -> dict[str, Any]:
         if dependencies.answer_service is None:
@@ -415,19 +613,60 @@ def create_default_app() -> FastAPI:
         llm_synthesizer=build_wiki_synthesizer(config, api_key=wiki_llm_api_key),
     )
     return create_console_app(
-        ConsoleDependencies(
+        _build_console_dependencies(
+            config=config,
             answer_service=answer_service,
             wiki_service=wiki_service,
             metadata_store=metadata_store,
             ingestion_service=ingestion_service,
-            github_sync_service=GitHubTargetSyncService(
-                config=config,
-                metadata_store=metadata_store,
-                indexer=indexer,
-                github_token=get_env_secret(config.github_token_env_var),
-            ),
-            smoke_runner=ScriptSmokeRunner(),
+            indexer=indexer,
+            github_token=get_env_secret(config.github_token_env_var),
+            notion_api_key=NOTION_API_KEY,
         )
+    )
+
+
+def _build_console_dependencies(
+    *,
+    config: Any,
+    answer_service: Any,
+    wiki_service: Any,
+    metadata_store: Any,
+    ingestion_service: Any,
+    indexer: Any,
+    github_token: str,
+    notion_api_key: str,
+) -> ConsoleDependencies:
+    github_sync_service = GitHubTargetSyncService(
+        config=config,
+        metadata_store=metadata_store,
+        indexer=indexer,
+        github_token=github_token,
+    )
+    notion_sync_service = NotionTargetSyncService(
+        config=config,
+        metadata_store=metadata_store,
+        indexer=indexer,
+        notion_api_key=notion_api_key,
+    )
+    web_sync_service = WebTargetSyncService(
+        config=config,
+        metadata_store=metadata_store,
+        indexer=indexer,
+    )
+    target_sync_service = TargetSyncService(
+        github_sync_service=github_sync_service,
+        notion_sync_service=notion_sync_service,
+        web_sync_service=web_sync_service,
+    )
+    return ConsoleDependencies(
+        answer_service=answer_service,
+        wiki_service=wiki_service,
+        metadata_store=metadata_store,
+        ingestion_service=ingestion_service,
+        target_sync_service=target_sync_service,
+        github_sync_service=github_sync_service,
+        smoke_runner=ScriptSmokeRunner(),
     )
 
 
@@ -487,6 +726,25 @@ def _sync_status_value(job: Any) -> str:
     return getattr(status, "value", status) or ""
 
 
+def _running_sync_job(metadata_store: Any, source_id: str) -> Any:
+    if metadata_store is None:
+        return None
+    latest_job = metadata_store.get_latest_sync_job(source_id)
+    if _sync_status_value(latest_job) == "running":
+        return latest_job
+    return None
+
+
+def _target_sync_already_running_payload(source_id: str, target_type: str, job: Any) -> dict[str, Any]:
+    return {
+        "status": "already_running",
+        "source_id": source_id,
+        "target_type": target_type,
+        "message": "A sync is already running for this source. The requested target was not started.",
+        "job": _safe_sync_job_payload(job),
+    }
+
+
 def _safe_source_payload(source: Any) -> dict[str, Any]:
     payload = _dump_model(source)
     if payload.get("last_error"):
@@ -513,6 +771,41 @@ def _safe_github_sync_payload(payload: Any) -> dict[str, Any]:
     return safe_payload
 
 
+def _safe_target_sync_payload(source_type: str, payload: Any) -> dict[str, Any]:
+    safe_payload = _dump_model(payload)
+    safe_payload["target_type"] = _normalize_source_type(
+        safe_payload.get("target_type") or source_type
+    )
+    safe_payload["source_id"] = safe_payload.get("source_id") or _source_id_for_target_type(
+        safe_payload["target_type"]
+    )
+    if safe_payload.get("target"):
+        safe_payload["target"] = _safe_target_for_display(
+            safe_payload["target_type"],
+            safe_payload["target"],
+        )
+    if safe_payload.get("job"):
+        safe_payload["job"] = _safe_sync_job_payload(safe_payload["job"])
+    safe_payload["poll_url"] = f"/api/sources/{safe_payload['source_id']}/sync-status"
+    return safe_payload
+
+
+def _safe_target_for_display(source_type: str, value: Any) -> str:
+    normalized_type = _normalize_source_type(source_type)
+    if normalized_type == "github":
+        return _safe_github_target_for_display(value)
+    if normalized_type == "notion":
+        try:
+            from fetching.notion import parse_notion_object_id
+
+            return f"notion:{parse_notion_object_id(str(value))}"
+        except Exception:
+            return "redacted"
+    if normalized_type == "web":
+        return _safe_url_for_display(value)
+    return "redacted"
+
+
 def _safe_github_target_for_display(value: Any) -> str:
     try:
         from fetching.github import parse_repository_or_owner_target
@@ -523,6 +816,29 @@ def _safe_github_target_for_display(value: Any) -> str:
     if repo:
         return f"{owner}/{repo}@{ref}"
     return f"github.com/{owner}"
+
+
+def _safe_url_for_display(value: Any) -> str:
+    try:
+        from fetching.web_docs import _redact_url_credentials
+
+        parsed = urlparse(str(value))
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return "redacted"
+        redacted = _redact_url_credentials(str(value))
+        if redacted == "<redacted>":
+            return "redacted"
+        return urlparse(redacted)._replace(query="", fragment="").geturl()
+    except Exception:
+        return "redacted"
+
+
+def _source_id_for_target_type(source_type: str) -> str:
+    return {
+        "github": "source_github",
+        "notion": "source_notion",
+        "web": "source_web",
+    }.get(_normalize_source_type(source_type), "")
 
 
 def _build_filters(request: ConsoleQuery, metadata_store: Any) -> dict[str, Any]:
@@ -574,6 +890,10 @@ def _normalize_source_type(value: Any) -> str:
     if normalized in {"docs", "pdf"}:
         return "web"
     return normalized
+
+
+def _normalize_target_source_type(value: Any) -> str:
+    return _normalize_text(value).lower()
 
 
 def _is_loopback_client(host: str | None) -> bool:

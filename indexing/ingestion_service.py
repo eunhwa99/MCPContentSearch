@@ -92,6 +92,14 @@ class IngestionService:
             processed = 0
             skipped = 0
             indexed_chunks = 0
+            total_documents = len(documents)
+            self._record_sync_progress(
+                job.job_id,
+                total_documents=total_documents,
+                processed_documents=processed,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped,
+            )
             last_seen_at = _now()
             last_seen_sync_id = job.job_id
             uncommitted_vector_ids: list[str] = []
@@ -132,6 +140,13 @@ class IngestionService:
                         if inactive_job:
                             return inactive_job
                         skipped += 1
+                        self._record_sync_progress(
+                            job.job_id,
+                            total_documents=total_documents,
+                            processed_documents=processed,
+                            indexed_chunks=indexed_chunks,
+                            skipped_documents=skipped,
+                        )
                         continue
 
                     if chunks:
@@ -159,6 +174,13 @@ class IngestionService:
                     self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                     processed += 1
                     indexed_chunks += len(chunks)
+                    self._record_sync_progress(
+                        job.job_id,
+                        total_documents=total_documents,
+                        processed_documents=processed,
+                        indexed_chunks=indexed_chunks,
+                        skipped_documents=skipped,
+                    )
                     continue
 
                 if chunks:
@@ -180,11 +202,18 @@ class IngestionService:
                 self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                 processed += 1
                 indexed_chunks += len(chunks)
+                self._record_sync_progress(
+                    job.job_id,
+                    total_documents=total_documents,
+                    processed_documents=processed,
+                    indexed_chunks=indexed_chunks,
+                    skipped_documents=skipped,
+                )
 
             finished, deleted_chunk_ids = self.metadata_store.complete_successful_sync(
                 job_id=job.job_id,
                 source_id=source_id,
-                total_documents=len(documents),
+                total_documents=total_documents,
                 processed_documents=processed,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped,
@@ -219,6 +248,30 @@ class IngestionService:
         if current_job.status != SyncJobStatus.RUNNING:
             return current_job
         return None
+
+    def _record_sync_progress(
+        self,
+        job_id: str,
+        *,
+        total_documents: int,
+        processed_documents: int,
+        indexed_chunks: int,
+        skipped_documents: int,
+    ):
+        try:
+            self.metadata_store.update_sync_job(
+                job_id,
+                total_documents=total_documents,
+                processed_documents=processed_documents,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped_documents,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Unable to update sync progress for job %s: %s",
+                job_id,
+                _redact_sensitive_error(str(exc)),
+            )
 
     def _validate_document_before_index(self, job_id: str, document: DocumentModel):
         current_job = self.metadata_store.validate_running_job_document(job_id, document)

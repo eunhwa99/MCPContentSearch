@@ -294,19 +294,26 @@ static files from `web/` and calls these local HTTP endpoints:
 | `GET /api/sources` | List configured ContextWiki sources from SQLite metadata. |
 | `GET /api/sources/{source_id}/sync-status` | Inspect one source and its latest sync job. |
 | `POST /api/sources/{source_id}/sync` | Run the existing configured ContextWiki source sync. |
+| `POST /api/targets/sync` | Sync a one-off target selected in the browser as GitHub, Notion, or Web URL. |
 | `POST /api/github/sync` | Sync a GitHub target typed in the browser, including `owner/repo@branch`, GitHub repo URLs, or owner URLs such as `github.com/eunhwa99`. |
 | `POST /api/answer` | Call `answer_with_citations` through the HTTP wrapper. |
 | `POST /api/wiki/generate` | Call `generate_wiki_page` through the HTTP wrapper. |
 | `POST /api/smoke/fake` | Run deterministic fake wiki smoke with temporary storage. |
 | `POST /api/smoke/github` | Run optional GitHub smoke, skipping gracefully when not configured. |
 
-The Sources panel can trigger sync for configured sources. The GitHub target
-field accepts a single repository (`owner/repo@branch`), a GitHub repository URL,
-or a GitHub owner URL such as `github.com/eunhwa99`; owner URLs are expanded via
-the GitHub repository list API and synced as `source_github`. One-off browser
-GitHub target sync disables source-wide stale cleanup so a partial ad hoc target
-does not tombstone previously indexed GitHub documents. Private repositories
-require `GITHUB_TOKEN` in the server environment.
+The Configured Sources panel can trigger sync for sources already registered by
+environment config. The Target Sync control is for one-off ad hoc targets:
+GitHub accepts a single repository (`owner/repo@branch`), a GitHub repository
+URL, or a GitHub owner URL such as `github.com/eunhwa99`; Notion accepts a page
+or database URL/id that the configured integration can read; Web URL accepts an
+HTTP(S) docs/page URL. Browser target sync disables stale cleanup so partial ad
+hoc targets do not tombstone previously indexed configured-source documents.
+GitHub private repositories require `GITHUB_TOKEN`, and Notion targets require
+the page/database to be shared with the configured `NOTION_API_KEY`
+integration. The console polls sync status while work is running and displays
+available document/chunk progress. If the same source is already syncing, a
+one-off target sync reports `already_running` and follows the active source job
+instead of claiming that the newly typed target started.
 
 The console does not add authentication, deployment, multi-user state, or
 server-side generated page persistence. It rejects non-loopback clients by
@@ -321,8 +328,8 @@ Answer/Search over the real vector index may call the configured embedding
 provider during retrieval, so the server needs the same valid embedding
 environment, such as `OPENAI_API_KEY`, unless a local/mock embedding model is
 configured. `generate_wiki_page` follows the existing opt-in wiki LLM
-configuration, and the GitHub sync and smoke endpoints perform live network
-work only when explicitly invoked and configured.
+configuration, and GitHub sync/smoke plus Target Sync for GitHub, Notion, or
+Web URL perform live network work only when explicitly invoked and configured.
 
 ---
 

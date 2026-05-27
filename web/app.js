@@ -4,6 +4,11 @@ const state = {
   lastPayload: null,
   lastKind: "",
   lastMarkdown: "",
+  syncPollTimer: null,
+  syncPollToken: 0,
+  activeSyncSourceId: "",
+  activeSyncJobId: "",
+  syncAwaitingResponse: false,
 };
 
 const elements = {
@@ -14,13 +19,14 @@ const elements = {
   sourceIdInput: document.querySelector("#sourceIdInput"),
   topKInput: document.querySelector("#topKInput"),
   githubRepositoryInput: document.querySelector("#githubRepositoryInput"),
-  githubTargetInput: document.querySelector("#githubTargetInput"),
+  targetSourceTypeSelect: document.querySelector("#targetSourceTypeSelect"),
+  targetSyncInput: document.querySelector("#targetSyncInput"),
   requireGeneratedInput: document.querySelector("#requireGeneratedInput"),
   answerButton: document.querySelector("#answerButton"),
   wikiButton: document.querySelector("#wikiButton"),
   fakeSmokeButton: document.querySelector("#fakeSmokeButton"),
   githubSmokeButton: document.querySelector("#githubSmokeButton"),
-  githubTargetSyncButton: document.querySelector("#githubTargetSyncButton"),
+  targetSyncButton: document.querySelector("#targetSyncButton"),
   refreshButton: document.querySelector("#refreshButton"),
   downloadMarkdownButton: document.querySelector("#downloadMarkdownButton"),
   downloadJsonButton: document.querySelector("#downloadJsonButton"),
@@ -32,13 +38,24 @@ const elements = {
   backlinksList: document.querySelector("#backlinksList"),
   chunksList: document.querySelector("#chunksList"),
   sourcesList: document.querySelector("#sourcesList"),
+  syncProgress: document.querySelector("#syncProgress"),
+  syncProgressLabel: document.querySelector("#syncProgressLabel"),
+  syncProgressPercent: document.querySelector("#syncProgressPercent"),
+  syncProgressBar: document.querySelector("#syncProgressBar"),
+  syncProgressDetail: document.querySelector("#syncProgressDetail"),
 };
 
-document.addEventListener("DOMContentLoaded", () => {
+function init() {
   bindEvents();
   refreshHealth();
   refreshSources();
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
 
 function bindEvents() {
   document.querySelector("#queryForm").addEventListener("submit", (event) => {
@@ -54,7 +71,8 @@ function bindEvents() {
   elements.wikiButton.addEventListener("click", () => runWiki());
   elements.fakeSmokeButton.addEventListener("click", () => runFakeSmoke());
   elements.githubSmokeButton.addEventListener("click", () => runGithubSmoke());
-  elements.githubTargetSyncButton.addEventListener("click", () => runGithubTargetSync());
+  elements.targetSourceTypeSelect.addEventListener("change", () => updateTargetPlaceholder());
+  elements.targetSyncButton.addEventListener("click", () => runTargetSync());
   elements.sourcesList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-sync-source-id]");
     if (!button) {
@@ -68,6 +86,7 @@ function bindEvents() {
   });
   elements.downloadMarkdownButton.addEventListener("click", () => downloadMarkdown());
   elements.downloadJsonButton.addEventListener("click", () => downloadJson());
+  updateTargetPlaceholder();
 }
 
 function setActiveTab(tabName) {
@@ -121,6 +140,7 @@ async function runAnswer() {
     top_k: readTopK(),
   };
 
+  clearInactiveSyncProgress();
   await runAction("answer", "/api/answer", body);
 }
 
@@ -137,12 +157,14 @@ async function runWiki() {
     top_k: readTopK(8),
   };
 
+  clearInactiveSyncProgress();
   await runAction("wiki", "/api/wiki/generate", body);
 }
 
 async function runFakeSmoke() {
   const topic = readTopic();
   const body = topic ? { topic } : {};
+  clearInactiveSyncProgress();
   await runAction("fake smoke", "/api/smoke/fake", body);
 }
 
@@ -155,29 +177,65 @@ async function runGithubSmoke() {
     require_generated: elements.requireGeneratedInput.checked,
   };
 
+  clearInactiveSyncProgress();
   await runAction("github smoke", "/api/smoke/github", body);
 }
 
-async function runGithubTargetSync() {
-  const target = elements.githubTargetInput.value.trim();
+async function runTargetSync() {
+  const sourceType = elements.targetSourceTypeSelect.value;
+  const target = elements.targetSyncInput.value.trim();
   if (!target) {
-    showClientError("Enter a GitHub target before calling /api/github/sync.");
+    stopSyncPolling();
+    elements.syncProgress.hidden = true;
+    showClientError("Enter a target URL or id before calling /api/targets/sync.");
     return;
   }
-  await runAction("github sync", "/api/github/sync", { target });
-  await refreshSources();
+  await runSyncAction(
+    `${sourceType} target sync`,
+    "/api/targets/sync",
+    { source_type: sourceType, target },
+    sourceIdForTargetType(sourceType),
+  );
 }
 
 async function runSourceSync(sourceId) {
   if (!sourceId) {
     return;
   }
-  await runAction(
+  await runSyncAction(
     `sync ${sourceId}`,
     `/api/sources/${encodeURIComponent(sourceId)}/sync`,
     {},
+    sourceId,
   );
+}
+
+async function runSyncAction(kind, url, body, sourceId) {
+  beginSyncProgress(sourceId, `Starting ${kind}`);
+  startSyncPolling(sourceId);
+  const payload = await runAction(kind, url, body);
+  const job = syncJobFromPayload(payload);
+  state.syncAwaitingResponse = false;
+  if (!payload || !actionSucceeded(payload)) {
+    stopSyncPolling();
+    renderSyncRequestStopped(sourceId, payload, "Sync request failed");
+    await refreshSources();
+    return;
+  }
+  if (job) {
+    state.activeSyncJobId = job.job_id || state.activeSyncJobId;
+    renderSyncProgress(job, sourceId);
+    if (!isTerminalSyncJob(job) && !state.syncPollTimer) {
+      startSyncPolling(sourceId);
+    }
+  } else {
+    stopSyncPolling();
+    renderSyncRequestStopped(sourceId, payload, "No sync job started");
+  }
   await refreshSources();
+  if (!job || isTerminalSyncJob(job)) {
+    stopSyncPolling();
+  }
 }
 
 async function runAction(kind, url, body) {
@@ -190,10 +248,12 @@ async function runAction(kind, url, body) {
       body: JSON.stringify(body),
     });
     renderResult(kind, payload);
-    setStatus(actionSucceeded(payload) ? `Completed ${kind}.` : `Failed ${kind}.`);
+    setStatus(actionStatusMessage(kind, payload));
+    return payload;
   } catch (error) {
     showClientError(error.message);
     setStatus(`Failed ${kind}.`);
+    return null;
   } finally {
     setBusy(false);
   }
@@ -318,6 +378,18 @@ function actionSucceeded(payload) {
   return !["error", "failed"].includes(status);
 }
 
+function actionStatusMessage(kind, payload) {
+  const root = payload && typeof payload === "object" ? payload.result || payload.data || payload : {};
+  const status = String(root.status || "").toLowerCase();
+  if (status === "already_running") {
+    return "Sync already running for this source.";
+  }
+  if (status === "running") {
+    return "Sync is running for this source.";
+  }
+  return actionSucceeded(payload) ? `Completed ${kind}.` : `Failed ${kind}.`;
+}
+
 function buildStatusSummary(root) {
   if (!root || typeof root !== "object") {
     return "";
@@ -437,7 +509,7 @@ function buildSourceHtml(source, index) {
           data-sync-enabled="${canSync ? "true" : "false"}"
           ${canSync ? "" : "disabled"}
         >
-          Sync
+          Sync configured
         </button>
       </div>
     </article>
@@ -516,7 +588,7 @@ function setBusy(isBusy, message = "") {
     elements.wikiButton,
     elements.fakeSmokeButton,
     elements.githubSmokeButton,
-    elements.githubTargetSyncButton,
+    elements.targetSyncButton,
     elements.refreshButton,
   ].forEach((button) => {
     button.disabled = isBusy;
@@ -526,6 +598,204 @@ function setBusy(isBusy, message = "") {
   if (message) {
     setStatus(message);
   }
+}
+
+function updateTargetPlaceholder() {
+  const placeholders = {
+    github: "github.com/eunhwa99 or owner/repo@main",
+    notion: "https://www.notion.so/... page/database URL or id",
+    web: "https://docs.example.com",
+  };
+  elements.targetSyncInput.placeholder =
+    placeholders[elements.targetSourceTypeSelect.value] || placeholders.github;
+}
+
+function sourceIdForTargetType(sourceType) {
+  return {
+    github: "source_github",
+    notion: "source_notion",
+    web: "source_web",
+  }[sourceType] || "";
+}
+
+function beginSyncProgress(sourceId, label) {
+  state.activeSyncSourceId = sourceId;
+  state.activeSyncJobId = "";
+  state.syncAwaitingResponse = true;
+  elements.syncProgress.hidden = false;
+  elements.syncProgress.classList.add("indeterminate");
+  elements.syncProgressLabel.textContent = label;
+  elements.syncProgressPercent.textContent = "Starting";
+  setSyncProgressValue(0, false);
+  elements.syncProgressDetail.textContent = "Waiting for sync job...";
+}
+
+function startSyncPolling(sourceId) {
+  stopSyncPolling();
+  if (!sourceId) {
+    return;
+  }
+  const token = state.syncPollToken + 1;
+  state.syncPollToken = token;
+  state.activeSyncSourceId = sourceId;
+  state.syncPollTimer = window.setInterval(() => {
+    refreshSyncStatus(sourceId, token);
+  }, 1000);
+  refreshSyncStatus(sourceId, token);
+}
+
+function stopSyncPolling() {
+  state.syncPollToken += 1;
+  if (state.syncPollTimer) {
+    window.clearInterval(state.syncPollTimer);
+    state.syncPollTimer = null;
+  }
+}
+
+async function refreshSyncStatus(sourceId, token = state.syncPollToken) {
+  if (!sourceId) {
+    return;
+  }
+  try {
+    const payload = await requestJson(`/api/sources/${encodeURIComponent(sourceId)}/sync-status`);
+    if (token !== state.syncPollToken || sourceId !== state.activeSyncSourceId) {
+      return;
+    }
+    if (String(payload.status || "").toLowerCase() === "error") {
+      if (!state.activeSyncJobId) {
+        elements.syncProgress.hidden = false;
+        elements.syncProgress.classList.remove("indeterminate");
+        elements.syncProgressLabel.textContent = "Sync status unavailable";
+        elements.syncProgressPercent.textContent = "Error";
+        elements.syncProgressDetail.textContent =
+          payload.message || "Unable to load sync status.";
+      }
+      return;
+    }
+    const job = payload.latest_job || null;
+    if (!shouldRenderSyncJob(job)) {
+      return;
+    }
+    renderSyncProgress(job, sourceId);
+    if (isTerminalSyncJob(job)) {
+      stopSyncPolling();
+      refreshSources();
+    }
+  } catch (error) {
+    if (token !== state.syncPollToken || sourceId !== state.activeSyncSourceId) {
+      return;
+    }
+    elements.syncProgress.hidden = false;
+    elements.syncProgress.classList.remove("indeterminate");
+    elements.syncProgressLabel.textContent = "Sync status unavailable";
+    elements.syncProgressPercent.textContent = "Error";
+    elements.syncProgressDetail.textContent = error.message;
+  }
+}
+
+function renderSyncProgress(job, sourceId) {
+  if (!job) {
+    elements.syncProgress.hidden = false;
+    elements.syncProgress.classList.add("indeterminate");
+    elements.syncProgressLabel.textContent = `Waiting for ${sourceId}`;
+    elements.syncProgressPercent.textContent = "Starting";
+    setSyncProgressValue(0, false);
+    elements.syncProgressDetail.textContent = "No job is visible yet.";
+    return;
+  }
+
+  const status = String(job.status || "").toLowerCase();
+  const total = Number(job.total_documents || 0);
+  const processed = Number(job.processed_documents || 0);
+  const skipped = Number(job.skipped_documents || 0);
+  const indexed = Number(job.indexed_chunks || 0);
+  const completed = processed + skipped;
+  const hasTotal = total > 0;
+  const percent = hasTotal ? Math.min(Math.round((completed / total) * 100), 100) : 0;
+
+  elements.syncProgress.hidden = false;
+  elements.syncProgress.classList.toggle("indeterminate", status === "running" && !hasTotal);
+  elements.syncProgressLabel.textContent = `${sourceId} ${status || "sync"}`;
+  elements.syncProgressPercent.textContent = hasTotal ? `${percent}%` : titleCase(status || "running");
+  setSyncProgressValue(percent, hasTotal);
+  elements.syncProgressDetail.textContent = hasTotal
+    ? `${completed}/${total} documents completed (${processed} indexed or refreshed, ${skipped} skipped), ${indexed} chunks indexed`
+    : `${indexed} chunks indexed. Discovering documents...`;
+}
+
+function renderSyncRequestStopped(sourceId, payload, fallbackLabel) {
+  const root = payload && typeof payload === "object" ? payload.result || payload.data || payload : {};
+  const status = String(root.status || "error");
+  const message = firstString(root.message, root.reason, fallbackLabel);
+  elements.syncProgress.hidden = false;
+  elements.syncProgress.classList.remove("indeterminate");
+  elements.syncProgressLabel.textContent = `${sourceId || "sync"} ${status}`;
+  elements.syncProgressPercent.textContent = titleCase(status);
+  setSyncProgressValue(0, true);
+  elements.syncProgressDetail.textContent = message;
+}
+
+function clearInactiveSyncProgress() {
+  if (state.syncAwaitingResponse) {
+    return;
+  }
+  const label = elements.syncProgressLabel.textContent.toLowerCase();
+  const percent = elements.syncProgressPercent.textContent.toLowerCase();
+  const hasTerminalState = /error|failed|succeeded|skipped|cancel/.test(`${label} ${percent}`);
+  if (state.syncPollTimer && !hasTerminalState) {
+    return;
+  }
+  if (hasTerminalState) {
+    stopSyncPolling();
+  }
+  elements.syncProgress.hidden = true;
+}
+
+function setSyncProgressValue(percent, hasValue) {
+  const boundedPercent = Math.min(Math.max(Number(percent) || 0, 0), 100);
+  const progressTrack = document.querySelector(".progress-track");
+  elements.syncProgressBar.style.width = hasValue ? `${boundedPercent}%` : "0%";
+  if (!progressTrack) {
+    return;
+  }
+  if (hasValue) {
+    progressTrack.setAttribute("aria-valuenow", String(boundedPercent));
+  } else {
+    progressTrack.removeAttribute("aria-valuenow");
+  }
+}
+
+function syncJobFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const root = payload.result || payload.data || payload;
+  if (root.job_id && root.status) {
+    return root;
+  }
+  return root.job || root.latest_job || null;
+}
+
+function shouldRenderSyncJob(job) {
+  if (!job || typeof job !== "object") {
+    return !state.syncAwaitingResponse && !state.activeSyncJobId;
+  }
+  const jobId = job.job_id || "";
+  if (state.syncAwaitingResponse) {
+    return false;
+  }
+  if (state.activeSyncJobId) {
+    return !jobId || jobId === state.activeSyncJobId;
+  }
+  return !isTerminalSyncJob(job);
+}
+
+function isTerminalSyncJob(job) {
+  if (!job || typeof job !== "object") {
+    return false;
+  }
+  const status = String(job.status || "").toLowerCase();
+  return ["succeeded", "failed", "cancelled", "canceled", "skipped"].includes(status);
 }
 
 function updateSourceSyncButtons() {
@@ -587,7 +857,7 @@ function handleTabKeydown(event) {
     Home: () => tabs[0],
     End: () => tabs[tabs.length - 1],
   };
-  const nextTab = keyActions[event.key]?.();
+  const nextTab = keyActions[event.key] ? keyActions[event.key]() : null;
   if (!nextTab) {
     return;
   }

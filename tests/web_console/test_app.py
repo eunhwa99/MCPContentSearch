@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
 from fastapi.testclient import TestClient
 
 from core.models import SourceModel, SourceType, SyncJobModel, SyncJobStatus, SyncStatus
-from web_console.app import ConsoleDependencies, create_console_app
+from web_console.app import ConsoleDependencies, GitHubTargetSyncService, create_console_app
 
 
 pytestmark = pytest.mark.integration
@@ -125,6 +126,36 @@ class FakeGitHubSyncService:
         }
 
 
+class FakeTargetSyncService:
+    def __init__(self):
+        self.calls = []
+
+    async def sync_target(self, source_type, target):
+        self.calls.append({"source_type": source_type, "target": target})
+        source_id = {
+            "github": "source_github",
+            "notion": "source_notion",
+            "web": "source_web",
+        }[source_type]
+        return {
+            "status": "succeeded",
+            "source_id": source_id,
+            "target_type": source_type,
+            "target": target,
+            "stale_cleanup": "disabled",
+            "job": {
+                "job_id": f"job-{source_type}",
+                "source_id": source_id,
+                "status": "succeeded",
+                "total_documents": 2,
+                "processed_documents": 2,
+                "indexed_chunks": 4,
+                "skipped_documents": 0,
+                "error_message": "",
+            },
+        }
+
+
 class FakeSmokeRunner:
     def __init__(self):
         self.calls = []
@@ -204,6 +235,11 @@ class FailingGitHubSyncService:
         raise RuntimeError("github sync failed with token=secret-value")
 
 
+class FailingTargetSyncService:
+    async def sync_target(self, source_type, target):
+        raise RuntimeError(f"{source_type} target failed with token=secret-value")
+
+
 class SecretMetadataStore(FakeMetadataStore):
     def list_sources(self):
         return [
@@ -251,11 +287,58 @@ class SecretPayloadGitHubSyncService:
         }
 
 
+class SecretPayloadTargetSyncService:
+    async def sync_target(self, source_type, target):
+        return {
+            "status": "failed",
+            "source_id": "source_web",
+            "target_type": source_type,
+            "target": target,
+            "job": {
+                "job_id": "job-secret",
+                "source_id": "source_web",
+                "status": "failed",
+                "error_message": "target sync failed with token=secret-value",
+            },
+        }
+
+
+class AlreadyRunningTargetSyncService:
+    async def sync_target(self, source_type, target):
+        return {
+            "status": "already_running",
+            "source_id": "source_web",
+            "target_type": source_type,
+            "message": "A sync is already running for this source. The requested target was not started.",
+            "job": {
+                "job_id": "job-running",
+                "source_id": "source_web",
+                "status": "running",
+                "total_documents": 0,
+                "processed_documents": 0,
+                "indexed_chunks": 0,
+                "skipped_documents": 0,
+                "error_message": "",
+            },
+        }
+
+
+class RunningGitHubMetadataStore:
+    def get_latest_sync_job(self, source_id):
+        assert source_id == "source_github"
+        return SyncJobModel(
+            job_id="job-running",
+            source_id=source_id,
+            status=SyncJobStatus.RUNNING,
+        )
+
+
 def make_client():
     answer_service = FakeAnswerService()
     wiki_service = FakeWikiService()
     ingestion_service = FakeIngestionService()
     github_sync_service = FakeGitHubSyncService()
+    target_sync_service = FakeTargetSyncService()
     smoke_runner = FakeSmokeRunner()
     app = create_console_app(
         ConsoleDependencies(
@@ -263,6 +346,7 @@ def make_client():
             wiki_service=wiki_service,
             metadata_store=FakeMetadataStore(),
             ingestion_service=ingestion_service,
+            target_sync_service=target_sync_service,
             github_sync_service=github_sync_service,
             smoke_runner=smoke_runner,
         )
@@ -273,6 +357,7 @@ def make_client():
         wiki_service,
         smoke_runner,
         ingestion_service,
+        target_sync_service,
         github_sync_service,
     )
 
@@ -493,7 +578,7 @@ def test_source_sync_status_redacts_persisted_source_and_job_errors():
 
 
 def test_source_sync_endpoint_delegates_to_ingestion_service():
-    client, *_, ingestion_service, _ = make_client()
+    client, _, _, _, ingestion_service, _, _ = make_client()
 
     response = client.post("/api/sources/source_github/sync", json={})
 
@@ -636,6 +721,149 @@ def test_github_target_sync_endpoint_redacts_returned_target_and_job_error():
     assert body["job"]["error_message"] == "Sync failed. See server logs for details."
     assert "secret-value" not in str(body)
     assert "token=secret-value" not in str(body)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "target", "source_id"),
+    [
+        ("github", "github.com/eunhwa99", "source_github"),
+        ("notion", "https://www.notion.so/Context-0123456789abcdef0123456789abcdef", "source_notion"),
+        ("web", "https://docs.example.com/guide", "source_web"),
+    ],
+)
+def test_target_sync_endpoint_delegates_by_type(source_type, target, source_id):
+    client, *_, target_sync_service, _ = make_client()
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": source_type, "target": target},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_id"] == source_id
+    assert body["target_type"] == source_type
+    assert body["poll_url"] == f"/api/sources/{source_id}/sync-status"
+    assert body["job"]["status"] == "succeeded"
+    assert target_sync_service.calls == [{"source_type": source_type, "target": target}]
+
+
+def test_target_sync_endpoint_returns_503_without_service():
+    client = make_unconfigured_client()
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": "github", "target": "github.com/eunhwa99"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "target sync service is not configured"
+
+
+def test_target_sync_endpoint_rejects_invalid_type_and_empty_target():
+    client, *_ = make_client()
+
+    invalid_type = client.post(
+        "/api/targets/sync",
+        json={"source_type": "pdf", "target": "https://example.com/file.pdf"},
+    )
+    empty_target = client.post(
+        "/api/targets/sync",
+        json={"source_type": "web", "target": "   "},
+    )
+
+    assert invalid_type.status_code == 400
+    assert invalid_type.json()["detail"] == "source_type must be github, notion, or web"
+    assert empty_target.status_code == 400
+    assert empty_target.json()["detail"] == "target is required"
+
+
+def test_target_sync_endpoint_returns_structured_failure_without_logging_secret(caplog):
+    app = create_console_app(
+        ConsoleDependencies(target_sync_service=FailingTargetSyncService())
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR, logger="web_console.app"):
+        response = client.post(
+            "/api/targets/sync",
+            json={"source_type": "web", "target": "https://docs.example.com?token=secret-value"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "source_id": "source_web",
+        "target_type": "web",
+        "status": "error",
+        "message": "Target sync failed. See server logs for details.",
+    }
+    assert "secret-value" not in str(body)
+    assert "secret-value" not in caplog.text
+
+
+def test_target_sync_endpoint_redacts_returned_target_and_job_error():
+    app = create_console_app(
+        ConsoleDependencies(target_sync_service=SecretPayloadTargetSyncService())
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": "web", "target": "https://docs.example.com?token=secret-value"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target"] == "redacted"
+    assert body["job"]["error_message"] == "Sync failed. See server logs for details."
+    assert "secret-value" not in str(body)
+    assert "token=secret-value" not in str(body)
+
+
+def test_target_sync_endpoint_reports_already_running_without_claiming_target_started():
+    app = create_console_app(
+        ConsoleDependencies(target_sync_service=AlreadyRunningTargetSyncService())
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": "web", "target": "https://docs.example.com/target"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "already_running"
+    assert body["target_type"] == "web"
+    assert body["source_id"] == "source_web"
+    assert body["job"]["status"] == "running"
+    assert body["poll_url"] == "/api/sources/source_web/sync-status"
+    assert "target" not in body
+    assert "docs.example.com/target" not in str(body)
+
+
+def test_github_target_sync_checks_running_job_before_owner_discovery(monkeypatch):
+    from fetching.github import GitHubRepositoryDiscovery
+
+    async def fail_discovery(self, target):
+        raise AssertionError("running sync should skip GitHub owner discovery")
+
+    monkeypatch.setattr(GitHubRepositoryDiscovery, "discover_repository_specs", fail_discovery)
+    service = GitHubTargetSyncService(
+        config=object(),
+        metadata_store=RunningGitHubMetadataStore(),
+        indexer=object(),
+        github_token="secret-token",
+    )
+
+    payload = asyncio.run(service.sync_target("github.com/eunhwa99"))
+
+    assert payload["status"] == "already_running"
+    assert payload["source_id"] == "source_github"
+    assert payload["target_type"] == "github"
+    assert payload["job"]["status"] == "running"
+    assert "target" not in payload
 
 
 def test_answer_endpoint_normalizes_source_filters_and_calls_service():
