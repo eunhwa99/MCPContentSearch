@@ -900,6 +900,159 @@ def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path)
     assert [chunk.chunk_id for chunk in store.list_chunks()] == ["keep:chunk:0:aaa"]
 
 
+def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_github")
+    assert started is True
+    marker = "2026-05-22T00:02:00Z"
+    kept = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:README.md",
+        source_id="source_github",
+        title="README",
+        content="current repo document",
+        url="https://example.com/README.md",
+        platform="GitHub",
+        path="README.md",
+        last_seen_at=marker,
+    )
+    stale_configured_repo = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:old.py",
+        source_id="source_github",
+        title="old.py",
+        content="removed from configured repo",
+        url="https://example.com/old.py",
+        platform="GitHub",
+        path="old.py",
+        last_seen_at="2026-05-22T00:00:00Z",
+    )
+    stale_ad_hoc_repo = DocumentModel(
+        id="github:eunhwa99/leetcode:graph.py",
+        source_id="source_github",
+        title="graph.py",
+        content="ad hoc target sync document",
+        url="https://example.com/graph.py",
+        platform="GitHub",
+        path="graph.py",
+        last_seen_at="2026-05-22T00:00:00Z",
+    )
+    for document in (kept, stale_configured_repo, stale_ad_hoc_repo):
+        store.upsert_document_and_replace_chunks(
+            document,
+            [
+                ChunkModel(
+                    chunk_id=f"{document.id}:chunk:0:aaa",
+                    document_id=document.id,
+                    source_id="source_github",
+                    title=document.title,
+                    text=document.content,
+                    path=document.path,
+                    chunk_index=0,
+                    content_hash="aaa",
+                )
+            ],
+        )
+
+    _, deleted_chunk_ids = store.complete_successful_sync(
+        job_id=job.job_id,
+        source_id="source_github",
+        total_documents=1,
+        processed_documents=0,
+        indexed_chunks=0,
+        skipped_documents=1,
+        last_seen_at=marker,
+        cleanup_missing_documents=True,
+        cleanup_document_id_prefixes=("github:eunhwa99/mcpcontentsearch:",),
+        deleted_at="2026-05-22T00:03:00Z",
+    )
+
+    assert deleted_chunk_ids == ["github:eunhwa99/mcpcontentsearch:old.py:chunk:0:aaa"]
+    assert store.get_document(stale_configured_repo.id).deleted_at == "2026-05-22T00:03:00Z"
+    assert store.get_document(stale_ad_hoc_repo.id).deleted_at == ""
+    assert store.list_chunks_for_document(stale_ad_hoc_repo.id)
+    assert [chunk.document_id for chunk in store.list_chunks(["source_github"])] == [
+        "github:eunhwa99/leetcode:graph.py",
+        "github:eunhwa99/mcpcontentsearch:README.md",
+    ]
+
+
+def test_successful_sync_cleanup_prefix_treats_underscore_literally(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_github")
+    assert started is True
+    exact_prefix_document = DocumentModel(
+        id="github:eunhwa99/foo_bar:old.py",
+        source_id="source_github",
+        title="old.py",
+        content="configured repo stale file",
+        url="https://example.com/old.py",
+        platform="GitHub",
+        path="old.py",
+        last_seen_at="2026-05-22T00:00:00Z",
+    )
+    wildcard_like_document = DocumentModel(
+        id="github:eunhwa99/fooxbar:graph.py",
+        source_id="source_github",
+        title="graph.py",
+        content="different repo that LIKE underscore would match",
+        url="https://example.com/graph.py",
+        platform="GitHub",
+        path="graph.py",
+        last_seen_at="2026-05-22T00:00:00Z",
+    )
+    for document in (exact_prefix_document, wildcard_like_document):
+        store.upsert_document_and_replace_chunks(
+            document,
+            [
+                ChunkModel(
+                    chunk_id=f"{document.id}:chunk:0:aaa",
+                    document_id=document.id,
+                    source_id="source_github",
+                    title=document.title,
+                    text=document.content,
+                    path=document.path,
+                    chunk_index=0,
+                    content_hash="aaa",
+                )
+            ],
+        )
+
+    _, deleted_chunk_ids = store.complete_successful_sync(
+        job_id=job.job_id,
+        source_id="source_github",
+        total_documents=0,
+        processed_documents=0,
+        indexed_chunks=0,
+        skipped_documents=0,
+        last_seen_at="2026-05-22T00:02:00Z",
+        cleanup_missing_documents=True,
+        cleanup_document_id_prefixes=("github:eunhwa99/foo_bar:",),
+        deleted_at="2026-05-22T00:03:00Z",
+    )
+
+    assert deleted_chunk_ids == ["github:eunhwa99/foo_bar:old.py:chunk:0:aaa"]
+    assert store.get_document(exact_prefix_document.id).deleted_at == "2026-05-22T00:03:00Z"
+    assert store.get_document(wildcard_like_document.id).deleted_at == ""
+    assert store.list_chunks_for_document(wildcard_like_document.id)
+
+
 def test_successful_sync_cleanup_ignores_source_mismatched_chunks(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(

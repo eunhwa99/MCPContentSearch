@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 
 from core.models import DocumentModel, SyncJobStatus
@@ -8,10 +9,39 @@ from indexing.chunker import DocumentChunker
 from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(access[-_]?key(?:[-_]?id)?|access[-_]?token|api[-_]?key|"
+    r"apikey|auth|authorization|aws[-_]?access[-_]?key[-_]?id|"
+    r"client[-_]?secret|code|cookie|credential|csrf[-_]?token|csrf|"
+    r"j[-_]?session[-_]?id|jwt[-_]?token|jwt|key|pass|password|"
+    r"php[-_]?sess[-_]?id|secret|session[-_]?id|session[-_]?token|"
+    r"session|sessionid|sig|signature|sid|token|x[-_]?amz[-_]?access[-_]?key[-_]?id|"
+    r"x[-_]?amz[-_]?credential|x[-_]?amz[-_]?signature|xsrf[-_]?token|xsrf)"
+    r"\s*[:=]\s*([^&,\s]+)"
+)
+CREDENTIAL_LIKE_RE = re.compile(
+    r"(?:"
+    r"gh[pousr]_[A-Za-z0-9_]+|"
+    r"github_pat_[A-Za-z0-9_]+|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
+    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AIza[A-Za-z0-9_-]{30,}|"
+    r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|"
+    r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _redact_sensitive_error(message: str) -> str:
+    redacted = SENSITIVE_ASSIGNMENT_RE.sub(r"\1=<redacted>", message or "")
+    redacted = CREDENTIAL_LIKE_RE.sub("<redacted>", redacted)
+    return redacted or "Sync failed. See server logs for details."
 
 
 class IngestionService:
@@ -23,18 +53,22 @@ class IngestionService:
         source_registry: SourceRegistry,
         chunker: DocumentChunker,
         indexer,
+        register_source_config: bool = True,
     ):
         self.metadata_store = metadata_store
         self.source_registry = source_registry
         self.chunker = chunker
         self.indexer = indexer
+        self.register_source_config = register_source_config
         self.metadata_store.ensure_schema()
-        for source in self.source_registry.list_sources():
-            self.metadata_store.register_source(source)
+        if self.register_source_config:
+            for source in self.source_registry.list_sources():
+                self.metadata_store.register_source(source)
 
     async def sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)
-        self.metadata_store.register_source(connector.source)
+        if self.register_source_config:
+            self.metadata_store.register_source(connector.source)
         job, started = self.metadata_store.begin_sync_job(source_id)
         if not started:
             logger.info("Sync already running for source %s", source_id)
@@ -58,6 +92,14 @@ class IngestionService:
             processed = 0
             skipped = 0
             indexed_chunks = 0
+            total_documents = len(documents)
+            self._record_sync_progress(
+                job.job_id,
+                total_documents=total_documents,
+                processed_documents=processed,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped,
+            )
             last_seen_at = _now()
             last_seen_sync_id = job.job_id
             uncommitted_vector_ids: list[str] = []
@@ -98,6 +140,13 @@ class IngestionService:
                         if inactive_job:
                             return inactive_job
                         skipped += 1
+                        self._record_sync_progress(
+                            job.job_id,
+                            total_documents=total_documents,
+                            processed_documents=processed,
+                            indexed_chunks=indexed_chunks,
+                            skipped_documents=skipped,
+                        )
                         continue
 
                     if chunks:
@@ -125,6 +174,13 @@ class IngestionService:
                     self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                     processed += 1
                     indexed_chunks += len(chunks)
+                    self._record_sync_progress(
+                        job.job_id,
+                        total_documents=total_documents,
+                        processed_documents=processed,
+                        indexed_chunks=indexed_chunks,
+                        skipped_documents=skipped,
+                    )
                     continue
 
                 if chunks:
@@ -146,30 +202,43 @@ class IngestionService:
                 self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                 processed += 1
                 indexed_chunks += len(chunks)
+                self._record_sync_progress(
+                    job.job_id,
+                    total_documents=total_documents,
+                    processed_documents=processed,
+                    indexed_chunks=indexed_chunks,
+                    skipped_documents=skipped,
+                )
 
             finished, deleted_chunk_ids = self.metadata_store.complete_successful_sync(
                 job_id=job.job_id,
                 source_id=source_id,
-                total_documents=len(documents),
+                total_documents=total_documents,
                 processed_documents=processed,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped,
                 last_seen_at=last_seen_at,
                 last_seen_sync_id=last_seen_sync_id,
                 cleanup_missing_documents=getattr(connector, "supports_stale_cleanup", False),
+                cleanup_document_id_prefixes=getattr(
+                    connector,
+                    "cleanup_document_id_prefixes",
+                    (),
+                ),
                 deleted_at=_now(),
             )
             self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
             return finished
 
         except Exception as exc:
-            logger.exception("Sync failed for source %s", source_id)
+            error_message = _redact_sensitive_error(str(exc))
+            logger.error("Sync failed for source %s: %s", source_id, error_message)
             if "uncommitted_vector_ids" in locals():
                 self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
             return self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
-                error_message=str(exc),
+                error_message=error_message,
             )
 
     def _refresh_running_job_or_current(self, job_id: str):
@@ -179,6 +248,30 @@ class IngestionService:
         if current_job.status != SyncJobStatus.RUNNING:
             return current_job
         return None
+
+    def _record_sync_progress(
+        self,
+        job_id: str,
+        *,
+        total_documents: int,
+        processed_documents: int,
+        indexed_chunks: int,
+        skipped_documents: int,
+    ):
+        try:
+            self.metadata_store.update_sync_job(
+                job_id,
+                total_documents=total_documents,
+                processed_documents=processed_documents,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped_documents,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Unable to update sync progress for job %s: %s",
+                job_id,
+                _redact_sensitive_error(str(exc)),
+            )
 
     def _validate_document_before_index(self, job_id: str, document: DocumentModel):
         current_job = self.metadata_store.validate_running_job_document(job_id, document)
@@ -212,8 +305,12 @@ class IngestionService:
             return
         try:
             self.indexer.delete_documents_by_ids(deletable_chunk_ids, source_id=source_id)
-        except Exception:
-            logger.exception("Vector cleanup failed for source %s", source_id)
+        except Exception as exc:
+            logger.error(
+                "Vector cleanup failed for source %s: %s",
+                source_id,
+                _redact_sensitive_error(str(exc)),
+            )
 
     @staticmethod
     def _normalize_document(

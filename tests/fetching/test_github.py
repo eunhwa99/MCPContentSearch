@@ -7,7 +7,12 @@ import pytest
 
 from environments.config import AppConfig
 from fetching.connectors import GitHubSourceConnector
-from fetching.github import GitHubHTTPClient, parse_repository_spec
+from fetching.github import (
+    GitHubHTTPClient,
+    GitHubRepositoryDiscovery,
+    parse_repository_or_owner_target,
+    parse_repository_spec,
+)
 from indexing.chunker import DocumentChunker
 
 
@@ -55,6 +60,18 @@ def test_github_http_client_streams_blob_json_with_byte_limit():
     )
 
     assert result == payload
+
+
+def test_github_connector_exposes_repository_cleanup_prefixes():
+    connector = GitHubSourceConnector(
+        ("EUNHWA99/MCPContentSearch@main", "eunhwa99/LeetCode@master"),
+        AppConfig(),
+    )
+
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunhwa99/mcpcontentsearch:",
+        "github:eunhwa99/leetcode:",
+    )
 
 
 def test_github_http_client_rejects_blob_json_by_content_length():
@@ -1220,6 +1237,81 @@ def test_parse_repository_spec_supports_clone_url_with_git_suffix_and_ref():
     assert spec.owner == "eunhwa99"
     assert spec.repo == "MCPContentSearch"
     assert spec.ref == "main"
+
+
+def test_parse_repository_or_owner_target_accepts_github_owner_url():
+    assert parse_repository_or_owner_target("github.com/eunhwa99") == (
+        "eunhwa99",
+        "",
+        "",
+    )
+
+
+def test_parse_repository_or_owner_target_accepts_repository_url():
+    assert parse_repository_or_owner_target("https://github.com/eunhwa99/repo") == (
+        "eunhwa99",
+        "repo",
+        "main",
+    )
+
+
+def test_parse_repository_or_owner_target_rejects_secret_url_without_leaking_secret():
+    with pytest.raises(ValueError) as exc_info:
+        parse_repository_or_owner_target("https://github.com/eunhwa99?token=secret")
+
+    message = str(exc_info.value)
+    assert "secret" not in message
+    assert "token=secret" not in message
+
+
+class OwnerRepositoryListHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "page=1" in url:
+            return [
+                {
+                    "name": "algorithms",
+                    "default_branch": "main",
+                    "owner": {"login": "eunhwa99"},
+                },
+                {
+                    "name": "neetcode",
+                    "default_branch": "trunk",
+                    "owner": {"login": "eunhwa99"},
+                },
+                {
+                    "name": "ghp_secret",
+                    "default_branch": "main",
+                    "owner": {"login": "eunhwa99"},
+                },
+            ]
+        return []
+
+
+def test_github_repository_discovery_expands_owner_url_to_repo_specs():
+    http = OwnerRepositoryListHTTP()
+    discovery = GitHubRepositoryDiscovery(AppConfig(), http_client=http)
+
+    specs = asyncio.run(discovery.discover_repository_specs("github.com/eunhwa99"))
+
+    assert specs == [
+        "eunhwa99/algorithms@main",
+        "eunhwa99/neetcode@trunk",
+    ]
+    assert http.urls[0].startswith("https://api.github.com/users/eunhwa99/repos?")
+
+
+def test_github_repository_discovery_keeps_explicit_repository_target_off_network():
+    http = OwnerRepositoryListHTTP()
+    discovery = GitHubRepositoryDiscovery(AppConfig(), http_client=http)
+
+    specs = asyncio.run(discovery.discover_repository_specs("eunhwa99/neetcode@main"))
+
+    assert specs == ["eunhwa99/neetcode@main"]
+    assert http.urls == []
 
 
 def test_parse_repository_spec_rejects_credentialed_clone_url_without_leaking_secret():

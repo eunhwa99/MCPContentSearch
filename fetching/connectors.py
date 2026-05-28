@@ -3,7 +3,7 @@ from typing import Iterable
 
 from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
-from fetching.github import GitHubRepositoryFetcher
+from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
 from fetching.tistory import fetch_tistory_posts
 from fetching.web_docs import WebsiteDocsFetcher
@@ -14,6 +14,7 @@ class SourceConnector(ABC):
 
     source: SourceModel
     supports_stale_cleanup: bool = False
+    cleanup_document_id_prefixes: tuple[str, ...] = ()
 
     @abstractmethod
     async def fetch_documents(self) -> list[DocumentModel]:
@@ -115,14 +116,20 @@ class GitHubSourceConnector(SourceConnector):
         *,
         token: str = "",
         http_client=None,
+        allow_stale_cleanup: bool = True,
     ):
         self.repositories = tuple(repositories)
         self.config = config
+        self.allow_stale_cleanup = allow_stale_cleanup
         self.fetcher = GitHubRepositoryFetcher(
             self.repositories,
             config,
             token=token,
             http_client=http_client,
+        )
+        self.cleanup_document_id_prefixes = tuple(
+            repository_document_id_prefix(spec)
+            for spec in self.fetcher.repository_specs
         )
         self.source = SourceModel(
             source_id="source_github",
@@ -142,7 +149,9 @@ class GitHubSourceConnector(SourceConnector):
             self.supports_stale_cleanup = False
             raise
         else:
-            self.supports_stale_cleanup = self.fetcher.snapshot_complete
+            self.supports_stale_cleanup = (
+                self.allow_stale_cleanup and self.fetcher.snapshot_complete
+            )
             return documents
 
 
@@ -155,9 +164,11 @@ class WebsiteSourceConnector(SourceConnector):
         config: AppConfig,
         *,
         http_client=None,
+        allow_stale_cleanup: bool = True,
     ):
         self.seed_urls = tuple(seed_urls)
         self.config = config
+        self.allow_stale_cleanup = allow_stale_cleanup
         self.fetcher = WebsiteDocsFetcher(
             self.seed_urls,
             config,
@@ -182,7 +193,9 @@ class WebsiteSourceConnector(SourceConnector):
             self.supports_stale_cleanup = False
             raise
         else:
-            self.supports_stale_cleanup = self.fetcher.snapshot_complete
+            self.supports_stale_cleanup = (
+                self.allow_stale_cleanup and self.fetcher.snapshot_complete
+            )
             return documents
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -36,6 +37,31 @@ class FakeConnector(SourceConnector):
 
 class PartialSnapshotConnector(FakeConnector):
     supports_stale_cleanup = False
+
+
+class ScopedCleanupConnector(FakeConnector):
+    cleanup_document_id_prefixes = ("github:eunhwa99/mcpcontentsearch:",)
+
+
+class ProgressRecordingMetadataStore(MetadataStore):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.progress_updates = []
+
+    def update_sync_job(self, job_id: str, **updates):
+        if {
+            "total_documents",
+            "processed_documents",
+            "indexed_chunks",
+            "skipped_documents",
+        }.intersection(updates):
+            self.progress_updates.append(dict(updates))
+        return super().update_sync_job(job_id, **updates)
+
+
+class FailingProgressMetadataStore(MetadataStore):
+    def update_sync_job(self, job_id: str, **updates):
+        raise RuntimeError("progress failed with token=secret-value")
 
 
 class SourceAConnector(FakeConnector):
@@ -108,8 +134,12 @@ class RecordingIndexer:
 
 
 class FailingDeleteIndexer(RecordingIndexer):
+    def __init__(self, message="vector delete failed"):
+        super().__init__()
+        self.message = message
+
     def delete_documents_by_ids(self, document_ids, source_id=""):
-        raise RuntimeError("vector delete failed")
+        raise RuntimeError(self.message)
 
 
 class FailingOnceIndexer(RecordingIndexer):
@@ -224,6 +254,83 @@ def test_ingestion_records_failed_sync_for_retry(tmp_path):
     assert job.status == SyncJobStatus.FAILED
     assert "boom" in job.error_message
     assert store.get_source("source_fake").sync_status == SyncStatus.FAILED
+
+
+def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
+    connector = FakeConnector(
+        error=RuntimeError(
+            "fetch failed with token=secret-value, api-key=abc123, "
+            "password: hunter2, credential=privatevalue, "
+            "x-amz-credential: aws-privatevalue, ghp_secretcredential, "
+            "AKIAIOSFODNN7EXAMPLE, "
+            "xoxb-1234567890-secret, AIzaSyDExampleExampleExampleExample1234, "
+            "eyJheader.payloadvalue.signaturevalue"
+        )
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.FAILED
+    assert "token=<redacted>" in job.error_message
+    assert "api-key=<redacted>" in job.error_message
+    assert "password=<redacted>" in job.error_message
+    assert "credential=<redacted>" in job.error_message
+    assert "x-amz-credential=<redacted>" in job.error_message
+    assert "secret-value" not in job.error_message
+    assert "privatevalue" not in job.error_message
+    assert "aws-privatevalue" not in job.error_message
+    assert "ghp_secretcredential" not in job.error_message
+    assert "AKIAIOSFODNN7EXAMPLE" not in job.error_message
+    assert "xoxb-1234567890-secret" not in job.error_message
+    assert "AIzaSyDExampleExampleExampleExample1234" not in job.error_message
+    assert "eyJheader.payloadvalue.signaturevalue" not in job.error_message
+    assert "secret-value" not in caplog.text
+    assert "privatevalue" not in caplog.text
+    assert "aws-privatevalue" not in caplog.text
+    assert "ghp_secretcredential" not in caplog.text
+    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+    assert "xoxb-1234567890-secret" not in caplog.text
+    assert "AIzaSyDExampleExampleExampleExample1234" not in caplog.text
+    assert "eyJheader.payloadvalue.signaturevalue" not in caplog.text
+
+
+def test_ingestion_can_skip_source_config_registration_for_ad_hoc_sync(tmp_path):
+    document = DocumentModel(
+        id="doc-1",
+        source_id="source_fake",
+        title="Ad hoc",
+        content="Ad hoc sync should not rewrite source static configuration.",
+        url="https://example.com/doc-1",
+        platform="GitHub",
+        path="doc-1.md",
+    )
+    connector = FakeConnector([document])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.register_source(
+        FakeConnector.source.model_copy(update={"enabled": False, "name": "Configured Fake"})
+    )
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=200, overlap_chars=0),
+        indexer=RecordingIndexer(),
+        register_source_config=False,
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    source = store.get_source("source_fake")
+    assert source.enabled is False
+    assert source.name == "Configured Fake"
 
 
 def test_overlapping_source_sync_returns_existing_running_job_without_second_fetch(tmp_path):
@@ -735,6 +842,68 @@ def test_successful_full_sync_tombstones_missing_documents_and_deletes_vectors(t
     assert store.get_document("kept").deleted_at == ""
 
 
+def test_running_sync_records_document_progress(tmp_path):
+    first = DocumentModel(
+        id="first",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="GitHub",
+        path="first.md",
+    )
+    second = DocumentModel(
+        id="second",
+        source_id="source_fake",
+        title="Second",
+        content="Second document.",
+        url="https://example.com/second",
+        platform="GitHub",
+        path="second.md",
+    )
+    store = ProgressRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([first, second])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert store.progress_updates[0]["total_documents"] == 2
+    assert store.progress_updates[0]["processed_documents"] == 0
+    assert store.progress_updates[-1]["processed_documents"] == 2
+    assert store.progress_updates[-1]["indexed_chunks"] == 2
+
+
+def test_running_sync_progress_update_failure_logs_redacted_error(tmp_path, caplog):
+    document = DocumentModel(
+        id="first",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="GitHub",
+        path="first.md",
+    )
+    store = FailingProgressMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert "token=secret-value" not in caplog.text
+    assert "token=<redacted>" in caplog.text
+
+
 def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repeats(
     tmp_path,
     monkeypatch,
@@ -780,6 +949,56 @@ def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repe
     assert store.get_document("kept").last_seen_sync_id == second.job_id
     assert store.get_document("removed").deleted_at == marker
     assert store.list_chunks_for_document("removed") == []
+    assert indexer.deleted_ids == [removed_chunk_id]
+
+
+def test_successful_full_sync_only_tombstones_scoped_documents(tmp_path):
+    kept = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:README.md",
+        source_id="source_fake",
+        title="README",
+        content="This configured repo document remains.",
+        url="https://example.com/readme",
+        platform="GitHub",
+        path="README.md",
+    )
+    removed = DocumentModel(
+        id="github:eunhwa99/mcpcontentsearch:old.py",
+        source_id="source_fake",
+        title="Old",
+        content="This configured repo document disappears.",
+        url="https://example.com/old",
+        platform="GitHub",
+        path="old.py",
+    )
+    ad_hoc = DocumentModel(
+        id="github:eunhwa99/leetcode:graph.py",
+        source_id="source_fake",
+        title="Graph",
+        content="This ad hoc repo document should remain searchable.",
+        url="https://example.com/graph",
+        platform="GitHub",
+        path="graph.py",
+    )
+    connector = ScopedCleanupConnector([kept, removed, ad_hoc])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    asyncio.run(service.sync_source("source_fake"))
+    removed_chunk_id = store.list_chunks_for_document(removed.id)[0].chunk_id
+    connector.documents = [kept]
+    second = asyncio.run(service.sync_source("source_fake"))
+
+    assert second.status == SyncJobStatus.SUCCEEDED
+    assert store.get_document(removed.id).deleted_at
+    assert store.get_document(ad_hoc.id).deleted_at == ""
+    assert store.list_chunks_for_document(ad_hoc.id)
     assert indexer.deleted_ids == [removed_chunk_id]
 
 
@@ -1102,6 +1321,38 @@ def test_vector_delete_failure_after_tombstone_does_not_fail_sync_or_restore_chu
     assert result.status == SyncJobStatus.SUCCEEDED
     assert store.get_document("removed").deleted_at
     assert store.list_chunks_for_document("removed") == []
+
+
+def test_vector_delete_failure_logs_redacted_error(tmp_path, caplog):
+    removed = DocumentModel(
+        id="removed",
+        source_id="source_fake",
+        title="Removed",
+        content="This document disappears.",
+        url="https://example.com/removed",
+        platform="GitHub",
+        path="removed.md",
+    )
+    connector = FakeConnector([removed])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = FailingDeleteIndexer("delete failed credential=privatevalue token=secret-value")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    asyncio.run(service.sync_source("source_fake"))
+    connector.documents = []
+    with caplog.at_level(logging.ERROR, logger="indexing.ingestion_service"):
+        result = asyncio.run(service.sync_source("source_fake"))
+
+    assert result.status == SyncJobStatus.SUCCEEDED
+    assert "credential=<redacted>" in caplog.text
+    assert "token=<redacted>" in caplog.text
+    assert "privatevalue" not in caplog.text
+    assert "secret-value" not in caplog.text
 
 
 def test_success_finalization_failure_rolls_back_stale_cleanup(tmp_path):

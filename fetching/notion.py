@@ -1,5 +1,7 @@
 import logging
+import re
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -9,6 +11,14 @@ from core.models import DocumentModel
 from core.exceptions import APIError, FetchError
 
 logger = logging.getLogger(__name__)
+NOTION_OBJECT_ID_RE = re.compile(
+    r"(?i)([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})"
+)
+NOTION_COMPACT_OBJECT_ID_RE = re.compile(r"(?i)([0-9a-f]{32})$")
+NOTION_HYPHENATED_OBJECT_ID_RE = re.compile(
+    r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+NOTION_HOST_SUFFIXES = ("notion.so", "notion.site")
 
 class NotionAPIClient:
     def __init__(self, config: NotionConfig, app_config: AppConfig):
@@ -106,6 +116,46 @@ class NotionAPIClient:
                 raise APIError("Notion", e.response.status_code, str(e))
         
         return all_blocks
+
+    async def fetch_page(self, client: httpx.AsyncClient, page_id: str) -> dict:
+        try:
+            response = await client.get(
+                f"{self.config.base_url}/pages/{page_id}",
+                headers=self.headers,
+                timeout=self.app_config.request_timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            raise APIError("Notion", e.response.status_code, str(e))
+
+    async def query_database(self, client: httpx.AsyncClient, database_id: str) -> List[dict]:
+        pages = []
+        next_cursor = None
+
+        while True:
+            payload = {"page_size": 100}
+            if next_cursor:
+                payload["start_cursor"] = next_cursor
+
+            try:
+                response = await client.post(
+                    f"{self.config.base_url}/databases/{database_id}/query",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=self.app_config.request_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as e:
+                raise APIError("Notion", e.response.status_code, str(e))
+
+            pages.extend(data.get("results", []))
+            if not data.get("has_more", False):
+                break
+            next_cursor = data.get("next_cursor")
+
+        return pages
     
     async def _extract_text_recursive(
         self,
@@ -269,3 +319,89 @@ async def fetch_notion_pages(api_key: str, app_config: AppConfig) -> List[Docume
         raise FetchError(f"Failed to fetch Notion pages: {e}")
     
     return documents
+
+
+async def fetch_notion_target(
+    api_key: str,
+    app_config: AppConfig,
+    target: str,
+) -> List[DocumentModel]:
+    """Fetch one Notion page URL/id or database URL/id using the configured token."""
+    if not api_key:
+        raise FetchError("NOTION_API_KEY is required for Notion target sync")
+
+    object_id = parse_notion_object_id(target)
+    notion_config = NotionConfig(api_key=api_key)
+    api_client = NotionAPIClient(notion_config, app_config)
+    processor = NotionPageProcessor(notion_config)
+
+    try:
+        async with httpx.AsyncClient(timeout=app_config.request_timeout) as client:
+            try:
+                page = await api_client.fetch_page(client, object_id)
+                content = await api_client.fetch_block_content(client, object_id, strict=True)
+                return [_notion_source_document(processor.build_document(page, content))]
+            except APIError as page_error:
+                if page_error.status_code != 404:
+                    raise
+
+            pages = await api_client.query_database(client, object_id)
+            documents = []
+            for page in pages:
+                page_id = page["id"]
+                content = await api_client.fetch_block_content(client, page_id, strict=True)
+                documents.append(_notion_source_document(processor.build_document(page, content)))
+            return documents
+    except APIError:
+        raise
+    except Exception as e:
+        logger.error("Unexpected Notion target error")
+        raise FetchError(f"Failed to fetch Notion target: {e}")
+
+
+def parse_notion_object_id(value: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise ValueError("Notion target is required")
+    if "://" in normalized:
+        parsed = urlparse(normalized)
+        host = (parsed.hostname or "").lower()
+        if parsed.username or parsed.password or not any(
+            host == suffix or host.endswith(f".{suffix}") for suffix in NOTION_HOST_SUFFIXES
+        ):
+            raise ValueError("Invalid Notion URL")
+        candidate = parsed.path.strip("/").split("/")[-1]
+    else:
+        candidate = normalized
+    match = NOTION_HYPHENATED_OBJECT_ID_RE.search(candidate)
+    if not match:
+        match = NOTION_COMPACT_OBJECT_ID_RE.search(candidate)
+    if not match:
+        match = NOTION_OBJECT_ID_RE.fullmatch(candidate)
+    if not match:
+        raise ValueError("Notion URL or id did not include a page/database id")
+    return _format_notion_uuid(match.group(1).replace("-", ""))
+
+
+def _format_notion_uuid(value: str) -> str:
+    compact = value.lower().replace("-", "")
+    if len(compact) != 32 or not re.fullmatch(r"[0-9a-f]{32}", compact):
+        raise ValueError("Invalid Notion id")
+    return (
+        f"{compact[0:8]}-{compact[8:12]}-{compact[12:16]}-"
+        f"{compact[16:20]}-{compact[20:32]}"
+    )
+
+
+def _notion_source_document(document: DocumentModel) -> DocumentModel:
+    document_id = document.external_id or document.document_id or document.id
+    return document.model_copy(
+        update={
+            "source_id": "source_notion",
+            "document_id": document_id,
+            "external_id": document_id,
+            "canonical_url": document.canonical_url or document.url,
+            "path": document.path or document.title,
+            "updated_at": document.updated_at or document.date,
+        }
+    )
