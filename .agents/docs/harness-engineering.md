@@ -24,8 +24,8 @@ Run phases in this order. The main agent is the harness orchestrator: it owns
 the plan, worker persona design, delegation, result synthesis, integration,
 review routing, and final delivery. `harness-implement` and `harness-test` may
 run as parallel lanes when tool policy and file ownership allow it.
-Code-changing work must always pass through the test lane before any review
-gate.
+Code-changing work must always pass through the test lane and functional smoke
+gate before any review gate.
 
 0. Branch preflight: follow `.agents/docs/github-workflow.md`.
 1. Plan document: create or update `docs/plan/YYYY-MM-DD-short-task-name.md`.
@@ -37,11 +37,14 @@ gate.
    to worker personas when useful and safe.
 5. Test lane: `.agents/skills/harness-test/SKILL.md`, delegated to a distinct
    verification persona when useful and safe.
-6. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
-7. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
-8. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-9. Final review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
-10. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+6. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+   which exercises the task-relevant feature inventory once through the safest
+   real caller surfaces or records a safety-gated skip.
+7. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
+8. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
+9. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+10. Final review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
+11. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 `.agents/skills/harness-engineering/SKILL.md` is the orchestrator for the full loop.
 
@@ -139,20 +142,24 @@ if needed, run multitask phase
 repeat:
   delegate implementation/test/docs/integration work to bounded worker personas where possible
   collect worker results, inspect the diff, and synthesize the main-agent result
+  run functional smoke gate using harness-functional-smoke
   run middle review gate using $subagent-review-loop
   if main-agent review or subagent review finds actionable issues:
     update plan
     route each issue to the responsible worker persona or a fresh replacement
     rerun affected verification
+    rerun affected functional smoke entries
     continue the loop
   run refactor phase
   rerun focused verification
   run integration verification
+  rerun or refresh functional smoke entries affected by refactor/integration
   run final review gate using $subagent-review-loop
   if final review finds actionable issues:
     update plan
     route each issue to the responsible worker persona or a fresh replacement
     rerun affected verification
+    rerun affected functional smoke entries
     continue the loop
   after the final clean review pass, commit, push, and create a PR
 until complete or blocked
@@ -174,6 +181,9 @@ Use review lenses that fit the change:
 - Async/background lens: `asyncio.create_task`, status reporting, swallowed exceptions, and caller-visible completion semantics.
 - Config/secrets lens: environment variables, token handling, `.env`, local data paths, and logging.
 - Test-quality lens: focused tests, compile/import checks, mocked external APIs, and smoke checks.
+- Functional-smoke lens: task-relevant inventory coverage, caller surfaces,
+  safe data modes, result vocabulary, blocked/gated rows, local substitutes, and
+  reruns after review fixes.
 - Docs-only lens: path references, skill names, phase order, whitespace checks,
   and staged diff checks.
 
@@ -224,6 +234,19 @@ real credentials or without mutating user Chroma data or SQLite metadata.
 External live checks against Notion, Tistory, GitHub, or configured website/docs
 sources require user approval.
 
+After focused verification and before any review gate, run the functional smoke
+gate in `.agents/skills/harness-functional-smoke/SKILL.md`. The smoke matrix
+must start from the task-relevant inventory of MCP tools, Web Console controls,
+source-sync paths, script smokes, downloads, status panels, and other
+user-visible features. Mark each row `passed`, `failed`, `not affected`, or
+`blocked/gated`; do not silently omit unchanged but relevant core workflows.
+Use fake services, mocked connectors, temporary Chroma/SQLite paths, script
+smoke, and the in-app browser before considering live external checks. For
+source sync, cover configured-source sync separately from target/ad hoc sync
+whenever safely possible. A skipped live check is acceptable only when the
+matrix records the safety reason, needed user approval, and nearest local
+substitute.
+
 MCP/wiki generation changes should include the safe FastMCP wiki smoke whenever
 appropriate:
 
@@ -246,7 +269,7 @@ python scripts/smoke_generate_wiki_page.py \
   --require-generated
 ```
 
-Verification must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification before starting the next fresh five-reviewer subagent review pass.
+Verification and functional smoke must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification and affected smoke entries before starting the next fresh five-reviewer subagent review pass.
 
 ## Delivery
 
@@ -255,6 +278,7 @@ Final reports include:
 - Plan document path
 - Changed files
 - Verification commands and results
+- Functional smoke matrix results, including blocked/gated checks and local substitutes
 - Review status and any subagent-review limitation
 - Known blockers or skipped checks
 - Commit, push, and PR status, including the PR URL after successful delivery

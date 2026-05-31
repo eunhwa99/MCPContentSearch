@@ -29,13 +29,16 @@ delivery.
    when tool policy and ownership boundaries allow.
 5. Test lane: `.agents/skills/harness-test/SKILL.md`, delegated to a distinct
    verification persona when useful and safe.
-6. Middle review gate: `.agents/skills/harness-review/SKILL.md`, invoking `$subagent-review-loop`
-7. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
-8. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-9. Final review gate: `.agents/skills/harness-review/SKILL.md`, invoking `$subagent-review-loop`
-10. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+6. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+   covering the task-relevant feature inventory once through the safest real
+   caller surfaces before review, not only the files changed.
+7. Middle review gate: `.agents/skills/harness-review/SKILL.md`, invoking `$subagent-review-loop`
+8. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
+9. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+10. Final review gate: `.agents/skills/harness-review/SKILL.md`, invoking `$subagent-review-loop`
+11. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
-Implementation and test lanes may run in parallel when ownership is disjoint and the active tool policy allows delegation. Code-changing work must run relevant tests or verification before any review gate.
+Implementation and test lanes may run in parallel when ownership is disjoint and the active tool policy allows delegation. Code-changing work must run relevant tests or verification plus the functional smoke gate before any review gate.
 
 ## Loop Rules
 
@@ -43,8 +46,8 @@ Treat implementation, testing, review, refactor, integration, and final review a
 
 Minimize human intervention by routing routine work through subagents when delegation is available. The main agent should inspect or update the plan, define worker personas, delegate bounded implementation/test/docs/integration tasks, collect outputs, inspect the resulting diff, and synthesize the integrated result. Ask the user only for unsafe ambiguity, credentials, destructive operations, local data mutation, unavailable delegation/review tools, or external approval.
 
-If the main-agent synthesis or `$subagent-review-loop` produces actionable findings, update the plan, assign each issue back to the responsible worker persona or a fresh replacement with the same ownership boundary, rerun affected verification, and continue the loop. Review gates must use `$subagent-review-loop`: run relevant verification first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification before each new review pass after fixes. Worker subagents may edit only within delegated boundaries; reviewer subagents inspect only and must not edit files.
+If the main-agent synthesis or `$subagent-review-loop` produces actionable findings, update the plan, assign each issue back to the responsible worker persona or a fresh replacement with the same ownership boundary, rerun affected verification and affected functional smoke entries, and continue the loop. Review gates must use `$subagent-review-loop`: run relevant verification and functional smoke first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification plus affected functional smoke entries before each new review pass after fixes. Worker subagents may edit only within delegated boundaries; reviewer subagents inspect only and must not edit files.
 
-Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, and docs-only.
+Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, and docs-only.
 
 If `$subagent-review-loop` cannot run because subagent review is unavailable or unauthorized, stop and report the blocker instead of silently using self-review. Do not respond on GitHub, watch PRs, or push follow-up PR changes unless the user explicitly delegates that work. For file-changing harness work, the repository standing workflow is to commit, push, and create a PR after the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work.
