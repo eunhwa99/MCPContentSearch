@@ -94,4 +94,5 @@
 | Pass 6 remediation + rerun | completed | 문서 compileall 명령에 `web_console` 포함 정렬, 문서 변경 후 경량 검증(`git diff --check`) 통과 | `AGENTS.md`; `.agents/docs/harness-engineering.md`; `git diff --check` |
 | Subagent review pass 7 findings | completed | 5인 fresh review에서 `harness-test` skill의 compileall 명령도 `web_console` 누락 드리프트와 docs-only 경량 검증 증거 보강 필요 지적 | reviewer findings: `.agents/skills/harness-test/SKILL.md:19`, plan evidence gap |
 | Pass 7 remediation + rerun | completed | `harness-test` compileall 명령을 `web_console` 포함으로 정렬하고 docs-only 경량 검증 전체 시퀀스(`git diff --name-only`, `git status --short --branch`, `git diff --check`, docs stage, `git diff --cached --check`) 완료 | `.agents/skills/harness-test/SKILL.md`; staged docs checks |
-| Review gate | in_progress | 최종 clean 판단을 위한 fresh 5인 `$subagent-review-loop` pass 8 진행 예정 | Pending pass 8 outputs |
+| Review gate | completed | fresh 5인 pass 8에서 전원 no actionable findings로 최종 clean gate 통과 | pass 8 reviewer outputs (5/5 clean) |
+| PR delivery | completed | 변경 스테이징/커밋/푸시 후 `main` base PR 생성 완료 | commit `6fece09`; PR `https://github.com/eunhwa99/MCPContentSearch/pull/15` |
