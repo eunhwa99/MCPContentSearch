@@ -8,6 +8,7 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from environments.config import AppConfig
 from core.models import DocumentModel, IndexStatusModel, IndexState
 from core.exceptions import IndexingError
+from indexing.background_tasks import safe_error_message
 from indexing.manager import IndexManager
 from indexing.converter import DocumentConverter
 
@@ -52,12 +53,13 @@ class ContentIndexer:
             )
         
         except Exception as e:
-            logger.error(f"Indexing error: {e}")
+            error_message = safe_error_message(e)
+            logger.error("Indexing error: %s", error_message)
             self._update_status(
                 state=IndexState.ERROR,
-                message=f"Error: {str(e)}"
+                message=f"Error: {error_message}",
             )
-            raise IndexingError(f"Indexing failed: {e}")
+            raise IndexingError(f"Indexing failed: {error_message}") from None
     
     async def _filter_documents(self, documents: List[DocumentModel]) -> dict:
         manager = IndexManager(self.collection)

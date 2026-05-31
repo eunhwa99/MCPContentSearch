@@ -3,73 +3,59 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-import ipaddress
 import logging
 import os
 from pathlib import Path
-import re
-import shutil
-import signal
 import tempfile
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from web_console.codex_cli import (
+    CodexCliExecutionError,
+    bounded_prompt_field as _bounded_prompt_field,
+    codex_prompt_char_budget as _codex_prompt_char_budget,
+    codex_sandbox_profile as _codex_sandbox_profile,
+    run_codex_cli as _run_codex_cli,
+    safe_codex_failure_message as _safe_codex_failure_message,
+)
+from web_console.payloads import (
+    build_filters as _build_filters,
+    citation_payload as _citation_payload,
+    codex_answer_payload as _codex_answer_payload,
+    list_sources as _list_sources,
+    normalize_auto_sync_source_ids as _normalize_auto_sync_source_ids,
+    normalize_multiline as _normalize_multiline,
+    normalize_target_source_type as _normalize_target_source_type,
+    normalize_text as _normalize_text,
+    normalize_top_k as _normalize_top_k,
+    redact_prompt_text as _redact_prompt_text,
+    remote_console_allowed as _remote_console_allowed,
+    running_sync_job as _running_sync_job,
+    safe_answer_failure_payload as _safe_answer_failure_payload,
+    safe_github_sync_payload as _safe_github_sync_payload,
+    safe_github_target_for_display as _safe_github_target_for_display,
+    safe_source_payload as _safe_source_payload,
+    safe_sync_job_payload as _safe_sync_job_payload,
+    safe_target_sync_payload as _safe_target_sync_payload,
+    safe_url_for_display as _safe_url_for_display,
+    source_id_for_target_type as _source_id_for_target_type,
+    source_sync_status as _source_sync_status,
+    sync_status_value as _sync_status_value,
+    target_sync_already_running_payload as _target_sync_already_running_payload,
+    is_local_host_header as _is_local_host_header,
+    is_local_url as _is_local_url,
+    is_loopback_client as _is_loopback_client,
+    without_persisted_output_path as _without_persisted_output_path,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = REPO_ROOT / "web"
 logger = logging.getLogger(__name__)
-SAFE_AUTH_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
-PROMPT_TOKEN_SECRET_RE = re.compile(
-    r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"
-    r"xox[baprs]-[A-Za-z0-9-]+|"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
-    r"AIza[A-Za-z0-9_-]{20,}|"
-    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
-    r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,})",
-    re.IGNORECASE,
-)
-PROMPT_ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?P<prefix>(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
-    r"client[-_]?secret|cookie|credential|jwt|key|pass|password|passwd|"
-    r"private[-_]?key|pwd|secret|session|token)\s*[:=]\s*['\"]?)"
-    r"(?P<secret>[^'\"\s,;}]+)(?P<suffix>['\"]?)",
-    re.IGNORECASE,
-)
-PROMPT_QUERY_SECRET_RE = re.compile(
-    r"(?P<prefix>[?&](?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
-    r"client[-_]?secret|credential|key|password|secret|session|sig|signature|"
-    r"token)=)(?P<secret>[^&#\s]+)",
-    re.IGNORECASE,
-)
-PROMPT_PEM_BLOCK_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|SECRET KEY|CERTIFICATE)-----.*?"
-    r"-----END [A-Z0-9 ]*(?:PRIVATE KEY|SECRET KEY|CERTIFICATE)-----",
-    re.IGNORECASE | re.DOTALL,
-)
-CODEX_DISABLED_FEATURES = (
-    "apps",
-    "auth_elicitation",
-    "shell_tool",
-    "shell_snapshot",
-    "unified_exec",
-    "browser_use",
-    "browser_use_external",
-    "computer_use",
-    "in_app_browser",
-    "image_generation",
-    "memories",
-    "plugins",
-    "plugin_hooks",
-    "multi_agent",
-    "tool_call_mcp_elicitation",
-    "workspace_dependencies",
-)
 
 
 class ConsoleQuery(BaseModel):
@@ -479,12 +465,6 @@ class CodexCliAnswerService:
             ]
         )
         return prompt[: _codex_prompt_char_budget(self.max_chunks, self.max_chunk_chars)]
-
-
-class CodexCliExecutionError(RuntimeError):
-    def __init__(self, safe_message: str):
-        super().__init__("codex cli failed")
-        self.safe_message = safe_message
 
 
 class _NotionTargetConnector:
@@ -960,296 +940,6 @@ def _build_console_dependencies(
     )
 
 
-async def _run_codex_cli(
-    prompt: str,
-    *,
-    timeout_seconds: float,
-    codex_binary: str,
-) -> str:
-    binary = shutil.which(codex_binary)
-    if not binary:
-        raise FileNotFoundError(codex_binary)
-
-    output_path = ""
-    sandbox_profile_path = ""
-    work_dir = ""
-    process = None
-    try:
-        work_dir = tempfile.mkdtemp(
-            prefix="contextwiki-codex-work-",
-            dir="/private/tmp",
-        )
-        with tempfile.NamedTemporaryFile(
-            prefix="contextwiki-codex-answer-",
-            suffix=".txt",
-            dir="/private/tmp",
-            delete=False,
-        ) as output_file:
-            output_path = output_file.name
-
-        command_args = _codex_exec_args(binary, work_dir, output_path)
-        sandbox_requested = _use_codex_sandbox_exec()
-        sandbox_exec = shutil.which("sandbox-exec") if sandbox_requested else None
-        if sandbox_requested and not sandbox_exec:
-            raise CodexCliExecutionError(
-                "Codex CLI macOS sandbox was requested but sandbox-exec is not available. "
-                "Disable CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC or use ContextWiki Answer mode."
-            )
-        if sandbox_exec:
-            sandbox_profile_path = _write_codex_sandbox_profile(
-                binary=binary,
-                work_dir=work_dir,
-                output_path=output_path,
-            )
-            command_args = [
-                sandbox_exec,
-                "-f",
-                sandbox_profile_path,
-                *command_args,
-            ]
-
-        process = await asyncio.create_subprocess_exec(
-            *command_args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_codex_subprocess_env(),
-            cwd=work_dir,
-            start_new_session=True,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(prompt.encode("utf-8")),
-            timeout=timeout_seconds,
-        )
-        if process.returncode != 0:
-            raise CodexCliExecutionError(_safe_codex_failure_message(stderr))
-        if output_path:
-            try:
-                output = Path(output_path).read_text(encoding="utf-8")
-            except FileNotFoundError:
-                output = ""
-        else:
-            output = ""
-        return output.strip() or stdout.decode("utf-8", errors="replace").strip()
-    except TimeoutError:
-        await _stop_codex_process(process)
-        raise
-    except asyncio.CancelledError:
-        await _stop_codex_process(process)
-        raise
-    finally:
-        if output_path:
-            try:
-                os.unlink(output_path)
-            except FileNotFoundError:
-                pass
-        if sandbox_profile_path:
-            try:
-                os.unlink(sandbox_profile_path)
-            except FileNotFoundError:
-                pass
-        if work_dir:
-            shutil.rmtree(work_dir, ignore_errors=True)
-
-
-async def _stop_codex_process(process: Any) -> None:
-    if process and process.returncode is None:
-        _terminate_process_group(process.pid)
-        with suppress(Exception):
-            await asyncio.wait_for(process.wait(), timeout=2)
-        if process.returncode is None:
-            _kill_process_group(process.pid)
-            with suppress(Exception):
-                await process.wait()
-
-
-def _use_codex_sandbox_exec() -> bool:
-    return str(os.environ.get("CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC", "")).lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _codex_exec_args(binary: str, work_dir: str, output_path: str) -> list[str]:
-    return [
-        binary,
-        "exec",
-        *_codex_disabled_feature_args(),
-        "--ephemeral",
-        "--ignore-user-config",
-        "--skip-git-repo-check",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--cd",
-        work_dir,
-        "--output-last-message",
-        output_path,
-        "--color",
-        "never",
-        "-",
-    ]
-
-
-def _write_codex_sandbox_profile(*, binary: str, work_dir: str, output_path: str) -> str:
-    with tempfile.NamedTemporaryFile(
-        prefix="contextwiki-codex-sandbox-",
-        suffix=".sb",
-        dir="/private/tmp",
-        mode="w",
-        encoding="utf-8",
-        delete=False,
-    ) as profile_file:
-        profile_file.write(_codex_sandbox_profile(binary, work_dir, output_path))
-        return profile_file.name
-
-
-def _codex_sandbox_profile(binary: str, work_dir: str, output_path: str) -> str:
-    codex_env = _codex_subprocess_env()
-    codex_home = codex_env.get("CODEX_HOME")
-    home = codex_env.get("HOME") or str(Path.home())
-
-    read_paths = [
-        "/bin",
-        "/System",
-        "/usr",
-        binary,
-        work_dir,
-        output_path,
-    ]
-    if Path("/Library").exists():
-        read_paths.append("/Library")
-    if Path("/opt/homebrew").exists():
-        read_paths.append("/opt/homebrew")
-    if codex_home:
-        read_paths.append(codex_home)
-    elif home:
-        read_paths.append(str(Path(home) / ".codex"))
-
-    write_paths = [work_dir, output_path]
-
-    for env_key in ("TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
-        env_path = codex_env.get(env_key)
-        if env_path:
-            read_paths.append(env_path)
-
-    return "\n".join(
-        [
-            "(version 1)",
-            "(deny default)",
-            "(allow process*)",
-            "(allow sysctl-read)",
-            "(allow mach-lookup)",
-            "(allow network-outbound)",
-            f"(allow file-read* {_sandbox_path_filters(read_paths)})",
-            f"(allow file-write* {_sandbox_path_filters(write_paths)})",
-            "",
-        ]
-    )
-
-
-def _sandbox_path_filters(paths: list[str]) -> str:
-    filters = []
-    for path in dict.fromkeys(paths):
-        if not path:
-            continue
-        normalized = str(Path(path))
-        predicate = "subpath" if Path(normalized).is_dir() else "literal"
-        filters.append(f"({predicate} {_sandbox_quote(normalized)})")
-    return " ".join(filters)
-
-
-def _sandbox_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _codex_subprocess_env() -> dict[str, str]:
-    allowed_keys = {
-        "CODEX_HOME",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "LOGNAME",
-        "PATH",
-        "SHELL",
-        "TEMP",
-        "TERM",
-        "TMP",
-        "TMPDIR",
-        "USER",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-    }
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key in allowed_keys and value
-    }
-
-
-def _codex_disabled_feature_args() -> list[str]:
-    args = []
-    for feature in CODEX_DISABLED_FEATURES:
-        args.extend(["--disable", feature])
-    return args
-
-
-def _bounded_prompt_field(value: Any, *, limit: int) -> str:
-    text = _redact_prompt_text(value)
-    return text[: max(1, limit)]
-
-
-def _codex_prompt_char_budget(max_chunks: int, max_chunk_chars: int) -> int:
-    return 2_500 + max_chunks * (max_chunk_chars + 1_200)
-
-
-def _terminate_process_group(pid: int) -> None:
-    with suppress(ProcessLookupError):
-        os.killpg(pid, signal.SIGTERM)
-
-
-def _kill_process_group(pid: int) -> None:
-    with suppress(ProcessLookupError):
-        os.killpg(pid, signal.SIGKILL)
-
-
-def _safe_codex_failure_message(stderr: bytes | str) -> str:
-    raw_text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr
-    text = _normalize_multiline(raw_text)
-    lowered = text.lower()
-    if (
-        "failed to initialize in-process app-server client" in lowered
-        or "attempt to write a readonly database" in lowered
-    ):
-        return (
-            "Codex CLI could not initialize from this server process. "
-            "If the Web Console is running inside the Codex desktop sandbox, "
-            "start it from a normal terminal or use ContextWiki Answer mode."
-        )
-    return "Codex CLI answer failed. See server logs for details."
-
-
-def _normalize_text(value: Any) -> str:
-    return " ".join(str(value or "").split())
-
-
-def _normalize_multiline(value: Any) -> str:
-    lines = [line.rstrip() for line in str(value or "").splitlines()]
-    return "\n".join(lines).strip()
-
-
-def _normalize_top_k(value: Any, *, default: int) -> int:
-    try:
-        top_k = int(value)
-    except (TypeError, ValueError):
-        top_k = default
-    return max(1, min(top_k, 20))
-
-
 async def _run_smoke(mode: str, runner_method, **kwargs) -> dict[str, Any]:
     try:
         return await runner_method(**kwargs)
@@ -1260,78 +950,6 @@ async def _run_smoke(mode: str, runner_method, **kwargs) -> dict[str, Any]:
             "status": "failed",
             "error": "Smoke check failed. See server logs for details.",
         }
-
-
-def _list_sources(metadata_store: Any) -> list[dict[str, Any]]:
-    if metadata_store is None:
-        return []
-    return [
-        _safe_source_payload(source)
-        for source in metadata_store.list_sources()
-    ]
-
-
-def _source_sync_status(metadata_store: Any, source_id: str) -> dict[str, Any]:
-    source = metadata_store.get_source(source_id)
-    latest_job = metadata_store.get_latest_sync_job(source_id)
-    return {
-        "source_id": source_id,
-        "source": _safe_source_payload(source) if source else None,
-        "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
-    }
-
-
-def _dump_model(value: Any) -> dict[str, Any]:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return value
-    return dict(value)
-
-
-def _sync_status_value(job: Any) -> str:
-    status = getattr(job, "status", "")
-    return getattr(status, "value", status) or ""
-
-
-def _running_sync_job(metadata_store: Any, source_id: str) -> Any:
-    if metadata_store is None:
-        return None
-    latest_job = metadata_store.get_latest_sync_job(source_id)
-    if _sync_status_value(latest_job) == "running":
-        return latest_job
-    return None
-
-
-def _target_sync_already_running_payload(source_id: str, target_type: str, job: Any) -> dict[str, Any]:
-    return {
-        "status": "already_running",
-        "source_id": source_id,
-        "target_type": target_type,
-        "message": "A sync is already running for this source. The requested target was not started.",
-        "job": _safe_sync_job_payload(job),
-    }
-
-
-def _safe_source_payload(source: Any) -> dict[str, Any]:
-    payload = _dump_model(source)
-    if payload.get("last_error"):
-        payload["last_error"] = "Source sync failed. See server logs for details."
-    auth_ref = payload.get("auth_ref")
-    if auth_ref and not SAFE_AUTH_REF_RE.match(str(auth_ref)):
-        payload["auth_ref"] = "redacted"
-    return payload
-
-
-def _safe_sync_job_payload(job: Any) -> dict[str, Any]:
-    payload = _dump_model(job)
-    if payload.get("error_message"):
-        payload["error_message"] = "Sync failed. See server logs for details."
-    return payload
-
-
-def _normalize_auto_sync_source_ids(values: Any) -> tuple[str, ...]:
-    return tuple(_dedupe(_normalize_list(values)))
 
 
 async def _run_startup_auto_sync_sources(
@@ -1355,215 +973,6 @@ def _configured_notion_api_key(canonical_value: str) -> str:
     return ""
 
 
-def _citation_payload(item: Any) -> dict[str, Any]:
-    return {
-        "chunk_id": item.chunk_id,
-        "title": _redact_prompt_text(item.title),
-        "url": _safe_url_for_display(item.url) if item.url else "",
-        "path": _redact_prompt_text(item.path),
-        "line_start": item.line_start,
-        "line_end": item.line_end,
-        "version_id": item.version_id,
-    }
-
-
-def _codex_answer_payload(
-    question: str,
-    answer: str,
-    evidence_status: str,
-    citations: list[dict[str, Any]],
-    used_chunks: list[str],
-    *,
-    codex_status: str,
-) -> dict[str, Any]:
-    return {
-        "question": question,
-        "answer": answer,
-        "answer_mode": "codex_cli",
-        "codex_status": codex_status,
-        "evidence_status": evidence_status,
-        "citations": citations,
-        "used_chunks": used_chunks,
-    }
-
-
-def _safe_github_sync_payload(payload: Any) -> dict[str, Any]:
-    safe_payload = _dump_model(payload)
-    if safe_payload.get("target"):
-        safe_payload["target"] = _safe_github_target_for_display(safe_payload["target"])
-    if safe_payload.get("job"):
-        safe_payload["job"] = _safe_sync_job_payload(safe_payload["job"])
-    return safe_payload
-
-
-def _safe_target_sync_payload(source_type: str, payload: Any) -> dict[str, Any]:
-    safe_payload = _dump_model(payload)
-    safe_payload["target_type"] = _normalize_source_type(
-        safe_payload.get("target_type") or source_type
-    )
-    safe_payload["source_id"] = safe_payload.get("source_id") or _source_id_for_target_type(
-        safe_payload["target_type"]
-    )
-    if safe_payload.get("target"):
-        safe_payload["target"] = _safe_target_for_display(
-            safe_payload["target_type"],
-            safe_payload["target"],
-        )
-    if safe_payload.get("job"):
-        safe_payload["job"] = _safe_sync_job_payload(safe_payload["job"])
-    safe_payload["poll_url"] = f"/api/sources/{safe_payload['source_id']}/sync-status"
-    return safe_payload
-
-
-def _safe_target_for_display(source_type: str, value: Any) -> str:
-    normalized_type = _normalize_source_type(source_type)
-    if normalized_type == "github":
-        return _safe_github_target_for_display(value)
-    if normalized_type == "notion":
-        try:
-            from fetching.notion import parse_notion_object_id
-
-            return f"notion:{parse_notion_object_id(str(value))}"
-        except Exception:
-            return "redacted"
-    if normalized_type == "web":
-        return _safe_url_for_display(value)
-    return "redacted"
-
-
-def _safe_github_target_for_display(value: Any) -> str:
-    try:
-        from fetching.github import parse_repository_or_owner_target
-
-        owner, repo, ref = parse_repository_or_owner_target(str(value))
-    except Exception:
-        return "redacted"
-    if repo:
-        return f"{owner}/{repo}@{ref}"
-    return f"github.com/{owner}"
-
-
-def _safe_url_for_display(value: Any) -> str:
-    try:
-        from fetching.web_docs import _redact_url_credentials
-
-        parsed = urlparse(str(value))
-        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
-            return "redacted"
-        redacted = _redact_url_credentials(str(value))
-        if redacted == "<redacted>":
-            return "redacted"
-        return urlparse(redacted)._replace(query="", fragment="").geturl()
-    except Exception:
-        return "redacted"
-
-
-def _redact_prompt_text(value: Any) -> str:
-    try:
-        from wiki.synthesis import OpenAIWikiSynthesizer
-
-        return _fallback_redact_prompt_text(
-            OpenAIWikiSynthesizer._redact_secret_like(value)
-        )
-    except Exception:
-        return _fallback_redact_prompt_text(value)
-
-
-def _fallback_redact_prompt_text(value: Any) -> str:
-    text = str(value or "")
-    text = PROMPT_PEM_BLOCK_RE.sub("[REDACTED]", text)
-    text = PROMPT_TOKEN_SECRET_RE.sub("[REDACTED]", text)
-    text = PROMPT_ASSIGNMENT_SECRET_RE.sub(
-        lambda match: f"{match.group('prefix')}[REDACTED]{match.group('suffix')}",
-        text,
-    )
-    return PROMPT_QUERY_SECRET_RE.sub(
-        lambda match: f"{match.group('prefix')}[REDACTED]",
-        text,
-    )
-
-
-def _source_id_for_target_type(source_type: str) -> str:
-    return {
-        "github": "source_github",
-        "notion": "source_notion",
-        "web": "source_web",
-    }.get(_normalize_source_type(source_type), "")
-
-
-def _build_filters(request: ConsoleQuery, metadata_store: Any) -> dict[str, Any]:
-    filters = dict(request.filters or {})
-    source_ids = _normalize_list(filters.pop("source_ids", []))
-    source_ids.extend(_normalize_list(filters.pop("source_id", [])))
-    source_types = _normalize_list(filters.pop("source_types", []))
-    source_types.extend(_normalize_list(filters.pop("source_type", [])))
-    source_types.extend(_normalize_list(request.source_types))
-    matched_source_ids = _source_ids_for_types(metadata_store, source_types)
-    if source_types and not matched_source_ids:
-        raise HTTPException(
-            status_code=400,
-            detail="no configured sources match selected source types",
-        )
-    source_ids.extend(matched_source_ids)
-    source_ids.extend(_normalize_list(request.source_ids))
-    if source_ids:
-        filters["source_ids"] = _dedupe(source_ids)
-    return filters
-
-
-def _normalize_list(value: Any) -> list[str]:
-    if not value:
-        return []
-    if isinstance(value, str):
-        values = value.replace("\n", ",").split(",")
-    elif isinstance(value, list | tuple | set):
-        values = value
-    else:
-        values = [value]
-    return [_normalize_text(item) for item in values if _normalize_text(item)]
-
-
-def _source_ids_for_types(metadata_store: Any, source_types: list[str]) -> list[str]:
-    requested = {_normalize_source_type(value) for value in source_types}
-    requested.discard("")
-    if not requested or metadata_store is None:
-        return []
-    source_ids = []
-    for source in _list_sources(metadata_store):
-        if _normalize_source_type(source.get("source_type", "")) in requested:
-            source_ids.append(source["source_id"])
-    return source_ids
-
-
-def _normalize_source_type(value: Any) -> str:
-    normalized = _normalize_text(value).lower()
-    if normalized in {"docs", "pdf"}:
-        return "web"
-    return normalized
-
-
-def _normalize_target_source_type(value: Any) -> str:
-    return _normalize_text(value).lower()
-
-
-def _is_loopback_client(host: str | None) -> bool:
-    if host in {"testclient", "localhost"}:
-        return True
-    try:
-        return ipaddress.ip_address(host or "").is_loopback
-    except ValueError:
-        return False
-
-
-def _remote_console_allowed() -> bool:
-    return os.getenv("CONTEXTWIKI_WEB_CONSOLE_ALLOW_REMOTE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _log_suppressed_error(message: str, exc: Exception | None = None) -> None:
     if exc is None:
         logger.error("%s; details suppressed to avoid leaking secrets", message)
@@ -1573,96 +982,3 @@ def _log_suppressed_error(message: str, exc: Exception | None = None) -> None:
         message,
         type(exc).__name__,
     )
-
-
-def _safe_answer_failure_payload(question: str, exc: Exception) -> dict[str, Any]:
-    if _is_openai_authentication_error(exc):
-        return {
-            "question": question,
-            "answer": (
-                "Answer failed because the OpenAI API key was rejected. "
-                "Restart the local server with the correct .env or OPENAI_API_KEY."
-            ),
-            "evidence_status": "configuration_error",
-            "citations": [],
-            "used_chunks": [],
-        }
-    return {
-        "question": question,
-        "answer": "Answer failed. See server logs for details.",
-        "evidence_status": "error",
-        "citations": [],
-        "used_chunks": [],
-    }
-
-
-def _is_openai_authentication_error(exc: Exception) -> bool:
-    class_name = type(exc).__name__.lower()
-    module_name = type(exc).__module__.lower()
-    message = str(exc).lower()
-    status_code = getattr(exc, "status_code", None)
-    return (
-        status_code == 401
-        and ("authentication" in class_name or "api key" in message)
-        and ("openai" in module_name or "openai" in message or "api key" in message)
-    )
-
-
-def _is_local_host_header(value: str) -> bool:
-    host = _parse_authority_host(value)
-    if not host:
-        return False
-    return host in {"localhost", "testserver"} or _is_loopback_client(host)
-
-
-def _is_local_url(value: str) -> bool:
-    parsed = urlparse(value)
-    if parsed.scheme and parsed.scheme not in {"http", "https"}:
-        return False
-    return _is_local_host_header(parsed.netloc or parsed.path)
-
-
-def _parse_authority_host(value: str) -> str:
-    authority = (value or "").strip()
-    if not authority or "@" in authority:
-        return ""
-    if "://" in authority:
-        parsed = urlparse(authority)
-        authority = parsed.netloc
-    if authority.startswith("["):
-        end = authority.find("]")
-        if end < 0:
-            return ""
-        host = authority[1:end].strip().lower()
-        remainder = authority[end + 1 :]
-        if remainder and not (remainder.startswith(":") and remainder[1:].isdigit()):
-            return ""
-        return host
-    try:
-        ipaddress.ip_address(authority)
-        return authority.lower()
-    except ValueError:
-        pass
-    if ":" in authority:
-        host, port = authority.rsplit(":", 1)
-        if not port.isdigit():
-            return ""
-        authority = host
-    if ":" in authority:
-        return ""
-    return authority.strip().lower()
-
-
-def _without_persisted_output_path(result: dict[str, Any]) -> dict[str, Any]:
-    cleaned = dict(result)
-    if cleaned.pop("output_path", None):
-        cleaned["output_retention"] = "temporary file cleaned up"
-    return cleaned
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    deduped = []
-    for value in values:
-        if value not in deduped:
-            deduped.append(value)
-    return deduped

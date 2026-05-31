@@ -1,0 +1,20 @@
+[
+  {
+    "case_id": "contextwiki-grounded-answer",
+    "question": "What is ContextWiki?",
+    "expected_status": "grounded",
+    "expected_answer_terms": ["ContextWiki", "MCP", "citations"],
+    "forbidden_answer_terms": ["deployment region", "always production-ready"],
+    "required_citation_chunk_ids": ["chunk-contextwiki-overview"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "unknown-deployment-region",
+    "question": "What is the deployment region?",
+    "expected_status": "insufficient",
+    "expected_answer_terms": ["Insufficient evidence"],
+    "forbidden_answer_terms": ["us-east-1", "ap-northeast-2"],
+    "required_citation_chunk_ids": [],
+    "min_citation_count": 0
+  }
+]
