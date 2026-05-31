@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 from typing import Tuple
@@ -7,6 +6,7 @@ from dataclasses import dataclass
 from search.service import SearchService
 from fetching.web_searcher import WebSearcher
 from indexing.indexer import ContentIndexer
+from indexing.background_tasks import get_default_background_task_registry
 from core.models import DocumentModel
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,16 @@ class DynamicSearchService:
         local_search: SearchService,
         web_searcher: WebSearcher,
         indexer: ContentIndexer,
-        min_threshold: int = 3
+        min_threshold: int = 3,
+        background_task_registry=None,
     ):
         self.local_search = local_search
         self.web_searcher = web_searcher
         self.indexer = indexer
         self.min_threshold = min_threshold
+        self.background_task_registry = (
+            background_task_registry or get_default_background_task_registry()
+        )
     
     async def search(
         self, 
@@ -85,7 +89,11 @@ class DynamicSearchService:
         
         # 4단계: 백그라운드 인덱싱
         logger.info(f"📚 Scheduling {len(web_docs)} documents for background indexing")
-        asyncio.create_task(self._index_background(web_docs))
+        self.background_task_registry.schedule(
+            "search_content_fallback",
+            self._index_background(web_docs),
+            total_docs=len(web_docs),
+        )
         
         return SearchResult(
             source="web",
@@ -107,14 +115,12 @@ class DynamicSearchService:
             logger.error(f"Local search error: {e}")
             return "", 0
     
-    async def _index_background(self, documents: list):
+    async def _index_background(self, documents: list) -> int:
         """백그라운드 인덱싱"""
-        try:
-            logger.info(f"⏳ Background indexing started")
-            await self.indexer.index_documents(documents)
-            logger.info(f"✅ Successfully indexed {len(documents)} documents")
-        except Exception as e:
-            logger.error(f"❌ Background indexing failed: {e}")
+        logger.info(f"⏳ Background indexing started")
+        await self.indexer.index_documents(documents)
+        logger.info(f"✅ Successfully indexed {len(documents)} documents")
+        return len(documents)
     
     @staticmethod
     def _extract_count(markdown: str) -> int:

@@ -1564,7 +1564,7 @@ def test_run_codex_cli_uses_ephemeral_isolated_subprocess(monkeypatch, tmp_path)
             "sandbox-exec": "/usr/bin/sandbox-exec",
         }.get(binary)
 
-    monkeypatch.setattr("web_console.app.shutil.which", fake_which)
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", fake_which)
 
     class FakeProcess:
         pid = 4242
@@ -1648,7 +1648,7 @@ def test_run_codex_cli_nonzero_exit_uses_safe_failure_message(monkeypatch):
     def fake_which(binary):
         return "/usr/local/bin/codex" if binary == "codex" else None
 
-    monkeypatch.setattr("web_console.app.shutil.which", fake_which)
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", fake_which)
 
     class FakeProcess:
         pid = 4242
@@ -1688,7 +1688,7 @@ def test_run_codex_cli_generic_nonzero_exit_suppresses_stderr(monkeypatch):
     def fake_which(binary):
         return "/usr/local/bin/codex" if binary == "codex" else None
 
-    monkeypatch.setattr("web_console.app.shutil.which", fake_which)
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", fake_which)
 
     class FakeProcess:
         pid = 4242
@@ -1763,7 +1763,7 @@ def test_run_codex_cli_fails_closed_when_requested_macos_sandbox_is_unavailable(
     def fake_which(binary):
         return "/usr/local/bin/codex" if binary == "codex" else None
 
-    monkeypatch.setattr("web_console.app.shutil.which", fake_which)
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", fake_which)
 
     class FakeProcess:
         pid = 4242
@@ -1804,7 +1804,7 @@ def test_run_codex_cli_ignores_macos_sandbox_by_default(monkeypatch):
             "sandbox-exec": "/usr/bin/sandbox-exec",
         }.get(binary)
 
-    monkeypatch.setattr("web_console.app.shutil.which", fake_which)
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", fake_which)
 
     class FakeProcess:
         pid = 4242
@@ -1842,7 +1842,7 @@ def test_run_codex_cli_terminates_process_group_on_timeout(monkeypatch):
     calls = []
     captured = {}
     monkeypatch.delenv("CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC", raising=False)
-    monkeypatch.setattr("web_console.app.shutil.which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", lambda _: "/usr/local/bin/codex")
 
     class HangingProcess:
         pid = 4242
@@ -1862,9 +1862,9 @@ def test_run_codex_cli_terminates_process_group_on_timeout(monkeypatch):
         return HangingProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr("web_console.app.os.getpgid", lambda pid: pid)
-    monkeypatch.setattr("web_console.app.os.getpgrp", lambda: 9999)
-    monkeypatch.setattr("web_console.app.os.killpg", lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr("web_console.codex_cli.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("web_console.codex_cli.os.getpgrp", lambda: 9999)
+    monkeypatch.setattr("web_console.codex_cli.os.killpg", lambda pid, sig: calls.append((pid, sig)))
 
     with pytest.raises(TimeoutError):
         asyncio.run(
@@ -1883,7 +1883,7 @@ def test_run_codex_cli_terminates_process_group_on_cancellation(monkeypatch):
     calls = []
     captured = {}
     monkeypatch.delenv("CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC", raising=False)
-    monkeypatch.setattr("web_console.app.shutil.which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr("web_console.codex_cli.shutil.which", lambda _: "/usr/local/bin/codex")
 
     class CancelledProcess:
         pid = 4242
@@ -1904,7 +1904,7 @@ def test_run_codex_cli_terminates_process_group_on_cancellation(monkeypatch):
         return CancelledProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr("web_console.app.os.killpg", lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr("web_console.codex_cli.os.killpg", lambda pid, sig: calls.append((pid, sig)))
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
