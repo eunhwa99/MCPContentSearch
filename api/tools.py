@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -10,9 +9,11 @@ from environments.config import AppConfig
 from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
 from fetching.fetcher import DocumentFetcher
 from core.models import IndexState
+from indexing.background_tasks import get_default_background_task_registry, safe_error_message
 
 if TYPE_CHECKING:
     from fetching.web_searcher import WebSearcher
+    from indexing.background_tasks import BackgroundTaskRegistry
     from indexing.indexer import ContentIndexer
     from search.dynamic_search import DynamicSearchService
     from search.service import SearchService
@@ -32,8 +33,16 @@ def register_tools(
     wiki_service=None,
     metadata_store=None,
     source_registry=None,
+    background_task_registry: BackgroundTaskRegistry | None = None,
 ):
     """MCP 도구 등록"""
+    task_registry = background_task_registry
+    if task_registry is None and dynamic_search is not None:
+        task_registry = getattr(dynamic_search, "background_task_registry", None)
+    if task_registry is None:
+        task_registry = get_default_background_task_registry()
+    if dynamic_search is not None:
+        dynamic_search.background_task_registry = task_registry
     
     # ================================================================
     # 검색 도구
@@ -111,7 +120,11 @@ def register_tools(
                 ])
             
             # 백그라운드 인덱싱
-            asyncio.create_task(_index_background(indexer, docs))
+            task_registry.schedule(
+                "search_notion",
+                _index_background(indexer, docs),
+                total_docs=len(docs),
+            )
             
             return "\n".join(output) + f"\n\n💡 {len(docs)}개 문서를 DB에 추가합니다."
             
@@ -156,7 +169,11 @@ def register_tools(
                 ])
             
             # 백그라운드 인덱싱
-            asyncio.create_task(_index_background(indexer, docs))
+            task_registry.schedule(
+                "search_tistory",
+                _index_background(indexer, docs),
+                total_docs=len(docs),
+            )
             
             return "\n".join(output) + f"\n\n💡 {len(docs)}개 문서를 DB에 추가합니다."
             
@@ -180,7 +197,10 @@ def register_tools(
         if indexer.status.state == IndexState.RUNNING:
             return "이미 인덱싱이 진행 중입니다."
         
-        asyncio.create_task(_index_all_background(indexer))
+        task_registry.schedule(
+            "trigger_index_all_content",
+            _index_all_background(indexer),
+        )
         return "인덱싱을 백그라운드에서 시작했습니다. 'get_index_status'로 상태 확인하세요."
     
     
@@ -192,7 +212,11 @@ def register_tools(
         Returns:
             상태 정보
         """
-        return indexer.status.model_dump()
+        status = indexer.status.model_dump()
+        if status.get("state") == IndexState.ERROR and status.get("message"):
+            status["message"] = safe_error_message(RuntimeError(str(status["message"])))
+        status["background_tasks"] = task_registry.snapshot()
+        return status
 
     # ================================================================
     # ContextWiki MVP 도구
@@ -336,24 +360,20 @@ def register_tools(
 # 헬퍼 함수
 # ================================================================
 
-async def _index_all_background(indexer: ContentIndexer):
+async def _index_all_background(indexer: ContentIndexer) -> int:
     """전체 인덱싱 백그라운드 작업"""
-    try:
-        config = AppConfig()
-        fetcher = DocumentFetcher(config, NOTION_API_KEY, TISTORY_BLOG_NAME)
-        
-        documents = await fetcher.fetch_all()
-        await indexer.index_documents(documents)
-        
-        logger.info("✅ Background indexing completed")
-    except Exception as e:
-        logger.error(f"❌ Background indexing failed: {e}")
+    config = AppConfig()
+    fetcher = DocumentFetcher(config, NOTION_API_KEY, TISTORY_BLOG_NAME)
+
+    documents = await fetcher.fetch_all()
+    await indexer.index_documents(documents)
+
+    logger.info("✅ Background indexing completed")
+    return len(documents)
 
 
-async def _index_background(indexer: ContentIndexer, documents: list):
+async def _index_background(indexer: ContentIndexer, documents: list) -> int:
     """웹 검색 결과 백그라운드 인덱싱"""
-    try:
-        await indexer.index_documents(documents)
-        logger.info(f"✅ Indexed {len(documents)} documents")
-    except Exception as e:
-        logger.error(f"❌ Indexing failed: {e}")
+    await indexer.index_documents(documents)
+    logger.info(f"✅ Indexed {len(documents)} documents")
+    return len(documents)

@@ -3,7 +3,8 @@ import asyncio
 import pytest
 
 from api.tools import register_tools
-from core.models import ContextSearchResult
+from core.models import ContextSearchResult, DocumentModel
+from indexing.background_tasks import BackgroundTaskRegistry
 
 
 pytestmark = pytest.mark.integration
@@ -23,10 +24,70 @@ class FakeMCP:
 
 class FakeIndexer:
     class Status:
+        state = "idle"
+
         def model_dump(self):
             return {"state": "idle"}
 
     status = Status()
+
+    async def index_documents(self, documents):
+        return None
+
+
+class FakeFailingIndexer(FakeIndexer):
+    async def index_documents(self, documents):
+        raise RuntimeError("index failed with token=super-secret-value")
+
+
+class FakeErrorStatusIndexer(FakeIndexer):
+    class Status:
+        state = "error"
+
+        def model_dump(self):
+            return {
+                "state": "error",
+                "message": (
+                    "Error: token=super-secret-value "
+                    "AKIAIOSFODNN7EXAMPLE "
+                    "Authorization: Basic dXNlcjpwYXNzd29yZA=="
+                ),
+            }
+
+    status = Status()
+
+
+class FakeWebSearcher:
+    async def search(self, query, n_results=10, platforms=None):
+        platform = platforms[0] if platforms else "web"
+        return [
+            DocumentModel(
+                id=f"{platform}-doc",
+                title=f"{platform.title()} Doc",
+                content="background indexing evidence",
+                url=f"https://example.com/{platform}",
+                platform=platform,
+                date="2026-05-31",
+            )
+        ]
+
+
+class FakeLocalSearch:
+    async def search(self, query, n_results=10):
+        return "Total 0 documents found"
+
+
+async def wait_for_index_status(mcp):
+    status = await mcp.tools["get_index_status"]()
+    for _ in range(5):
+        if status["background_tasks"] and status["background_tasks"][-1]["state"] in {
+            "succeeded",
+            "failed",
+        }:
+            return status
+        await asyncio.sleep(0)
+        status = await mcp.tools["get_index_status"]()
+    return status
 
 
 class FakeFailingIngestion:
@@ -264,3 +325,131 @@ def test_get_sync_status_returns_source_after_status_recovery():
     assert single["latest_job"]["status"] == "failed"
     assert all_sources["sources"][0]["source"]["sync_status"] == "failed"
     assert all_sources["sources"][0]["latest_job"]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_label"),
+    [
+        ("search_notion", "search_notion"),
+        ("search_tistory", "search_tistory"),
+    ],
+)
+def test_get_index_status_reports_legacy_search_background_failures(tool_name, expected_label):
+    async def run_tool_and_status():
+        mcp = FakeMCP()
+        register_tools(
+            mcp,
+            indexer=FakeFailingIndexer(),
+            search_service=None,
+            dynamic_search=None,
+            web_searcher=FakeWebSearcher(),
+            background_task_registry=BackgroundTaskRegistry(),
+        )
+
+        await mcp.tools[tool_name]("background status")
+        return await wait_for_index_status(mcp)
+
+    status = asyncio.run(run_tool_and_status())
+
+    assert status["state"] == "idle"
+    task = status["background_tasks"][-1]
+    assert task["label"] == expected_label
+    assert task["state"] == "failed"
+    assert task["total_docs"] == 1
+    assert task["processed_docs"] == 0
+    assert "super-secret-value" not in task["error"]
+    assert "token=<redacted>" in task["error"]
+
+
+def test_get_index_status_redacts_top_level_error_message():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeErrorStatusIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        background_task_registry=BackgroundTaskRegistry(),
+    )
+
+    status = asyncio.run(mcp.tools["get_index_status"]())
+
+    assert status["state"] == "error"
+    assert "super-secret-value" not in status["message"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in status["message"]
+    assert "Basic dXNlcjpwYXNzd29yZA==" not in status["message"]
+    assert "token=<redacted>" in status["message"]
+
+
+def test_get_index_status_reports_search_content_fallback_background_task():
+    from search.dynamic_search import DynamicSearchService
+
+    async def run_tool_and_status():
+        mcp = FakeMCP()
+        registry = BackgroundTaskRegistry()
+        dynamic_search = DynamicSearchService(
+            local_search=FakeLocalSearch(),
+            web_searcher=FakeWebSearcher(),
+            indexer=FakeIndexer(),
+            background_task_registry=registry,
+        )
+        register_tools(
+            mcp,
+            indexer=FakeIndexer(),
+            search_service=None,
+            dynamic_search=dynamic_search,
+            web_searcher=FakeWebSearcher(),
+            background_task_registry=registry,
+        )
+
+        await mcp.tools["search_content"]("fallback topic")
+        return await wait_for_index_status(mcp)
+
+    status = asyncio.run(run_tool_and_status())
+
+    task = status["background_tasks"][-1]
+    assert task["label"] == "search_content_fallback"
+    assert task["state"] == "succeeded"
+    assert task["total_docs"] == 1
+    assert task["processed_docs"] == 1
+
+
+def test_get_index_status_reports_trigger_index_all_content_task(monkeypatch):
+    class FakeFetcher:
+        def __init__(self, config, notion_api_key, tistory_blog_name):
+            pass
+
+        async def fetch_all(self):
+            return [
+                DocumentModel(
+                    id="full-index-doc",
+                    title="Full Index Doc",
+                    content="background indexing evidence",
+                    url="https://example.com/full-index",
+                    platform="web",
+                )
+            ]
+
+    async def run_tool_and_status():
+        mcp = FakeMCP()
+        registry = BackgroundTaskRegistry()
+        monkeypatch.setattr("api.tools.DocumentFetcher", FakeFetcher)
+        register_tools(
+            mcp,
+            indexer=FakeIndexer(),
+            search_service=None,
+            dynamic_search=None,
+            web_searcher=FakeWebSearcher(),
+            background_task_registry=registry,
+        )
+
+        await mcp.tools["trigger_index_all_content"]()
+        return await wait_for_index_status(mcp)
+
+    status = asyncio.run(run_tool_and_status())
+
+    task = status["background_tasks"][-1]
+    assert task["label"] == "trigger_index_all_content"
+    assert task["state"] == "succeeded"
+    assert task["total_docs"] == 1
+    assert task["processed_docs"] == 1

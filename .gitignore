@@ -12,3 +12,4 @@ venv/
 chroma_db/
 .env
 .DS_Store
+.idea/

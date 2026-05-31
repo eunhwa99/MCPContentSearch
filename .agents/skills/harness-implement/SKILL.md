@@ -29,6 +29,6 @@ metadata unless the plan and user approval allow it. Do not expose secrets.
 
 ## Output
 
-Leave changes ready for the test lane and review gate. If returning from a failure, record the first actionable failure and the changed code path in the plan progress log.
+Leave changes ready for the test lane, functional smoke gate, and review gate. If returning from a failure, record the first actionable failure and the changed code path in the plan progress log.
 
-Do not commit from the implementation lane. Final commit, push, and PR delivery happen only after verification, integration, and the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+Do not commit from the implementation lane. Final commit, push, and PR delivery happen only after verification, the functional smoke matrix, integration, and the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work or a safety blocker prevents delivery.

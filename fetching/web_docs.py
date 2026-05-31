@@ -1,8 +1,7 @@
 import asyncio
 from dataclasses import dataclass, field
-from email.utils import parsedate_to_datetime
 import re
-from urllib.parse import parse_qsl, unquote, urldefrag, urljoin, urlparse
+from urllib.parse import unquote, urlparse
 import warnings
 from xml.etree import ElementTree
 
@@ -19,206 +18,33 @@ from bs4 import (
 
 from core.models import DocumentModel
 from environments.config import AppConfig
+from fetching.web_media import (
+    content_type_header as _content_type,
+    explicit_html_response_has_unsupported_xml_root as _explicit_html_response_has_unsupported_xml_root,
+    has_unsupported_media_hint as _has_unsupported_media_hint,
+    looks_like_xml as _looks_like_xml,
+    markup_root_name as _markup_root_name,
+    response_disables_stale_cleanup as _response_disables_stale_cleanup,
+    should_read_response_body as _should_read_response_body,
+    strip_leading_bom as _strip_leading_bom,
+    supports_page_content as _supports_page_content,
+)
+from fetching.web_safety import (
+    canonical_url as _canonical_url,
+    crawl_key as _crawl_key,
+    fetch_url as _fetch_url,
+    has_non_fetchable_scheme as _has_non_fetchable_scheme,
+    join_fetch_url as _join_fetch_url,
+    origin_url as _origin_url,
+    redact_url_credentials as _redact_url_credentials,
+    safe_response_header_value as _safe_response_header_value,
+    same_origin as _same_origin,
+    seed_url as _seed_url,
+)
 
 
 SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9"
 ALLOWED_SITEMAP_NAMESPACES = {"", SITEMAP_NAMESPACE}
-SUPPORTED_PAGE_CONTENT_TYPES = {
-    "application/markdown",
-    "application/xhtml+xml",
-    "text/html",
-    "text/markdown",
-    "text/plain",
-    "text/x-markdown",
-}
-READABLE_RESPONSE_CONTENT_TYPES = SUPPORTED_PAGE_CONTENT_TYPES | {
-    "application/atom+xml",
-    "application/rss+xml",
-    "application/xml",
-    "text/xml",
-}
-SUPPORTED_PAGE_EXTENSIONS = {
-    ".htm",
-    ".html",
-    ".markdown",
-    ".md",
-    ".rst",
-    ".txt",
-}
-UNSUPPORTED_PAGE_EXTENSIONS = {
-    ".7z",
-    ".avi",
-    ".bmp",
-    ".bz2",
-    ".dmg",
-    ".doc",
-    ".docx",
-    ".exe",
-    ".gif",
-    ".gz",
-    ".ico",
-    ".iso",
-    ".jar",
-    ".jpeg",
-    ".jpg",
-    ".mov",
-    ".mp3",
-    ".mp4",
-    ".pdf",
-    ".png",
-    ".ppt",
-    ".pptx",
-    ".rar",
-    ".svg",
-    ".svgz",
-    ".tar",
-    ".tgz",
-    ".webm",
-    ".webp",
-    ".xls",
-    ".xlsx",
-    ".zip",
-}
-HTML_DOCUMENT_ROOTS = {
-    "article",
-    "body",
-    "div",
-    "h1",
-    "h2",
-    "head",
-    "html",
-    "main",
-    "p",
-    "section",
-    "title",
-}
-HTML_FRAGMENT_ROOTS = HTML_DOCUMENT_ROOTS | {
-    "a",
-    "abbr",
-    "aside",
-    "b",
-    "blockquote",
-    "cite",
-    "code",
-    "data",
-    "dd",
-    "details",
-    "dfn",
-    "dl",
-    "dt",
-    "em",
-    "figcaption",
-    "figure",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "i",
-    "kbd",
-    "li",
-    "mark",
-    "ol",
-    "pre",
-    "q",
-    "s",
-    "samp",
-    "small",
-    "span",
-    "strong",
-    "sub",
-    "sup",
-    "table",
-    "tbody",
-    "td",
-    "tfoot",
-    "th",
-    "thead",
-    "tr",
-    "u",
-    "ul",
-    "var",
-    "wbr",
-}
-SENSITIVE_QUERY_KEYS = {
-    "access_token",
-    "api_key",
-    "apikey",
-    "auth",
-    "authorization",
-    "client_secret",
-    "cookie",
-    "code",
-    "csrf",
-    "jwt",
-    "key",
-    "pass",
-    "password",
-    "secret",
-    "session",
-    "session_id",
-    "sessionid",
-    "sig",
-    "signature",
-    "sid",
-    "token",
-    "xsrf",
-}
-CREDENTIAL_LIKE_RE = re.compile(
-    r"(?:"
-    r"gh[pousr]_[A-Za-z0-9_]+|"
-    r"github_pat_[A-Za-z0-9_]+|"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
-    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
-    r"AIza[A-Za-z0-9_-]{30,}|"
-    r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|"
-    r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"
-    r")",
-    re.IGNORECASE,
-)
-SAFE_ETAG_RE = re.compile(r'^(?:W/)?"[\x20-\x21\x23-\x7e]*"$')
-SENSITIVE_ASSIGNMENT_KEY_RE = re.compile(
-    r"(?:^|[^A-Za-z0-9])"
-    r"(?:access[-_]?key(?:[-_]?id)?|access[-_]?token|api[-_]?key|"
-    r"auth|authorization|aws[-_]?access[-_]?key[-_]?id|client[-_]?secret|"
-    r"code|cookie|credential|csrf[-_]?token|csrf|j[-_]?session[-_]?id|"
-    r"jwt[-_]?token|jwt|key|pass|password|php[-_]?sess[-_]?id|secret|"
-    r"session[-_]?id|session[-_]?token|session|sig|signature|sid|token|"
-    r"xsrf[-_]?token|xsrf|"
-    r"x[-_]?amz[-_]?access[-_]?key[-_]?id|x[-_]?amz[-_]?credential|"
-    r"x[-_]?amz[-_]?signature)"
-    r"\s*[:=]",
-    re.IGNORECASE,
-)
-SENSITIVE_PATH_SEGMENT_KEYS = {
-    "accesskey",
-    "accesskeyid",
-    "accesstoken",
-    "apikey",
-    "authorization",
-    "awsaccesskeyid",
-    "clientsecret",
-    "cookie",
-    "credential",
-    "csrf",
-    "csrftoken",
-    "jwt",
-    "jwttoken",
-    "jsessionid",
-    "password",
-    "phpsessid",
-    "secret",
-    "session",
-    "sessionid",
-    "sessiontoken",
-    "sid",
-    "token",
-    "xamzaccesskeyid",
-    "xamzcredential",
-    "xamzsignature",
-    "xsrf",
-    "xsrftoken",
-}
 
 
 @dataclass(frozen=True)
@@ -1025,71 +851,6 @@ class WebsiteDocsFetcher:
         return url
 
 
-def _normalize_url(url: str) -> str:
-    normalized, _ = urldefrag(url.strip())
-    parsed = urlparse(normalized)
-    path = parsed.path
-    if path != "/" and path.endswith("/"):
-        path = path.rstrip("/")
-    return parsed._replace(path=path).geturl()
-
-
-def _fetch_url(url: str) -> str:
-    normalized, _ = urldefrag(url.strip())
-    return normalized
-
-
-def _seed_url(url: str) -> str:
-    try:
-        normalized = _fetch_url(url)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid website seed URL: {_redact_url_credentials(url)}"
-        ) from exc
-    if not _valid_fetch_url(normalized):
-        raise ValueError(f"Invalid website seed URL: {_redact_url_credentials(normalized)}")
-    return normalized
-
-
-def _join_fetch_url(base_url: str, value: str) -> str:
-    try:
-        joined_url = _fetch_url(urljoin(base_url, value))
-    except ValueError:
-        return ""
-    if not _valid_fetch_url(joined_url):
-        return ""
-    return joined_url
-
-
-def _valid_fetch_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    return (
-        parsed.scheme in {"http", "https"}
-        and not _has_url_credentials(parsed)
-        and not _has_sensitive_query(parsed)
-        and not _contains_credential_like_value(url)
-        and _origin_host_port(parsed) is not None
-    )
-
-
-def _canonical_url(url: str) -> str:
-    normalized = _normalize_url(url)
-    parsed = urlparse(normalized)
-    origin = _origin_url(parsed)
-    path = parsed.path or "/"
-    if path != "/" and path.endswith("/"):
-        path = path.rstrip("/")
-    query = f"?{parsed.query}" if parsed.query else ""
-    return f"{origin}{path}{query}"
-
-
-def _crawl_key(url: str) -> str:
-    return _canonical_url(url)
-
-
 def _iter_page_links(url: str, soup: BeautifulSoup, *, on_malformed=None):
     seen_links = set()
     for element in soup.descendants:
@@ -1114,223 +875,6 @@ def _iter_page_links(url: str, soup: BeautifulSoup, *, on_malformed=None):
         yield linked_url
 
 
-def _has_non_fetchable_scheme(value: str) -> bool:
-    try:
-        scheme = urlparse(value.strip()).scheme.lower()
-    except ValueError:
-        return False
-    return bool(scheme) and scheme not in {"http", "https"}
-
-
-def _same_origin(left: str, right: str) -> bool:
-    try:
-        left_parsed = urlparse(left)
-        right_parsed = urlparse(right)
-    except ValueError:
-        return False
-    left_origin = _origin_host_port(left_parsed)
-    right_origin = _origin_host_port(right_parsed)
-    return (
-        left_parsed.scheme in {"http", "https"}
-        and right_parsed.scheme in {"http", "https"}
-        and left_parsed.scheme == right_parsed.scheme
-        and left_origin is not None
-        and right_origin is not None
-        and left_origin == right_origin
-    )
-
-
-def _origin_host_port(parsed) -> tuple[str, int | None] | None:
-    if _has_url_credentials(parsed):
-        return None
-    try:
-        hostname = (parsed.hostname or "").lower()
-        if not hostname:
-            return None
-        port = parsed.port
-    except ValueError:
-        return None
-    if port is None and parsed.scheme == "http":
-        port = 80
-    elif port is None and parsed.scheme == "https":
-        port = 443
-    return hostname, port
-
-
-def _origin_url(parsed) -> str:
-    origin = _origin_host_port(parsed)
-    if origin is None:
-        raise ValueError(f"Invalid URL origin: {_redact_url_credentials(parsed.geturl())}")
-    hostname, port = origin
-    default_port = (parsed.scheme == "http" and port == 80) or (
-        parsed.scheme == "https" and port == 443
-    )
-    host = f"[{hostname}]" if ":" in hostname else hostname
-    netloc = host if default_port or port is None else f"{host}:{port}"
-    return f"{parsed.scheme}://{netloc}"
-
-
-def _has_url_credentials(parsed) -> bool:
-    return bool(parsed.username or parsed.password)
-
-
-def _has_sensitive_query(parsed) -> bool:
-    return any(
-        _is_sensitive_query_key(key) or _contains_credential_like_value(value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-    )
-
-
-def _is_sensitive_query_key(key: str) -> bool:
-    for variant in _decoded_variants(key.strip()):
-        normalized = variant.lower().replace("-", "_")
-        compact = re.sub(r"[^a-z0-9]", "", variant.lower())
-        if (
-            normalized in SENSITIVE_QUERY_KEYS
-            or normalized.endswith("_token")
-            or normalized.endswith("_session")
-            or normalized.endswith("_cookie")
-            or normalized.endswith("_jwt")
-            or normalized.endswith("_csrf")
-            or normalized.endswith("_xsrf")
-            or normalized.endswith("_secret")
-            or normalized.endswith("_key")
-            or normalized.endswith("_signature")
-            or normalized.endswith("_credential")
-            or "access_key" in normalized
-            or compact in {
-                "accesskey",
-                "accesskeyid",
-                "awsaccesskeyid",
-                "cookie",
-                "csrf",
-                "csrftoken",
-                "jwt",
-                "jwttoken",
-                "jsessionid",
-                "phpsessid",
-                "session",
-                "sessionid",
-                "sessiontoken",
-                "sid",
-                "xsrf",
-                "xsrftoken",
-            }
-            or compact.endswith("token")
-            or compact.endswith("session")
-            or compact.endswith("sessionid")
-            or compact.endswith("cookie")
-            or compact.endswith("csrf")
-            or compact.endswith("xsrf")
-            or compact.endswith("jwt")
-            or compact.endswith("accesskey")
-            or compact.endswith("accesskeyid")
-        ):
-            return True
-    return False
-
-
-def _contains_credential_like_value(value: str) -> bool:
-    return any(
-        CREDENTIAL_LIKE_RE.search(variant)
-        or _contains_sensitive_key_marker(variant)
-        or _contains_sensitive_path_segment(variant)
-        for variant in _decoded_variants(value)
-    )
-
-
-def _contains_sensitive_key_marker(value: str) -> bool:
-    return bool(SENSITIVE_ASSIGNMENT_KEY_RE.search(value))
-
-
-def _contains_sensitive_path_segment(value: str) -> bool:
-    segments = [segment for segment in re.split(r"[\\/]+", value) if segment]
-    for index, segment in enumerate(segments[:-1]):
-        if _is_sensitive_path_segment_key(segment) and segments[index + 1]:
-            return True
-    return False
-
-
-def _is_sensitive_path_segment_key(value: str) -> bool:
-    compact = re.sub(r"[^a-z0-9]", "", value.lower())
-    return compact in SENSITIVE_PATH_SEGMENT_KEYS
-
-
-def _decoded_variants(value: str) -> tuple[str, ...]:
-    variants = [value]
-    current = value
-    for _ in range(3):
-        decoded = unquote(current)
-        if decoded == current:
-            break
-        variants.append(decoded)
-        current = decoded
-    return tuple(variants)
-
-
-def _redact_url_credentials(url: str) -> str:
-    if not url:
-        return url
-    if _contains_credential_like_value(url):
-        return "<redacted>"
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return _redact_raw_url_credentials(url)
-    if "@" not in parsed.netloc:
-        redacted = parsed._replace(
-            query=_redact_query_secrets(parsed.query),
-            fragment=_redact_fragment(parsed.fragment),
-        ).geturl()
-        if "@" in redacted and not parsed.netloc:
-            return _redact_raw_url_credentials(redacted)
-        return redacted
-    host_part = parsed.netloc.rsplit("@", 1)[1]
-    return parsed._replace(
-        netloc=f"<credentials>@{host_part}",
-        query=_redact_query_secrets(parsed.query),
-        fragment=_redact_fragment(parsed.fragment),
-    ).geturl()
-
-
-def _redact_query_secrets(query: str) -> str:
-    if not query:
-        return query
-    return "redacted"
-
-
-def _redact_fragment(fragment: str) -> str:
-    return "<redacted>" if fragment else fragment
-
-
-def _redact_raw_url_credentials(url: str) -> str:
-    scheme_end = url.find("://")
-    authority_start = scheme_end + 3 if scheme_end != -1 else 0
-    at_index = url.find("@", authority_start)
-    redacted = url
-    if at_index != -1:
-        redacted = f"{url[:authority_start]}<credentials>@{url[at_index + 1:]}"
-    return _redact_raw_query_secrets(redacted)
-
-
-def _redact_raw_query_secrets(url: str) -> str:
-    query_start = url.find("?")
-    fragment_start = url.find("#")
-    if query_start == -1:
-        if fragment_start == -1:
-            return url
-        return f"{url[:fragment_start]}#<redacted>"
-    fragment_start = url.find("#", query_start)
-    query_end = len(url) if fragment_start == -1 else fragment_start
-    query = url[query_start + 1 : query_end]
-    redacted_query = _redact_query_secrets(query)
-    redacted_url = f"{url[:query_start + 1]}{redacted_query}{url[query_end:]}"
-    redacted_fragment_start = redacted_url.find("#", query_start)
-    if redacted_fragment_start == -1:
-        return redacted_url
-    return f"{redacted_url[:redacted_fragment_start]}#<redacted>"
-
-
 def _looks_like_sitemap(url: str, body: str) -> bool:
     lowered_path = urlparse(url).path.lower().rstrip("/")
     stripped = _strip_leading_bom(body).lstrip().lower()
@@ -1349,108 +893,12 @@ def _looks_like_sitemap(url: str, body: str) -> bool:
     )
 
 
-def _looks_like_xml(url: str, body: str) -> bool:
-    stripped = _strip_leading_bom(body).lstrip().lower()
-    return stripped.startswith("<?xml") or urlparse(url).path.lower().endswith(".xml")
-
-
-def _supports_page_content(response: FetchResponse) -> bool:
-    content_type = _content_type(response.headers)
-    extension = _url_extension(response.url)
-    if _response_looks_like_binary_media(response):
-        return False
-    if _has_unsupported_media_hint(response.url):
-        return _body_looks_like_html_page(response.text)
-    if not content_type:
-        if extension in SUPPORTED_PAGE_EXTENSIONS:
-            return True
-        return _body_looks_like_html_page(response.text)
-    if content_type == "text/html":
-        return True
-    if content_type == "application/xhtml+xml":
-        return _body_looks_like_html_page(response.text, allow_fragments=True)
-    if content_type == "text/plain" and _markup_root_name(response.text):
-        return _body_looks_like_html_page(response.text)
-    return content_type in SUPPORTED_PAGE_CONTENT_TYPES
-
-
-def _explicit_html_response_has_unsupported_xml_root(response: FetchResponse) -> bool:
-    content_type = _content_type(response.headers)
-    root_name = _markup_root_name(response.text)
-    if content_type == "application/xhtml+xml":
-        return not _body_looks_like_html_page(response.text, allow_fragments=True)
-    if content_type == "text/html" and root_name in {"urlset", "sitemapindex"}:
-        return True
-    if content_type == "text/html" and _looks_like_xml(response.url, response.text):
-        return not _body_looks_like_html_page(response.text, allow_fragments=True)
-    return False
-
-
-def _is_supported_xhtml_response(response: FetchResponse) -> bool:
-    return (
-        _content_type(response.headers) == "application/xhtml+xml"
-        and _supports_page_content(response)
-    )
-
-
-def _response_disables_stale_cleanup(response: FetchResponse) -> bool:
-    content_type = _content_type(response.headers)
-    extension = _url_extension(response.url)
-    if _has_unsupported_media_hint(response.url):
-        return True
-    if content_type == "text/html":
-        return False
-    if content_type == "application/xhtml+xml":
-        return not _body_looks_like_html_page(response.text, allow_fragments=True)
-    if content_type in SUPPORTED_PAGE_CONTENT_TYPES:
-        return True
-    if not content_type and extension in SUPPORTED_PAGE_EXTENSIONS:
-        if extension not in {".htm", ".html"}:
-            return True
-        return not _body_looks_like_html_page(response.text, allow_fragments=True)
-    return False
-
-
 def _response_version_id(response: FetchResponse) -> str:
     return _safe_response_header_value(response.headers, "etag") or _response_updated_at(response)
 
 
 def _response_updated_at(response: FetchResponse) -> str:
     return _safe_response_header_value(response.headers, "last-modified")
-
-
-def _safe_response_header_value(headers: dict[str, str], name: str) -> str:
-    value = _header_value(headers, name)
-    if (
-        not value
-        or _contains_disallowed_control_text(value)
-        or _contains_credential_like_value(value)
-    ):
-        return ""
-    normalized_name = name.lower()
-    if normalized_name == "etag" and not _valid_etag(value):
-        return ""
-    if normalized_name == "last-modified" and not _valid_http_date(value):
-        return ""
-    return value
-
-
-def _valid_etag(value: str) -> bool:
-    return bool(SAFE_ETAG_RE.fullmatch(value))
-
-
-def _valid_http_date(value: str) -> bool:
-    try:
-        return parsedate_to_datetime(value) is not None
-    except (TypeError, ValueError, IndexError, OverflowError):
-        return False
-
-
-def _header_value(headers: dict[str, str], name: str) -> str:
-    for key, value in headers.items():
-        if key.lower() == name:
-            return value.strip()
-    return ""
 
 
 def _content_length_exceeds(headers: dict[str, str], max_response_bytes: int) -> bool:
@@ -1467,175 +915,11 @@ def _content_length_exceeds(headers: dict[str, str], max_response_bytes: int) ->
         return False
 
 
-def _should_read_response_body(url: str, headers: dict[str, str]) -> bool:
-    content_type = _content_type(headers)
-    return not content_type or content_type in READABLE_RESPONSE_CONTENT_TYPES
-
-
 def _decode_response_body(body: bytes, encoding: str | None) -> tuple[str, bool]:
     try:
         return body.decode(encoding or "utf-8"), False
     except (LookupError, UnicodeDecodeError):
         return "", True
-
-
-def _url_extension(url: str) -> str:
-    parsed = urlparse(url)
-    path = unquote(parsed.path).lower()
-    filename = path.rsplit("/", 1)[-1]
-    if "." not in filename:
-        return ""
-    return f".{filename.rsplit('.', 1)[-1]}"
-
-
-def _has_unsupported_media_hint(url: str) -> bool:
-    extension = _url_extension(url)
-    if extension in UNSUPPORTED_PAGE_EXTENSIONS:
-        return True
-    return _query_extension(url) in UNSUPPORTED_PAGE_EXTENSIONS
-
-
-def _query_extension(url: str) -> str:
-    parsed = urlparse(url)
-    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-        for part in (key, value):
-            part = unquote(part).lower()
-            filename = part.rsplit("/", 1)[-1]
-            if "." in filename:
-                extension = f".{filename.rsplit('.', 1)[-1]}"
-                if extension in UNSUPPORTED_PAGE_EXTENSIONS:
-                    return extension
-    return ""
-
-
-def _response_looks_like_binary_media(response: FetchResponse) -> bool:
-    return _body_prefix_looks_like_binary_media(
-        response.body_prefix
-    ) or _body_looks_like_textual_media(response.text) or _body_looks_like_binary_media(
-        response.text
-    )
-
-
-def _body_prefix_looks_like_binary_media(prefix: bytes) -> bool:
-    stripped = prefix.lstrip(b"\xef\xbb\xbf\r\n\t ")
-    lowered = stripped.lower()
-    control_bytes = [
-        byte
-        for byte in prefix[:256]
-        if (byte < 32 and byte not in {9, 10, 13}) or byte == 127
-    ]
-    return (
-        stripped.startswith(b"%PDF-")
-        or stripped.startswith(b"\x89PNG")
-        or stripped.startswith(b"GIF87a")
-        or stripped.startswith(b"GIF89a")
-        or stripped.startswith(b"\xff\xd8\xff")
-        or stripped.startswith(b"PK\x03\x04")
-        or stripped.startswith(b"\x1f\x8b")
-        or stripped.startswith(b"BZh")
-        or stripped.startswith(b"MZ")
-        or stripped.startswith(b"BM")
-        or stripped.startswith(b"\xd0\xcf\x11\xe0")
-        or stripped.startswith(b"\xfd7zXZ\x00")
-        or stripped.startswith(b"\x1aE\xdf\xa3")
-        or stripped.startswith(b"\xff\xfb")
-        or stripped.startswith(b"\xff\xf3")
-        or stripped.startswith(b"\xff\xf2")
-        or lowered.startswith(b"rar!")
-        or lowered.startswith(b"7z")
-        or lowered.startswith(b"id3")
-        or (len(stripped) >= 12 and stripped.startswith(b"RIFF") and stripped[8:12] == b"WEBP")
-        or (len(stripped) >= 8 and stripped[4:8] == b"ftyp")
-        or (len(prefix) >= 262 and prefix[257:262] == b"ustar")
-        or b"\x00" in prefix[:256]
-        or len(control_bytes) >= 3
-    )
-
-
-def _body_looks_like_textual_media(body: str) -> bool:
-    return _markup_root_name(body) in {"feed", "opml", "rdf", "rss", "svg"}
-
-
-def _body_looks_like_binary_media(body: str) -> bool:
-    stripped = body.lstrip("\ufeff\r\n\t ")
-    lowered = stripped.lower()
-    return (
-        stripped.startswith("%PDF-")
-        or stripped.startswith("\x89PNG")
-        or stripped.startswith("GIF87a")
-        or stripped.startswith("GIF89a")
-        or stripped.startswith("PK\x03\x04")
-        or stripped.startswith("BZh")
-        or stripped.startswith("MZ")
-        or stripped.startswith("BM")
-        or stripped.startswith("\x1aEߣ")
-        or stripped.startswith("���")
-        or lowered.startswith("rar!")
-        or lowered.startswith("7z")
-        or lowered.startswith("id3")
-        or (len(stripped) >= 262 and stripped[257:262] == "ustar")
-        or _contains_disallowed_control_text(stripped)
-    )
-
-
-def _contains_disallowed_control_text(value: str) -> bool:
-    return any(
-        (ord(character) < 32 and character not in {"\t", "\n", "\r"})
-        or ord(character) == 127
-        for character in value
-    )
-
-
-def _markup_root_name(body: str) -> str:
-    stripped = _strip_markup_preamble(body)
-    match = re.match(r"<\s*([A-Za-z_][\w:.-]*)\b", stripped)
-    if not match:
-        return ""
-    return match.group(1).rsplit(":", 1)[-1].lower()
-
-
-def _strip_markup_preamble(body: str) -> str:
-    stripped = _strip_leading_bom(body).lstrip()
-    for _ in range(20):
-        lowered = stripped.lower()
-        if lowered.startswith("<?"):
-            end = stripped.find("?>")
-            if end == -1:
-                return stripped
-            stripped = stripped[end + 2 :].lstrip()
-            continue
-        if lowered.startswith("<!--"):
-            end = stripped.find("-->")
-            if end == -1:
-                return stripped
-            stripped = stripped[end + 3 :].lstrip()
-            continue
-        if lowered.startswith("<!doctype"):
-            end = stripped.find(">")
-            if end == -1:
-                return stripped
-            stripped = stripped[end + 1 :].lstrip()
-            continue
-        break
-    return stripped
-
-
-def _body_looks_like_html_page(body: str, *, allow_fragments: bool = False) -> bool:
-    leading = _strip_leading_bom(body).lstrip().lower()
-    root_name = _markup_root_name(body)
-    if root_name:
-        html_roots = HTML_FRAGMENT_ROOTS if allow_fragments else HTML_DOCUMENT_ROOTS
-        return root_name in html_roots or (
-            leading.startswith("<!doctype html") and root_name in html_roots
-        )
-    return leading.startswith("<!doctype html")
-
-
-def _content_type(headers: dict[str, str]) -> str:
-    for key, value in headers.items():
-        if key.lower() == "content-type":
-            return value.split(";", 1)[0].strip().lower()
-    return ""
 
 
 def _find_by_local_name(soup: BeautifulSoup, name: str):
@@ -1758,10 +1042,6 @@ def _has_sitemap_root(body: str) -> bool:
         "urlset",
         "sitemapindex",
     }
-
-
-def _strip_leading_bom(text: str) -> str:
-    return text.lstrip("\ufeff")
 
 
 def _user_agent_token(user_agent: str) -> str:
