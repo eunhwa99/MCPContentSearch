@@ -4,7 +4,8 @@ Baseline:
 
 - Original baseline: `eunhwa99/MCPContentSearch` PR #2
 - Updated through: Phase B-0 / PR #4
-- Current update: Phase B GitHub/Web connectors / PR #6
+- Current update: Phase C Auto Wiki, Phase C.5 local Web Console, and local
+  eval/background-status documentation groundwork
 
 Goal:
 
@@ -38,6 +39,7 @@ source registration
 -> cleanup-capable sources tombstone stale documents after complete successful snapshots
 -> search_context asks Chroma for candidates and validates them through SQLite
 -> answer_with_citations returns evidence-gated answers
+-> generate_wiki_page returns citation-backed read-only Markdown pages
 ```
 
 Interview or README version:
@@ -272,6 +274,52 @@ configured API key is available. When enabled, the LLM receives citation-ready
 evidence and must return Markdown/sections with the provided citation markers;
 if the provider fails or omits/changes required citations, ContextWiki falls
 back to deterministic evidence Markdown instead of returning ungrounded prose.
+
+Current Auto Wiki limits:
+
+```text
+- no server-side wiki page persistence
+- no direct source fetch during page generation
+- no live LLM call unless explicitly enabled and configured
+- deterministic fallback stays the default path
+```
+
+### Phase C.5 Local Web Console
+
+The local Web Console is developer/test tooling around the MCP services. It is
+not a production UI. It serves the browser app from `web/` through
+`web_console.app`, exposes local HTTP wrappers for source listing/sync,
+answering, wiki generation, fake/GitHub smoke, and target sync, then displays
+citations, used chunks, downloads, and status/error payloads for manual
+inspection.
+
+Important boundaries:
+
+```text
+- loopback-only by default; remote allowance is explicit and still guarded
+- Target Sync and smoke endpoints can contact external services only when invoked
+- configured-source startup auto-sync can contact GitHub/Notion/Tistory unless disabled
+- Answer/Search against the real vector index may call the configured embedding provider
+- Codex CLI Answer is a local subprocess wrapper for manual testing, not a production answer service
+- generated wiki pages are returned/downloaded, not persisted as server-side wiki state
+```
+
+### Local Eval Groundwork
+
+`evals/answer_quality.py` provides deterministic payload-level checks for
+current `answer_with_citations` responses. It can score already-produced local
+payloads for expected status, expected answer terms, forbidden unsupported
+claims, citation coverage, `used_chunks` consistency, and obvious secret-like
+output. The focused test entry point is:
+
+```bash
+uv run pytest -q tests/evals
+```
+
+This is eval scaffolding, not full evaluation infrastructure. It does not call
+live APIs, embeddings, Chroma, SQLite, or LLM providers. LLM answer generation,
+LLM-as-judge grading, retrieval tuning dashboards, and external trace storage
+remain future work.
 
 ---
 
@@ -721,7 +769,37 @@ send retrieved source evidence to an external model.
 
 ---
 
-## 13. README / Interview Architecture Summary
+## 13. Background Status Model
+
+ContextWiki source sync status is durable enough for user-visible inspection:
+`sync_source` writes SQLite source/job metadata, and `get_sync_status` returns
+the latest source/job state. The local Web Console polls the same status path
+while configured-source sync or target sync is running.
+
+Legacy background indexing is different. `trigger_index_all_content`,
+`search_content`, `search_notion`, and `search_tistory` schedule process-local
+`asyncio.create_task` work. The caller-visible surface is `get_index_status`,
+which returns the in-memory indexer status model plus process-local
+`background_tasks` records. Each background record includes a runtime task id,
+label, state, total/processed document counts, timestamps, and a sanitized
+error summary when a task fails. The top-level indexer error message is also
+sanitized before it is stored, logged, or returned through status responses.
+
+Those legacy tasks still do not expose durable job ids, retry history, or
+persisted progress after process restart. Their records are runtime observability
+only, capped in memory, and are not a replacement for SQLite-backed source sync
+jobs.
+
+Design implication:
+
+```text
+source sync status = SQLite-backed operational status
+legacy background indexing status = process-local runtime status
+```
+
+---
+
+## 14. README / Interview Architecture Summary
 
 Short version:
 
@@ -744,14 +822,13 @@ SQLite. AI clients use MCP tools such as search_context and answer_with_citation
 to retrieve grounded context without directly accessing the database.
 ```
 
-Current Phase B version:
+Current Phase C/C.5 version:
 
 ```text
-Phase B adds GitHub and Web/docs connectors. GitHub repositories are indexed as
-file-level documents with stable path-based identity, GitHub blob SHA versioning,
-line-range citations, and conservative stale cleanup. Web/docs sources support
-configured seed URLs or sitemaps, robots-aware bounded crawling, canonical URL
-identity, readable text extraction, and validator-based version metadata.
+Phase B added GitHub and Web/docs connectors. Phase C added read-only Auto Wiki
+generation from active citation-ready chunks with deterministic fallback and
+optional opt-in wiki LLM synthesis. Phase C.5 added a local Web Console for
+manual source sync, answer, wiki, download, and smoke-test workflows.
 ```
 
 Honest limitation version:
@@ -761,17 +838,19 @@ The current implementation builds the production safety foundation:
 source/job metadata, document identity, source-aware chunking, tombstone-based
 stale cleanup, SQLite-backed active retrieval checks, historical chunk-id
 provenance, GitHub/Web connectors, structured context search, and citation-gated
-answer responses.
+answer responses. It now also includes read-only citation-backed Auto Wiki
+generation, local Web Console developer tooling, and deterministic local
+payload-level answer-quality eval scaffolding.
 
 It does not yet include fingerprint dedup, rename detection, function/class-aware
 code chunking, queue-based retry, full ACL-aware retrieval, evaluation metrics,
-reranking, query rewriting, citation verification, or LLM-based answer
+reranking, query rewriting, full citation verification, or LLM-based answer
 generation.
 ```
 
 ---
 
-## 14. Files to Understand First
+## 15. Files to Understand First
 
 1. `core/models.py`
    - Shared data contracts: source, job, document, chunk, search result.
@@ -808,7 +887,7 @@ generation.
 
 ---
 
-## 15. Current Limitations
+## 16. Current Limitations
 
 Still not implemented:
 
@@ -822,16 +901,18 @@ Still not implemented:
 - ACL-aware retrieval
 - tenant/source permission model
 - full audit logs
-- eval-driven retrieval tuning
+- full eval-driven retrieval tuning
 - reranking
 - query rewriting
-- citation verification
+- full citation verification
 - LLM answer generation
+- durable job ids/retry history for legacy background indexing
 ```
 
 Deferred or non-default validation:
 
 ```text
+- tests/evals covers deterministic local payload checks only
 - live external smoke tests are outside CI/default pytest verification
 - MCP/wiki PR validation should run the safe fake wiki smoke and run optional
   live wiki smoke when network access, user approval, and an appropriate source

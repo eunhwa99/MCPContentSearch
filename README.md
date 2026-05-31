@@ -18,6 +18,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
 - Read-only Auto Wiki page generation from active ContextWiki chunks with citations and backlinks
 - Local-only web test console for asking indexed sources, syncing test targets, and inspecting citations
+- Deterministic local answer-quality and grounding eval scaffolding for current citation answer payloads
 
 ## 🛠️ MCP Tools
 
@@ -61,6 +62,7 @@ mcp-content-search/
 │
 ├── indexing/
 │   ├── chunker.py            # Source-aware citation chunking
+│   ├── background_tasks.py   # Process-local background indexing task status
 │   ├── ingestion_service.py  # ContextWiki source sync and incremental indexing
 │   ├── converter.py          # Convert DocumentModel → LlamaIndex document
 │   ├── manager.py            # Handles index life-cycle
@@ -70,6 +72,8 @@ mcp-content-search/
 │   ├── connectors.py         # ContextWiki source registry and source connectors
 │   ├── github.py             # GitHub repository file fetcher
 │   ├── web_docs.py           # Website/docs bounded crawler
+│   ├── web_media.py          # Web media/content classification helpers
+│   ├── web_safety.py         # URL validation and credential redaction helpers
 │   ├── notion.py             # Notion API client + processors
 │   ├── tistory.py            # Tistory RSS extractor + HTML parser
 │   ├── fetcher.py            # Unified fetcher for full indexing
@@ -86,7 +90,13 @@ mcp-content-search/
 │   └── synthesis.py          # Optional opt-in LLM wiki synthesis provider
 │
 ├── web_console/
-│   └── app.py                # Local FastAPI wrapper for browser manual testing
+│   ├── app.py                # Local FastAPI wrapper for browser manual testing
+│   ├── codex_cli.py          # Codex CLI runner and subprocess isolation helpers
+│   └── payloads.py           # Local-console payload shaping and redaction helpers
+│
+├── evals/
+│   ├── answer_quality.py     # Deterministic answer payload grounding checks
+│   └── answer_quality_cases.json  # Local example eval cases
 │
 ├── web/
 │   ├── index.html            # Local Web Test Console shell
@@ -256,6 +266,9 @@ Install dependencies:
 uv sync --python 3.13
 ```
 
+The fallback `requirements.txt` file mirrors the direct runtime dependencies in
+`pyproject.toml` plus the direct dev dependency used by the test suite.
+
 Use Python 3.13 for local development. Python 3.14 is not currently supported
 because the Chroma dependency stack includes wheels, such as `onnxruntime`, that
 do not publish `cp314` artifacts for the locked version. If you use the fallback
@@ -374,6 +387,14 @@ external model behavior depending on the user's CLI setup, and smoke endpoints
 plus Target Sync for GitHub, Notion, or Web URL perform live network work only
 when explicitly invoked and configured.
 
+Background status is split by subsystem today. ContextWiki source sync has
+SQLite-backed source/job status through `get_sync_status` and the web console
+polling endpoints. Legacy background indexing started by
+`trigger_index_all_content`, `search_content`, `search_notion`, or
+`search_tistory` is process-local and currently reports through
+`get_index_status` plus logs; those fire-and-forget tasks do not expose durable
+job ids, retry history, or per-task persisted failures yet.
+
 ---
 
 # ⚙️ ContextWiki Source Configuration
@@ -438,8 +459,24 @@ python scripts/smoke_generate_wiki_page.py --mode fake
 The required test path excludes live external API smoke tests:
 
 ```bash
+uv run pytest -q
 uv run pytest -m "not live"
 ```
+
+Deterministic local answer-quality eval groundwork lives under `evals/` with
+focused tests under `tests/evals/`. These checks evaluate already-produced
+`answer_with_citations`-style payloads for expected terms, forbidden unsupported
+claims, citation coverage, used-chunk consistency, and obvious secret-like
+output. They do not call live APIs, Chroma, SQLite, embedding providers, or
+LLMs.
+
+```bash
+uv run pytest -q tests/evals
+```
+
+Full LLM answer generation, LLM-as-judge grading, retrieval tuning metrics, and
+external observability are future work and should remain opt-in because source
+evidence may contain private content.
 
 Live API smoke tests are non-default and must be explicitly enabled. For wiki
 generation, run the live GitHub smoke only when network is available and an
