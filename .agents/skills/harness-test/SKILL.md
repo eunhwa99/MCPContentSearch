@@ -16,11 +16,12 @@ Add or update the smallest useful verification for the changed behavior. This ph
 Preferred checks by change type:
 
 - Docs-only `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`: path listing, `git status --short --branch`, `git diff --check`, then stage the relevant docs-only files and run `git diff --cached --check` so new files are covered.
-- Python syntax safety: `python -m compileall api core environments fetching indexing search storage wiki main.py`.
+- Python syntax safety: `python -m compileall api core environments fetching indexing search storage wiki web_console main.py`.
 - Unit behavior: `uv run pytest` when tests exist.
 - MCP tool contracts: focused tests or smoke around `register_tools` and tool handlers.
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mocked collection. Avoid user Chroma data and SQLite metadata.
 - Fetching/network: mocked HTTP/API responses. Live Notion/Tistory/GitHub/Web checks require user approval.
+- End-to-end feature verification: run `./scripts/verify_functional_e2e.sh` before review for code-changing work (includes deterministic FastMCP smoke, E2E suites, and Playwright browser-click smoke; may bootstrap Chromium once if browser binaries are missing).
 
 Use uv when it is available and healthy. If uv fails because local setup is broken, record the blocker and run a dependency-free fallback when useful.
 

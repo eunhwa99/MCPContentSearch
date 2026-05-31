@@ -105,7 +105,9 @@ mcp-content-search/
 │
 ├── scripts/
 │   ├── smoke_generate_wiki_page.py  # FastMCP wiki generation smoke checks
-│   └── verify_all.sh                # Compile + non-live test suite
+│   ├── smoke_web_console_playwright.py  # Playwright browser-click smoke
+│   ├── verify_functional_e2e.sh     # Functional E2E gate for core workflows
+│   └── verify_all.sh                # Compile + non-live tests + functional E2E gate
 │
 ├── main.py                   # Application entry point
 ├── requirements.txt
@@ -418,12 +420,35 @@ sync_source("source_web")
 
 # ✅ Verification
 
-Required verification includes compile checks plus unit, integration, fake E2E
-tests, and `node --check` for the local web console JavaScript. Install Node.js
-before running the required script.
+Required verification includes compile checks plus unit/integration coverage,
+Web Console contract checks, functional E2E workflow verification, and
+Playwright browser-click smoke. Install Node.js before running the required
+scripts. The Playwright step uses Python package `playwright` and may
+bootstrap Chromium once when browser binaries are missing.
 
 ```bash
 ./scripts/verify_all.sh
+```
+
+`verify_all.sh` includes the functional E2E gate. You can also run it directly:
+
+```bash
+./scripts/verify_functional_e2e.sh
+```
+
+If you need fully offline replay after initial setup, preinstall browsers and
+disable automatic bootstrap:
+
+```bash
+uv run python -m playwright install chromium
+VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT=0 ./scripts/verify_functional_e2e.sh
+```
+
+If `uv` is unavailable or unhealthy in your environment, use:
+
+```bash
+python -m playwright install chromium
+VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT=0 ./scripts/verify_functional_e2e.sh
 ```
 
 Wiki-generation PRs should also run the safe FastMCP smoke. This uses a fake

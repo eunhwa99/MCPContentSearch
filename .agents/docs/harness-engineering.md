@@ -209,15 +209,31 @@ otherwise the cached check does not cover new untracked docs or plan files.
 Python code changes use the smallest useful check first:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage wiki main.py
+python -m compileall api core environments fetching indexing search storage wiki web_console main.py
 ```
 
 Prefer uv when the local uv workspace is healthy:
 
 ```bash
-uv run python -m compileall api core environments fetching indexing search storage wiki main.py
+uv run python -m compileall api core environments fetching indexing search storage wiki web_console main.py
 uv run pytest
 ```
+
+Before final review for code-changing work, run the functional E2E harness gate
+that exercises end-to-end feature workflows (ContextWiki MCP flows, connector
+E2E flows, Web Console contract/UI logic, deterministic FastMCP wiki smoke,
+and Playwright browser-click smoke):
+
+```bash
+./scripts/verify_functional_e2e.sh
+```
+
+`./scripts/verify_all.sh` should include this functional E2E gate so the full
+verification path runs it automatically.
+
+The Playwright step is local-first. If Chromium binaries are missing, the gate
+may perform a one-time bootstrap install by default; set
+`VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT=0` to require preinstalled browsers.
 
 MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
