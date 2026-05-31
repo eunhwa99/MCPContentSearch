@@ -32,7 +32,9 @@ The plan must include:
 - Likely changed files and module boundaries.
 - Tests or verification to add or run.
 - Focused verification commands.
-- Integration or smoke scenario when needed.
+- Functional smoke matrix plan: rows to cover, caller surfaces, safe data modes,
+  and approval-gated rows before review.
+- Integration or additional smoke scenario when needed.
 - Whether the change is docs-only.
 - MCP tool contract documentation updates when tool behavior changes.
 - Local ChromaDB or SQLite metadata impact, if any.

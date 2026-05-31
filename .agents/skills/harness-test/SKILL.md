@@ -24,7 +24,20 @@ Preferred checks by change type:
 
 Use uv when it is available and healthy. If uv fails because local setup is broken, record the blocker and run a dependency-free fallback when useful.
 
-Do not proceed to review until the relevant verification has been run and recorded in the plan. If there are no tests yet, record the compile/import check or another focused smoke check as the current verification baseline.
+After focused verification, run `.agents/skills/harness-functional-smoke/SKILL.md`
+before review. The test lane must leave a smoke matrix in the plan that covers
+the task-relevant inventory of MCP tools, Web Console workflows, source-sync
+paths, script smokes, status surfaces, downloads, and other user-visible
+behavior once through the safest real caller surfaces. Include changed features,
+directly affected neighboring features, and core workflows a user would expect
+to still work. For source sync, distinguish configured-source sync from target
+or ad hoc sync. If a live or user-data check is unsafe, record it as
+blocked/gated with the approval needed and the nearest fake/temp substitute.
+
+Do not proceed to review until the relevant verification and functional smoke
+matrix have been run and recorded in the plan. If there are no tests yet, record
+the compile/import check or another focused smoke check as the current
+verification baseline.
 
 ## Failure Handling
 

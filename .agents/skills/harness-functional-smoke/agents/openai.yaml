@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Functional Smoke"
+  short_description: "Validate MCPContentSearch behavior through real caller surfaces"
+  default_prompt: "$harness-functional-smoke를 사용해 task-relevant 기능 inventory를 MCP tool, Web Console, smoke script, fake/temp storage로 검증하고 skip 사유와 PR evidence를 기록하세요."

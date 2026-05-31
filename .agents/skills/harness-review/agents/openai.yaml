@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Review"
-  short_description: "$subagent-review-loop gate for bugs and contracts"
-  default_prompt: "$harness-review를 사용해 중간 또는 최종 review gate에서 $subagent-review-loop를 실행하고 MCP contract, Chroma/vector data, SQLite lifecycle/tombstone metadata, external connectors, secrets, async, tests를 검토하세요."
+  short_description: "$subagent-review-loop gate for bugs, contracts, and functional smoke evidence"
+  default_prompt: "$harness-review를 사용해 중간 또는 최종 review gate에서 $subagent-review-loop를 실행하고 MCP contract, Chroma/vector data, SQLite lifecycle/tombstone metadata, external connectors, secrets, async, tests, functional smoke matrix/results를 검토하세요. Reviewers must check blocked/gated rows, local substitutes, plan evidence, and whether review fixes rerun affected verification plus affected smoke entries."
