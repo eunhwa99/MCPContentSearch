@@ -44,8 +44,12 @@ Do not run destructive commands or delete local data without explicit user appro
 
 - Use Conventional Commit style: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`.
 - Keep commits small and focused.
-- Do not commit before required verification and `$subagent-review-loop` pass.
-- After final clean `$subagent-review-loop` verification for file-changing harness work, commit relevant staged files by default as part of PR delivery unless the user explicitly asks for local-only work.
+- Do not commit before required verification, functional smoke matrix, and final
+  clean `$subagent-review-loop` pass.
+- After final clean `$subagent-review-loop` verification for file-changing
+  harness work, with the functional smoke matrix recorded in the plan, commit
+  relevant staged files by default as part of PR delivery unless the user
+  explicitly asks for local-only work.
 - If the user asks to commit, never commit directly to `main`. Move to a `feature/...` branch first.
 - Do not revert user or other-agent changes unless the user explicitly requests it.
 
@@ -74,11 +78,16 @@ If `uv run ...` is not available because dependencies or workspace metadata are 
 
 ## Push and PR Policy
 
-- Final clean `$subagent-review-loop` verification flows into push and PR creation by default. Do not stop at a local diff unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+- Final clean `$subagent-review-loop` verification plus recorded functional
+  smoke matrix results flow into push and PR creation by default. Do not stop at
+  a local diff unless the user explicitly asks for local-only work or a safety
+  blocker prevents delivery.
 - PR base is `main` unless a stacked PR requires another feature branch as base.
 - For multi-task work, independent PRs use `base=main`.
 - Ordered or contract-dependent tasks use stacked PRs.
-- Include verification results and known skipped checks in PR text.
+- Include verification results and functional smoke matrix results in PR text,
+  including `blocked/gated` checks, approval blockers, and local substitutes; a
+  link to the plan matrix is acceptable when the summary is clear.
 - Stage only files relevant to the current task, commit them, push the current `feature/...` branch, then create the PR.
 - If GitHub CLI auth fails, use the configured PR-create skill fallback when available. If no documented fallback is available in the active environment, report the auth blocker instead of improvising around credentials.
 

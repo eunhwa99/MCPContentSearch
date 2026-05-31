@@ -31,6 +31,7 @@ Each plan document should include:
 - Step breakdown, if the work needs multiple ordered steps
 - Files likely to change
 - Test and verification plan
+- Functional smoke matrix or planned matrix rows before review
 - Architecture/ADR constraints
 - Risks and rollback notes
 - Progress log

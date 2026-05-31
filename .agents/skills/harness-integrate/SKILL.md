@@ -38,9 +38,20 @@ Indexing/search/storage changes should avoid user data by using temp Chroma path
 
 Live Notion/Tistory/GitHub/Web validation requires user approval. Do not print tokens.
 
+Refresh the functional smoke matrix from
+`.agents/skills/harness-functional-smoke/SKILL.md` during integration. If
+refactor or integration changed any caller-visible path, rerun the affected
+smoke entries. The final matrix must be present in the plan before the final
+review gate and must explicitly cover configured-source sync and target/ad hoc
+sync when source sync behavior is in scope, or mark live/user-data checks as
+blocked/gated with a local substitute.
+
 ## Completion
 
-If integration verification passes, run the final `$subagent-review-loop` review gate before PR delivery. If review findings require edits, rerun the affected verification and then start a fresh five-reviewer subagent review pass.
+If integration verification and the functional smoke matrix pass, run the final
+`$subagent-review-loop` review gate before PR delivery. If review findings
+require edits, rerun the affected verification and affected smoke entries, then
+start a fresh five-reviewer subagent review pass.
 
 After the final clean `$subagent-review-loop` pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
@@ -49,6 +60,7 @@ Final response should include:
 - Plan document path.
 - Changed files.
 - Verification commands and results.
+- Functional smoke matrix results, including blocked/gated checks.
 - `$subagent-review-loop` status, including whether all five reviewers in the final fresh pass reported no actionable findings.
 - Skipped checks or blockers.
 - Commit/push/PR status.
