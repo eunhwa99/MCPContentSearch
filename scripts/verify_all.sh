@@ -7,9 +7,18 @@ cd "$REPO_ROOT"
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/uv-cache}"
 
+FUNCTIONAL_GATE_EXCLUDES=(
+  --ignore=tests/e2e/test_contextwiki_flow.py
+  --ignore=tests/e2e/test_phase_b_connectors_flow.py
+  --ignore=tests/web_console/test_app.py
+)
+
 python -m compileall api core environments fetching indexing search storage wiki web_console main.py
 
-command -v node >/dev/null 2>&1
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js is required for verification (needed for 'node --check web/app.js'). Install Node.js and retry." >&2
+  exit 1
+fi
 node --check web/app.js
 
 uv_workspace_healthy() {
@@ -21,8 +30,11 @@ PY
 }
 
 if uv_workspace_healthy; then
-  uv run pytest -m "not live"
+  uv run pytest -m "not live" "${FUNCTIONAL_GATE_EXCLUDES[@]}"
 else
   echo "uv pytest is unavailable or workspace dependencies are unhealthy; falling back to python -m pytest -m \"not live\"" >&2
-  python -m pytest -m "not live"
+  python -m pytest -m "not live" "${FUNCTIONAL_GATE_EXCLUDES[@]}"
 fi
+
+# Functional E2E gate for end-to-end feature workflows.
+"$REPO_ROOT/scripts/verify_functional_e2e.sh"
