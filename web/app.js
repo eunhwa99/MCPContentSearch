@@ -835,7 +835,22 @@ function renderSyncProgress(job, sourceId) {
   setSyncProgressValue(percent, hasTotal);
   elements.syncProgressDetail.textContent = hasTotal
     ? `${completed}/${total} documents completed (${processed} indexed or refreshed, ${skipped} skipped), ${indexed} chunks indexed`
-    : `${indexed} chunks indexed. Discovering documents...`;
+    : zeroTotalSyncProgressDetail(job, status, completed, indexed);
+}
+
+function zeroTotalSyncProgressDetail(job, status, completed, indexed) {
+  if (status === "running") {
+    const chunkText = indexed > 0 ? `${indexed} chunks indexed. ` : "";
+    return `${chunkText}Sync is running. Discovering or fetching documents...`;
+  }
+  if (isTerminalSyncJob(job)) {
+    const error = firstString(job.error_message, job.message);
+    if (status === "failed" && error) {
+      return `Sync failed: ${error}`;
+    }
+    return `Sync ${status || "finished"} with ${completed} of 0 documents completed, ${indexed} chunks indexed.`;
+  }
+  return `${indexed} chunks indexed. Waiting for document totals...`;
 }
 
 function renderSyncRequestStopped(sourceId, payload, fallbackLabel) {

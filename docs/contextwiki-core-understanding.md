@@ -634,6 +634,133 @@ Chroma candidate
 -> return ContextSearchResult
 ```
 
+When vector retrieval does not produce enough active managed candidates,
+`search_context` also performs a SQLite-backed keyword fallback over active
+chunks. That fallback searches chunk text plus citation metadata such as
+document id, title, URL, canonical URL, path, and platform, so GitHub queries
+can match repository names like `ImageGallery` even when the term is only in
+the repo/path/URL metadata. Korean query terms such as `깃허브`, `니트코드`,
+and `문서` are expanded to common English equivalents before keyword matching.
+If the vector indexer is unavailable, the same bounded SQLite fallback is used
+instead of materializing every active chunk.
+Metadata keyword matches are merged with vector candidates before the final
+`top_k` slice so an exact repository/path match can compete with semantic hits
+instead of being skipped when vector retrieval already filled the window.
+Full metadata identity matches are ranked in a priority tier above vector-only
+hits, so exact repository/path matches remain deterministic even when vector
+scores tie or exceed `1.0`.
+The indexed-vector path applies the same GitHub document-intent guard as the
+metadata fallback: if the query asks for documents, hydrated GitHub vector hits
+must also come from README/docs/Markdown/text-like metadata before they are
+returned.
+Only full metadata query coverage is boosted for ranking. Partial metadata
+matches keep their fractional score so a low-signal term such as `docs` cannot
+turn unrelated GitHub chunks into grounded answer evidence by itself.
+Common request words such as `show`, `tell`, `give`, `repo`, and `repository`
+are treated as query noise before metadata scoring, so natural requests like
+`show me ImageGallery docs` can still prioritize the repository/path match.
+English search phrasing such as `search ImageGallery docs` and `search for
+ImageGallery docs` is treated the same way.
+Korean filler/search words such as `라고`, `라는`, `리포지토리`, `검색`, and
+`검색해도` are also treated as request noise, so phrasing like `ImageGallery라는
+리포지토리 검색` can still prioritize the exact repository metadata. Broad topic
+words such as Korean `알고리즘` are treated as non-boost terms only when a
+strong anchor such as NeetCode is also present, so `니트코드 알고리즘 그래프`
+does not demote the NeetCode graph match while general `algorithm docs` queries
+can still use `algorithm` as a real topic. Korean `니트코드` maps to NeetCode
+rather than generic LeetCode so a competing `leetcode-solutions` repository
+does not tie the intended `neetcode-submissions` repository for Korean NeetCode
+requests.
+When Korean intents are attached without spaces, such as `니트코드문서찾아와`,
+known intent terms are split into separate query groups before scoring.
+Single-token repository-looking queries are matched case-insensitively against
+GitHub metadata, so `ImageGallery`, `imagegallery`, and similar lowercase repo
+probes follow the same recall path. Lowercase single-token lookups first use a
+bounded GitHub SQLite metadata predicate before Python-side scoring instead of
+materializing every active GitHub chunk, so real GitHub repository matches still
+win deterministically. When vector recall is still insufficient, search also
+merges a normal all-source metadata/body fallback for plain lowercase probes, so
+GitHub metadata does not hide relevant Notion/Web/Tistory evidence for ordinary
+technical topics.
+If vector search already returned enough lexically relevant candidates for an
+ambiguous plain lowercase topic, that vector evidence is kept ahead of GitHub
+metadata recovery.
+Known generic topic words such as `configuration`, `javascript`, `kubernetes`,
+or suffix-shaped technical words such as `monitoring`, `authorization`, and
+`scalability` are excluded from that lowercase repository probe path.
+Other plain technical terms such as `typescript` and `postgresql` therefore
+remain recoverable from Notion/Web/Tistory evidence when no GitHub repository
+metadata actually matches.
+Korean source-only terms are preserved for ordinary/document fallback too; the
+ASCII-preferred term selection is limited to GitHub identity/repository lookup,
+so Korean-only Notion/Tistory/Web evidence can still match Korean queries.
+Explicit non-GitHub source filters keep body-text lookup enabled for these
+plain technical terms, while explicit GitHub filters and stronger repository
+signals continue to use metadata-only repository matching.
+Mixed filters that include GitHub and non-GitHub sources split the lookup so
+GitHub rows keep repository-safe metadata matching while non-GitHub rows can
+still match body text.
+When vector recall is empty, bounded lookup also checks chunk text for these
+plain long-word fallback cases, so body-only matches such as troubleshooting
+notes can still be recovered. Metadata term matching is literal substring
+matching, so repository names containing `_` are not treated as SQL wildcard
+patterns. Repository identity lookups use citation metadata fields rather than
+chunk body text, so an unrelated README that merely mentions `ImageGallery`
+does not outrank the actual `ImageGallery` repository metadata match.
+For anchored topical GitHub requests, such as Korean NeetCode graph-document
+queries, the bounded lookup keeps the anchor and the required topical term
+together before the result limit is applied.
+The lookup enforces those two parts in different places: repository/identity
+anchors must match GitHub citation metadata, while topical terms may match the
+doc-like chunk body. This prevents many unrelated READMEs that only mention a
+repository name in text from filling the bounded SQL window before the intended
+repository metadata row is considered.
+When that anchored GitHub request is already constrained to README/docs-like
+rows, the topical term may match chunk body text, so a NeetCode README whose
+path establishes the repository and whose body discusses graph traversal remains
+discoverable.
+The repository anchor still has to match GitHub metadata fields such as
+document id, path, URL, or title; body-only mentions of `NeetCode` in an
+unrelated README do not establish repository identity.
+Only stronger repository signals, such as CamelCase names (`ImageGallery`),
+owner/repo paths, underscore-separated names, or hyphenated names with digits,
+can narrow default fallback to GitHub. Plain topic words such as `performance`
+or `configuration docs` keep the normal cross-source fallback behavior.
+Slash-shaped API topics such as `api/v1` are treated as ordinary topic terms
+unless another repository signal is present, so they can still recover
+non-GitHub evidence.
+For queries such as `github ImageGallery docs`, generic GitHub words narrow the
+fallback to `source_github` but are not used as the bounded lookup term when a
+more selective repository term exists.
+For GitHub document-intent queries, the fallback treats README files,
+Markdown/text documentation files, and `docs/` paths as document-like metadata
+inside SQLite before applying the bounded result limit. The SQLite prefilter is
+source-aware: it applies only to GitHub rows even when the caller did not pass a
+source filter, so Notion/Web/Tistory documents are not excluded. Its README/docs
+matching is path/extension-oriented rather than a loose title substring, so code
+files such as `ReadmeComponent.java` or `DocumentationHelper.java` do not fill
+the bounded document window ahead of real docs.
+For repository-name-only GitHub lookups, README/docs/Markdown/text-like rows are
+preferred before code rows, while code rows remain available if the repository
+has no document-like files.
+Code-only paths such as `Graph.java` are not returned merely because their
+repository URL matches `neetcode` when the query asks for documents.
+When vector results are already sufficient for an ordinary non-metadata query,
+the GitHub metadata fallback is skipped. Generic document-only phrasing such as
+`configuration docs` also skips metadata fallback when vector results are already
+sufficient and there are no bounded metadata lookup terms, preventing an
+unbounded active-chunk scan. Metadata fallback still runs when vector results are
+insufficient, or when the query is metadata-like with selective lookup terms.
+For vector-empty ordinary queries, search derives bounded lookup terms from the
+normalized query groups and uses SQLite's limited metadata/text term lookup
+instead of loading every active chunk; the unbounded active-chunk list remains a
+last resort only for truly termless queries.
+Stop-word-only queries such as `search for` or `찾아와` are treated as termless
+and skip metadata fallback rather than scanning active chunks.
+Explicit source filters keep fallback within the requested sources when fallback
+is otherwise needed, but they no longer force a full metadata scan for ordinary
+queries that already have enough vector candidates.
+
 Legacy raw Chroma rows may still exist. `search_context` filters for managed
 ContextWiki vectors only. Legacy `search_content` suppresses unmanaged hits that
 match known ContextWiki document or chunk identities so old raw vectors do not
@@ -700,6 +827,34 @@ Current limitation:
 answer_with_citations is an evidence-gated answer scaffold.
 It is not yet a full LLM generation pipeline.
 ```
+
+Its evidence relevance gate checks the returned chunk text and preview plus
+GitHub-friendly metadata fields such as title, document id, URL, and path. This
+keeps repository-name questions grounded when the repository name lives in the
+citation metadata rather than in the chunk body.
+For strong repository anchors such as NeetCode, the gate also requires a
+remaining intent term when the question includes one, so a code file whose URL
+contains `neetcode` is not enough to answer a `니트코드 문서` request unless it
+also matches the document/docs intent.
+Document intent can be satisfied by doc-like GitHub metadata such as `README.md`,
+Markdown/text file extensions, or `docs/` paths. This keeps Korean document
+queries useful for normal repository documentation while preserving the
+code-only rejection.
+For GitHub evidence, document intent is satisfied by doc-like metadata rather
+than arbitrary chunk text. A code file that merely contains the word
+`documentation` in a comment is still not enough for a `문서/docs` request if
+its path is code-only.
+The answer relevance gate uses the same Korean search/filler normalization and
+no-space intent splitting as context search, so `ImageGallery라는 리포지토리
+검색` and attached forms like `니트코드그래프문서` are filtered consistently
+after retrieval.
+English request verbs such as `get`, `please`, `find`, and `search for` are
+treated as noise there too, so polite phrasing does not become an extra
+evidence requirement.
+When a strong-anchor query includes both document intent and another topical
+term, such as `니트코드 그래프 문서`, the answer gate requires the topical term
+too. A generic NeetCode README can satisfy the document intent, but it still
+cannot answer the graph-specific part unless the evidence also matches graph.
 
 Future direction:
 

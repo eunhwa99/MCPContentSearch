@@ -1447,6 +1447,80 @@ def test_codex_cli_answer_service_skips_low_score_or_irrelevant_evidence():
     assert payload["used_chunks"] == []
 
 
+def test_codex_cli_answer_service_uses_grouped_korean_query_expansions():
+    captured = {}
+
+    async def fake_runner(prompt, *, timeout_seconds, codex_binary):
+        captured["prompt"] = prompt
+        return "Project Structure describes the search and indexing modules. [C1]"
+
+    service = CodexCliAnswerService(
+        FakeContextSearch(
+            [
+                ContextSearchResult(
+                    chunk_id="chunk-project-structure",
+                    document_id="doc-project-structure",
+                    source_id="source_github",
+                    source_type="github",
+                    title="Project Structure",
+                    score=0.92,
+                    preview="Project Structure describes the search and indexing modules.",
+                    text="Project Structure describes the search and indexing modules.",
+                )
+            ]
+        ),
+        runner=fake_runner,
+    )
+
+    payload = asyncio.run(service.answer_with_codex("이 프로젝트 구조 정리해줘"))
+
+    assert payload["answer_mode"] == "codex_cli"
+    assert payload["codex_status"] == "succeeded"
+    assert payload["evidence_status"] == "grounded"
+    assert payload["used_chunks"] == ["chunk-project-structure"]
+    assert "Project Structure describes" in captured["prompt"]
+
+
+def test_codex_cli_answer_service_ignores_korean_search_filler_for_repo_query():
+    captured = {}
+
+    async def fake_runner(prompt, *, timeout_seconds, codex_binary):
+        captured["prompt"] = prompt
+        return "ImageGallery usage details. [C1]"
+
+    service = CodexCliAnswerService(
+        FakeContextSearch(
+            [
+                ContextSearchResult(
+                    chunk_id="imagegallery-docs",
+                    document_id="github:eunhwa99/ImageGallery:docs/usage.md",
+                    source_id="source_github",
+                    source_type="github",
+                    title="eunhwa99/ImageGallery docs/usage.md",
+                    path="docs/usage.md",
+                    score=0.92,
+                    preview="Component usage notes and layout details.",
+                    text="Component usage notes and layout details.",
+                )
+            ]
+        ),
+        runner=fake_runner,
+    )
+
+    for query in (
+        "ImageGallery 라고 검색해도",
+        "ImageGallery라고 검색해도",
+        "ImageGallery라는 리포지토리 검색",
+    ):
+        payload = asyncio.run(service.answer_with_codex(query))
+
+        assert payload["answer_mode"] == "codex_cli"
+        assert payload["codex_status"] == "succeeded"
+        assert payload["evidence_status"] == "grounded"
+        assert payload["used_chunks"] == ["imagegallery-docs"]
+        assert "ImageGallery docs" in captured["prompt"]
+
+
 def test_codex_cli_answer_service_skips_cli_without_evidence():
     async def fail_runner(prompt, *, timeout_seconds, codex_binary):
         raise AssertionError("runner should not be called without evidence")
@@ -2125,6 +2199,105 @@ if (context.__result.lastPayload.sources[0].refreshToken !== "redacted") throw n
 if (context.__result.lastPayload.sources[0].nested.refresh_token !== "redacted") throw new Error("nested token not sanitized");
 if (context.__result.lastPayload.sources[0].nested.clientSecret !== "redacted") throw new Error("camel secret not sanitized");
 if (!context.__result.lastPayload.sources[0].nested.message.includes("Bearer [REDACTED]")) throw new Error("message not redacted");
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_renders_zero_document_sync_jobs_as_active_or_terminal():
+    script_path = REPO_ROOT / "web" / "app.js"
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    removeAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Date,
+  document,
+  fetch: async () => ({{ ok: true, headers: {{ get: () => "application/json" }}, json: async () => ({{ status: "ok" }}) }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+vm.runInContext(`
+renderSyncProgress({{
+  job_id: "job-running",
+  source_id: "source_github",
+  status: "running",
+  total_documents: 0,
+  processed_documents: 0,
+  skipped_documents: 0,
+  indexed_chunks: 0,
+}}, "source_github");
+globalThis.__runningDetail = document.querySelector("#syncProgressDetail").textContent;
+renderSyncProgress({{
+  job_id: "job-succeeded",
+  source_id: "source_github",
+  status: "succeeded",
+  total_documents: 0,
+  processed_documents: 0,
+  skipped_documents: 0,
+  indexed_chunks: 0,
+}}, "source_github");
+globalThis.__succeededDetail = document.querySelector("#syncProgressDetail").textContent;
+renderSyncProgress({{
+  job_id: "job-failed",
+  source_id: "source_github",
+  status: "failed",
+  total_documents: 0,
+  processed_documents: 0,
+  skipped_documents: 0,
+  indexed_chunks: 0,
+  error_message: "No repositories were available.",
+}}, "source_github");
+globalThis.__failedDetail = document.querySelector("#syncProgressDetail").textContent;
+`, context);
+if (!context.__runningDetail.includes("running") || !context.__runningDetail.includes("Discovering or fetching documents")) {{
+  throw new Error(`running detail was not active: ${{context.__runningDetail}}`);
+}}
+if (!context.__succeededDetail.includes("succeeded") || !context.__succeededDetail.includes("0 documents")) {{
+  throw new Error(`succeeded detail was not terminal: ${{context.__succeededDetail}}`);
+}}
+if (context.__succeededDetail.includes("Discovering documents")) {{
+  throw new Error(`succeeded detail still looked non-terminal: ${{context.__succeededDetail}}`);
+}}
+if (!context.__failedDetail.includes("failed") || !context.__failedDetail.includes("No repositories were available.")) {{
+  throw new Error(`failed detail was not terminal: ${{context.__failedDetail}}`);
+}}
+if (context.__failedDetail.includes("Discovering documents")) {{
+  throw new Error(`failed detail still looked non-terminal: ${{context.__failedDetail}}`);
+}}
 """
     subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
 
