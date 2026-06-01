@@ -2,8 +2,17 @@ import asyncio
 
 import pytest
 
-from core.models import ContextSearchResult
+from core.models import (
+    ChunkModel,
+    ContextSearchResult,
+    DocumentModel,
+    SourceModel,
+    SourceType,
+    SyncStatus,
+)
 from search.answer_service import CitationAnswerService
+from search.context_service import ContextSearchService
+from storage.metadata_store import MetadataStore
 
 
 pytestmark = pytest.mark.unit
@@ -155,3 +164,655 @@ def test_answer_service_matches_common_korean_query_terms_to_english_context():
 
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == "chunk-1"
+
+
+def test_answer_service_ground_neetcode_korean_query_from_github_repository_metadata(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Algorithm docs",
+            content="Dynamic programming solution notes and study documents.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="Algorithm docs",
+                text="Dynamic programming solution notes and study documents.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-chunk",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 문서 찾아와"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["neetcode-readme-chunk"]
+
+
+def test_answer_service_treats_readme_as_document_for_neetcode_korean_query(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Dynamic programming notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-no-doc-word",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Dynamic programming notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-no-doc-word",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 문서 찾아와"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["neetcode-readme-no-doc-word"]
+
+
+def test_answer_service_ignores_common_request_words_for_specific_repo_query(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-chunk",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    for query in (
+        "get ImageGallery docs",
+        "please ImageGallery docs",
+        "show me ImageGallery docs",
+        "find ImageGallery docs",
+        "search ImageGallery docs",
+        "search for ImageGallery docs",
+    ):
+        answer = asyncio.run(service.answer_with_citations(query))
+
+        assert answer["evidence_status"] == "grounded"
+        assert answer["used_chunks"] == ["imagegallery-docs-chunk"]
+
+
+def test_answer_service_treats_non_github_evidence_as_document_like_for_docs_query():
+    result = ContextSearchResult(
+        chunk_id="notion-configuration",
+        document_id="notion-configuration-guide",
+        source_id="source_notion",
+        source_type="notion",
+        title="Configuration guide",
+        score=0.92,
+        preview="Configuration reference.",
+        text="Configuration reference.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("configuration docs"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["notion-configuration"]
+
+
+def test_answer_service_rejects_github_docs_helper_code_for_document_query():
+    result = ContextSearchResult(
+        chunk_id="docs-helper-code",
+        document_id="github:eunhwa99/neetcode-submissions-8ogaz8xl:src/docs_helper.py",
+        source_id="source_github",
+        source_type="github",
+        title="src/docs_helper.py",
+        path="src/docs_helper.py",
+        score=0.92,
+        preview="NeetCode helper implementation.",
+        text="NeetCode helper implementation.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 문서 찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_ignores_korean_search_filler_for_specific_repo_query(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-korean-filler",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-korean-filler",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    for query in (
+        "ImageGallery 라고 검색해도",
+        "ImageGallery라고 검색해도",
+        "ImageGallery라는 리포지토리 검색",
+    ):
+        answer = asyncio.run(service.answer_with_citations(query))
+
+        assert answer["evidence_status"] == "grounded"
+        assert answer["used_chunks"] == ["imagegallery-docs-korean-filler"]
+
+
+def test_answer_service_rejects_partial_github_metadata_match_for_specific_repo_query(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/other:docs/README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Other docs",
+            content="Repository documentation for a different project.",
+            url="https://github.com/eunhwa99/other/blob/main/docs/README.md",
+            canonical_url="https://github.com/eunhwa99/other/blob/main/docs/README.md",
+            platform="GitHub",
+            path="docs/README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="other-docs-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="Other docs",
+                text="Repository documentation for a different project.",
+                url="https://github.com/eunhwa99/other/blob/main/docs/README.md",
+                path="docs/README.md",
+                chunk_index=0,
+                content_hash="other-docs-chunk",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("ImageGallery docs"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_rejects_neetcode_docs_query_for_code_only_metadata_match(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Graph.java",
+            content="class GraphSolution { void dfs() {} }",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            platform="GitHub",
+            path="Graph.java",
+        ),
+        [
+            ChunkModel(
+                chunk_id="code-only",
+                document_id=document_id,
+                source_id="source_github",
+                title="Graph.java",
+                text="class GraphSolution { void dfs() {} }",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+                path="Graph.java",
+                chunk_index=0,
+                content_hash="code-only",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 문서 찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_rejects_neetcode_docs_query_when_code_text_mentions_documentation(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Graph.java",
+            content="// documentation for graph solution\nclass GraphSolution {}",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            platform="GitHub",
+            path="Graph.java",
+        ),
+        [
+            ChunkModel(
+                chunk_id="code-only-documentation-text",
+                document_id=document_id,
+                source_id="source_github",
+                title="Graph.java",
+                text="// documentation for graph solution\nclass GraphSolution {}",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+                path="Graph.java",
+                chunk_index=0,
+                content_hash="code-only-documentation-text",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 문서 찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_rejects_neetcode_graph_docs_query_for_generic_readme(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Dynamic programming notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="generic-neetcode-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Dynamic programming notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="generic-neetcode-readme",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 그래프 문서 찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_rejects_body_only_neetcode_anchor_from_unrelated_readme():
+    result = ContextSearchResult(
+        chunk_id="other-neetcode-body-only",
+        document_id="github:eunhwa99/other:README.md",
+        source_id="source_github",
+        source_type="github",
+        title="Other README",
+        url="https://github.com/eunhwa99/other/blob/main/README.md",
+        path="README.md",
+        line_start=1,
+        line_end=20,
+        version_id="commit-1",
+        score=0.92,
+        preview="NeetCode graph notes appear in this unrelated README body.",
+        text="NeetCode graph notes appear in this unrelated README body.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 그래프 문서 찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_rejects_no_space_neetcode_graph_docs_query_for_generic_readme(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Dynamic programming notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="generic-neetcode-readme-no-space",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Dynamic programming notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="generic-neetcode-readme-no-space",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드그래프문서찾아와"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["used_chunks"] == []
+
+
+def test_answer_service_accepts_neetcode_graph_docs_query_for_matching_readme(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Graph traversal notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="graph-neetcode-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Graph traversal notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="graph-neetcode-readme",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("니트코드 그래프 문서 찾아와"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["graph-neetcode-readme"]
+
+
+def test_answer_service_ignores_polite_request_words_for_neetcode_docs_query(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Repository usage notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="polite-neetcode-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Repository usage notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="polite-neetcode-readme",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("please get neetcode docs"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["polite-neetcode-readme"]

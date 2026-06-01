@@ -782,6 +782,138 @@ class MetadataStore:
                 ).fetchall()
         return [self._chunk_from_row(row) for row in rows]
 
+    def list_chunks_matching_metadata_terms(
+        self,
+        terms: Iterable[str],
+        source_ids: Optional[list[str]] = None,
+        limit: int = 200,
+        require_document_like: bool = False,
+        include_text: bool = False,
+        require_all_terms: bool = False,
+        metadata_only_terms: Optional[Iterable[str]] = None,
+    ) -> list[ChunkModel]:
+        """Return active chunks whose citation metadata contains any term."""
+        self.ensure_schema()
+        normalized_terms = [term.lower() for term in terms if term]
+        normalized_metadata_only_terms = [
+            term.lower() for term in (metadata_only_terms or []) if term
+        ]
+        if not normalized_terms and not normalized_metadata_only_terms:
+            return []
+
+        metadata_fields = [
+            "c.chunk_id",
+            "c.document_id",
+            "c.title",
+            "c.url",
+            "c.path",
+            "d.external_id",
+            "d.title",
+            "d.url",
+            "d.canonical_url",
+            "d.path",
+            "d.platform",
+        ]
+        searchable_fields = [*metadata_fields]
+        if include_text:
+            searchable_fields.append("c.text")
+        term_clauses = []
+        params: list[str | int] = []
+        for term in normalized_terms:
+            term_clauses.append(
+                "(" + " OR ".join(f"INSTR(LOWER({field}), ?) > 0" for field in searchable_fields) + ")"
+            )
+            params.extend([term for _ in searchable_fields])
+
+        term_operator = " AND " if require_all_terms else " OR "
+        where_clauses = ["COALESCE(d.deleted_at, '') = ''"]
+        if term_clauses:
+            where_clauses.append("(" + term_operator.join(term_clauses) + ")")
+        for term in normalized_metadata_only_terms:
+            where_clauses.append(
+                "(" + " OR ".join(f"INSTR(LOWER({field}), ?) > 0" for field in metadata_fields) + ")"
+            )
+            params.extend([term for _ in metadata_fields])
+        if require_document_like:
+            document_like_clause = """
+                (
+                    LOWER(c.document_id) LIKE '%/readme.%'
+                    OR LOWER(c.document_id) LIKE '%/readme/%'
+                    OR LOWER(c.document_id) LIKE '%:readme.%'
+                    OR LOWER(c.document_id) LIKE '%:readme/%'
+                    OR LOWER(c.document_id) LIKE '%/docs/%'
+                    OR LOWER(c.document_id) LIKE '%:docs/%'
+                    OR LOWER(c.document_id) LIKE '%/documentation/%'
+                    OR LOWER(c.document_id) LIKE '%:documentation/%'
+                    OR LOWER(c.document_id) LIKE '%.md'
+                    OR LOWER(c.document_id) LIKE '%.mdx'
+                    OR LOWER(c.document_id) LIKE '%.markdown'
+                    OR LOWER(c.document_id) LIKE '%.rst'
+                    OR LOWER(c.document_id) LIKE '%.txt'
+                    OR LOWER(c.path) = 'readme'
+                    OR LOWER(c.path) LIKE 'readme.%'
+                    OR LOWER(c.path) LIKE 'readme/%'
+                    OR LOWER(c.path) LIKE '%/readme.%'
+                    OR LOWER(c.path) LIKE '%/readme/%'
+                    OR LOWER(c.path) LIKE 'docs/%'
+                    OR LOWER(c.path) LIKE '%/docs/%'
+                    OR LOWER(c.path) LIKE 'documentation/%'
+                    OR LOWER(c.path) LIKE '%/documentation/%'
+                    OR LOWER(c.path) LIKE '%.md'
+                    OR LOWER(c.path) LIKE '%.mdx'
+                    OR LOWER(c.path) LIKE '%.markdown'
+                    OR LOWER(c.path) LIKE '%.rst'
+                    OR LOWER(c.path) LIKE '%.txt'
+                    OR LOWER(d.document_id) LIKE '%/readme.%'
+                    OR LOWER(d.document_id) LIKE '%/readme/%'
+                    OR LOWER(d.document_id) LIKE '%:readme.%'
+                    OR LOWER(d.document_id) LIKE '%:readme/%'
+                    OR LOWER(d.document_id) LIKE '%/docs/%'
+                    OR LOWER(d.document_id) LIKE '%:docs/%'
+                    OR LOWER(d.document_id) LIKE '%/documentation/%'
+                    OR LOWER(d.document_id) LIKE '%:documentation/%'
+                    OR LOWER(d.document_id) LIKE '%.md'
+                    OR LOWER(d.document_id) LIKE '%.mdx'
+                    OR LOWER(d.document_id) LIKE '%.markdown'
+                    OR LOWER(d.document_id) LIKE '%.rst'
+                    OR LOWER(d.document_id) LIKE '%.txt'
+                    OR LOWER(d.path) = 'readme'
+                    OR LOWER(d.path) LIKE 'readme.%'
+                    OR LOWER(d.path) LIKE 'readme/%'
+                    OR LOWER(d.path) LIKE '%/readme.%'
+                    OR LOWER(d.path) LIKE '%/readme/%'
+                    OR LOWER(d.path) LIKE 'docs/%'
+                    OR LOWER(d.path) LIKE '%/docs/%'
+                    OR LOWER(d.path) LIKE 'documentation/%'
+                    OR LOWER(d.path) LIKE '%/documentation/%'
+                    OR LOWER(d.path) LIKE '%.md'
+                    OR LOWER(d.path) LIKE '%.mdx'
+                    OR LOWER(d.path) LIKE '%.markdown'
+                    OR LOWER(d.path) LIKE '%.rst'
+                    OR LOWER(d.path) LIKE '%.txt'
+                )
+            """
+            where_clauses.append(f"(c.source_id != 'source_github' OR {document_like_clause})")
+        if source_ids:
+            placeholders = ",".join("?" for _ in source_ids)
+            where_clauses.append(f"c.source_id IN ({placeholders})")
+            params.extend(source_ids)
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.* FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                    AND d.source_id = c.source_id
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY c.document_id, c.chunk_index
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [self._chunk_from_row(row) for row in rows]
+
     def complete_successful_sync(
         self,
         *,

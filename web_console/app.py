@@ -345,10 +345,16 @@ class CodexCliAnswerService:
             for item in search_result.get("results", [])
         ]
         query_terms = CitationAnswerService._query_terms(question)
+        query_term_groups = CitationAnswerService._query_term_groups(question)
         evidence = [
             item
             for item in results
-            if item.score >= 0.35 and CitationAnswerService._is_relevant_to_query(item, query_terms)
+            if item.score >= 0.35
+            and CitationAnswerService._is_relevant_to_query(
+                item,
+                query_terms,
+                query_term_groups,
+            )
         ][: self.max_chunks]
         citations = [_citation_payload(item) for item in evidence]
         used_chunks = [item.chunk_id for item in evidence]

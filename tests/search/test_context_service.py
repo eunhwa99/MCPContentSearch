@@ -298,6 +298,4335 @@ def test_search_context_returns_chunk_version_id(tmp_path):
     assert result["results"][0].version_id == "blob-version-123"
 
 
+def test_search_context_matches_github_identity_metadata_when_body_does_not(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    result = asyncio.run(ContextSearchService(store).search_context("ImageGallery", top_k=1))
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_no_indexer_plain_topic_uses_bounded_text_lookup(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seeded_chunk = ChunkModel(
+        chunk_id="notion-typescript-body",
+        document_id="notion-typescript-body",
+        source_id="source_notion",
+        title="Language notes",
+        text="The frontend migration uses TypeScript.",
+        chunk_index=0,
+        content_hash="notion-typescript-body",
+    )
+    seed_document_chunks(
+        store,
+        "notion-typescript-body",
+        "notion-typescript-body",
+        "source_notion",
+        "Language notes",
+        "The frontend migration uses TypeScript.",
+    )
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("no-indexer ordinary query should use bounded text lookup")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+        metadata_only_terms=None,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "include_text": include_text,
+            }
+        )
+        if set(terms) == {"typescript"} and source_ids is None and include_text:
+            return [seeded_chunk]
+        return []
+
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(ContextSearchService(store).search_context("typescript", top_k=1))
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-typescript-body"
+    assert {
+        "terms": {"typescript"},
+        "source_ids": None,
+        "include_text": True,
+    } in matching_calls
+
+
+def test_no_indexer_github_repo_query_uses_bounded_metadata_lookup(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    chunk = ChunkModel(
+        chunk_id="imagegallery-chunk",
+        document_id=document_id,
+        source_id="source_github",
+        title="eunhwa99/ImageGallery docs/usage.md",
+        text="Component usage notes and layout details.",
+        url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+        path="docs/ImageGallery/usage.md",
+        chunk_index=0,
+        content_hash="imagegallery-chunk",
+    )
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [chunk],
+    )
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("no-indexer GitHub repo query should use bounded metadata lookup")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+        metadata_only_terms=None,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "require_document_like": require_document_like,
+                "include_text": include_text,
+            }
+        )
+        if set(terms) == {"imagegallery"} and source_ids == ["source_github"]:
+            return [chunk]
+        return []
+
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "ImageGallery",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+    assert {
+        "terms": {"imagegallery"},
+        "source_ids": ["source_github"],
+        "require_document_like": True,
+        "include_text": False,
+    } in matching_calls
+
+
+def test_no_indexer_stop_word_only_query_skips_metadata_scan(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("no-indexer stop-word-only query should not scan chunks")
+
+    def fail_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+        metadata_only_terms=None,
+    ):
+        raise AssertionError("no-indexer stop-word-only query has no bounded terms")
+
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(ContextSearchService(store).search_context("search for", top_k=1))
+
+    assert result["results"] == []
+
+
+def test_search_context_metadata_match_competes_with_full_vector_window(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+    assert result["results"][0].score >= 1.0
+
+
+def test_search_context_ignores_common_request_words_for_metadata_boost(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "show me ImageGallery docs",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["search ImageGallery docs", "search for ImageGallery docs"],
+)
+def test_search_context_ignores_search_request_words_for_metadata_boost(
+    monkeypatch,
+    tmp_path,
+    query,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-search-docs",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-search-docs",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-search-docs"
+
+
+def test_search_context_ignores_extended_request_words_for_metadata_boost(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "tell me about ImageGallery docs",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_matches_camelcase_repository_name_when_vector_window_is_full(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_ignores_korean_search_filler_for_repository_metadata_boost(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    for query in ("ImageGallery 라고 검색", "ImageGallery 검색해도", "ImageGallery라고 검색해도"):
+        result = asyncio.run(
+            ContextSearchService(store, indexer=FakeIndexer()).search_context(
+                query,
+                top_k=1,
+            )
+        )
+
+        assert len(result["results"]) == 1
+        assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_metadata_identity_match_wins_vector_score_tie(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class TiedUnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 1.0)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", TiedUnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_metadata_identity_match_wins_oversized_vector_score(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class OversizedUnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 1.5)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", OversizedUnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_metadata_priority_is_preserved_for_existing_high_score_vector_hit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class MixedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            unrelated = FakeNode("other-github-chunk", 1.5)
+            unrelated.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            unrelated.metadata["source_id"] = "source_github"
+            exact = FakeNode("imagegallery-chunk", 1.2)
+            exact.metadata["document_id"] = document_id
+            exact.metadata["source_id"] = "source_github"
+            return [unrelated, exact]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", MixedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+
+
+def test_search_context_treats_readme_as_document_for_neetcode_korean_query_with_vector_competition(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Dynamic programming notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Dynamic programming notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-readme-chunk"
+
+
+def test_search_context_rejects_neetcode_docs_query_for_code_only_metadata_match(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Graph.java",
+            content="class GraphSolution { void dfs() {} }",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            platform="GitHub",
+            path="Graph.java",
+        ),
+        [
+            ChunkModel(
+                chunk_id="code-only",
+                document_id=document_id,
+                source_id="source_github",
+                title="Graph.java",
+                text="class GraphSolution { void dfs() {} }",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+                path="Graph.java",
+                chunk_index=0,
+                content_hash="code-only",
+            )
+        ],
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "니트코드 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert result["results"] == []
+
+
+def test_search_context_rejects_neetcode_docs_query_for_code_only_vector_hit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="Graph.java",
+            content="class GraphSolution { void dfs() {} }",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+            platform="GitHub",
+            path="Graph.java",
+        ),
+        [
+            ChunkModel(
+                chunk_id="code-only-vector",
+                document_id=document_id,
+                source_id="source_github",
+                title="Graph.java",
+                text="class GraphSolution { void dfs() {} }",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/Graph.java",
+                path="Graph.java",
+                chunk_index=0,
+                content_hash="code-only-vector",
+            )
+        ],
+    )
+
+    class CodeOnlyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("code-only-vector", 0.99)
+            node.metadata["document_id"] = document_id
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", CodeOnlyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert result["results"] == []
+
+
+def test_search_context_matches_neetcode_doc_with_topic_only_in_readme_body(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/neetcode-submissions-8ogaz8xl README",
+            content="Graph traversal notes live in this README.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-body-graph",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/neetcode-submissions-8ogaz8xl README",
+                text="Graph traversal notes live in this README.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-body-graph",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("strong-anchor docs fallback should use bounded lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 그래프 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-readme-body-graph"
+
+
+def test_search_context_prefers_neetcode_over_leetcode_for_korean_anchor(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    for document_id, chunk_id, title, url in (
+        (
+            "github:eunhwa99/leetcode-solutions:README.md",
+            "leetcode-readme",
+            "eunhwa99/leetcode-solutions README",
+            "https://github.com/eunhwa99/leetcode-solutions/blob/main/README.md",
+        ),
+        (
+            "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md",
+            "neetcode-readme",
+            "eunhwa99/neetcode-submissions-8ogaz8xl README",
+            "https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+        ),
+    ):
+        store.upsert_document_and_replace_chunks(
+            DocumentModel(
+                id=document_id,
+                document_id=document_id,
+                external_id=document_id,
+                source_id="source_github",
+                title=title,
+                content="Study notes.",
+                url=url,
+                canonical_url=url,
+                platform="GitHub",
+                path="README.md",
+            ),
+            [
+                ChunkModel(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    source_id="source_github",
+                    title=title,
+                    text="Study notes.",
+                    url=url,
+                    path="README.md",
+                    chunk_index=0,
+                    content_hash=chunk_id,
+                )
+            ],
+        )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "니트코드 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-readme"
+
+
+def test_search_context_prefers_neetcode_for_no_space_korean_anchor_and_document_intent(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    for document_id, chunk_id, title, url in (
+        (
+            "github:eunhwa99/leetcode-solutions:README.md",
+            "leetcode-readme",
+            "eunhwa99/leetcode-solutions README",
+            "https://github.com/eunhwa99/leetcode-solutions/blob/main/README.md",
+        ),
+        (
+            "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md",
+            "neetcode-readme",
+            "eunhwa99/neetcode-submissions-8ogaz8xl README",
+            "https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+        ),
+    ):
+        store.upsert_document_and_replace_chunks(
+            DocumentModel(
+                id=document_id,
+                document_id=document_id,
+                external_id=document_id,
+                source_id="source_github",
+                title=title,
+                content="Study notes.",
+                url=url,
+                canonical_url=url,
+                platform="GitHub",
+                path="README.md",
+            ),
+            [
+                ChunkModel(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    source_id="source_github",
+                    title=title,
+                    text="Study notes.",
+                    url=url,
+                    path="README.md",
+                    chunk_index=0,
+                    content_hash=chunk_id,
+                )
+            ],
+        )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "니트코드문서찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-readme"
+
+
+def test_search_context_ignores_broad_algorithm_term_for_neetcode_graph_metadata_boost(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="NeetCode Clone Graph README",
+            content="Graph traversal notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-graph-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="NeetCode Clone Graph README",
+                text="Graph traversal notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-graph-readme",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 알고리즘에서 그래프 관련 코드 알려줘",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-graph-readme"
+
+
+def test_search_context_keeps_algorithm_term_for_general_document_queries(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other README",
+        "General project notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/algorithms:README.md",
+        "algorithm-readme",
+        "source_github",
+        "Algorithm README",
+        "Algorithm study notes.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "algorithm docs",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "algorithm-readme"
+
+
+def test_search_context_keeps_korean_algorithm_term_for_general_document_queries(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other README",
+        "General project notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/algorithms:README.md",
+        "algorithm-readme",
+        "source_github",
+        "Algorithm README",
+        "Algorithm study notes.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "알고리즘 문서 찾아와",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "algorithm-readme"
+
+
+def test_search_context_metadata_match_boosts_low_score_vector_hit(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class LowScoreMetadataMatchRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("imagegallery-chunk", 0.12)
+            node.metadata["document_id"] = document_id
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr(
+        "search.context_service.VectorIndexRetriever",
+        LowScoreMetadataMatchRetriever,
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+    assert result["results"][0].score >= 1.0
+
+
+def test_search_context_metadata_boost_survives_stale_duplicate_vector_hit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class DuplicateVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            stale = FakeNode("imagegallery-chunk", 0.99)
+            stale.metadata["document_id"] = "github:eunhwa99/old:docs/usage.md"
+            stale.metadata["source_id"] = "source_github"
+            valid = FakeNode("imagegallery-chunk", 0.12)
+            valid.metadata["document_id"] = document_id
+            valid.metadata["source_id"] = "source_github"
+            return [stale, valid]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", DuplicateVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+    assert result["results"][0].score >= 1.0
+
+
+def test_search_context_metadata_match_survives_stale_only_vector_hit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-chunk",
+            )
+        ],
+    )
+
+    class StaleOnlyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            stale = FakeNode("imagegallery-chunk", 0.99)
+            stale.metadata["document_id"] = "github:eunhwa99/old:docs/usage.md"
+            stale.metadata["source_id"] = "source_github"
+            return [stale]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", StaleOnlyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-chunk"
+    assert result["results"][0].score >= 1.0
+
+
+def test_vector_search_stops_expanding_after_enough_active_candidates(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "One project context.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/two:README.md",
+        "two-chunk",
+        "source_github",
+        "Two",
+        "Two project context.",
+    )
+    requested_limits = []
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            self.limit = kwargs["similarity_top_k"]
+            requested_limits.append(self.limit)
+
+        def retrieve(self, query):
+            nodes = []
+            for chunk_id, document_id in (
+                ("one-chunk", "github:eunhwa99/one:README.md"),
+                ("two-chunk", "github:eunhwa99/two:README.md"),
+            ):
+                node = FakeNode(chunk_id, 0.8)
+                node.metadata["document_id"] = document_id
+                node.metadata["source_id"] = "source_github"
+                nodes.append(node)
+            return nodes[: self.limit]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "project",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert requested_limits == [2]
+
+
+def test_vector_search_skips_metadata_scan_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should not scan chunks")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "plain context",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+
+
+def test_vector_search_skips_metadata_scan_for_filtered_ordinary_query_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should not scan filtered chunks")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "plain context",
+            filters={"source_id": "source_github"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+
+
+def test_vector_search_skips_metadata_lookup_for_ordinary_long_token_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should not scan chunks")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("metadata fallback should not run for ordinary vector search")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "database",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+
+
+def test_vector_search_skips_metadata_lookup_for_plain_long_word_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Performance overview.",
+    )
+    seed_document_chunks(
+        store,
+        "notion-performance-notes",
+        "notion-performance-metadata",
+        "source_notion",
+        "Performance",
+        "Metadata-only performance notes.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("plain long-word query should not scan metadata")
+
+    def fail_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("plain long-word query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "performance",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+
+
+def test_vector_search_skips_metadata_lookup_for_unlisted_plain_long_word_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-infrastructure-vector",
+        "notion-infrastructure-vector",
+        "source_notion",
+        "Infra",
+        "Infrastructure overview.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/infrastructure-notes:README.md",
+        "github-infrastructure-metadata",
+        "source_github",
+        "Infrastructure notes",
+        "Metadata-only infrastructure notes.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-infrastructure-vector", 0.8)
+            node.metadata["document_id"] = "notion-infrastructure-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("plain long-word query should not scan metadata")
+
+    def fail_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("plain long-word query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "infrastructure",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-infrastructure-vector"
+
+
+def test_vector_search_skips_metadata_lookup_for_plain_language_name_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-javascript-vector",
+        "notion-javascript-vector",
+        "source_notion",
+        "Language notes",
+        "JavaScript overview.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/javascript-notes:README.md",
+        "github-javascript-metadata",
+        "source_github",
+        "JavaScript notes",
+        "Metadata-only JavaScript notes.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-javascript-vector", 0.8)
+            node.metadata["document_id"] = "notion-javascript-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("plain language query should not scan metadata")
+
+    def fail_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("plain language query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "javascript",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-javascript-vector"
+
+
+def test_vector_search_skips_metadata_lookup_for_generic_document_query_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-configuration-vector",
+        "notion-configuration-vector",
+        "source_notion",
+        "Configuration",
+        "Configuration docs overview.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/configuration-docs:README.md",
+        "github-configuration-metadata",
+        "source_github",
+        "Configuration docs",
+        "Metadata-only configuration docs.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-configuration-vector", 0.8)
+            node.metadata["document_id"] = "notion-configuration-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("generic document query should not scan metadata")
+
+    def fail_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("generic document query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "configuration docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-configuration-vector"
+
+
+def test_search_context_matches_lowercase_repository_name_when_vector_window_is_full(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-lowercase-chunk",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-lowercase-chunk",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "imagegallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-lowercase-chunk"
+
+
+def test_search_context_matches_other_lowercase_repository_name_when_vector_window_is_full(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-other-vector",
+        "notion-other-vector",
+        "source_notion",
+        "Other notes",
+        "Unrelated vector result.",
+    )
+    document_id = "github:eunhwa99/anothergallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/anothergallery docs/usage.md",
+            content="Gallery usage notes.",
+            url="https://github.com/eunhwa99/anothergallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/anothergallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="anothergallery-docs",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/anothergallery docs/usage.md",
+                text="Gallery usage notes.",
+                url="https://github.com/eunhwa99/anothergallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="anothergallery-docs",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-other-vector", 0.99)
+            node.metadata["document_id"] = "notion-other-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "anothergallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "anothergallery-docs"
+
+
+def test_lowercase_repository_probe_uses_github_metadata_when_vector_results_are_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion-anothergallery",
+        "notion-anothergallery",
+        "source_notion",
+        "anothergallery planning notes",
+        "Non-GitHub anothergallery notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/anothergallery:README.md",
+        "github-anothergallery-readme",
+        "source_github",
+        "eunhwa99/anothergallery README.md",
+        "GitHub anothergallery docs.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "anothergallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "github-anothergallery-readme"
+
+
+def test_lowercase_repository_name_lookup_prefers_docs_before_code(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-github-chunk",
+        "source_github",
+        "Other repository README",
+        "Generic project documentation.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:aaa{index:03}.java",
+            f"imagegallery-lowercase-code-{index}",
+            "source_github",
+            f"aaa{index:03}.java",
+            "class Component {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes and layout details.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/ImageGallery/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-lowercase-docs-first",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes and layout details.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/ImageGallery/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-lowercase-docs-first",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-github-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "imagegallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-lowercase-docs-first"
+
+
+def test_vector_search_uses_bounded_metadata_lookup_for_repo_docs_query(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should use bounded lookup")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "limit": limit,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+    assert matching_calls == [
+        {
+            "terms": {"imagegallery"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": True,
+        }
+    ]
+
+
+def test_vector_search_uses_selective_terms_for_github_prefixed_repo_docs_query(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should use bounded lookup")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "limit": limit,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "github ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+    assert matching_calls == [
+        {
+            "terms": {"imagegallery"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": True,
+        }
+    ]
+
+
+def test_vector_search_uses_bounded_metadata_lookup_for_short_underscore_repo_docs_query(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should use bounded lookup")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "limit": limit,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "foo_bar docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+    assert matching_calls == [
+        {
+            "terms": {"foo_bar"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": True,
+        }
+    ]
+
+
+def test_vector_search_ignores_repo_request_words_for_korean_repo_query(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should use bounded lookup")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "limit": limit,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery라는 리포지토리 검색",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+    assert matching_calls == [
+        {
+            "terms": {"imagegallery"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": True,
+        },
+        {
+            "terms": {"imagegallery"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": False,
+        }
+    ]
+
+
+def test_github_document_lookup_filters_code_rows_before_limit(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:aaa{index:03}.java",
+            f"imagegallery-code-{index}",
+            "source_github",
+            f"aaa{index:03}.java",
+            "class Component {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-after-code",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-after-code",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-after-code"
+
+
+def test_anchored_topic_document_lookup_requires_topic_before_limit(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/neetcode-submissions-8ogaz8xl:aaa{index:03}/README.md",
+            f"neetcode-generic-readme-{index}",
+            "source_github",
+            f"aaa{index:03} README",
+            "NeetCode generic notes.",
+        )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:graph/README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="graph README",
+            content="NeetCode graph notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/graph/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/graph/README.md",
+            platform="GitHub",
+            path="graph/README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-graph-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="graph README",
+                text="NeetCode graph notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/graph/README.md",
+                path="graph/README.md",
+                chunk_index=0,
+                content_hash="neetcode-graph-readme",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 그래프 문서 찾아와",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-graph-readme"
+
+
+@pytest.mark.parametrize(
+    ("query", "repo_name", "expected_chunk_id"),
+    [
+        ("imagegallery docs", "ImageGallery", "imagegallery-docs-lowercase"),
+        ("image-gallery docs", "image-gallery", "image-gallery-docs"),
+        ("foo-bar docs", "foo-bar", "foo-bar-docs"),
+    ],
+)
+def test_unfiltered_repository_docs_lookup_filters_github_code_rows_before_limit(
+    monkeypatch,
+    tmp_path,
+    query,
+    repo_name,
+    expected_chunk_id,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/{repo_name}:aaa{index:03}.java",
+            f"{expected_chunk_id}-code-{index}",
+            "source_github",
+            f"aaa{index:03}.java",
+            "class Component {}",
+        )
+    document_id = f"github:eunhwa99/{repo_name}:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title=f"eunhwa99/{repo_name} docs/usage.md",
+            content="Component usage notes.",
+            url=f"https://github.com/eunhwa99/{repo_name}/blob/main/docs/usage.md",
+            canonical_url=f"https://github.com/eunhwa99/{repo_name}/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id=expected_chunk_id,
+                document_id=document_id,
+                source_id="source_github",
+                title=f"eunhwa99/{repo_name} docs/usage.md",
+                text="Component usage notes.",
+                url=f"https://github.com/eunhwa99/{repo_name}/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash=expected_chunk_id,
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == expected_chunk_id
+
+
+def test_github_document_lookup_filters_code_rows_for_mixed_source_filters(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    seed_document_chunks(
+        store,
+        "notion-imagegallery-notes",
+        "notion-imagegallery-notes",
+        "source_notion",
+        "ImageGallery planning notes",
+        "Planning notes.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:aaa{index:03}.java",
+            f"imagegallery-code-mixed-{index}",
+            "source_github",
+            f"aaa{index:03}.java",
+            "class Component {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-mixed-source",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-mixed-source",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            filters={"source_ids": ["source_github", "source_notion"]},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-mixed-source"
+
+
+def test_repository_name_lookup_prefers_docs_before_code_without_document_intent(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:aaa{index:03}.java",
+            f"imagegallery-code-repo-only-{index}",
+            "source_github",
+            f"aaa{index:03}.java",
+            "class Component {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-repo-only",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-repo-only",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-repo-only"
+
+
+def test_github_document_lookup_filters_docs_named_code_rows_before_limit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:DocsComponent{index:03}.java",
+            f"imagegallery-docs-component-{index}",
+            "source_github",
+            f"DocsComponent{index:03}.java",
+            "class DocsComponent {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-after-docs-code",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-after-docs-code",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-after-docs-code"
+
+
+def test_github_document_lookup_filters_adocs_code_rows_before_limit(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:adocs/Component{index:03}.java",
+            f"imagegallery-adocs-component-{index}",
+            "source_github",
+            f"adocs/Component{index:03}.java",
+            "class Component {}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-after-adocs-code",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-after-adocs-code",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-after-adocs-code"
+
+
+@pytest.mark.parametrize("code_name", ["ReadmeComponent", "DocumentationComponent"])
+def test_github_document_lookup_filters_readme_documentation_named_code_rows_before_limit(
+    monkeypatch,
+    tmp_path,
+    code_name,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-chunk",
+        "source_github",
+        "Other README",
+        "Unrelated docs.",
+    )
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/ImageGallery:{code_name}{index:03}.java",
+            f"imagegallery-{code_name.lower()}-{index}",
+            "source_github",
+            f"{code_name}{index:03}.java",
+            f"class {code_name} {{}}",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id=f"imagegallery-docs-after-{code_name.lower()}-code",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash=f"imagegallery-docs-after-{code_name.lower()}-code",
+            )
+        ],
+    )
+
+    class UnrelatedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("other-chunk", 0.99)
+            node.metadata["document_id"] = "github:eunhwa99/other:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", UnrelatedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == f"imagegallery-docs-after-{code_name.lower()}-code"
+
+
+def test_metadata_lookup_treats_underscore_terms_as_literal_text(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/fooXbar:README.md",
+        "fooxbar-chunk",
+        "source_github",
+        "fooXbar README",
+        "Wrong repository.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/foo_bar:README.md",
+        "foobar-underscore-chunk",
+        "source_github",
+        "foo_bar README",
+        "Target repository.",
+    )
+
+    chunks = store.list_chunks_matching_metadata_terms(
+        {"foo_bar"},
+        ["source_github"],
+        limit=1,
+        require_document_like=True,
+    )
+
+    assert [chunk.chunk_id for chunk in chunks] == ["foobar-underscore-chunk"]
+
+
+def test_repository_lookup_uses_metadata_fields_before_chunk_text(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/aaa{index:03}:README.md",
+            f"other-readme-{index}",
+            "source_github",
+            f"aaa{index:03} README",
+            "This README compares ImageGallery alternatives.",
+        )
+    document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="eunhwa99/ImageGallery docs/usage.md",
+            content="Component usage notes.",
+            url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            canonical_url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+            platform="GitHub",
+            path="docs/usage.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="imagegallery-docs-metadata-only",
+                document_id=document_id,
+                source_id="source_github",
+                title="eunhwa99/ImageGallery docs/usage.md",
+                text="Component usage notes.",
+                url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+                path="docs/usage.md",
+                chunk_index=0,
+                content_hash="imagegallery-docs-metadata-only",
+            )
+        ],
+    )
+
+    service = ContextSearchService(store)
+    result = asyncio.run(service.search_context("ImageGallery docs", top_k=1))
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-docs-metadata-only"
+
+
+def test_strong_github_anchor_must_match_metadata_before_body_text(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "other-neetcode-body-only",
+        "source_github",
+        "Other README",
+        "NeetCode graph notes appear in this unrelated README body.",
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Graph traversal notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-graph",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Graph traversal notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-graph",
+            )
+        ],
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store).search_context(
+            "니트코드 그래프 문서 찾아와",
+            top_k=5,
+        )
+    )
+
+    chunk_ids = [item.chunk_id for item in result["results"]]
+    assert chunk_ids == ["neetcode-readme-graph"]
+
+
+def test_strong_github_anchor_lookup_survives_saturated_body_only_false_positives(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    for index in range(501):
+        seed_document_chunks(
+            store,
+            f"github:eunhwa99/aaa{index:03}:README.md",
+            f"other-readme-body-only-{index}",
+            "source_github",
+            f"aaa{index:03} README",
+            "NeetCode graph notes appear in this unrelated README body.",
+        )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Graph traversal notes.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-readme-after-body-only-window",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Graph traversal notes.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-readme-after-body-only-window",
+            )
+        ],
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 그래프 문서 찾아와",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "neetcode-readme-after-body-only-window"
+
+
+def test_vector_search_uses_bounded_metadata_lookup_for_neetcode_docs_query(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Plain context.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("metadata fallback should use bounded lookup")
+
+    def fake_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "limit": limit,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "니트코드 문서 찾아와",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+    assert matching_calls == [
+        {
+            "terms": {"neetcode"},
+            "source_ids": ["source_github"],
+            "limit": 500,
+            "require_document_like": True,
+        }
+    ]
+
+
+def test_document_intent_metadata_fallback_keeps_non_github_sources_when_unanchored(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-project-docs",
+        "notion-docs-chunk",
+        "source_notion",
+        "Project docs",
+        "Planning notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "project docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-docs-chunk"
+
+
+def test_single_document_term_metadata_fallback_keeps_non_github_sources(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-project-document",
+        "notion-document-chunk",
+        "source_notion",
+        "Project document",
+        "Planning notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "document",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-document-chunk"
+
+
+def test_ordinary_long_token_metadata_fallback_keeps_non_github_sources_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-architecture-notes",
+        "notion-architecture-chunk",
+        "source_notion",
+        "Architecture notes",
+        "Architecture planning notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "architecture",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-architecture-chunk"
+
+
+def test_plain_long_token_metadata_fallback_keeps_non_github_sources_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-performance-notes",
+        "notion-performance-chunk",
+        "source_notion",
+        "Performance notes",
+        "Performance planning notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "performance",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-performance-chunk"
+
+
+def test_plain_long_token_metadata_fallback_matches_chunk_body_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-runbook",
+        "notion-troubleshooting-chunk",
+        "source_notion",
+        "Runbook",
+        "Troubleshooting steps live in the body only.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "troubleshooting",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-troubleshooting-chunk"
+
+
+def test_korean_only_non_github_document_query_uses_bounded_original_terms(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seeded_chunk = ChunkModel(
+        chunk_id="notion-korean-algorithm-doc",
+        document_id="notion-korean-algorithm-doc",
+        source_id="source_notion",
+        title="알고리즘 문서",
+        text="알고리즘 정리 내용입니다.",
+        chunk_index=0,
+        content_hash="notion-korean-algorithm-doc",
+    )
+    seed_document_chunks(
+        store,
+        "notion-korean-algorithm-doc",
+        "notion-korean-algorithm-doc",
+        "source_notion",
+        "알고리즘 문서",
+        "알고리즘 정리 내용입니다.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("Korean ordinary fallback should use bounded lookup")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "include_text": include_text,
+            }
+        )
+        assert "알고리즘" in set(terms)
+        assert {"algorithm", "algorithms"}.issubset(set(terms))
+        assert include_text is True
+        return [seeded_chunk]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "알고리즘 문서",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-korean-algorithm-doc"
+    assert matching_calls
+
+
+@pytest.mark.parametrize(
+    ("query", "title", "text", "expected_chunk_id"),
+    [
+        ("monitoring", "Monitoring guide", "Operational telemetry notes.", "notion-monitoring"),
+        ("authorization", "Access guide", "Authorization policy notes.", "notion-authorization"),
+    ],
+)
+def test_ordinary_technical_terms_keep_non_github_fallback_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+    query,
+    title,
+    text,
+    expected_chunk_id,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        f"notion-{query}",
+        expected_chunk_id,
+        "source_notion",
+        title,
+        text,
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/unrelated:README.md",
+        "github-unrelated-readme",
+        "source_github",
+        "Unrelated README",
+        "GitHub unrelated notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == expected_chunk_id
+
+
+@pytest.mark.parametrize(
+    ("query", "source_id", "title", "text", "expected_chunk_id"),
+    [
+        (
+            "typescript",
+            "source_notion",
+            "TypeScript notes",
+            "TypeScript planning notes.",
+            "notion-typescript",
+        ),
+        (
+            "postgresql",
+            "source_tistory",
+            "PostgreSQL tuning",
+            "PostgreSQL index notes.",
+            "tistory-postgresql",
+        ),
+        (
+            "typescript docs",
+            "source_notion",
+            "TypeScript docs",
+            "TypeScript API reference.",
+            "notion-typescript-docs",
+        ),
+    ],
+)
+def test_plain_lowercase_topic_terms_recover_non_github_metadata_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+    query,
+    source_id,
+    title,
+    text,
+    expected_chunk_id,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_tistory", SourceType.TISTORY, "Tistory")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        expected_chunk_id,
+        expected_chunk_id,
+        source_id,
+        title,
+        text,
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/unrelated:README.md",
+        "github-unrelated-readme",
+        "source_github",
+        "Unrelated README",
+        "GitHub unrelated notes.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == expected_chunk_id
+
+
+def test_plain_lowercase_topic_merges_non_github_body_match_with_github_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/typescript-notes:README.md",
+        "github-typescript-readme",
+        "source_github",
+        "TypeScript README",
+        "Repository overview.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/typescript-notes:src/example.ts",
+        "github-typescript-code",
+        "source_github",
+        "src/example.ts",
+        "export const example = true;",
+    )
+    seed_document_chunks(
+        store,
+        "notion-language-notes",
+        "notion-typescript-body",
+        "source_notion",
+        "Language notes",
+        "The team uses TypeScript for frontend architecture.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "typescript",
+            top_k=2,
+        )
+    )
+
+    chunk_ids = [result.chunk_id for result in result["results"]]
+    assert "notion-typescript-body" in chunk_ids
+    if "github-typescript-code" in chunk_ids:
+        assert chunk_ids.index("notion-typescript-body") < chunk_ids.index("github-typescript-code")
+
+
+def test_source_filtered_non_github_lookup_matches_body_only_lowercase_term(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-language-body",
+        "notion-language-filtered-body",
+        "source_notion",
+        "Language notes",
+        "TypeScript appears only in the body text.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "typescript",
+            filters={"source_id": "source_notion"},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-language-filtered-body"
+
+
+def test_plain_lowercase_topic_keeps_sufficient_lexical_vector_hit_over_github_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion-typescript-vector",
+        "notion-typescript-vector",
+        "source_notion",
+        "TypeScript notes",
+        "TypeScript planning notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/typescript:README.md",
+        "github-typescript-readme",
+        "source_github",
+        "TypeScript README",
+        "Repository overview.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-typescript-vector", 0.8)
+            node.metadata["document_id"] = "notion-typescript-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("sufficient vector results should not trigger broad metadata fallback")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        raise AssertionError("sufficient lexical vector results should not use GitHub metadata")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "typescript",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-typescript-vector"
+
+
+@pytest.mark.parametrize("query", ["api/v1", "api/v1 docs"])
+def test_api_path_queries_recover_non_github_body_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+    query,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seeded_chunk = ChunkModel(
+        chunk_id="notion-api-v1-body",
+        document_id="notion-api-v1-body",
+        source_id="source_notion",
+        title="API notes",
+        text="The api/v1 endpoint behavior is documented here.",
+        chunk_index=0,
+        content_hash="notion-api-v1-body",
+    )
+    seed_document_chunks(
+        store,
+        "notion-api-v1-body",
+        "notion-api-v1-body",
+        "source_notion",
+        "API notes",
+        "The api/v1 endpoint behavior is documented here.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("api path fallback should use bounded text lookup")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        assert set(terms) == {"api/v1"}
+        assert source_ids is None
+        assert include_text is True
+        return [seeded_chunk]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-api-v1-body"
+
+
+@pytest.mark.parametrize("query", ["docs", "문서 찾아와"])
+def test_document_intent_only_queries_do_not_use_unbounded_chunk_scan(
+    monkeypatch,
+    tmp_path,
+    query,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("document-intent fallback should not call list_chunks")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "require_document_like": require_document_like,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert result["results"] == []
+    assert matching_calls
+    assert all(call["require_document_like"] is True for call in matching_calls)
+
+
+def test_mixed_github_and_notion_filter_keeps_non_github_body_text_lookup(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    notion_chunk = ChunkModel(
+        chunk_id="notion-typescript-mixed-body",
+        document_id="notion-typescript-mixed-body",
+        source_id="source_notion",
+        title="Language notes",
+        text="TypeScript appears only in the Notion body.",
+        chunk_index=0,
+        content_hash="notion-typescript-mixed-body",
+    )
+    seed_document_chunks(
+        store,
+        "notion-typescript-mixed-body",
+        "notion-typescript-mixed-body",
+        "source_notion",
+        "Language notes",
+        "TypeScript appears only in the Notion body.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/other:README.md",
+        "github-other-readme",
+        "source_github",
+        "Other README",
+        "Repository overview.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    matching_calls = []
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "include_text": include_text,
+            }
+        )
+        if source_ids == ["source_notion"] and include_text:
+            return [notion_chunk]
+        return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "typescript",
+            filters={"source_ids": ["source_github", "source_notion"]},
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-typescript-mixed-body"
+    assert {
+        "terms": {"typescript"},
+        "source_ids": ["source_github"],
+        "include_text": False,
+    } in matching_calls
+    assert {
+        "terms": {"typescript"},
+        "source_ids": ["source_notion"],
+        "include_text": True,
+    } in matching_calls
+
+
+def test_unlisted_technical_term_skips_metadata_lookup_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion-scalability-vector",
+        "notion-scalability-vector",
+        "source_notion",
+        "Scalability notes",
+        "Scalability planning notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/scalability:README.md",
+        "github-scalability-metadata",
+        "source_github",
+        "Scalability README",
+        "Metadata-only scalability notes.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-scalability-vector", 0.8)
+            node.metadata["document_id"] = "notion-scalability-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("ordinary technical query should not scan metadata")
+
+    def fail_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        raise AssertionError("ordinary technical query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "scalability",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-scalability-vector"
+
+
+def test_generic_long_word_docs_query_keeps_non_github_sources_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-configuration-docs",
+        "notion-configuration-docs",
+        "source_notion",
+        "Configuration docs",
+        "Configuration reference.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "configuration docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-configuration-docs"
+
+
+def test_hyphenated_topic_docs_query_matches_body_when_vector_empty(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "notion-security-guide",
+        "notion-zero-trust-body",
+        "source_notion",
+        "Security guide",
+        "Zero-trust rollout notes live in the body only.",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "zero-trust docs",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-zero-trust-body"
+
+
+@pytest.mark.parametrize(
+    ("query", "title", "text", "expected_terms", "expected_chunk_id"),
+    [
+        (
+            "project structure",
+            "Project structure",
+            "Repository layout notes.",
+            {"project", "structure"},
+            "notion-project-structure",
+        ),
+        (
+            "plain context",
+            "Plain notes",
+            "Plain context lives in the body.",
+            {"plain", "context"},
+            "notion-plain-context",
+        ),
+        (
+            "configuration docs",
+            "Configuration docs",
+            "Configuration reference.",
+            {"configuration"},
+            "notion-configuration-docs-bounded",
+        ),
+    ],
+)
+def test_vector_empty_ordinary_queries_use_bounded_metadata_lookup(
+    monkeypatch,
+    tmp_path,
+    query,
+    title,
+    text,
+    expected_terms,
+    expected_chunk_id,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seeded_chunk = ChunkModel(
+        chunk_id=expected_chunk_id,
+        document_id=expected_chunk_id,
+        source_id="source_notion",
+        title=title,
+        text=text,
+        chunk_index=0,
+        content_hash=expected_chunk_id,
+    )
+    seed_document_chunks(
+        store,
+        expected_chunk_id,
+        expected_chunk_id,
+        "source_notion",
+        title,
+        text,
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    matching_calls = []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("ordinary vector-empty fallback should use bounded lookup")
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        matching_calls.append(
+            {
+                "terms": set(terms),
+                "source_ids": source_ids,
+                "include_text": include_text,
+                "require_all_terms": require_all_terms,
+            }
+        )
+        assert set(terms) == expected_terms
+        assert include_text is True
+        return [seeded_chunk]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == expected_chunk_id
+    assert matching_calls
+
+
+def test_hyphenated_ordinary_query_skips_metadata_scan_when_vector_results_are_enough(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/one:README.md",
+        "one-chunk",
+        "source_github",
+        "One",
+        "Read-only retrieval notes.",
+    )
+
+    class ActiveVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("one-chunk", 0.8)
+            node.metadata["document_id"] = "github:eunhwa99/one:README.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("ordinary hyphenated query should not scan metadata")
+
+    def fail_matching_terms(terms, source_ids=None, limit=200, require_document_like=False, include_text=False, require_all_terms=False):
+        raise AssertionError("ordinary hyphenated query should not use metadata lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", ActiveVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "read-only retrieval",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "one-chunk"
+
+
+@pytest.mark.parametrize("query", ["찾아와", "search for", "please show me"])
+def test_stop_word_only_queries_skip_metadata_fallback_scan(
+    monkeypatch,
+    tmp_path,
+    query,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("stop-word-only query should not scan metadata")
+
+    def fail_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+    ):
+        raise AssertionError("stop-word-only query has no bounded metadata terms")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fail_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            query,
+            top_k=1,
+        )
+    )
+
+    assert result["results"] == []
+
+
 def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
