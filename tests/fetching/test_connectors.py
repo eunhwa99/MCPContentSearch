@@ -115,3 +115,19 @@ def test_github_connector_uses_validated_custom_token_env_ref():
     )
 
     assert connector.source.auth_ref == "env:CONTEXTWIKI_GITHUB_TOKEN"
+
+
+def test_github_connector_exposes_public_disabled_reason_for_missing_repositories():
+    connector = GitHubSourceConnector(
+        repositories=(),
+        config=AppConfig(github_token_env_var="GITHUB_TOKEN"),
+        token="ghp_secretcredential",
+        http_client=object(),
+    )
+
+    assert connector.source.enabled is False
+    assert connector.disabled_reason == (
+        "Source source_github is disabled because no GitHub repositories are "
+        "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+    )
+    assert "ghp_secretcredential" not in connector.disabled_reason

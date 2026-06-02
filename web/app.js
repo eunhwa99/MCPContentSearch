@@ -856,7 +856,7 @@ function zeroTotalSyncProgressDetail(job, status, completed, indexed) {
 function renderSyncRequestStopped(sourceId, payload, fallbackLabel) {
   const root = payload && typeof payload === "object" ? payload.result || payload.data || payload : {};
   const status = String(root.status || "error");
-  const message = firstString(root.message, root.reason, fallbackLabel);
+  const message = firstString(root.error_message, root.message, root.reason, fallbackLabel);
   elements.syncProgress.hidden = false;
   elements.syncProgress.classList.remove("indeterminate");
   elements.syncProgressLabel.textContent = `${sourceId || "sync"} ${status}`;

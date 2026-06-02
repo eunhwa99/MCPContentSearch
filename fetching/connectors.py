@@ -15,6 +15,7 @@ class SourceConnector(ABC):
     source: SourceModel
     supports_stale_cleanup: bool = False
     cleanup_document_id_prefixes: tuple[str, ...] = ()
+    disabled_reason: str = ""
 
     @abstractmethod
     async def fetch_documents(self) -> list[DocumentModel]:
@@ -138,6 +139,12 @@ class GitHubSourceConnector(SourceConnector):
             enabled=bool(self.repositories),
             auth_ref=f"env:{config.github_token_env_var}",
             sync_status=SyncStatus.IDLE,
+        )
+        self.disabled_reason = (
+            "Source source_github is disabled because no GitHub repositories are "
+            "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+            if not self.source.enabled
+            else ""
         )
 
     async def fetch_documents(self) -> list[DocumentModel]:

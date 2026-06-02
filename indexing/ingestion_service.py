@@ -74,7 +74,9 @@ class IngestionService:
             logger.info("Sync already running for source %s", source_id)
             return job
         if not connector.source.enabled:
-            message = f"Source {source_id} is disabled"
+            message = _redact_sensitive_error(
+                getattr(connector, "disabled_reason", "") or f"Source {source_id} is disabled"
+            )
             return self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
