@@ -168,7 +168,7 @@ class ContextSearchService:
             else:
                 candidates = self._keyword_candidates(query, self.retriever, top_k, source_ids)
             term_groups = self._query_term_groups(query)
-            reranked = self._rerank_candidates(candidates, term_groups, top_k)
+            reranked = self._rerank_candidates(query, candidates, term_groups, top_k)
             return {
                 "candidates": reranked,
                 "retrieval_queries": [query],
@@ -192,7 +192,7 @@ class ContextSearchService:
                 term_groups,
                 [],
             )
-            reranked = self._rerank_candidates(candidates, term_groups, top_k)
+            reranked = self._rerank_candidates(query, candidates, term_groups, top_k)
             return {
                 "candidates": reranked,
                 "retrieval_queries": [query],
@@ -245,7 +245,7 @@ class ContextSearchService:
                     retrieval_queries,
                 )
 
-        reranked = self._rerank_candidates(candidates, effective_term_groups, top_k)
+        reranked = self._rerank_candidates(query, candidates, effective_term_groups, top_k)
         return {
             "candidates": reranked,
             "retrieval_queries": retrieval_queries,
@@ -789,6 +789,7 @@ class ContextSearchService:
 
     def _rerank_candidates(
         self,
+        query: str,
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
@@ -796,6 +797,8 @@ class ContextSearchService:
         if not candidates:
             return []
         scoring_groups = self._scoring_term_groups(term_groups)
+        preferred_phrases = self._preferred_query_phrases(query, term_groups)
+        source_type_terms = self._query_source_type_terms(term_groups)
         reranked = []
         for order, candidate in enumerate(candidates):
             chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
@@ -823,6 +826,10 @@ class ContextSearchService:
             rerank_score = float(candidate.get("score", 0.0))
             rerank_score += match_count * 0.12
             rerank_score += metadata_match_count * 0.08
+            if preferred_phrases:
+                rerank_score += self._phrase_match_bonus(preferred_phrases, metadata_haystack)
+            if source_type_terms and self._document_matches_source_type_terms(document, source_type_terms):
+                rerank_score += 0.12
             if (
                 any(group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups)
                 and document.source_id == "source_github"
@@ -1048,6 +1055,51 @@ class ContextSearchService:
     def _preferred_metadata_terms(terms: set[str]) -> set[str]:
         ascii_terms = {term for term in terms if re.fullmatch(r"[a-z0-9_/-]+", term)}
         return ascii_terms or terms
+
+    @classmethod
+    def _preferred_query_phrases(
+        cls,
+        query: str,
+        term_groups: list[set[str]],
+    ) -> list[str]:
+        phrases = []
+        seen = set()
+        for variant in retrieval_query_variants(query, term_groups):
+            normalized = " ".join(str(variant or "").split()).lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            if len(normalized.split()) >= 2:
+                phrases.append(normalized)
+        return phrases[:3]
+
+    @staticmethod
+    def _phrase_match_bonus(phrases: list[str], metadata_haystack: str) -> float:
+        bonus = 0.0
+        for phrase in phrases:
+            if phrase in metadata_haystack:
+                bonus = max(bonus, 0.18 if len(phrase.split()) >= 3 else 0.12)
+        return bonus
+
+    @staticmethod
+    def _query_source_type_terms(term_groups: list[set[str]]) -> set[str]:
+        source_terms = set()
+        for group in term_groups:
+            lowered = {term.lower() for term in group}
+            if lowered.intersection({"github", "깃허브", "repo", "repository", "리포지토리"}):
+                source_terms.add("github")
+            if lowered.intersection({"notion", "노션"}):
+                source_terms.add("notion")
+            if lowered.intersection({"tistory", "티스토리"}):
+                source_terms.add("tistory")
+            if lowered.intersection({"web", "website", "site", "docs", "documentation", "웹"}):
+                source_terms.add("web")
+        return source_terms
+
+    @staticmethod
+    def _document_matches_source_type_terms(document: DocumentModel, source_type_terms: set[str]) -> bool:
+        source_id = (document.source_id or "").lower()
+        return any(term and term in source_id for term in source_type_terms)
 
     @staticmethod
     def _metadata_lookup_topical_terms(term_groups: list[set[str]]) -> set[str]:

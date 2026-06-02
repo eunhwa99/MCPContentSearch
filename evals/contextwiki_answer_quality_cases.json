@@ -1,0 +1,35 @@
+[
+  {
+    "case_id": "github-sync-docs-answer",
+    "group": "repo-specific",
+    "question": "github sync 문서",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["GitHub", "sync"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["github-sync-doc-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "neetcode-problems-answer",
+    "group": "repo-specific",
+    "question": "neetcode 문제",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["NeetCode", "problem"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["neetcode-problems-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "unknown-deployment-region-answer",
+    "group": "generic-behavior",
+    "question": "What is the deployment region?",
+    "top_k": 3,
+    "expected_status": "insufficient",
+    "expected_answer_terms": ["Insufficient evidence"],
+    "forbidden_answer_terms": ["us-east-1", "ap-northeast-2"],
+    "required_citation_chunk_ids": [],
+    "min_citation_count": 0
+  }
+]

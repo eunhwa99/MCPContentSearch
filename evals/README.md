@@ -1,9 +1,14 @@
 # ContextWiki Local Evaluations
 
-This directory contains deterministic evaluation scaffolding for ContextWiki
-answer quality and grounding. The current checks evaluate already-produced
-`answer_with_citations`-style payloads and do not call live APIs, embedding
-providers, Chroma, SQLite, or LLMs.
+This directory contains deterministic evaluation scaffolding for ContextWiki.
+Phase D1 now covers two local-first layers:
+
+- payload-level answer grounding checks
+- fixture-based retrieval and answer evaluation over temporary local SQLite
+  state
+
+These checks do not call live APIs, user Chroma data, user SQLite data, or
+LLMs.
 
 Run the focused eval tests with:
 
@@ -21,6 +26,25 @@ The first evaluator, `evals.answer_quality`, checks local answer payloads for:
 - consistency between `used_chunks` and citation payloads
 - obvious secret-like output leakage
 
-Full LLM answer generation and LLM-as-judge grading are future work. Keep those
-opt-in because generated answers may send retrieved source evidence to an
-external model.
+`evals.retrieval_quality` checks retrieval ranking expectations such as:
+
+- expected top chunk ids
+- expected source ids
+- required chunk presence
+- forbidden chunk absence
+
+Run the D1 fixture runner with:
+
+```bash
+PYTHONPATH=. python scripts/run_contextwiki_eval.py
+```
+
+This seeds temporary fixture documents into temp SQLite, executes
+`search_context` and `answer_with_citations`, and returns a JSON summary.
+
+Phase split used by the roadmap:
+
+- `D1`: local retrieval/answer eval foundation
+- `D2`: observability expansion
+- `J1`: deterministic non-LLM retrieval quality
+- `J2`: LLM-assisted answer quality

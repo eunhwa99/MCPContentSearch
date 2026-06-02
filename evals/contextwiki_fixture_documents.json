@@ -1,0 +1,72 @@
+[
+  {
+    "chunk_id": "github-sync-doc-chunk",
+    "document_id": "github:example/repo:docs/github-sync.md",
+    "source_id": "source_github",
+    "source_type": "github",
+    "title": "GitHub sync guide",
+    "text": "GitHub sync guide with troubleshooting steps and sync workflow details.",
+    "url": "https://github.com/example/repo/blob/main/docs/github-sync.md",
+    "path": "docs/github-sync.md"
+  },
+  {
+    "chunk_id": "neetcode-problems-chunk",
+    "document_id": "github:eunhwa99/prep-alerts:data/neetcode150.json",
+    "source_id": "source_github",
+    "source_type": "github",
+    "title": "NeetCode problem list",
+    "text": "NeetCode 150 problem list with categories and canonical problem names.",
+    "url": "https://github.com/eunhwa99/prep-alerts/blob/main/data/neetcode150.json",
+    "path": "data/neetcode150.json"
+  },
+  {
+    "chunk_id": "notion-sync-chunk",
+    "document_id": "notion:notion-sync-notes",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Notion sync notes",
+    "text": "Notion sync troubleshooting and checklist for connector behavior.",
+    "url": "https://www.notion.so/notion-sync-notes",
+    "path": "Notion sync notes"
+  },
+  {
+    "chunk_id": "architecture-guide-chunk",
+    "document_id": "web:project-architecture-guide",
+    "source_id": "source_web",
+    "source_type": "web",
+    "title": "Project architecture guide",
+    "text": "Overview of services, queue boundaries, retrieval modules, and system ownership.",
+    "url": "https://docs.example.com/project-architecture-guide",
+    "path": "docs/project-architecture-guide.md"
+  },
+  {
+    "chunk_id": "runtime-notes-chunk",
+    "document_id": "web:runtime-notes",
+    "source_id": "source_web",
+    "source_type": "web",
+    "title": "Runtime notes",
+    "text": "This note mentions project architecture guide ideas in passing but focuses on runtime caveats.",
+    "url": "https://docs.example.com/runtime-notes",
+    "path": "notes/runtime.txt"
+  },
+  {
+    "chunk_id": "aws-guide-chunk",
+    "document_id": "web:aws-deployment-guide",
+    "source_id": "source_web",
+    "source_type": "web",
+    "title": "AWS deployment guide",
+    "text": "Amazon Web Services deployment checklist for environment setup and launch steps.",
+    "url": "https://docs.example.com/aws-deployment-guide",
+    "path": "docs/aws-deployment-guide.md"
+  },
+  {
+    "chunk_id": "code-only-graph-chunk",
+    "document_id": "github:eunhwa99/neetcode-submissions:Graph.java",
+    "source_id": "source_github",
+    "source_type": "github",
+    "title": "Graph.java",
+    "text": "class GraphSolution { void dfs() {} }",
+    "url": "https://github.com/eunhwa99/neetcode-submissions/blob/main/Graph.java",
+    "path": "Graph.java"
+  }
+]

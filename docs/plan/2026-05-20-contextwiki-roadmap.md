@@ -178,6 +178,19 @@ Expected impact:
 
 - Strong portfolio differentiator for US backend/AI infrastructure roles.
 
+Sub-stages:
+
+- `D1`: local retrieval/answer eval foundation
+  - deterministic fixture documents
+  - golden questions split into repo-specific and generic-behavior suites
+  - retrieval ranking checks
+  - grounded-answer checks
+  - local JSON report runner
+- `D2`: observability expansion
+  - latency, token, and cost tracking
+  - failed-query logging and comparison over time
+  - richer reporting or trace/dashboard integration
+
 ### Phase E: Remote MCP and API Server
 
 Goal: Make ContextWiki usable by remote agents and clients.
@@ -289,6 +302,17 @@ Expected impact:
 
 - Moves ContextWiki from "retrieves relevant chunks" to "reliably answers with verifiable evidence."
 - Uses Phase D evaluation foundations to tune retrieval and answer behavior instead of guessing.
+
+Sub-stages:
+
+- `J1`: deterministic non-LLM retrieval quality
+  - metadata-aware reranking
+  - deterministic query normalization and multi-query shaping
+  - stricter evidence gating and citation trust improvements
+- `J2`: LLM-assisted quality
+  - low-confidence semantic rewrite
+  - grounded answer synthesis
+  - optional deeper citation verification
 
 Dependency note:
 
