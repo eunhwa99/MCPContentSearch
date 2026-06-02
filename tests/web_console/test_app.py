@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.models import ContextSearchResult, SourceModel, SourceType, SyncJobModel, SyncJobStatus, SyncStatus
+from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 from web_console.app import (
     CodexCliExecutionError,
     CodexCliAnswerService,
@@ -20,6 +21,7 @@ from web_console.app import (
     GitHubTargetSyncService,
     REPO_ROOT,
     create_console_app,
+    _recover_orphaned_sync_jobs_for_startup,
     _codex_sandbox_profile,
     _configured_notion_api_key,
     _redact_prompt_text,
@@ -124,6 +126,17 @@ class FakeMetadataStore:
             processed_documents=1,
             indexed_chunks=4,
         )
+
+
+class RecoveryRecordingMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        self.recover_calls = []
+
+    def recover_orphaned_running_jobs(self, *, started_before, error_message):
+        self.recover_calls.append(
+            {"started_before": started_before, "error_message": error_message}
+        )
+        return 2
 
 
 class FakeIngestionService:
@@ -841,6 +854,82 @@ def test_configured_notion_api_key_prefers_canonical_value(monkeypatch):
     monkeypatch.setenv("notion_token", "lower-alias-secret")
 
     assert _configured_notion_api_key("canonical-notion-secret") == "canonical-notion-secret"
+
+
+def test_startup_recovery_helper_invokes_metadata_store_with_safe_message():
+    metadata_store = RecoveryRecordingMetadataStore()
+
+    recovered_count = _recover_orphaned_sync_jobs_for_startup(
+        metadata_store,
+        process_started_at="2026-06-02T00:00:00+00:00",
+    )
+
+    assert recovered_count == 2
+    assert metadata_store.recover_calls == [
+        {
+            "started_before": "2026-06-02T00:00:00+00:00",
+            "error_message": (
+                "Previous running sync job was recovered after server restart; "
+                "start sync again."
+            ),
+        }
+    ]
+
+
+def test_startup_recovery_allows_api_sync_to_start_fresh_job_after_restart(tmp_path):
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    metadata_store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    orphan, started = metadata_store.begin_sync_job("source_github")
+    assert started is True
+    with metadata_store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs SET
+                owner_id = '',
+                started_at = ?,
+                heartbeat_at = ?
+            WHERE job_id = ?
+            """,
+            (
+                "2000-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                orphan.job_id,
+            ),
+        )
+
+    recovered_count = _recover_orphaned_sync_jobs_for_startup(
+        metadata_store,
+        process_started_at="2026-06-02T00:00:00+00:00",
+    )
+    app = create_console_app(
+        ConsoleDependencies(
+            metadata_store=metadata_store,
+            ingestion_service=FakeIngestionService(),
+            auto_sync_source_ids=(),
+        )
+    )
+    client = TestClient(app)
+
+    status_response = client.get("/api/sources/source_github/sync-status")
+    sync_response = client.post("/api/sources/source_github/sync", json={})
+
+    assert recovered_count == 1
+    status_body = status_response.json()
+    assert status_body["source"]["last_error"] == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+    assert status_body["latest_job"]["job_id"] == orphan.job_id
+    assert status_body["latest_job"]["status"] == "failed"
+    assert status_body["latest_job"]["error_message"] == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+    sync_body = sync_response.json()
+    assert sync_body["job_id"] == "job-sync"
+    assert sync_body["status"] == "succeeded"
 
 
 def test_github_target_sync_endpoint_delegates_to_service():

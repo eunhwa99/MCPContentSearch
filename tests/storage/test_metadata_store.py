@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
 
 import pytest
@@ -24,18 +24,25 @@ def _mark_job_running(
     *,
     started_at: str | None = None,
     heartbeat_at: str = "",
+    owner_id: str | None = None,
 ):
     started_at = started_at or datetime.now(timezone.utc).isoformat()
+    owner_clause = ", owner_id = ?" if owner_id is not None else ""
+    params = [SyncJobStatus.RUNNING.value, started_at, heartbeat_at]
+    if owner_id is not None:
+        params.append(owner_id)
+    params.append(job_id)
     with store._connect() as conn:
         conn.execute(
-            """
+            f"""
             UPDATE sync_jobs SET
                 status = ?,
                 started_at = ?,
                 heartbeat_at = ?
+                {owner_clause}
             WHERE job_id = ?
             """,
-            (SyncJobStatus.RUNNING.value, started_at, heartbeat_at, job_id),
+            tuple(params),
         )
     return store.get_sync_job(job_id)
 
@@ -268,6 +275,384 @@ def test_begin_sync_job_recovers_all_stale_running_jobs(tmp_path):
     assert running_count == 1
     assert store.get_sync_job(first.job_id).status == SyncJobStatus.FAILED
     assert store.get_sync_job(second.job_id).status == SyncJobStatus.FAILED
+
+
+def test_recover_orphaned_running_jobs_fails_old_job_and_allows_fresh_sync(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    orphan, started = store.begin_sync_job("source_github")
+    assert started is True
+    document = DocumentModel(
+        id="doc-claimed",
+        source_id="source_github",
+        title="Claimed",
+        content="Claimed by an orphan job",
+        url="https://github.com/example/repo/blob/main/README.md",
+        platform="GitHub",
+    )
+    store.validate_running_job_document(orphan.job_id, document)
+    _mark_job_running(
+        store,
+        orphan.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at="2026-06-01T00:00:00+00:00",
+    )
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    recovered_source = store.get_source("source_github")
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    with store._connect() as conn:
+        claim_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_claims WHERE job_id = ?",
+            (orphan.job_id,),
+        ).fetchone()["count"]
+
+    failed_orphan = store.get_sync_job(orphan.job_id)
+    source = store.get_source("source_github")
+    assert recovered_count == 1
+    assert failed_orphan.status == SyncJobStatus.FAILED
+    assert "server restart" in failed_orphan.error_message
+    assert claim_count == 0
+    assert recovered_source.sync_status == SyncStatus.FAILED
+    assert "server restart" in recovered_source.last_error
+    assert source.sync_status == SyncStatus.RUNNING
+    assert source.last_error == ""
+    assert fresh_started is True
+    assert fresh.job_id != orphan.job_id
+
+
+def test_recover_orphaned_running_jobs_preserves_jobs_started_after_cutoff(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    active, started = store.begin_sync_job("source_github")
+    assert started is True
+    recent_timestamp = datetime.now(timezone.utc).isoformat()
+    _mark_job_running(
+        store,
+        active.job_id,
+        started_at="2026-06-02T00:00:01+00:00",
+        heartbeat_at=recent_timestamp,
+    )
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    returned, started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert store.get_sync_job(active.job_id).status == SyncJobStatus.RUNNING
+    assert store.get_source("source_github").sync_status == SyncStatus.RUNNING
+    assert started is False
+    assert returned.job_id == active.job_id
+
+
+def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_cutoff(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    active, started = store.begin_sync_job("source_github")
+    assert started is True
+    _mark_job_running(
+        store,
+        active.job_id,
+        started_at="2000-01-01T00:00:00+00:00",
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    returned, started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert store.get_sync_job(active.job_id).status == SyncJobStatus.RUNNING
+    assert started is False
+    assert returned.job_id == active.job_id
+
+
+def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, monkeypatch):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: False))
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 1
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
+    assert fresh_started is True
+    assert fresh.job_id != previous_job.job_id
+
+
+def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, monkeypatch):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    returned, started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.RUNNING
+    assert started is False
+    assert returned.job_id == previous_job.job_id
+
+
+def test_begin_sync_job_preserves_owned_job_after_unowned_grace(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        unowned_running_job_grace_seconds=60,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    active, started = store.begin_sync_job("source_github")
+    assert started is True
+    older_than_unowned_grace = (
+        datetime.now(timezone.utc) - timedelta(seconds=120)
+    ).isoformat()
+    _mark_job_running(
+        store,
+        active.job_id,
+        started_at=older_than_unowned_grace,
+        heartbeat_at=older_than_unowned_grace,
+    )
+
+    latest = store.get_latest_sync_job("source_github")
+    returned, started = store.begin_sync_job("source_github")
+
+    assert latest.status == SyncJobStatus.RUNNING
+    assert started is False
+    assert returned.job_id == active.job_id
+
+
+def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path, monkeypatch):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+    )
+    alive = {"value": True}
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: alive["value"]),
+    )
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    alive["value"] = False
+
+    latest = store.get_latest_sync_job("source_github")
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert latest.status == SyncJobStatus.FAILED
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
+    assert fresh_started is True
+    assert fresh.job_id != previous_job.job_id
+
+
+def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        unowned_running_job_grace_seconds=60,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    legacy, started = store.begin_sync_job("source_github")
+    assert started is True
+    _mark_job_running(
+        store,
+        legacy.job_id,
+        started_at="2000-01-01T00:00:00+00:00",
+        heartbeat_at="2000-01-01T00:00:00+00:00",
+        owner_id="",
+    )
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+
+    assert recovered_count == 1
+    assert store.get_sync_job(legacy.job_id).status == SyncJobStatus.FAILED
+
+
+def test_begin_sync_job_recovers_unowned_legacy_job_after_startup_grace(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        unowned_running_job_grace_seconds=60,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    legacy, started = store.begin_sync_job("source_github")
+    assert started is True
+    recent_timestamp = datetime.now(timezone.utc).isoformat()
+    _mark_job_running(
+        store,
+        legacy.job_id,
+        started_at="2026-06-01T23:59:30+00:00",
+        heartbeat_at=recent_timestamp,
+        owner_id="",
+    )
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+
+    _mark_job_running(
+        store,
+        legacy.job_id,
+        started_at="2000-01-01T00:00:00+00:00",
+        heartbeat_at="2000-01-01T00:00:00+00:00",
+        owner_id="",
+    )
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert store.get_sync_job(legacy.job_id).status == SyncJobStatus.FAILED
+    assert fresh_started is True
+    assert fresh.job_id != legacy.job_id
+
+
+def test_is_process_alive_treats_permission_error_as_alive(monkeypatch):
+    def raise_permission_error(pid, signal_number):
+        raise PermissionError()
+
+    monkeypatch.setattr("storage.metadata_store.os.kill", raise_permission_error)
+
+    assert MetadataStore._is_process_alive(12345) is True
 
 
 def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate(tmp_path):
@@ -813,6 +1198,52 @@ def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):
 
     assert "version_id" in columns
     assert store.get_chunk("legacy-chunk").version_id == ""
+
+
+def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with store._connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sync_jobs (
+                job_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL DEFAULT '',
+                finished_at TEXT NOT NULL,
+                total_documents INTEGER NOT NULL,
+                processed_documents INTEGER NOT NULL,
+                indexed_chunks INTEGER NOT NULL,
+                skipped_documents INTEGER NOT NULL,
+                error_message TEXT NOT NULL
+            );
+            INSERT INTO sync_jobs (
+                job_id, source_id, status, started_at, heartbeat_at,
+                finished_at, total_documents, processed_documents,
+                indexed_chunks, skipped_documents, error_message
+            ) VALUES (
+                'legacy-job', 'source_github', 'running',
+                '2000-01-01T00:00:00+00:00',
+                '2000-01-01T00:00:00+00:00',
+                '', 0, 0, 0, 0, ''
+            );
+            """
+        )
+
+    store.ensure_schema()
+
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sync_jobs)").fetchall()}
+        row = conn.execute(
+            "SELECT job_id, owner_id FROM sync_jobs WHERE job_id = ?",
+            ("legacy-job",),
+        ).fetchone()
+
+    assert "owner_id" in columns
+    assert row["job_id"] == "legacy-job"
+    assert row["owner_id"] == ""
 
 
 def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path):

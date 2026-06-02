@@ -1,5 +1,7 @@
 import sqlite3
+import os
 import uuid
+from errno import EPERM, ESRCH
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -16,6 +18,11 @@ from core.models import (
 from core.utils import ContentHasher
 
 
+ORPHANED_SYNC_JOB_RECOVERY_MESSAGE = (
+    "Previous running sync job was recovered after server restart; start sync again."
+)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -23,9 +30,17 @@ def _now() -> str:
 class MetadataStore:
     """SQLite-backed metadata store for ContextWiki sources, jobs, docs, and chunks."""
 
-    def __init__(self, db_path: Path | str, running_job_timeout_seconds: int = 24 * 60 * 60):
+    def __init__(
+        self,
+        db_path: Path | str,
+        running_job_timeout_seconds: int = 24 * 60 * 60,
+        sync_owner_id: str | None = None,
+        unowned_running_job_grace_seconds: int = 60,
+    ):
         self.db_path = Path(db_path)
         self.running_job_timeout_seconds = running_job_timeout_seconds
+        self.sync_owner_id = sync_owner_id or str(uuid.uuid4())
+        self.unowned_running_job_grace_seconds = unowned_running_job_grace_seconds
 
     def ensure_schema(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +63,7 @@ class MetadataStore:
                 CREATE TABLE IF NOT EXISTS sync_jobs (
                     job_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL,
+                    owner_id TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     heartbeat_at TEXT NOT NULL DEFAULT '',
@@ -57,6 +73,13 @@ class MetadataStore:
                     indexed_chunks INTEGER NOT NULL,
                     skipped_documents INTEGER NOT NULL,
                     error_message TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_job_owners (
+                    owner_id TEXT PRIMARY KEY,
+                    process_id INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS documents (
@@ -125,6 +148,7 @@ class MetadataStore:
                 conn,
                 "sync_jobs",
                 {
+                    "owner_id": "TEXT NOT NULL DEFAULT ''",
                     "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
                 },
             )
@@ -135,6 +159,7 @@ class MetadataStore:
                     "version_id": "TEXT NOT NULL DEFAULT ''",
                 },
             )
+            self._touch_sync_owner(conn, _now())
 
     def upsert_source(self, source: SourceModel) -> SourceModel:
         self.ensure_schema()
@@ -256,14 +281,15 @@ class MetadataStore:
             conn.execute(
                 """
                 INSERT INTO sync_jobs (
-                    job_id, source_id, status, started_at, heartbeat_at, finished_at,
+                    job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
                     skipped_documents, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
                     job.source_id,
+                    "",
                     job.status.value,
                     job.started_at,
                     "",
@@ -312,14 +338,15 @@ class MetadataStore:
             conn.execute(
                 """
                 INSERT INTO sync_jobs (
-                    job_id, source_id, status, started_at, heartbeat_at, finished_at,
+                    job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
                     skipped_documents, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
                     job.source_id,
+                    self.sync_owner_id,
                     job.status.value,
                     job.started_at,
                     started_at,
@@ -576,6 +603,69 @@ class MetadataStore:
                 )
             row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._job_from_row(row)
+
+    def recover_orphaned_running_jobs(
+        self,
+        *,
+        started_before: str,
+        error_message: str,
+    ) -> int:
+        """Fail restart-orphaned jobs without stealing a live owned sync."""
+        self.ensure_schema()
+        cutoff = self._parse_timestamp(started_before)
+        if not cutoff:
+            raise ValueError("started_before must be an ISO-8601 timestamp")
+        finished_at = _now()
+        recovered_job_ids: list[str] = []
+        affected_source_ids: set[str] = set()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            running_rows = conn.execute(
+                """
+                SELECT * FROM sync_jobs
+                WHERE status = ?
+                ORDER BY started_at, job_id
+                """,
+                (SyncJobStatus.RUNNING.value,),
+            ).fetchall()
+            for row in running_rows:
+                job_started_at = self._parse_timestamp(row["started_at"])
+                if job_started_at and job_started_at >= cutoff:
+                    continue
+                if not self._should_recover_startup_running_job(conn, row):
+                    continue
+                self._fail_sync_job_row(
+                    conn,
+                    row["job_id"],
+                    finished_at,
+                    error_message,
+                )
+                recovered_job_ids.append(row["job_id"])
+                affected_source_ids.add(row["source_id"])
+
+            for source_id in affected_source_ids:
+                active_row = conn.execute(
+                    """
+                    SELECT job_id FROM sync_jobs
+                    WHERE source_id = ? AND status = ?
+                    LIMIT 1
+                    """,
+                    (source_id, SyncJobStatus.RUNNING.value),
+                ).fetchone()
+                if active_row:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE sources SET
+                        sync_status = ?,
+                        last_error = ?,
+                        updated_at = ?
+                    WHERE source_id = ?
+                    """,
+                    (SyncStatus.FAILED.value, error_message, finished_at, source_id),
+                )
+
+        return len(recovered_job_ids)
 
     def get_sync_job(self, job_id: str) -> Optional[SyncJobModel]:
         self.ensure_schema()
@@ -1045,7 +1135,7 @@ class MetadataStore:
         ).fetchall()
         active_running_rows = []
         for running_row in running_rows:
-            if self._is_stale_running_job(running_row):
+            if self._should_fail_active_running_job(conn, running_row):
                 self._fail_sync_job_row(
                     conn,
                     running_row["job_id"],
@@ -1171,6 +1261,78 @@ class MetadataStore:
         return datetime.now(timezone.utc) - parsed > timedelta(
             seconds=self.running_job_timeout_seconds
         )
+
+    def _should_fail_active_running_job(self, conn, row) -> bool:
+        if self._is_stale_running_job(row):
+            return True
+        owner_id = row["owner_id"] if "owner_id" in row.keys() else ""
+        if not owner_id:
+            return self._should_recover_unowned_running_job(row)
+        if owner_id == self.sync_owner_id:
+            return False
+        owner_row = conn.execute(
+            "SELECT * FROM sync_job_owners WHERE owner_id = ?",
+            (owner_id,),
+        ).fetchone()
+        if not owner_row:
+            return False
+        return not self._is_process_alive(owner_row["process_id"])
+
+    def _should_recover_startup_running_job(self, conn, row) -> bool:
+        owner_id = row["owner_id"] if "owner_id" in row.keys() else ""
+        if owner_id:
+            owner_row = conn.execute(
+                "SELECT * FROM sync_job_owners WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+            if owner_row:
+                if owner_id == self.sync_owner_id:
+                    return self._is_stale_running_job(row)
+                return not self._is_process_alive(owner_row["process_id"])
+            return self._is_stale_running_job(row)
+        return self._should_recover_unowned_running_job(row)
+
+    def _should_recover_unowned_running_job(self, row) -> bool:
+        if self.unowned_running_job_grace_seconds <= 0:
+            return True
+        timestamp = row["heartbeat_at"] or row["started_at"]
+        parsed = self._parse_timestamp(timestamp)
+        if not parsed:
+            return True
+        return datetime.now(timezone.utc) - parsed > timedelta(
+            seconds=self.unowned_running_job_grace_seconds
+        )
+
+    def _touch_sync_owner(self, conn, timestamp: str):
+        process_id = os.getpid()
+        conn.execute(
+            """
+            INSERT INTO sync_job_owners (owner_id, process_id, started_at, heartbeat_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(owner_id) DO UPDATE SET
+                process_id = excluded.process_id,
+                heartbeat_at = excluded.heartbeat_at
+            """,
+            (self.sync_owner_id, process_id, timestamp, timestamp),
+        )
+
+    @staticmethod
+    def _is_process_alive(process_id: int) -> bool:
+        try:
+            os.kill(int(process_id), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError as error:
+            if error.errno == ESRCH:
+                return False
+            if error.errno == EPERM:
+                return True
+            return False
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _parse_timestamp(value: str) -> Optional[datetime]:

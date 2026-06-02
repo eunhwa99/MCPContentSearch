@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import os
 from pathlib import Path
@@ -52,6 +53,7 @@ from web_console.payloads import (
     is_loopback_client as _is_loopback_client,
     without_persisted_output_path as _without_persisted_output_path,
 )
+from storage.metadata_store import ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = REPO_ROOT / "web"
@@ -558,6 +560,23 @@ def _schedule_startup_auto_sync_task(
     return task
 
 
+def _recover_orphaned_sync_jobs_for_startup(
+    metadata_store: Any,
+    *,
+    process_started_at: str,
+) -> int:
+    recover = getattr(metadata_store, "recover_orphaned_running_jobs", None)
+    if not callable(recover):
+        return 0
+    recovered_count = recover(
+        started_before=process_started_at,
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+    if recovered_count:
+        logger.info("Recovered %s orphaned running sync job(s)", recovered_count)
+    return recovered_count
+
+
 def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
     app = FastAPI(
         title="ContextWiki Local Web Test Console",
@@ -833,6 +852,7 @@ def create_default_app() -> FastAPI:
     from wiki.service import WikiGenerationService
     from wiki.synthesis import build_wiki_synthesizer
 
+    process_started_at = datetime.now(timezone.utc).isoformat()
     config = AppConfig()
     notion_api_key = _configured_notion_api_key(NOTION_API_KEY)
     chroma_collection = setup_chroma(config)
@@ -865,6 +885,10 @@ def create_default_app() -> FastAPI:
         source_registry=source_registry,
         chunker=DocumentChunker(),
         indexer=indexer,
+    )
+    _recover_orphaned_sync_jobs_for_startup(
+        metadata_store,
+        process_started_at=process_started_at,
     )
     context_search = ContextSearchService(
         metadata_store=metadata_store,
