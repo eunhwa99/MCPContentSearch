@@ -22,6 +22,100 @@ class FakeIndexer:
         return object()
 
 
+class FakeQueryRewriter:
+    def __init__(self, rewrites):
+        self.rewrites = rewrites
+        self.calls = []
+
+    async def rewrite_query(self, query, term_groups):
+        self.calls.append({"query": query, "term_groups": term_groups})
+        return list(self.rewrites)
+
+
+def test_vector_search_tries_alias_expanded_query_variants(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-aws",
+        "aws-chunk",
+        "source_target",
+        "AWS guide",
+        "Amazon Web Services deployment checklist",
+    )
+    retrieval_queries = []
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            self.limit = kwargs.get("similarity_top_k")
+
+        def retrieve(self, query):
+            retrieval_queries.append(query)
+            if "amazon web services" not in query.lower():
+                return []
+            node = FakeNode("aws-chunk", 0.9)
+            node.metadata["document_id"] = "doc-aws"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context("AWS에 적은 문서를 찾아줘", top_k=1)
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "aws-chunk"
+    assert any("amazon web services" in query.lower() for query in retrieval_queries)
+
+
+def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_confidence(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+    retrieval_queries = []
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            retrieval_queries.append(query)
+            if "ec2" not in query.lower():
+                return []
+            node = FakeNode("ec2-chunk", 0.91)
+            node.metadata["document_id"] = "doc-ec2"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    rewriter = FakeQueryRewriter(["aws ec2 setup"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("aws virtual machine startup", top_k=1)
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "ec2-chunk"
+    assert rewriter.calls
+    assert "aws ec2 setup" in result["debug"]["rewritten_queries"]
+    assert any("ec2" in query.lower() for query in retrieval_queries)
+
+
 def test_vector_search_pushes_source_filter_into_retriever(monkeypatch, tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(

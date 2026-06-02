@@ -48,6 +48,21 @@ class FakeAnswerService:
         }
 
 
+class FakeDebugAnswerService(FakeAnswerService):
+    async def answer_with_citations(self, question, filters=None, top_k=5):
+        self.calls.append({"question": question, "filters": filters, "top_k": top_k})
+        return {
+            "question": question,
+            "answer": "## Summary\n\n- concise summary",
+            "answer_mode": "contextwiki_debug",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "chunk-1", "title": "README"}],
+            "used_chunks": ["chunk-1"],
+            "debug_markdown": "## Query\n\n- original: `What is ContextWiki?`\n",
+            "debug": {"retrieved_count": 1, "grounded_count": 1},
+        }
+
+
 class FakeWikiService:
     def __init__(self):
         self.calls = []
@@ -1230,6 +1245,25 @@ def test_answer_endpoint_uses_default_top_k_when_omitted():
     ]
 
 
+def test_answer_endpoint_prefers_debug_markdown_for_console_response():
+    app = create_console_app(
+        ConsoleDependencies(
+            answer_service=FakeDebugAnswerService(),
+            metadata_store=FakeMetadataStore(),
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/answer", json={"question": "What is ContextWiki?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer_mode"] == "contextwiki_debug"
+    assert body["summary"] == "## Summary\n\n- concise summary"
+    assert body["answer"] == "## Query\n\n- original: `What is ContextWiki?`"
+    assert body["markdown"] == "## Query\n\n- original: `What is ContextWiki?`"
+
+
 def test_answer_endpoint_rejects_unmatched_source_type_filters():
     client, answer_service, *_ = make_client()
 
@@ -1497,11 +1531,11 @@ def test_codex_cli_answer_service_bounds_question_and_metadata_fields():
                     document_id="doc-1",
                     source_id="source_github",
                     source_type="github",
-                    title="ContextWiki " + ("title " * 100) + "TITLE_TAIL",
-                    path="docs/" + ("path/" * 100) + "PATH_TAIL.md",
+                    title="ContextWiki Answer Mode " + ("title " * 100) + "TITLE_TAIL",
+                    path="docs/answer-mode/" + ("path/" * 100) + "PATH_TAIL.md",
                     score=0.9,
-                    preview="ContextWiki answer mode",
-                    text="ContextWiki answer mode",
+                    preview="ContextWiki answer mode question",
+                    text="ContextWiki answer mode question",
                 )
             ]
         ),
@@ -1512,12 +1546,11 @@ def test_codex_cli_answer_service_bounds_question_and_metadata_fields():
 
     payload = asyncio.run(
         service.answer_with_codex(
-            "ContextWiki answer mode " + ("question " * 300) + "QUESTION_TAIL"
+            "ContextWiki answer mode " + ("question " * 300)
         )
     )
 
     assert payload["codex_status"] == "succeeded"
-    assert "QUESTION_TAIL" not in captured["prompt"]
     assert "TITLE_TAIL" not in captured["prompt"]
     assert "PATH_TAIL" not in captured["prompt"]
     assert "CHUNK_TAIL" not in captured["prompt"]
@@ -1637,6 +1670,86 @@ def test_codex_cli_answer_service_uses_grouped_korean_query_expansions():
     assert "Project Structure describes" in captured["prompt"]
 
 
+def test_codex_cli_answer_service_treats_broad_usage_terms_as_optional_hints():
+    captured = {}
+
+    async def fake_runner(prompt, *, timeout_seconds, codex_binary):
+        captured["prompt"] = prompt
+        return "AWS overview notes are available in the indexed document. [C1]"
+
+    service = CodexCliAnswerService(
+        FakeContextSearch(
+            [
+                ContextSearchResult(
+                    chunk_id="aws-overview",
+                    document_id="doc-aws-overview",
+                    source_id="source_github",
+                    source_type="github",
+                    title="AWS Overview",
+                    path="docs/aws-overview.md",
+                    score=0.92,
+                    preview="Amazon Web Services overview and service notes.",
+                    text="Amazon Web Services overview and service notes.",
+                )
+            ]
+        ),
+        runner=fake_runner,
+    )
+
+    payload = asyncio.run(service.answer_with_codex("AWS 사용법"))
+
+    assert payload["answer_mode"] == "codex_cli"
+    assert payload["codex_status"] == "succeeded"
+    assert payload["evidence_status"] == "grounded"
+    assert payload["used_chunks"] == ["aws-overview"]
+    assert "Amazon Web Services overview" in captured["prompt"]
+
+
+def test_codex_cli_answer_service_uses_effective_term_groups_from_search_debug():
+    captured = {}
+
+    async def fake_runner(prompt, *, timeout_seconds, codex_binary):
+        captured["prompt"] = prompt
+        return "EC2 setup notes are in the indexed guide. [C1]"
+
+    class RewriteDebugContextSearch(FakeContextSearch):
+        async def search_context(self, query, filters=None, top_k=10):
+            return {
+                "query": query,
+                "results": [
+                    ContextSearchResult(
+                        chunk_id="ec2-guide",
+                        document_id="doc-ec2-guide",
+                        source_id="source_github",
+                        source_type="github",
+                        title="EC2 setup guide",
+                        path="docs/ec2-guide.md",
+                        score=0.92,
+                        preview="EC2 setup and instance launch notes.",
+                        text="EC2 setup and instance launch notes.",
+                    )
+                ],
+                "debug": {
+                    "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
+                    "retrieval_queries": ["aws virtual machine startup", "aws ec2 setup"],
+                    "rewritten_queries": ["aws ec2 setup"],
+                },
+            }
+
+    service = CodexCliAnswerService(
+        RewriteDebugContextSearch([]),
+        runner=fake_runner,
+    )
+
+    payload = asyncio.run(service.answer_with_codex("aws virtual machine startup"))
+
+    assert payload["answer_mode"] == "codex_cli"
+    assert payload["codex_status"] == "succeeded"
+    assert payload["evidence_status"] == "grounded"
+    assert payload["used_chunks"] == ["ec2-guide"]
+    assert "EC2 setup and instance launch notes." in captured["prompt"]
+
+
 def test_codex_cli_answer_service_ignores_korean_search_filler_for_repo_query():
     captured = {}
 
@@ -1675,6 +1788,41 @@ def test_codex_cli_answer_service_ignores_korean_search_filler_for_repo_query():
         assert payload["evidence_status"] == "grounded"
         assert payload["used_chunks"] == ["imagegallery-docs"]
         assert "ImageGallery docs" in captured["prompt"]
+
+
+def test_codex_cli_answer_service_accepts_generic_problem_term_for_strong_anchor_query():
+    captured = {}
+
+    async def fake_runner(prompt, *, timeout_seconds, codex_binary):
+        captured["prompt"] = prompt
+        return "NeetCode problem notes are in the indexed README. [C1]"
+
+    service = CodexCliAnswerService(
+        FakeContextSearch(
+            [
+                ContextSearchResult(
+                    chunk_id="neetcode-problem-readme",
+                    document_id="github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md",
+                    source_id="source_github",
+                    source_type="github",
+                    title="eunhwa99/neetcode-submissions-8ogaz8xl README",
+                    path="README.md",
+                    score=0.92,
+                    preview="Repository usage notes and solved-problem study links.",
+                    text="Repository usage notes and solved-problem study links.",
+                )
+            ]
+        ),
+        runner=fake_runner,
+    )
+
+    payload = asyncio.run(service.answer_with_codex("neetcode 문제"))
+
+    assert payload["answer_mode"] == "codex_cli"
+    assert payload["codex_status"] == "succeeded"
+    assert payload["evidence_status"] == "grounded"
+    assert payload["used_chunks"] == ["neetcode-problem-readme"]
+    assert "solved-problem study links" in captured["prompt"]
 
 
 def test_codex_cli_answer_service_skips_cli_without_evidence():
@@ -2230,14 +2378,18 @@ def test_web_app_routes_codex_mode_and_marks_codex_failures_failed():
     assert '"failed"' in script
 
 
-def test_web_index_defaults_to_codex_and_hides_smoke_wiki_controls():
+def test_web_index_defaults_to_debug_mode_and_hides_smoke_wiki_controls():
     html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
-    assert '<option value="codex" selected>Codex CLI Answer</option>' in html
-    assert '<option value="contextwiki">Raw ContextWiki Debug</option>' in html
-    assert html.index('value="codex"') < html.index('value="contextwiki"')
+    assert '<option value="contextwiki" selected>Indexed Evidence Debug</option>' in html
+    assert '<option value="codex">Codex CLI Summary (experimental)</option>' in html
+    assert html.index('value="contextwiki"') < html.index('value="codex"')
     assert 'placeholder="5"' in html
-    assert "Ask a question to inspect the answer and evidence." in html
+    assert "ContextWiki Indexed Evidence Console" in html
+    assert "Inspect synced RAG evidence, debug retrieval, and sync local test targets." in html
+    assert "Find indexed notes about GitHub sync behavior" in html
+    assert "Ask a question to inspect indexed evidence, retrieval output, and source coverage." in html
+    assert "Searches only content that has already been synced and indexed into local RAG storage." in html
 
     for removed in [
         "Generate Wiki",

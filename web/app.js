@@ -441,14 +441,44 @@ function normalizeEvidenceArray(value) {
 
 function buildAnswerHtml(result, kind) {
   const text = result.answer || result.markdown || "Response did not include a text answer.";
+  const context = answerContextCopy(kind, result.raw || {});
   return `
     <div class="answer-block">
+      ${context ? `
+        <section class="answer-context">
+          <div class="answer-context-title">${escapeHtml(context.title)}</div>
+          <div class="answer-context-copy">${renderMarkdownLite(context.body)}</div>
+        </section>
+      ` : ""}
       <section>
         <h3>${escapeHtml(titleCase(kind))}</h3>
         <div class="answer-text">${renderMarkdownLite(text)}</div>
       </section>
     </div>
   `;
+}
+
+function answerContextCopy(kind, raw) {
+  const mode = String(raw.answer_mode || "").toLowerCase();
+  if (mode === "contextwiki_debug") {
+    return {
+      title: "Indexed retrieval debug",
+      body:
+        "This view shows what the local RAG index returned for your question. It is best for checking whether the right sources, chunks, and retrieval hints were found.",
+    };
+  }
+  if (mode === "codex_cli" || String(kind).toLowerCase() === "codex answer") {
+    return {
+      title: "Convenience summary",
+      body:
+        "This summary is synthesized from already-retrieved chunks. It does not perform the same multi-step tool loop as Claude using the MCP server directly.",
+    };
+  }
+  return {
+    title: "Indexed evidence view",
+    body:
+      "This console searches synced and indexed content only. If a source has not been synced into local RAG storage yet, it will not appear here.",
+  };
 }
 
 function renderMarkdownLite(value) {

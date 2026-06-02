@@ -28,6 +28,7 @@ from web_console.payloads import (
     build_filters as _build_filters,
     citation_payload as _citation_payload,
     codex_answer_payload as _codex_answer_payload,
+    contextwiki_console_answer_payload as _contextwiki_console_answer_payload,
     list_sources as _list_sources,
     normalize_auto_sync_source_ids as _normalize_auto_sync_source_ids,
     normalize_multiline as _normalize_multiline,
@@ -346,8 +347,13 @@ class CodexCliAnswerService:
             CitationAnswerService._as_result(item)
             for item in search_result.get("results", [])
         ]
-        query_terms = CitationAnswerService._query_terms(question)
-        query_term_groups = CitationAnswerService._query_term_groups(question)
+        search_debug = search_result.get("debug", {})
+        query_term_groups = CitationAnswerService._effective_query_term_groups(
+            question,
+            search_debug,
+        )
+        query_terms = {term for group in query_term_groups for term in group}
+        relaxed_match = bool(search_debug.get("rewritten_queries"))
         evidence = [
             item
             for item in results
@@ -356,6 +362,7 @@ class CodexCliAnswerService:
                 item,
                 query_terms,
                 query_term_groups,
+                relaxed_match=relaxed_match,
             )
         ][: self.max_chunks]
         citations = [_citation_payload(item) for item in evidence]
@@ -742,10 +749,12 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
             raise HTTPException(status_code=400, detail="question is required")
         try:
             filters = _build_filters(request, dependencies.metadata_store)
-            return await dependencies.answer_service.answer_with_citations(
-                question,
-                filters=filters,
-                top_k=_normalize_top_k(request.top_k, default=5),
+            return _contextwiki_console_answer_payload(
+                await dependencies.answer_service.answer_with_citations(
+                    question,
+                    filters=filters,
+                    top_k=_normalize_top_k(request.top_k, default=5),
+                )
             )
         except HTTPException:
             raise
@@ -867,6 +876,8 @@ def create_default_app() -> FastAPI:
         notion_api_key=notion_api_key,
         tistory_blog_name=TISTORY_BLOG_NAME,
         config=config,
+        github_repositories=config.github_repositories,
+        github_token=get_env_secret(config.github_token_env_var),
     )
     DynamicSearchService(
         local_search=search_service,

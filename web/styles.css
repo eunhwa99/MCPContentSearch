@@ -185,6 +185,31 @@ h2 {
   gap: 14px;
 }
 
+.console-note {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  padding: 14px;
+}
+
+.console-note h2 {
+  font-size: 0.92rem;
+}
+
+.console-note ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #1e3a5f;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.console-note li + li {
+  margin-top: 6px;
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -353,6 +378,28 @@ button:focus-visible {
 .answer-block {
   display: grid;
   gap: 14px;
+}
+
+.answer-context {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.answer-context-title {
+  font-size: 0.83rem;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: 0.01em;
+}
+
+.answer-context-copy {
+  color: #334155;
+  font-size: 0.87rem;
+  line-height: 1.5;
 }
 
 .answer-block h3 {

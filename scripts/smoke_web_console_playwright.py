@@ -175,7 +175,7 @@ def _run_browser_checks(base_url: str) -> None:
         page.locator("#questionInput").fill("What changed in ContextWiki?")
         page.locator("#answerButton").click()
         page.wait_for_function(
-            "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed codex answer')"
+            "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed answer')"
         )
 
         # Download buttons should emit files.
@@ -236,9 +236,9 @@ def main() -> None:
         if thread.is_alive():
             raise RuntimeError("Failed to stop local web console server cleanly")
 
-    if not codex_answer_service.calls:
-        raise AssertionError("Expected codex answer request was not issued")
-    call = codex_answer_service.calls[-1]
+    if not answer_service.calls:
+        raise AssertionError("Expected indexed evidence answer request was not issued")
+    call = answer_service.calls[-1]
     source_ids = call["filters"].get("source_ids", [])
     if "source_github" not in source_ids:
         raise AssertionError(f"Expected source_github filter in answer call, got {call}")

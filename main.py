@@ -55,7 +55,9 @@ def create_app() -> FastMCP:
     web_searcher = WebSearcher(
         notion_api_key=NOTION_API_KEY,
         tistory_blog_name=TISTORY_BLOG_NAME,
-        config=config
+        config=config,
+        github_repositories=config.github_repositories,
+        github_token=get_env_secret(config.github_token_env_var),
     )
 
     # 동적 검색 서비스
