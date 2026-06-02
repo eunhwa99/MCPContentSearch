@@ -186,6 +186,19 @@ def codex_answer_payload(
     }
 
 
+def contextwiki_console_answer_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = dump_model(payload)
+    safe_payload.setdefault("answer_mode", "contextwiki_debug")
+    safe_payload.setdefault("summary", normalize_multiline(safe_payload.get("answer", "")))
+    debug_markdown = normalize_multiline(safe_payload.get("debug_markdown", ""))
+    if debug_markdown:
+        safe_payload["answer"] = debug_markdown
+        safe_payload["markdown"] = debug_markdown
+    else:
+        safe_payload["answer"] = normalize_multiline(safe_payload.get("answer", ""))
+    return safe_payload
+
+
 def safe_github_sync_payload(payload: Any) -> dict[str, Any]:
     safe_payload = dump_model(payload)
     if safe_payload.get("target"):

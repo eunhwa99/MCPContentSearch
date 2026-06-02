@@ -64,6 +64,7 @@ def test_answer_service_uses_only_returned_context_as_citations():
     answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
 
     assert answer["evidence_status"] == "grounded"
+    assert answer["answer_mode"] == "contextwiki_debug"
     assert answer["citations"] == [
         {
             "chunk_id": "chunk-1",
@@ -75,7 +76,11 @@ def test_answer_service_uses_only_returned_context_as_citations():
             "version_id": "page-version-1",
         }
     ]
-    assert "ContextWiki is an MCP knowledge backend." in answer["answer"]
+    assert "## Summary" in answer["answer"]
+    assert "## Best Matches" in answer["answer"]
+    assert "[C1]" in answer["answer"]
+    assert "## Query" in answer["debug_markdown"]
+    assert answer["debug"]["selected_chunks"][0]["matched_terms"]
 
 
 def test_answer_service_rejects_high_score_context_without_query_terms():
@@ -164,6 +169,91 @@ def test_answer_service_matches_common_korean_query_terms_to_english_context():
 
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == "chunk-1"
+
+
+def test_answer_service_treats_broad_usage_terms_as_optional_hints():
+    result = ContextSearchResult(
+        chunk_id="chunk-aws-overview",
+        document_id="doc-aws-overview",
+        source_id="source_github",
+        source_type="github",
+        title="AWS Overview",
+        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/aws-overview.md",
+        path="docs/aws-overview.md",
+        line_start=1,
+        line_end=20,
+        version_id="commit-1",
+        score=0.92,
+        preview="Amazon Web Services overview and service notes.",
+        text="Amazon Web Services overview and service notes.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS 사용법"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["citations"][0]["chunk_id"] == "chunk-aws-overview"
+
+
+def test_answer_service_uses_effective_term_groups_from_search_debug():
+    result = ContextSearchResult(
+        chunk_id="chunk-ec2-guide",
+        document_id="doc-ec2-guide",
+        source_id="source_github",
+        source_type="github",
+        title="EC2 setup guide",
+        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/ec2-guide.md",
+        path="docs/ec2-guide.md",
+        line_start=1,
+        line_end=20,
+        version_id="commit-1",
+        score=0.92,
+        preview="EC2 setup and instance launch notes.",
+        text="EC2 setup and instance launch notes.",
+    )
+
+    class RewriteDebugContextSearch(FakeContextSearch):
+        async def search_context(self, query, filters=None, top_k=5):
+            return {
+                "query": query,
+                "results": [result],
+                "debug": {
+                    "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
+                    "retrieval_queries": ["aws virtual machine startup", "aws ec2 setup"],
+                    "rewritten_queries": ["aws ec2 setup"],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=RewriteDebugContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("aws virtual machine startup"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["chunk-ec2-guide"]
+    assert answer["debug"]["rewritten_queries"] == ["aws ec2 setup"]
+
+
+def test_answer_service_adds_debug_markdown_for_insufficient_evidence():
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS에 적은 문서를 찾아줘"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["answer_mode"] == "contextwiki_debug"
+    assert "## Query" in answer["debug_markdown"]
+    assert "amazon web services" in answer["debug_markdown"]
 
 
 def test_answer_service_ground_neetcode_korean_query_from_github_repository_metadata(tmp_path):
@@ -816,3 +906,53 @@ def test_answer_service_ignores_polite_request_words_for_neetcode_docs_query(
 
     assert answer["evidence_status"] == "grounded"
     assert answer["used_chunks"] == ["polite-neetcode-readme"]
+
+
+def test_answer_service_accepts_generic_problem_term_for_strong_anchor_query(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:README.md"
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_github",
+            title="README",
+            content="Repository usage notes and solved-problem study links.",
+            url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            canonical_url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+            platform="GitHub",
+            path="README.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="neetcode-problem-readme",
+                document_id=document_id,
+                source_id="source_github",
+                title="README",
+                text="Repository usage notes and solved-problem study links.",
+                url="https://github.com/eunhwa99/neetcode-submissions-8ogaz8xl/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                content_hash="neetcode-problem-readme",
+            )
+        ],
+    )
+    service = CitationAnswerService(
+        context_search=ContextSearchService(store),
+        min_score=0.35,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("neetcode 문제"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["neetcode-problem-readme"]

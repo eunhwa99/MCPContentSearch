@@ -64,6 +64,10 @@ def _bool_env(name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _search_llm_enabled_default() -> bool:
+    return _bool_env("CONTEXTWIKI_SEARCH_LLM_ENABLED", False)
+
+
 def _require_positive_int(name: str, value: int):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer")
@@ -108,6 +112,23 @@ class AppConfig:
     search_multiplier: int = 2
     preview_length: int = 200
     default_search_results: int = 10
+    search_llm_enabled: bool = field(default_factory=_search_llm_enabled_default)
+    search_llm_provider: str = field(
+        default_factory=lambda: os.getenv("CONTEXTWIKI_SEARCH_LLM_PROVIDER", "openai")
+        .strip()
+        .lower()
+    )
+    search_llm_model: str = field(
+        default_factory=lambda: os.getenv("CONTEXTWIKI_SEARCH_LLM_MODEL", "gpt-4.1-mini")
+        .strip()
+    )
+    search_llm_api_key_env_var: str = "OPENAI_API_KEY"
+    search_llm_timeout: float = field(
+        default_factory=lambda: _float_env("CONTEXTWIKI_SEARCH_LLM_TIMEOUT", 10.0)
+    )
+    search_llm_max_rewrites: int = field(
+        default_factory=lambda: _int_env("CONTEXTWIKI_SEARCH_LLM_MAX_REWRITES", 3)
+    )
 
     # API
     request_timeout: float = 10.0
@@ -198,11 +219,17 @@ class AppConfig:
             "wiki_llm_api_key_env_var",
             self.wiki_llm_api_key_env_var,
         )
+        _require_safe_env_var_name(
+            "search_llm_api_key_env_var",
+            self.search_llm_api_key_env_var,
+        )
         _require_non_negative("wiki_llm_timeout", self.wiki_llm_timeout)
         _require_positive_int(
             "wiki_llm_max_evidence_chars",
             self.wiki_llm_max_evidence_chars,
         )
+        _require_non_negative("search_llm_timeout", self.search_llm_timeout)
+        _require_positive_int("search_llm_max_rewrites", self.search_llm_max_rewrites)
         if (
             self.wiki_llm_enabled
             and self.wiki_llm_provider == "openai"
@@ -210,6 +237,14 @@ class AppConfig:
         ):
             raise ValueError(
                 "CONTEXTWIKI_WIKI_LLM_MODEL must be set when wiki LLM is enabled"
+            )
+        if (
+            self.search_llm_enabled
+            and self.search_llm_provider == "openai"
+            and not self.search_llm_model
+        ):
+            raise ValueError(
+                "CONTEXTWIKI_SEARCH_LLM_MODEL must be set when search LLM is enabled"
             )
         if self.chroma_db_path is None:
             object.__setattr__(

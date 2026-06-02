@@ -1,4 +1,5 @@
 import re
+import os
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -7,58 +8,19 @@ from llama_index.core.vector_stores import FilterOperator, MetadataFilter, Metad
 
 from core.models import ChunkModel, ContextSearchResult, DocumentModel
 from environments.config import AppConfig
+from search.query_terms import (
+    BROAD_TOPIC_TERMS,
+    DOCUMENT_INTENT_TERMS,
+    STRONG_ANCHOR_TERMS,
+    TOKEN_RE,
+    append_query_term_group,
+    query_term_groups,
+    retrieval_query_variants,
+    split_attached_latin_korean_token,
+)
+from search.query_rewrite import build_query_rewriter
 from storage.metadata_store import MetadataStore
 
-
-KOREAN_QUERY_TERM_EXPANSIONS = {
-    "깃허브": {"github"},
-    "그래프": {"graph"},
-    "니트코드": {"neetcode"},
-    "문서": {"document", "documents", "docs"},
-    "알고리즘": {"algorithm", "algorithms"},
-}
-QUERY_STOP_TERMS = {
-    "about",
-    "answer",
-    "code",
-    "does",
-    "find",
-    "for",
-    "get",
-    "give",
-    "have",
-    "how",
-    "is",
-    "me",
-    "please",
-    "repo",
-    "repository",
-    "related",
-    "search",
-    "show",
-    "tell",
-    "the",
-    "what",
-    "with",
-    "관련",
-    "라고",
-    "검색",
-    "검색해도",
-    "검색해줘",
-    "라는",
-    "리포지토리",
-    "알려줘",
-    "에서",
-    "찾아와",
-    "찾아줘",
-    "정리",
-    "정리해줘",
-    "코드",
-}
-TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_/-]+")
-DOCUMENT_INTENT_TERMS = {"doc", "docs", "document", "documents", "문서"}
-BROAD_TOPIC_TERMS = {"algorithm", "algorithms", "알고리즘"}
-STRONG_ANCHOR_TERMS = {"neetcode", "니트코드"}
 GITHUB_IDENTITY_TERMS = {"github", *STRONG_ANCHOR_TERMS}
 GENERIC_GITHUB_TERMS = {"github", "깃허브"}
 GENERIC_SINGLE_TOKEN_TERMS = {
@@ -115,16 +77,21 @@ class ContextSearchService:
         indexer=None,
         config: AppConfig | None = None,
         retriever: Callable | Iterable[DocumentModel] | None = None,
+        query_rewriter=None,
     ):
         self.metadata_store = metadata_store
         self.indexer = indexer
         self.config = config or AppConfig()
         self.retriever = retriever
+        api_key = os.getenv(self.config.search_llm_api_key_env_var, "").strip()
+        self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
 
     async def search_context(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
         filters = filters or {}
         source_ids = self._normalize_source_ids(filters)
-        candidates = self._retrieve_candidates(query, top_k, source_ids)
+        retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
+        candidates = retrieval_debug["candidates"]
+        effective_term_groups = retrieval_debug["effective_term_groups"]
         results = []
 
         for candidate in candidates:
@@ -158,7 +125,15 @@ class ContextSearchService:
             if len(results) >= top_k:
                 break
 
-        return {"query": query, "results": results}
+        return {
+            "query": query,
+            "results": results,
+            "debug": {
+                "retrieval_queries": retrieval_debug["retrieval_queries"],
+                "rewritten_queries": retrieval_debug["rewritten_queries"],
+                "effective_term_groups": [sorted(group) for group in effective_term_groups],
+            },
+        }
 
     @staticmethod
     def _normalize_source_ids(filters: dict) -> list[str] | None:
@@ -181,23 +156,111 @@ class ContextSearchService:
 
         return normalized or None
 
-    def _retrieve_candidates(self, query: str, top_k: int, source_ids: list[str] | None) -> list[dict[str, Any]]:
+    async def _retrieve_candidates(
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str] | None,
+    ) -> dict[str, Any]:
         if self.retriever is not None:
             if callable(self.retriever):
-                return list(self.retriever(query, top_k, source_ids))
-            return self._keyword_candidates(query, self.retriever, top_k, source_ids)
+                candidates = list(self.retriever(query, top_k, source_ids))
+            else:
+                candidates = self._keyword_candidates(query, self.retriever, top_k, source_ids)
+            term_groups = self._query_term_groups(query)
+            reranked = self._rerank_candidates(candidates, term_groups, top_k)
+            return {
+                "candidates": reranked,
+                "retrieval_queries": [query],
+                "rewritten_queries": [],
+                "effective_term_groups": term_groups,
+            }
 
         term_groups = self._query_term_groups(query)
         if self.indexer is None:
             if not term_groups:
-                return []
-            return self._metadata_fallback_candidates(
+                return {
+                    "candidates": [],
+                    "retrieval_queries": [query],
+                    "rewritten_queries": [],
+                    "effective_term_groups": [],
+                }
+            candidates = self._metadata_fallback_candidates(
                 query,
                 top_k,
                 source_ids,
                 term_groups,
                 [],
             )
+            reranked = self._rerank_candidates(candidates, term_groups, top_k)
+            return {
+                "candidates": reranked,
+                "retrieval_queries": [query],
+                "rewritten_queries": [],
+                "effective_term_groups": term_groups,
+            }
+
+        retrieval_queries = retrieval_query_variants(query, term_groups)
+        candidates = self._retrieve_candidates_for_variants(
+            query,
+            top_k,
+            source_ids,
+            term_groups,
+            retrieval_queries,
+        )
+        effective_term_groups = term_groups
+        rewritten_queries: list[str] = []
+
+        if self._should_try_query_rewrite(candidates, term_groups, top_k):
+            rewritten_queries = await self._rewrite_queries(query, term_groups)
+            if rewritten_queries:
+                effective_term_groups = self._merged_term_groups(
+                    [
+                        group
+                        for group in term_groups
+                        if group.intersection(STRONG_ANCHOR_TERMS)
+                        or group.intersection(DOCUMENT_INTENT_TERMS)
+                    ],
+                    *[self._query_term_groups(rewrite) for rewrite in rewritten_queries],
+                )
+                retrieval_queries = self._dedupe_queries(
+                    [
+                        *retrieval_queries,
+                        *rewritten_queries,
+                        *[
+                            variant
+                            for rewrite in rewritten_queries
+                            for variant in retrieval_query_variants(
+                                rewrite,
+                                self._query_term_groups(rewrite),
+                            )
+                        ],
+                    ]
+                )
+                candidates = self._retrieve_candidates_for_variants(
+                    query,
+                    top_k,
+                    source_ids,
+                    effective_term_groups,
+                    retrieval_queries,
+                )
+
+        reranked = self._rerank_candidates(candidates, effective_term_groups, top_k)
+        return {
+            "candidates": reranked,
+            "retrieval_queries": retrieval_queries,
+            "rewritten_queries": rewritten_queries,
+            "effective_term_groups": effective_term_groups,
+        }
+
+    def _retrieve_candidates_for_variants(
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str] | None,
+        term_groups: list[set[str]],
+        query_variants: list[str],
+    ) -> list[dict[str, Any]]:
 
         index = self.indexer.get_or_create_index()
         base_limit = max(top_k, top_k * self.config.search_multiplier)
@@ -214,34 +277,37 @@ class ContextSearchService:
                 vector_store_query_mode="hybrid",
                 filters=self._metadata_filters(source_ids),
             )
-            nodes = retriever.retrieve(query)
-            for node in nodes:
-                chunk_id = node.metadata.get("chunk_id") or node.metadata.get("doc_id")
-                if not chunk_id or chunk_id in seen:
-                    continue
-                chunk = self.metadata_store.get_chunk(chunk_id)
-                if not chunk:
-                    continue
-                if not self._managed_hit_matches_chunk(node.metadata, chunk):
-                    rejected.add(chunk_id)
-                    continue
-                if source_ids and chunk.source_id not in source_ids:
-                    rejected.add(chunk_id)
-                    continue
-                if not self._document_intent_allows_chunk(term_groups, chunk):
-                    rejected.add(chunk_id)
-                    continue
-                rejected.discard(chunk_id)
-                seen.add(chunk_id)
-                candidates.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "score": float(node.score or 0.0),
-                    }
-                )
+            max_node_count = 0
+            for retrieval_query in query_variants:
+                nodes = retriever.retrieve(retrieval_query)
+                max_node_count = max(max_node_count, len(nodes))
+                for node in nodes:
+                    chunk_id = node.metadata.get("chunk_id") or node.metadata.get("doc_id")
+                    if not chunk_id or chunk_id in seen:
+                        continue
+                    chunk = self.metadata_store.get_chunk(chunk_id)
+                    if not chunk:
+                        continue
+                    if not self._managed_hit_matches_chunk(node.metadata, chunk):
+                        rejected.add(chunk_id)
+                        continue
+                    if source_ids and chunk.source_id not in source_ids:
+                        rejected.add(chunk_id)
+                        continue
+                    if not self._document_intent_allows_chunk(term_groups, chunk):
+                        rejected.add(chunk_id)
+                        continue
+                    rejected.discard(chunk_id)
+                    seen.add(chunk_id)
+                    candidates.append(
+                        {
+                            "chunk_id": chunk_id,
+                            "score": float(node.score or 0.0),
+                        }
+                    )
             if len(candidates) >= top_k:
                 break
-            if len(nodes) < limit:
+            if max_node_count < limit:
                 break
             next_limit = min(limit * 2, max_limit)
             if next_limit == limit:
@@ -279,6 +345,59 @@ class ContextSearchService:
             rejected,
             top_k,
         )
+
+    async def _rewrite_queries(self, query: str, term_groups: list[set[str]]) -> list[str]:
+        if self.query_rewriter is None:
+            return []
+        try:
+            return await self.query_rewriter.rewrite_query(query, term_groups)
+        except Exception:
+            return []
+
+    def _should_try_query_rewrite(
+        self,
+        candidates: list[dict[str, Any]],
+        term_groups: list[set[str]],
+        top_k: int,
+    ) -> bool:
+        if self.query_rewriter is None or not term_groups:
+            return False
+        if not candidates:
+            return True
+        if len(candidates) < top_k:
+            return True
+        if not self._candidates_have_textual_matches(candidates, term_groups):
+            return True
+        top_score = max(float(candidate.get("score", 0.0)) for candidate in candidates)
+        return top_score < 0.75
+
+    @staticmethod
+    def _dedupe_queries(queries: list[str]) -> list[str]:
+        deduped = []
+        seen = set()
+        for query in queries:
+            normalized = " ".join(str(query or "").split())
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+        return deduped
+
+    @staticmethod
+    def _merged_term_groups(*group_lists: list[set[str]]) -> list[set[str]]:
+        merged = []
+        seen = set()
+        for group_list in group_lists:
+            for group in group_list:
+                key = tuple(sorted(group))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(set(group))
+        return merged
 
     def _metadata_fallback_candidates(
         self,
@@ -668,6 +787,74 @@ class ContextSearchService:
                 return False
         return True
 
+    def _rerank_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        term_groups: list[set[str]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        scoring_groups = self._scoring_term_groups(term_groups)
+        reranked = []
+        for order, candidate in enumerate(candidates):
+            chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
+            if not chunk:
+                continue
+            document = chunk.to_document_model()
+            haystack = self._document_haystack(document)
+            metadata_haystack = self._document_metadata_haystack(document)
+            is_document_like = self._is_document_like(document, metadata_haystack)
+            match_count = sum(
+                1
+                for term_group in scoring_groups
+                if self._term_group_matches(
+                    term_group,
+                    haystack,
+                    metadata_haystack,
+                    is_document_like,
+                )
+            )
+            metadata_match_count = sum(
+                1
+                for term_group in scoring_groups
+                if any(term in metadata_haystack for term in term_group)
+            )
+            rerank_score = float(candidate.get("score", 0.0))
+            rerank_score += match_count * 0.12
+            rerank_score += metadata_match_count * 0.08
+            if (
+                any(group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups)
+                and document.source_id == "source_github"
+                and is_document_like
+            ):
+                rerank_score += 0.05
+            if any(group.intersection(STRONG_ANCHOR_TERMS) for group in scoring_groups) and any(
+                term in metadata_haystack
+                for group in scoring_groups
+                if group.intersection(STRONG_ANCHOR_TERMS)
+                for term in group
+            ):
+                rerank_score += 0.1
+            reranked.append(
+                {
+                    **candidate,
+                    "rerank_score": rerank_score,
+                    "_order": order,
+                }
+            )
+        reranked.sort(
+            key=lambda item: (
+                -float(item.get("rerank_score", item.get("score", 0.0))),
+                -float(item.get("score", 0.0)),
+                item["_order"],
+            )
+        )
+        return [
+            {key: value for key, value in item.items() if key != "_order"}
+            for item in reranked[:top_k]
+        ]
+
     @staticmethod
     def _document_haystack(document: DocumentModel) -> str:
         return " ".join(
@@ -732,59 +919,15 @@ class ContextSearchService:
 
     @staticmethod
     def _query_term_groups(query: str) -> list[set[str]]:
-        groups = []
-        seen = set()
-        for raw_token in TOKEN_RE.findall(query.lower()):
-            for raw_term in ContextSearchService._split_attached_latin_korean_token(raw_token):
-                ContextSearchService._append_query_term_group(raw_term, groups, seen)
-        return groups
+        return query_term_groups(query)
 
     @staticmethod
     def _append_query_term_group(raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]):
-        candidates = {raw_term}
-        matched_korean_terms = []
-        for korean_term, expansions in KOREAN_QUERY_TERM_EXPANSIONS.items():
-            if korean_term in raw_term:
-                matched_korean_terms.append(korean_term)
-                candidates.update(expansions)
-                if korean_term != raw_term:
-                    candidates.add(korean_term)
-        if len(matched_korean_terms) > 1:
-            for korean_term in matched_korean_terms:
-                cls_candidates = {korean_term, *KOREAN_QUERY_TERM_EXPANSIONS[korean_term]}
-                normalized = {
-                    candidate.strip("_-/")
-                    for candidate in cls_candidates
-                    if len(candidate.strip("_-/")) >= 2
-                    and candidate.strip("_-/") not in QUERY_STOP_TERMS
-                }
-                if normalized:
-                    key = tuple(sorted(normalized))
-                    if key not in seen:
-                        seen.add(key)
-                        groups.append(normalized)
-            return
-        normalized = {
-            candidate.strip("_-/")
-            for candidate in candidates
-            if len(candidate.strip("_-/")) >= 2
-            and candidate.strip("_-/") not in QUERY_STOP_TERMS
-        }
-        if not normalized:
-            return
-        key = tuple(sorted(normalized))
-        if key in seen:
-            return
-        seen.add(key)
-        groups.append(normalized)
+        append_query_term_group(raw_term, groups, seen)
 
     @staticmethod
     def _split_attached_latin_korean_token(raw_token: str) -> list[str]:
-        match = re.fullmatch(r"([0-9a-z_/-]+)([가-힣]+)", raw_token)
-        if not match:
-            return [raw_token]
-        latin, korean = match.groups()
-        return [latin, korean]
+        return split_attached_latin_korean_token(raw_token)
 
     @staticmethod
     def _scoring_term_groups(term_groups: list[set[str]]) -> list[set[str]]:

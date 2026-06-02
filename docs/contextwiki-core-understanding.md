@@ -846,14 +846,23 @@ flowchart TD
 Current limitation:
 
 ```text
-answer_with_citations is an evidence-gated answer scaffold.
-It is not yet a full LLM generation pipeline.
+answer_with_citations is still deterministic and evidence-gated first.
+It is not a free-form LLM answer generator by default.
 ```
 
 Its evidence relevance gate checks the returned chunk text and preview plus
 GitHub-friendly metadata fields such as title, document id, URL, and path. This
 keeps repository-name questions grounded when the repository name lives in the
 citation metadata rather than in the chunk body.
+When evidence is sufficient, the answer payload now returns:
+
+- a concise structured summary instead of raw chunk concatenation
+- stable citation metadata
+- `debug` + `debug_markdown` fields that explain normalized terms, retrieval
+  query variants, selected chunks, and grounded chunk counts
+
+The local Web Console uses that structured debug markdown for the `Raw
+ContextWiki Debug` path so mixed retrieval results are easier to inspect.
 For strong repository anchors such as NeetCode, the gate also requires a
 remaining intent term when the question includes one, so a code file whose URL
 contains `neetcode` is not enough to answer a `니트코드 문서` request unless it
@@ -873,6 +882,31 @@ after retrieval.
 English request verbs such as `get`, `please`, `find`, and `search for` are
 treated as noise there too, so polite phrasing does not become an extra
 evidence requirement.
+Broad problem-collection terms such as `문제`, `problem`, `question`, and
+`solution` are normalized together as generic topical hints. For strong anchors
+like NeetCode, those broad terms do not over-constrain the answer gate the way
+specific topical terms such as `graph` still do, so `neetcode 문제` can ground
+on indexed NeetCode problem lists while `neetcode graph` still requires graph
+evidence.
+The same idea now applies more broadly to intent-like hint words such as
+`예제/example`, `사용법/usage`, `가이드/guide`, `설정/setup`, and
+`개념/concept`. Retrieval can still use them as query hints, but answer
+grounding does not require those broad hints to appear literally when a more
+specific anchor/topic already matches. This makes natural requests such as
+`AWS 사용법` or `redis 예제` less brittle while preserving stricter matching for
+truly specific topical words.
+When base retrieval looks low-confidence, ContextWiki can now ask an optional
+OpenAI-backed query rewriter for a few short search rewrites, such as adding a
+canonical product name or a more index-friendly phrase. Only the user query and
+normalized query terms are sent; indexed evidence is not sent during rewrite.
+If rewrites are used, context search merges those retrieval variants back into
+the candidate set, reranks candidates with lightweight metadata/text match
+bonuses, and exposes both `retrieval_queries` and `rewritten_queries` in debug
+output.
+When rewrite-assisted retrieval is used, answer grounding is slightly relaxed
+for ordinary non-strong-anchor requests so semantic equivalents recovered by
+rewrite are not discarded just because every rewritten hint word does not
+appear literally in the final chunk.
 When a strong-anchor query includes both document intent and another topical
 term, such as `니트코드 그래프 문서`, the answer gate requires the topical term
 too. A generic NeetCode README can satisfy the document intent, but it still
@@ -1025,7 +1059,7 @@ payload-level answer-quality eval scaffolding.
 
 It does not yet include fingerprint dedup, rename detection, function/class-aware
 code chunking, queue-based retry, full ACL-aware retrieval, evaluation metrics,
-reranking, query rewriting, full citation verification, or LLM-based answer
+richer reranking, LLM query rewriting, full citation verification, or LLM-based answer
 generation.
 ```
 
@@ -1171,8 +1205,15 @@ Good next topics:
    - stale document cleanup observability
 
 6. retrieval quality
+   - deterministic alias/synonym expansion now exists for common Korean intent
+     words plus bounded cloud/platform terms such as AWS, IAM, S3, EC2, RDS,
+     VPC, EKS, ECS, and DynamoDB/DDB
+   - vector retrieval now also builds generic query variants from normalized
+     term groups, including focused topic-plus-intent queries and topic-only
+     queries for natural-language document requests, before falling back to
+     SQLite metadata/body lookup
    - reranking
-   - query rewriting
+   - broader query rewriting
    - retrieval hit rate
    - MRR
    - citation correctness
