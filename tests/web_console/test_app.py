@@ -328,6 +328,34 @@ class SecretMetadataStore(FakeMetadataStore):
         )
 
 
+PUBLIC_MISSING_GITHUB_REPOS_MESSAGE = (
+    "Source source_github is disabled because no GitHub repositories are "
+    "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+)
+
+
+class PublicConfigErrorMetadataStore(FakeMetadataStore):
+    def list_sources(self):
+        return [
+            SourceModel(
+                source_id="source_github",
+                source_type=SourceType.GITHUB,
+                name="GitHub",
+                sync_status=SyncStatus.FAILED,
+                auth_ref="env:GITHUB_TOKEN",
+                last_error=PUBLIC_MISSING_GITHUB_REPOS_MESSAGE,
+            ),
+        ]
+
+    def get_latest_sync_job(self, source_id):
+        return SyncJobModel(
+            job_id="job-config",
+            source_id=source_id,
+            status=SyncJobStatus.FAILED,
+            error_message=PUBLIC_MISSING_GITHUB_REPOS_MESSAGE,
+        )
+
+
 class SecretJobIngestionService:
     async def sync_source(self, source_id):
         return SyncJobModel(
@@ -335,6 +363,16 @@ class SecretJobIngestionService:
             source_id=source_id,
             status=SyncJobStatus.FAILED,
             error_message="sync failed with token=secret-value",
+        )
+
+
+class PublicConfigJobIngestionService:
+    async def sync_source(self, source_id):
+        return SyncJobModel(
+            job_id="job-config",
+            source_id=source_id,
+            status=SyncJobStatus.FAILED,
+            error_message=PUBLIC_MISSING_GITHUB_REPOS_MESSAGE,
         )
 
 
@@ -646,6 +684,20 @@ def test_source_sync_status_redacts_persisted_source_and_job_errors():
     assert "token=secret-value" not in str(body)
 
 
+def test_source_sync_status_exposes_public_missing_github_repository_config_error():
+    app = create_console_app(ConsoleDependencies(metadata_store=PublicConfigErrorMetadataStore()))
+    client = TestClient(app)
+
+    response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"]["last_error"] == PUBLIC_MISSING_GITHUB_REPOS_MESSAGE
+    assert body["latest_job"]["error_message"] == PUBLIC_MISSING_GITHUB_REPOS_MESSAGE
+    assert "GITHUB_TOKEN" not in body["source"]["last_error"]
+    assert "secret-value" not in str(body)
+
+
 def test_source_sync_endpoint_delegates_to_ingestion_service():
     client, *_, ingestion_service, _, _ = make_client()
 
@@ -698,6 +750,21 @@ def test_source_sync_endpoint_redacts_returned_job_error():
     assert body["error_message"] == "Sync failed. See server logs for details."
     assert "secret-value" not in str(body)
     assert "token=secret-value" not in str(body)
+
+
+def test_source_sync_endpoint_exposes_public_missing_github_repository_config_error():
+    app = create_console_app(
+        ConsoleDependencies(ingestion_service=PublicConfigJobIngestionService())
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/sources/source_github/sync", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_message"] == PUBLIC_MISSING_GITHUB_REPOS_MESSAGE
+    assert "GITHUB_TOKEN" not in body["error_message"]
+    assert "secret-value" not in str(body)
 
 
 def _wait_for_sync_completion(service, expected_calls):
@@ -2297,6 +2364,70 @@ if (!context.__failedDetail.includes("failed") || !context.__failedDetail.includ
 }}
 if (context.__failedDetail.includes("Discovering documents")) {{
   throw new Error(`failed detail still looked non-terminal: ${{context.__failedDetail}}`);
+}}
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_sync_request_stopped_prefers_safe_error_message():
+    script_path = REPO_ROOT / "web" / "app.js"
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    removeAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Date,
+  document,
+  fetch: async () => ({{ ok: true, headers: {{ get: () => "application/json" }}, json: async () => ({{ status: "ok" }}) }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+vm.runInContext(`
+renderSyncRequestStopped("source_github", {{
+  status: "failed",
+  error_message: "Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES.",
+}}, "Sync request failed");
+globalThis.__detail = document.querySelector("#syncProgressDetail").textContent;
+`, context);
+if (!context.__detail.includes("CONTEXTWIKI_GITHUB_REPOSITORIES")) {{
+  throw new Error(`stopped detail did not use error_message: ${{context.__detail}}`);
+}}
+if (context.__detail.includes("Sync request failed")) {{
+  throw new Error(`stopped detail fell back instead of using error_message: ${{context.__detail}}`);
 }}
 """
     subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)

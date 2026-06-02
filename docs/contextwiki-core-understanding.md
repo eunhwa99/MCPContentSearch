@@ -930,6 +930,10 @@ ContextWiki source sync status is durable enough for user-visible inspection:
 `sync_source` writes SQLite source/job metadata, and `get_sync_status` returns
 the latest source/job state. The local Web Console polls the same status path
 while configured-source sync or target sync is running.
+When a configured GitHub source is disabled because
+`CONTEXTWIKI_GITHUB_REPOSITORIES` is empty, sync records and Web Console
+payloads expose that exact public configuration reason; arbitrary errors still
+use generic secret-safe failure text.
 
 Legacy background indexing is different. `trigger_index_all_content`,
 `search_content`, `search_notion`, and `search_tistory` schedule process-local

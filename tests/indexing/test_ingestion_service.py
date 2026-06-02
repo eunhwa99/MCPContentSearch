@@ -9,7 +9,7 @@ from core.utils import ContentHasher
 from environments.config import AppConfig
 from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
-from fetching.connectors import SourceConnector, SourceRegistry
+from fetching.connectors import GitHubSourceConnector, SourceConnector, SourceRegistry
 from search.service import SearchService
 from storage.metadata_store import MetadataStore
 
@@ -739,6 +739,34 @@ def test_disabled_source_records_failed_job_without_fetching(tmp_path):
     assert "disabled" in job.error_message.lower()
     assert connector.called is False
     assert store.get_source("source_disabled").sync_status == SyncStatus.FAILED
+
+
+def test_disabled_github_source_records_public_missing_repository_config_error(tmp_path):
+    connector = GitHubSourceConnector(
+        repositories=(),
+        config=AppConfig(),
+        token="ghp_secretcredential",
+        http_client=object(),
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_github"))
+    source = store.get_source("source_github")
+
+    assert job.status == SyncJobStatus.FAILED
+    assert job.error_message == (
+        "Source source_github is disabled because no GitHub repositories are "
+        "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+    )
+    assert "CONTEXTWIKI_GITHUB_REPOSITORIES" in source.last_error
+    assert "ghp_secretcredential" not in job.error_message
+    assert "ghp_secretcredential" not in source.last_error
 
 
 def test_disabled_source_request_returns_existing_running_job_without_clobbering(tmp_path):
