@@ -259,6 +259,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "fetch_context",
         "answer_with_citations",
         "generate_wiki_page",
+        "search_github",
     }.issubset(mcp.tools)
 
 
@@ -332,6 +333,7 @@ def test_get_sync_status_returns_source_after_status_recovery():
     [
         ("search_notion", "search_notion"),
         ("search_tistory", "search_tistory"),
+        ("search_github", "search_github"),
     ],
 )
 def test_get_index_status_reports_legacy_search_background_failures(tool_name, expected_label):

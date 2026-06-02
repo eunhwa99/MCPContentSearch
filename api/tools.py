@@ -180,6 +180,55 @@ def register_tools(
         except Exception as e:
             logger.error(f"Tistory search error: {e}")
             return f"Tistory 검색 오류: {str(e)}"
+
+
+    @mcp.tool()
+    async def search_github(query: str, n_results: int = 10) -> str:
+        """
+        GitHub에서만 실시간 검색
+
+        Args:
+            query: 검색어
+            n_results: 결과 수
+
+        Returns:
+            검색 결과
+        """
+        try:
+            logger.info(f"🔍 Searching GitHub for: '{query}'")
+            docs = await web_searcher.search(query, n_results, platforms=["github"])
+
+            if not docs:
+                return f"GitHub에서 '{query}'에 대한 검색 결과가 없습니다."
+
+            output = [
+                f"# 🐙 GitHub Search: '{query}'",
+                "",
+                f"Found {len(docs)} documents",
+                ""
+            ]
+
+            for i, doc in enumerate(docs, 1):
+                preview = (doc.content or "")[:200]
+                ellipsis = "..." if len(doc.content or "") > 200 else ""
+                output.extend([
+                    f"## {i}. [{doc.title}]({doc.url})",
+                    f"**Path**: {doc.path or '-'}",
+                    f"**Preview**: {preview}{ellipsis}",
+                    ""
+                ])
+
+            task_registry.schedule(
+                "search_github",
+                _index_background(indexer, docs),
+                total_docs=len(docs),
+            )
+
+            return "\n".join(output) + f"\n\n💡 {len(docs)}개 GitHub 문서를 DB에 추가합니다."
+
+        except Exception as e:
+            logger.error(f"GitHub search error: {e}")
+            return f"GitHub 검색 오류: {str(e)}"
     
     
     # ================================================================

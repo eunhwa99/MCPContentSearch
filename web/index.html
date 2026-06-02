@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ContextWiki Console</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260527-c5-clean-answer" />
+    <title>ContextWiki Indexed Evidence Console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260602-indexed-evidence-console" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
-          <h1>ContextWiki Local Console</h1>
-          <p>Ask indexed sources, inspect evidence, and sync local test targets.</p>
+          <h1>ContextWiki Indexed Evidence Console</h1>
+          <p>Inspect synced RAG evidence, debug retrieval, and sync local test targets.</p>
         </div>
         <div class="status-stack" aria-live="polite">
           <span id="healthBadge" class="badge badge-warn">Checking API</span>
@@ -23,15 +23,24 @@
         <form id="queryForm" class="panel input-panel">
           <div class="field">
             <label for="questionInput">Question</label>
-            <textarea id="questionInput" rows="5" placeholder="What changed in ContextWiki Phase C?"></textarea>
+            <textarea id="questionInput" rows="5" placeholder="Find indexed notes about GitHub sync behavior"></textarea>
           </div>
 
           <div class="field compact answer-mode-field">
-            <label for="answerModeSelect">Answer mode</label>
+            <label for="answerModeSelect">Console mode</label>
             <select id="answerModeSelect">
-              <option value="codex" selected>Codex CLI Answer</option>
-              <option value="contextwiki">Raw ContextWiki Debug</option>
+              <option value="contextwiki" selected>Indexed Evidence Debug</option>
+              <option value="codex">Codex CLI Summary (experimental)</option>
             </select>
+          </div>
+
+          <div class="console-note" aria-label="Console guidance">
+            <h2>What this console is for</h2>
+            <ul>
+              <li>Searches only content that has already been synced and indexed into local RAG storage.</li>
+              <li><strong>Indexed Evidence Debug</strong> is the default because it shows what retrieval actually found and why.</li>
+              <li><strong>Codex CLI Summary</strong> is a convenience summary over retrieved chunks, not a full multi-step agent like Claude using MCP.</li>
+            </ul>
           </div>
 
           <div class="inline-actions">
@@ -122,7 +131,7 @@
           </div>
 
           <article id="answerPane" class="tab-pane active" role="tabpanel" aria-labelledby="answerTab">
-            <p class="empty">Ask a question to inspect the answer and evidence.</p>
+            <p class="empty">Ask a question to inspect indexed evidence, retrieval output, and source coverage.</p>
           </article>
           <pre id="markdownPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="markdownTab" hidden></pre>
           <pre id="jsonPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
@@ -149,6 +158,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260527-c5-clean-answer"></script>
+    <script src="/static/app.js?v=20260602-indexed-evidence-console"></script>
   </body>
 </html>

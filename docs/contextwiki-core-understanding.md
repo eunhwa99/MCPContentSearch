@@ -287,11 +287,11 @@ Current Auto Wiki limits:
 ### Phase C.5 Local Web Console
 
 The local Web Console is developer/test tooling around the MCP services. It is
-not a production UI. It serves the browser app from `web/` through
-`web_console.app`, exposes local HTTP wrappers for source listing/sync,
-answering, wiki generation, fake/GitHub smoke, and target sync, then displays
-citations, used chunks, downloads, and status/error payloads for manual
-inspection.
+not a production UI or a full MCP-client replacement. It serves the browser app
+from `web/` through `web_console.app`, exposes local HTTP wrappers for source
+listing/sync, answering, wiki generation, fake/GitHub smoke, and target sync,
+then displays citations, used chunks, downloads, and status/error payloads for
+manual inspection.
 
 Important boundaries:
 
@@ -300,7 +300,8 @@ Important boundaries:
 - Target Sync and smoke endpoints can contact external services only when invoked
 - configured-source startup auto-sync can contact GitHub/Notion/Tistory unless disabled
 - Answer/Search against the real vector index may call the configured embedding provider
-- Codex CLI Answer is a local subprocess wrapper for manual testing, not a production answer service
+- the default browser mode is indexed-evidence inspection, not final-answer UX
+- Codex CLI Summary is a local subprocess wrapper for manual testing, not a production answer service
 - generated wiki pages are returned/downloaded, not persisted as server-side wiki state
 ```
 
@@ -861,8 +862,8 @@ When evidence is sufficient, the answer payload now returns:
 - `debug` + `debug_markdown` fields that explain normalized terms, retrieval
   query variants, selected chunks, and grounded chunk counts
 
-The local Web Console uses that structured debug markdown for the `Raw
-ContextWiki Debug` path so mixed retrieval results are easier to inspect.
+The local Web Console uses that structured debug markdown for its default
+indexed-evidence debug path so mixed retrieval results are easier to inspect.
 For strong repository anchors such as NeetCode, the gate also requires a
 remaining intent term when the question includes one, so a code file whose URL
 contains `neetcode` is not enough to answer a `니트코드 문서` request unless it
@@ -907,6 +908,9 @@ When rewrite-assisted retrieval is used, answer grounding is slightly relaxed
 for ordinary non-strong-anchor requests so semantic equivalents recovered by
 rewrite are not discarded just because every rewritten hint word does not
 appear literally in the final chunk.
+Because the browser console is now explicitly retrieval/debug-first, this raw
+evidence path is the default browser mode and the optional Codex summary is
+presented only as a convenience layer over already-retrieved chunks.
 When a strong-anchor query includes both document intent and another topical
 term, such as `니트코드 그래프 문서`, the answer gate requires the topical term
 too. A generic NeetCode README can satisfy the document intent, but it still
@@ -992,13 +996,14 @@ payloads expose that exact public configuration reason; arbitrary errors still
 use generic secret-safe failure text.
 
 Legacy background indexing is different. `trigger_index_all_content`,
-`search_content`, `search_notion`, and `search_tistory` schedule process-local
-`asyncio.create_task` work. The caller-visible surface is `get_index_status`,
-which returns the in-memory indexer status model plus process-local
-`background_tasks` records. Each background record includes a runtime task id,
-label, state, total/processed document counts, timestamps, and a sanitized
-error summary when a task fails. The top-level indexer error message is also
-sanitized before it is stored, logged, or returned through status responses.
+`search_content`, `search_notion`, `search_tistory`, and `search_github`
+schedule process-local `asyncio.create_task` work. The caller-visible surface
+is `get_index_status`, which returns the in-memory indexer status model plus
+process-local `background_tasks` records. Each background record includes a
+runtime task id, label, state, total/processed document counts, timestamps, and
+a sanitized error summary when a task fails. The top-level indexer error
+message is also sanitized before it is stored, logged, or returned through
+status responses.
 
 Those legacy tasks still do not expose durable job ids, retry history, or
 persisted progress after process restart. Their records are runtime observability

@@ -2378,14 +2378,18 @@ def test_web_app_routes_codex_mode_and_marks_codex_failures_failed():
     assert '"failed"' in script
 
 
-def test_web_index_defaults_to_codex_and_hides_smoke_wiki_controls():
+def test_web_index_defaults_to_debug_mode_and_hides_smoke_wiki_controls():
     html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
-    assert '<option value="codex" selected>Codex CLI Answer</option>' in html
-    assert '<option value="contextwiki">Raw ContextWiki Debug</option>' in html
-    assert html.index('value="codex"') < html.index('value="contextwiki"')
+    assert '<option value="contextwiki" selected>Indexed Evidence Debug</option>' in html
+    assert '<option value="codex">Codex CLI Summary (experimental)</option>' in html
+    assert html.index('value="contextwiki"') < html.index('value="codex"')
     assert 'placeholder="5"' in html
-    assert "Ask a question to inspect the answer and evidence." in html
+    assert "ContextWiki Indexed Evidence Console" in html
+    assert "Inspect synced RAG evidence, debug retrieval, and sync local test targets." in html
+    assert "Find indexed notes about GitHub sync behavior" in html
+    assert "Ask a question to inspect indexed evidence, retrieval output, and source coverage." in html
+    assert "Searches only content that has already been synced and indexed into local RAG storage." in html
 
     for removed in [
         "Generate Wiki",

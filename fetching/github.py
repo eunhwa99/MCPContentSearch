@@ -2,6 +2,7 @@ import base64
 import binascii
 from dataclasses import dataclass
 import json
+import logging
 import re
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlparse
@@ -10,6 +11,8 @@ import httpx
 
 from core.models import DocumentModel
 from environments.config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {
@@ -453,6 +456,56 @@ class GitHubRepositoryFetcher:
         )
 
 
+class GitHubSearcher:
+    """GitHub real-time search over configured repositories."""
+
+    def __init__(
+        self,
+        repositories: tuple[str, ...],
+        config: AppConfig,
+        *,
+        token: str = "",
+        http_client=None,
+    ):
+        self.repositories = tuple(repositories)
+        self.config = config
+        self.token = token
+        self.http_client = http_client
+
+    async def search(self, query: str, max_results: int = 10) -> list[DocumentModel]:
+        if not self.repositories:
+            logger.warning("GitHub repositories are not configured")
+            return []
+
+        try:
+            documents = await GitHubRepositoryFetcher(
+                self.repositories,
+                self.config,
+                token=self.token,
+                http_client=self.http_client,
+            ).fetch_documents()
+        except Exception as exc:
+            logger.error("GitHub search error: %s", exc)
+            return []
+
+        ranked = []
+        query_terms = [term for term in _search_terms(query) if len(term) >= 2]
+        for document in documents:
+            score = _github_search_score(document, query_terms)
+            if score <= 0:
+                continue
+            ranked.append((score, document))
+
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].title.lower(),
+                item[1].path or "",
+            )
+        )
+        return [document for _, document in ranked[:max_results]]
+
+
 class GitHubRepositoryDiscovery:
     """Resolve a GitHub repo or owner target into concrete repository specs."""
 
@@ -752,6 +805,29 @@ def _github_blob_response_byte_limit(max_file_bytes: int) -> int:
 def _encoded_base64_exceeds(compact_content: str, max_file_bytes: int) -> bool:
     max_encoded_length = ((max_file_bytes + 2) // 3) * 4
     return len(compact_content) > max_encoded_length
+
+
+def _search_terms(query: str) -> list[str]:
+    return re.findall(r"[0-9A-Za-z가-힣._/-]+", str(query or "").lower())
+
+
+def _github_search_score(document: DocumentModel, query_terms: list[str]) -> float:
+    if not query_terms:
+        return 0.0
+    title = (document.title or "").lower()
+    path = (document.path or "").lower()
+    content = (document.content or "").lower()
+    score = 0.0
+    for term in query_terms:
+        if term in title:
+            score += 4.0
+        if term in path:
+            score += 3.0
+        if term in content:
+            score += 1.0
+    if any(term in path for term in query_terms) and "/readme" in f"/{path}".lower():
+        score += 0.5
+    return score
 
 
 def _content_length_exceeds(headers, max_response_bytes: int) -> bool:

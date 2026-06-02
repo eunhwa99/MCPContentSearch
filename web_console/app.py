@@ -876,6 +876,8 @@ def create_default_app() -> FastAPI:
         notion_api_key=notion_api_key,
         tistory_blog_name=TISTORY_BLOG_NAME,
         config=config,
+        github_repositories=config.github_repositories,
+        github_token=get_env_secret(config.github_token_env_var),
     )
     DynamicSearchService(
         local_search=search_service,

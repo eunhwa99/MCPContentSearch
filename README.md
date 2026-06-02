@@ -17,7 +17,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - GitHub repository ingestion with stable file identities, blob version metadata, and code line citations
 - Website/docs ingestion with bounded crawling, sitemap support, robots.txt disallow handling, and canonical URL citations
 - Read-only Auto Wiki page generation from active ContextWiki chunks with citations and backlinks
-- Local-only web test console for asking indexed sources, syncing test targets, and inspecting citations
+- Local-only indexed-evidence console for inspecting RAG retrieval, syncing test targets, and debugging citations
 - Deterministic local answer-quality and grounding eval scaffolding for current citation answer payloads
 
 ## 🛠️ MCP Tools
@@ -25,6 +25,7 @@ ContextWiki is an MCP-first knowledge backend that indexes personal/work knowled
 - search_content — Dynamic search (local → web)
 - search_notion — Forced Notion-only search
 - search_tistory — Forced Tistory-only search
+- search_github — Forced GitHub-only search over configured repositories
 - trigger_index_all_content — Run full indexing in background
 - get_index_status — Check indexing progress
 - list_sources — List configured ContextWiki sources
@@ -163,12 +164,12 @@ mcp-content-search/
 | File              | Description                                       | Key Components                                             |
 | ----------------- | ------------------------------------------------- | ---------------------------------------------------------- |
 | `connectors.py`   | ContextWiki source registry and source connectors | `SourceRegistry`, `GitHubSourceConnector`, `WebsiteSourceConnector` |
-| `github.py`       | GitHub repository file ingestion                  | `GitHubRepositoryFetcher`, `GitHubRepositorySpec`          |
+| `github.py`       | GitHub repository file ingestion and live search  | `GitHubRepositoryFetcher`, `GitHubRepositorySpec`, `GitHubSearcher` |
 | `web_docs.py`     | Bounded website/docs crawler                      | `WebsiteDocsFetcher`, `RobotsRules`                       |
 | `notion.py`       | Notion integration                                | `NotionAPIClient`, `NotionPageProcessor`, `NotionSearcher` |
 | `tistory.py`      | Tistory blog crawler                              | `TistoryPostExtractor`, `TistorySearcher`                  |
 | `fetcher.py`      | Unified fetch interface used for indexing         | `DocumentFetcher`                                          |
-| `web_searcher.py` | Unified search interface for real-time web search | `WebSearcher`                                              |
+| `web_searcher.py` | Unified search interface for real-time source search | `WebSearcher`                                              |
 
 ---
 
@@ -300,10 +301,10 @@ uv run --python 3.13 uvicorn web_console.app:create_default_app --factory --host
 
 Then open `http://127.0.0.1:8765`.
 
-The web console is local-only developer tooling, not a production UI. The
-browser screen focuses on asking questions, inspecting evidence, downloading
-Markdown/JSON, and starting source sync. It serves static files from `web/` and
-calls these local HTTP endpoints:
+The web console is local-only developer tooling, not a production UI or a full
+agentic assistant. The browser screen focuses on inspecting what the synced
+local RAG index can retrieve, downloading Markdown/JSON, and starting source
+sync. It serves static files from `web/` and calls these local HTTP endpoints:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -352,11 +353,13 @@ content instead of falling back to raw JSON, JSON panes/downloads use the
 browser's sanitized result state, and HTTP smoke endpoints clean up temporary
 Markdown files before returning.
 
-The Answer mode selector defaults to Codex CLI Answer because the browser is
-meant for manual local evaluation of the final answer experience. ContextWiki
-is labeled as a raw debug fallback when the CLI is unavailable or when a raw
-citation-gated answer scaffold is useful. Codex CLI Answer retrieves bounded
-ContextWiki chunks first, redacts obvious secret-looking strings from the
+The console now defaults to `Indexed Evidence Debug` because the browser is
+best used to inspect whether the right sources, chunks, and retrieval hints
+were found in local storage. `Codex CLI Summary (experimental)` remains
+available as a convenience summary over bounded retrieved chunks, but it is not
+a full multi-step MCP client loop like Claude or Codex acting against the MCP
+server directly. Codex CLI Summary retrieves bounded ContextWiki chunks first,
+redacts obvious secret-looking strings from the
 prompt, and keeps citations/used chunks from the retrieval result instead of
 trusting generated citation metadata.
 The HTTP wrapper supplies only bounded/redacted prompt fields as evidence, starts
