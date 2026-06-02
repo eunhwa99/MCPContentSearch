@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
+from storage.metadata_store import ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
 SAFE_AUTH_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
 PUBLIC_CONFIG_ERROR_MESSAGES = {
@@ -15,6 +16,7 @@ PUBLIC_CONFIG_ERROR_MESSAGES = {
         "Source source_github is disabled because no GitHub repositories are "
         "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
     ),
+    ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
 }
 PROMPT_TOKEN_SECRET_RE = re.compile(
     r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"

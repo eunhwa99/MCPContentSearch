@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 from environments.config import AppConfig, setup_chroma
@@ -16,7 +17,7 @@ from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
-from storage.metadata_store import MetadataStore
+from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 from wiki.service import WikiGenerationService
 from wiki.synthesis import build_wiki_synthesizer
 from api.tools import register_tools
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastMCP:
     """애플리케이션 초기화"""
+
+    process_started_at = datetime.now(timezone.utc).isoformat()
 
     # 설정 로드
     config = AppConfig()
@@ -76,6 +79,12 @@ def create_app() -> FastMCP:
         chunker=DocumentChunker(),
         indexer=indexer,
     )
+    recovered_count = metadata_store.recover_orphaned_running_jobs(
+        started_before=process_started_at,
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+    if recovered_count:
+        logger.info("Recovered %s orphaned running sync job(s)", recovered_count)
     context_search = ContextSearchService(
         metadata_store=metadata_store,
         indexer=indexer,
