@@ -1,5 +1,6 @@
 import asyncio
 
+import httpx
 import pytest
 
 from core.exceptions import APIError
@@ -15,6 +16,11 @@ from fetching.notion import (
 pytestmark = pytest.mark.unit
 
 
+def _notion_response(status_code: int, payload: dict | None = None) -> httpx.Response:
+    request = httpx.Request("GET", "https://api.notion.com/v1/test")
+    return httpx.Response(status_code, json=payload or {}, request=request)
+
+
 def test_notion_block_fetch_can_surface_strict_full_sync_failures():
     client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
 
@@ -27,6 +33,171 @@ def test_notion_block_fetch_can_surface_strict_full_sync_failures():
         asyncio.run(client.fetch_block_content(object(), "block-id", strict=True))
 
     assert asyncio.run(client.fetch_block_content(object(), "block-id")) == ""
+
+
+def test_notion_block_children_retries_transient_502(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def no_sleep(seconds):
+        return None
+
+    class FlakyHTTPClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                return _notion_response(502, {"code": "bad_gateway", "message": "Bad Gateway"})
+            return _notion_response(
+                200,
+                {
+                    "results": [
+                        {
+                            "id": "block-1",
+                            "type": "paragraph",
+                            "paragraph": {"rich_text": [{"plain_text": "retried"}]},
+                        }
+                    ],
+                    "has_more": False,
+                },
+            )
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", no_sleep)
+
+    blocks = asyncio.run(client._fetch_blocks(FlakyHTTPClient(), "block-id"))
+
+    assert len(calls) == 2
+    assert blocks[0]["id"] == "block-1"
+
+
+def test_notion_block_children_does_not_retry_permission_errors(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def fail_sleep(seconds):
+        raise AssertionError("403 should not sleep for retry")
+
+    class PermissionHTTPClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _notion_response(
+                403,
+                {"code": "restricted_resource", "message": "not shared"},
+            )
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fail_sleep)
+
+    with pytest.raises(APIError, match="HTTP 403"):
+        asyncio.run(client._fetch_blocks(PermissionHTTPClient(), "block-id"))
+
+    assert len(calls) == 1
+
+
+def test_notion_block_children_raises_after_transient_retry_exhaustion(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def no_sleep(seconds):
+        return None
+
+    class AlwaysBadGatewayHTTPClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _notion_response(502, {"code": "bad_gateway", "message": "Bad Gateway"})
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", no_sleep)
+
+    with pytest.raises(APIError, match="HTTP 502"):
+        asyncio.run(client._fetch_blocks(AlwaysBadGatewayHTTPClient(), "block-id"))
+
+    assert len(calls) == 3
+
+
+def test_notion_search_pages_retries_transient_500(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def no_sleep(seconds):
+        return None
+
+    class FlakyHTTPClient:
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if len(calls) == 1:
+                return _notion_response(
+                    500,
+                    {"code": "internal_server_error", "message": "try again"},
+                )
+            return _notion_response(
+                200,
+                {
+                    "results": [{"id": "page-id"}],
+                    "has_more": False,
+                },
+            )
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", no_sleep)
+
+    pages = asyncio.run(client.search_pages(FlakyHTTPClient()))
+
+    assert pages == [{"id": "page-id"}]
+    assert len(calls) == 2
+    assert calls[0][1]["json"]["filter"] == {"property": "object", "value": "page"}
+
+
+def test_notion_page_fetch_retries_transient_503(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def no_sleep(seconds):
+        return None
+
+    class FlakyHTTPClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                return _notion_response(
+                    503,
+                    {"code": "service_unavailable", "message": "try again later"},
+                )
+            return _notion_response(200, {"id": "page-id"})
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", no_sleep)
+
+    page = asyncio.run(client.fetch_page(FlakyHTTPClient(), "page-id"))
+
+    assert page["id"] == "page-id"
+    assert len(calls) == 2
+
+
+def test_notion_database_query_retries_transient_429(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+
+    async def no_sleep(seconds):
+        return None
+
+    class RateLimitedHTTPClient:
+        async def post(self, url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                return _notion_response(
+                    429,
+                    {"code": "rate_limited", "message": "slow down"},
+                )
+            return _notion_response(
+                200,
+                {
+                    "results": [{"id": "page-id"}],
+                    "has_more": False,
+                },
+            )
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", no_sleep)
+
+    pages = asyncio.run(client.query_database(RateLimitedHTTPClient(), "database-id"))
+
+    assert pages == [{"id": "page-id"}]
+    assert len(calls) == 2
 
 
 def test_notion_page_processor_populates_native_external_id():

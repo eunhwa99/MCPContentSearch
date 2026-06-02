@@ -537,6 +537,8 @@ Current mapping:
 Notion
 -> external_id = page_id
 -> document_id = page_id
+-> transient API status codes 429/500/502/503/504 are retried with bounded
+   backoff while fetching search results, pages, databases, and block children
 
 Tistory
 -> external_id = blog_name:post_id
