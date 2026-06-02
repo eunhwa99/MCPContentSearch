@@ -1,10 +1,10 @@
+import asyncio
 import logging
 import re
 from typing import List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from environments.config import AppConfig, NotionConfig
 from core.models import DocumentModel
@@ -19,6 +19,8 @@ NOTION_HYPHENATED_OBJECT_ID_RE = re.compile(
     r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
 NOTION_HOST_SUFFIXES = ("notion.so", "notion.site")
+NOTION_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+NOTION_MAX_RETRY_ATTEMPTS = 3
 
 class NotionAPIClient:
     def __init__(self, config: NotionConfig, app_config: AppConfig):
@@ -30,43 +32,32 @@ class NotionAPIClient:
             "Content-Type": "application/json",
         }
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(httpx.HTTPStatusError)
-    )
     async def search_pages(self, client: httpx.AsyncClient) -> List[dict]:
         pages = []
         next_cursor = None
         
         while True:
             payload = self._build_search_payload(next_cursor)
-            
-            try:
-                response = await client.post(
-                    f"{self.config.base_url}/search",
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.app_config.request_timeout
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                pages.extend(data.get("results", []))
-                
-                if not data.get("has_more", False):
-                    break
-                    
-                next_cursor = data.get("next_cursor")
-                
-            except httpx.HTTPStatusError as e:
-                raise APIError("Notion", e.response.status_code, str(e))
-        
+
+            data = await self._request_json(
+                client,
+                "post",
+                f"{self.config.base_url}/search",
+                json=payload,
+            )
+
+            pages.extend(data.get("results", []))
+
+            if not data.get("has_more", False):
+                break
+
+            next_cursor = data.get("next_cursor")
+
         return pages
-    
+
     async def fetch_block_content(
-        self, 
-        client: httpx.AsyncClient, 
+        self,
+        client: httpx.AsyncClient,
         block_id: str,
         depth: int = 0,
         strict: bool = False,
@@ -75,7 +66,7 @@ class NotionAPIClient:
         if depth > self.app_config.notion_max_depth:
             logger.warning(f"Max depth reached for block {block_id}")
             return ""
-        
+
         try:
             blocks = await self._fetch_blocks(client, block_id)
             return await self._extract_text_recursive(client, blocks, depth, strict)
@@ -84,50 +75,39 @@ class NotionAPIClient:
                 raise
             logger.debug(f"Failed to fetch block {block_id}: {e}")
             return ""
-    
+
     async def _fetch_blocks(self, client: httpx.AsyncClient, block_id: str) -> List[dict]:
         """페이지네이션 지원 블록 가져오기"""
         all_blocks = []
         next_cursor = None
-        
+
         while True:
             params = {"page_size": self.app_config.notion_page_size}
             if next_cursor:
                 params["start_cursor"] = next_cursor
-            
-            try:
-                response = await client.get(
-                    f"{self.config.base_url}/blocks/{block_id}/children",
-                    headers=self.headers,
-                    params=params,
-                    timeout=self.app_config.request_timeout
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                all_blocks.extend(data.get("results", []))
-                
-                if not data.get("has_more", False):
-                    break
-                    
-                next_cursor = data.get("next_cursor")
-                
-            except httpx.HTTPStatusError as e:
-                raise APIError("Notion", e.response.status_code, str(e))
-        
+
+            data = await self._request_json(
+                client,
+                "get",
+                f"{self.config.base_url}/blocks/{block_id}/children",
+                params=params,
+            )
+
+            all_blocks.extend(data.get("results", []))
+
+            if not data.get("has_more", False):
+                break
+
+            next_cursor = data.get("next_cursor")
+
         return all_blocks
 
     async def fetch_page(self, client: httpx.AsyncClient, page_id: str) -> dict:
-        try:
-            response = await client.get(
-                f"{self.config.base_url}/pages/{page_id}",
-                headers=self.headers,
-                timeout=self.app_config.request_timeout,
-            )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            raise APIError("Notion", e.response.status_code, str(e))
+        return await self._request_json(
+            client,
+            "get",
+            f"{self.config.base_url}/pages/{page_id}",
+        )
 
     async def query_database(self, client: httpx.AsyncClient, database_id: str) -> List[dict]:
         pages = []
@@ -138,17 +118,12 @@ class NotionAPIClient:
             if next_cursor:
                 payload["start_cursor"] = next_cursor
 
-            try:
-                response = await client.post(
-                    f"{self.config.base_url}/databases/{database_id}/query",
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.app_config.request_timeout,
-                )
-                response.raise_for_status()
-                data = response.json()
-            except httpx.HTTPStatusError as e:
-                raise APIError("Notion", e.response.status_code, str(e))
+            data = await self._request_json(
+                client,
+                "post",
+                f"{self.config.base_url}/databases/{database_id}/query",
+                json=payload,
+            )
 
             pages.extend(data.get("results", []))
             if not data.get("has_more", False):
@@ -156,6 +131,40 @@ class NotionAPIClient:
             next_cursor = data.get("next_cursor")
 
         return pages
+
+    async def _request_json(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> dict:
+        request = getattr(client, method)
+        for attempt in range(1, NOTION_MAX_RETRY_ATTEMPTS + 1):
+            try:
+                response = await request(
+                    url,
+                    headers=self.headers,
+                    timeout=self.app_config.request_timeout,
+                    **kwargs,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                if (
+                    status_code in NOTION_TRANSIENT_STATUS_CODES
+                    and attempt < NOTION_MAX_RETRY_ATTEMPTS
+                ):
+                    await asyncio.sleep(self._retry_delay_seconds(attempt))
+                    continue
+                raise APIError("Notion", status_code, str(e))
+
+        raise APIError("Notion", 0, "Notion request retry loop exited unexpectedly")
+
+    @staticmethod
+    def _retry_delay_seconds(attempt: int) -> float:
+        return min(2 ** attempt, 10)
     
     async def _extract_text_recursive(
         self,
