@@ -52,12 +52,12 @@ class NotionAPIClient:
                 break
 
             next_cursor = data.get("next_cursor")
-
+        
         return pages
-
+    
     async def fetch_block_content(
-        self,
-        client: httpx.AsyncClient,
+        self, 
+        client: httpx.AsyncClient, 
         block_id: str,
         depth: int = 0,
         strict: bool = False,
@@ -66,7 +66,7 @@ class NotionAPIClient:
         if depth > self.app_config.notion_max_depth:
             logger.warning(f"Max depth reached for block {block_id}")
             return ""
-
+        
         try:
             blocks = await self._fetch_blocks(client, block_id)
             return await self._extract_text_recursive(client, blocks, depth, strict)
@@ -75,12 +75,12 @@ class NotionAPIClient:
                 raise
             logger.debug(f"Failed to fetch block {block_id}: {e}")
             return ""
-
+    
     async def _fetch_blocks(self, client: httpx.AsyncClient, block_id: str) -> List[dict]:
         """페이지네이션 지원 블록 가져오기"""
         all_blocks = []
         next_cursor = None
-
+        
         while True:
             params = {"page_size": self.app_config.notion_page_size}
             if next_cursor:
@@ -99,7 +99,7 @@ class NotionAPIClient:
                 break
 
             next_cursor = data.get("next_cursor")
-
+        
         return all_blocks
 
     async def fetch_page(self, client: httpx.AsyncClient, page_id: str) -> dict:
@@ -156,15 +156,43 @@ class NotionAPIClient:
                     status_code in NOTION_TRANSIENT_STATUS_CODES
                     and attempt < NOTION_MAX_RETRY_ATTEMPTS
                 ):
+                    await asyncio.sleep(self._retry_delay_seconds(attempt, e.response))
+                    continue
+                raise APIError("Notion", status_code, self._error_message(e))
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                if attempt < NOTION_MAX_RETRY_ATTEMPTS:
                     await asyncio.sleep(self._retry_delay_seconds(attempt))
                     continue
-                raise APIError("Notion", status_code, str(e))
+                raise APIError("Notion", 0, str(e))
 
         raise APIError("Notion", 0, "Notion request retry loop exited unexpectedly")
 
     @staticmethod
-    def _retry_delay_seconds(attempt: int) -> float:
+    def _retry_delay_seconds(attempt: int, response: httpx.Response | None = None) -> float:
+        if response is not None and response.status_code == 429:
+            retry_after = (response.headers.get("Retry-After") or "").strip()
+            try:
+                if retry_after:
+                    return min(max(0.0, float(retry_after)), 10.0)
+            except ValueError:
+                pass
         return min(2 ** attempt, 10)
+
+    @staticmethod
+    def _error_message(error: httpx.HTTPStatusError) -> str:
+        try:
+            payload = error.response.json()
+        except Exception:
+            payload = {}
+        code = str(payload.get("code") or "").strip()
+        message = str(payload.get("message") or "").strip()
+        if code and message:
+            return f"{code} | {message}"
+        if message:
+            return message
+        if code:
+            return code
+        return str(error)
     
     async def _extract_text_recursive(
         self,
@@ -264,19 +292,19 @@ class NotionSearcher:
             
             async with httpx.AsyncClient(timeout=self.config.request_timeout) as http_client:
                 # Notion search API with keyword query
-                response = await http_client.post(
+                data = await client._request_json(
+                    http_client,
+                    "post",
                     f"{self.notion_config.base_url}/search",
-                    headers=client.headers,
                     json={
                         "query": query,  # keyword search
                         "filter": {"property": "object", "value": "page"},
                         "page_size": min(max_results, 100),
                         "sort": {"direction": "descending", "timestamp": "last_edited_time"}
-                    }
+                    },
                 )
-                
-                response.raise_for_status()
-                results = response.json().get("results", [])
+
+                results = data.get("results", [])
                 
                 logger.info(f"Notion: {len(results)} pages found for '{query}'")
                 
@@ -346,15 +374,22 @@ async def fetch_notion_target(
 
     try:
         async with httpx.AsyncClient(timeout=app_config.request_timeout) as client:
+            page_error: APIError | None = None
             try:
                 page = await api_client.fetch_page(client, object_id)
                 content = await api_client.fetch_block_content(client, object_id, strict=True)
                 return [_notion_source_document(processor.build_document(page, content))]
-            except APIError as page_error:
+            except APIError as exc:
+                page_error = exc
                 if page_error.status_code != 404:
                     raise
 
-            pages = await api_client.query_database(client, object_id)
+            try:
+                pages = await api_client.query_database(client, object_id)
+            except APIError as database_error:
+                if page_error is not None and database_error.status_code in {400, 404}:
+                    raise page_error
+                raise database_error
             documents = []
             for page in pages:
                 page_id = page["id"]

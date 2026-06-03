@@ -330,7 +330,7 @@ def register_tools(
         return {
             "query": result["query"],
             "results": [
-                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                _search_context_result_payload(item)
                 for item in result["results"]
             ],
         }
@@ -419,6 +419,18 @@ async def _index_all_background(indexer: ContentIndexer) -> int:
 
     logger.info("✅ Background indexing completed")
     return len(documents)
+
+
+def _search_context_result_payload(item):
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json", exclude={"vector_score", "metadata_priority"})
+    if isinstance(item, dict):
+        return {
+            key: value
+            for key, value in item.items()
+            if key not in {"vector_score", "metadata_priority"}
+        }
+    return item
 
 
 async def _index_background(indexer: ContentIndexer, documents: list) -> int:

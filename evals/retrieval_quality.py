@@ -63,15 +63,17 @@ def evaluate_search_payload(
     case: RetrievalQualityCase,
 ) -> RetrievalQualityResult:
     results = _as_list(payload.get("results"))
+    top_chunk_id = str(_item_value(results[0], "chunk_id")) if results else ""
+    top_source_id = str(_item_value(results[0], "source_id")) if results else ""
     chunk_ids = [str(_item_value(item, "chunk_id")) for item in results if _item_value(item, "chunk_id")]
     source_ids = [str(_item_value(item, "source_id")) for item in results if _item_value(item, "source_id")]
 
     checks = {
         "min_result_count": len(results) >= case.min_result_count,
         "expected_top_chunk_id": not case.expected_top_chunk_id
-        or (bool(chunk_ids) and chunk_ids[0] == case.expected_top_chunk_id),
+        or (bool(results) and top_chunk_id == case.expected_top_chunk_id),
         "expected_source_id": not case.expected_source_id
-        or case.expected_source_id in source_ids,
+        or (bool(results) and top_source_id == case.expected_source_id),
         "required_chunk_ids_present": set(case.required_chunk_ids).issubset(set(chunk_ids)),
         "forbidden_chunk_ids_absent": not set(case.forbidden_chunk_ids).intersection(set(chunk_ids)),
     }
@@ -96,6 +98,14 @@ def evaluate_search_suite(
     payloads_by_case_id: dict[str, dict[str, Any]],
     cases: list[RetrievalQualityCase],
 ) -> dict[str, Any]:
+    if not cases:
+        return {
+            "passed": False,
+            "total": 0,
+            "passed_count": 0,
+            "average_score": 0.0,
+            "results": [],
+        }
     results = [
         evaluate_search_payload(payloads_by_case_id.get(case.case_id, {}), case)
         for case in cases

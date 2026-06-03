@@ -16,6 +16,7 @@ PUBLIC_CONFIG_ERROR_MESSAGES = {
         "Source source_github is disabled because no GitHub repositories are "
         "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
     ),
+    "NOTION_API_KEY is required for Notion target sync",
     ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
 }
 PROMPT_TOKEN_SECRET_RE = re.compile(

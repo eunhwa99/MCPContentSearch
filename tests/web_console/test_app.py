@@ -19,6 +19,7 @@ from web_console.app import (
     CodexCliAnswerService,
     ConsoleDependencies,
     GitHubTargetSyncService,
+    NotionTargetSyncService,
     REPO_ROOT,
     create_console_app,
     _recover_orphaned_sync_jobs_for_startup,
@@ -37,8 +38,15 @@ class FakeAnswerService:
     def __init__(self):
         self.calls = []
 
-    async def answer_with_citations(self, question, filters=None, top_k=5):
-        self.calls.append({"question": question, "filters": filters, "top_k": top_k})
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
+        self.calls.append(
+            {
+                "question": question,
+                "filters": filters,
+                "top_k": top_k,
+                "include_debug": include_debug,
+            }
+        )
         return {
             "question": question,
             "answer": "ContextWiki evidence",
@@ -49,8 +57,15 @@ class FakeAnswerService:
 
 
 class FakeDebugAnswerService(FakeAnswerService):
-    async def answer_with_citations(self, question, filters=None, top_k=5):
-        self.calls.append({"question": question, "filters": filters, "top_k": top_k})
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
+        self.calls.append(
+            {
+                "question": question,
+                "filters": filters,
+                "top_k": top_k,
+                "include_debug": include_debug,
+            }
+        )
         return {
             "question": question,
             "answer": "## Summary\n\n- concise summary",
@@ -285,7 +300,7 @@ class FailingSmokeRunner:
 
 
 class FailingAnswerService:
-    async def answer_with_citations(self, question, filters=None, top_k=5):
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         raise RuntimeError("answer failed with token=secret-value")
 
 
@@ -294,7 +309,7 @@ class AuthenticationError(RuntimeError):
 
 
 class OpenAIAuthFailingAnswerService:
-    async def answer_with_citations(self, question, filters=None, top_k=5):
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         raise AuthenticationError("Incorrect API key provided: sk-proj-secret-value")
 
 
@@ -455,6 +470,16 @@ class AlreadyRunningTargetSyncService:
         }
 
 
+class InvalidNotionTargetSyncService:
+    async def sync_target(self, source_type, target):
+        raise ValueError("Invalid Notion URL")
+
+
+class MissingNotionCredentialTargetSyncService:
+    async def sync_target(self, source_type, target):
+        raise RuntimeError("NOTION_API_KEY is required for Notion target sync")
+
+
 class RunningGitHubMetadataStore:
     def get_latest_sync_job(self, source_id):
         assert source_id == "source_github"
@@ -462,6 +487,22 @@ class RunningGitHubMetadataStore:
             job_id="job-running",
             source_id=source_id,
             status=SyncJobStatus.RUNNING,
+        )
+
+
+class RunningNotionMetadataStore:
+    def ensure_schema(self):
+        return None
+
+    def get_latest_sync_job(self, source_id):
+        assert source_id == "source_notion"
+        return SyncJobModel(
+            job_id="job-source_notion",
+            source_id="source_notion",
+            status=SyncJobStatus.RUNNING,
+            total_documents=2,
+            processed_documents=1,
+            indexed_chunks=1,
         )
 
 
@@ -1182,6 +1223,48 @@ def test_github_target_sync_checks_running_job_before_owner_discovery(monkeypatc
     assert "target" not in payload
 
 
+def test_notion_target_sync_does_not_short_circuit_on_stale_running_job(monkeypatch):
+    async def fake_sync_source(self, source_id):
+        assert source_id == "source_notion"
+        return SyncJobModel(
+            job_id="job-sync-source_notion",
+            source_id="source_notion",
+            status=SyncJobStatus.SUCCEEDED,
+            total_documents=1,
+            processed_documents=1,
+            indexed_chunks=1,
+        )
+
+    monkeypatch.setattr("indexing.ingestion_service.IngestionService.sync_source", fake_sync_source)
+
+    service = NotionTargetSyncService(
+        config=object(),
+        metadata_store=RunningNotionMetadataStore(),
+        indexer=object(),
+        notion_api_key="secret",
+    )
+
+    payload = asyncio.run(
+        service.sync_target("https://www.notion.so/workspace/My-Page-1234567890abcdef1234567890abcdef")
+    )
+
+    assert payload["status"] == "succeeded"
+    assert payload["source_id"] == "source_notion"
+    assert payload["target_type"] == "notion"
+
+
+def test_notion_target_sync_requires_api_key_before_disabled_source_path(tmp_path):
+    service = NotionTargetSyncService(
+        config=object(),
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        indexer=object(),
+        notion_api_key="",
+    )
+
+    with pytest.raises(RuntimeError, match="NOTION_API_KEY is required for Notion target sync"):
+        asyncio.run(service.sync_target("https://www.notion.so/workspace/My-Page-1234567890abcdef1234567890abcdef"))
+
+
 def test_answer_endpoint_normalizes_source_filters_and_calls_service():
     client, answer_service, *_ = make_client()
 
@@ -1202,6 +1285,7 @@ def test_answer_endpoint_normalizes_source_filters_and_calls_service():
             "question": "What is ContextWiki?",
             "top_k": 3,
             "filters": {"source_ids": ["source_github", "manual_source"]},
+            "include_debug": True,
         }
     ]
 
@@ -1223,6 +1307,7 @@ def test_answer_endpoint_does_not_forward_source_types_filter():
             "question": "What is ContextWiki?",
             "top_k": 5,
             "filters": {"source_ids": ["source_github"]},
+            "include_debug": True,
         }
     ]
 
@@ -1241,14 +1326,16 @@ def test_answer_endpoint_uses_default_top_k_when_omitted():
             "question": "What is ContextWiki?",
             "top_k": 5,
             "filters": {},
+            "include_debug": True,
         }
     ]
 
 
 def test_answer_endpoint_prefers_debug_markdown_for_console_response():
+    answer_service = FakeDebugAnswerService()
     app = create_console_app(
         ConsoleDependencies(
-            answer_service=FakeDebugAnswerService(),
+            answer_service=answer_service,
             metadata_store=FakeMetadataStore(),
         )
     )
@@ -1262,6 +1349,42 @@ def test_answer_endpoint_prefers_debug_markdown_for_console_response():
     assert body["summary"] == "## Summary\n\n- concise summary"
     assert body["answer"] == "## Query\n\n- original: `What is ContextWiki?`"
     assert body["markdown"] == "## Query\n\n- original: `What is ContextWiki?`"
+    assert answer_service.calls[0]["include_debug"] is True
+
+
+def test_target_sync_endpoint_invalid_notion_target_returns_400():
+    app = create_console_app(
+        ConsoleDependencies(target_sync_service=InvalidNotionTargetSyncService())
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": "notion", "target": "not-a-notion-url"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid Notion URL"
+
+
+def test_target_sync_endpoint_returns_safe_notion_configuration_hint():
+    app = create_console_app(
+        ConsoleDependencies(target_sync_service=MissingNotionCredentialTargetSyncService())
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/targets/sync",
+        json={"source_type": "notion", "target": "https://www.notion.so/workspace/page"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source_id": "source_notion",
+        "target_type": "notion",
+        "status": "error",
+        "message": "NOTION_API_KEY is required for Notion target sync",
+    }
 
 
 def test_answer_endpoint_rejects_unmatched_source_type_filters():
@@ -1634,6 +1757,35 @@ def test_codex_cli_answer_service_skips_low_score_or_irrelevant_evidence():
     assert "Sync a GitHub, Notion, or Web URL target" in payload["answer"]
     assert payload["citations"] == []
     assert payload["used_chunks"] == []
+
+
+def test_codex_cli_answer_service_uses_vector_score_for_grounding_gate():
+    async def fail_runner(prompt, *, timeout_seconds, codex_binary):
+        raise AssertionError("runner should not be called for low-vector-score evidence")
+
+    service = CodexCliAnswerService(
+        FakeContextSearch(
+            [
+                ContextSearchResult(
+                    chunk_id="chunk-low-vector",
+                    document_id="doc-low-vector",
+                    source_id="source_github",
+                    source_type="github",
+                    title="NeetCode Graph",
+                    score=0.92,
+                    vector_score=0.2,
+                    preview="neetcode graph",
+                    text="neetcode graph metadata-only hit",
+                )
+            ]
+        ),
+        runner=fail_runner,
+    )
+
+    payload = asyncio.run(service.answer_with_codex("neetcode graph"))
+
+    assert payload["codex_status"] == "skipped"
+    assert payload["evidence_status"] == "insufficient"
 
 
 def test_codex_cli_answer_service_uses_grouped_korean_query_expansions():

@@ -182,8 +182,28 @@ class FakeContextSearch:
         }
 
 
+class FakeDictContextSearch:
+    async def search_context(self, query, filters=None, top_k=10):
+        return {
+            "query": query,
+            "results": [
+                {
+                    "chunk_id": "chunk-1",
+                    "document_id": "doc-1",
+                    "source_id": "source_fake",
+                    "source_type": "notion",
+                    "title": "ContextWiki",
+                    "score": 0.9,
+                    "vector_score": 0.2,
+                    "preview": "ContextWiki evidence",
+                    "text": "ContextWiki evidence",
+                }
+            ],
+        }
+
+
 class FakeAnswerService:
-    async def answer_with_citations(self, question, filters=None, top_k=5):
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         return {
             "question": question,
             "answer": "ContextWiki evidence",
@@ -285,10 +305,30 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
 
     assert status["sources"][0]["source"]["source_id"] == "source_fake"
     assert search["results"][0]["chunk_id"] == "chunk-1"
+    assert "vector_score" not in search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
     assert answer["evidence_status"] == "grounded"
+    assert "debug" not in answer
+    assert "debug_markdown" not in answer
+    assert "answer_mode" not in answer
     assert wiki["status"] == "generated"
     assert wiki["citations"][0]["chunk_id"] == "chunk-1"
+
+
+def test_search_context_contract_strips_vector_score_from_dict_results():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        context_search_service=FakeDictContextSearch(),
+    )
+
+    search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
+
+    assert "vector_score" not in search["results"][0]
 
 
 def test_generate_wiki_page_returns_configured_error_without_service():

@@ -39,8 +39,10 @@ Run the D1 fixture runner with:
 PYTHONPATH=. python scripts/run_contextwiki_eval.py
 ```
 
-This seeds temporary fixture documents into temp SQLite, executes
-`search_context` and `answer_with_citations`, and returns a JSON summary.
+This seeds temporary fixture documents into temp SQLite, swaps in a local
+fixture `VectorIndexRetriever`, executes the normal `search_context` indexer
+path plus `answer_with_citations`, and returns a JSON summary without live LLM
+rewrite.
 
 Phase split used by the roadmap:
 

@@ -47,13 +47,15 @@ class WebSearcher:
         Args:
             query: 검색어
             max_results: 최대 결과 수
-            platforms: 검색할 플랫폼 ["notion", "tistory", "github"] or None (모두)
+            platforms: 검색할 플랫폼 ["notion", "tistory", "github"] or None
         """
         tasks = []
         
         # 플랫폼 선택
         if platforms is None:
-            platforms = ["notion", "tistory", "github"]
+            platforms = ["notion", "tistory"]
+            if self.github:
+                platforms.append("github")
         
         per_platform = max(3, max_results // len(platforms))
         
