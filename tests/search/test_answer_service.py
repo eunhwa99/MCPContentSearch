@@ -33,7 +33,7 @@ def test_answer_service_returns_insufficient_evidence_without_grounding():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
+    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
 
     assert answer["evidence_status"] == "insufficient"
     assert answer["citations"] == []
@@ -61,7 +61,7 @@ def test_answer_service_uses_only_returned_context_as_citations():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
+    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
 
     assert answer["evidence_status"] == "grounded"
     assert answer["answer_mode"] == "contextwiki_debug"
@@ -234,11 +234,126 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("aws virtual machine startup"))
+    answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
 
     assert answer["evidence_status"] == "grounded"
     assert answer["used_chunks"] == ["chunk-ec2-guide"]
     assert answer["debug"]["rewritten_queries"] == ["aws ec2 setup"]
+
+
+def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
+    result = ContextSearchResult(
+        chunk_id="chunk-debug-guide",
+        document_id="doc-debug-guide",
+        source_id="source_github",
+        source_type="github",
+        title="ContextWiki context-wiki-debug guide",
+        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/contextwiki-debug-guide.md",
+        path="docs/context-wiki-debug-guide.md",
+        line_start=1,
+        line_end=20,
+        version_id="commit-1",
+        score=0.92,
+        preview="ContextWiki context-wiki-debug guide and console workflow.",
+        text="ContextWiki context-wiki-debug guide and console workflow.",
+    )
+
+    class RedactedDisplayContextSearch(FakeContextSearch):
+        async def search_context(self, query, filters=None, top_k=5):
+            return {
+                "query": query,
+                "results": [result],
+                "_grounding": {
+                    "effective_term_groups": [["context-wiki-debug"], ["guide"]],
+                },
+                "debug": {
+                    "effective_term_groups": [["[REDACTED]"], ["guide"]],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=RedactedDisplayContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations("context-wiki-debug guide", include_debug=True)
+    )
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["citations"][0]["chunk_id"] == "chunk-debug-guide"
+    assert "context-wiki-debug guide" in answer["debug_markdown"]
+    assert "[REDACTED]" in answer["debug_markdown"]
+
+
+def test_answer_service_visible_answer_keeps_benign_repo_slugs():
+    result = ContextSearchResult(
+        chunk_id="chunk-debug-guide",
+        document_id="doc-debug-guide",
+        source_id="source_github",
+        source_type="github",
+        title="ContextWiki context-wiki-debug guide",
+        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/contextwiki-debug-guide.md",
+        path="docs/context-wiki-debug-guide.md",
+        score=0.92,
+        preview="ContextWiki context-wiki-debug guide and console workflow.",
+        text="ContextWiki context-wiki-debug guide and console workflow.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("context-wiki-debug guide"))
+
+    assert "[REDACTED]" not in answer["answer"]
+    assert "context-wiki-debug guide" in answer["answer"]
+
+
+def test_answer_service_keeps_original_topical_constraint_when_rewrite_relaxes_query():
+    result = ContextSearchResult(
+        chunk_id="chunk-neetcode-arrays",
+        document_id="doc-neetcode-arrays",
+        source_id="source_github",
+        source_type="github",
+        title="Neetcode arrays docs",
+        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/neetcode-arrays.md",
+        path="docs/neetcode-arrays.md",
+        line_start=1,
+        line_end=20,
+        version_id="commit-1",
+        score=0.92,
+        preview="Neetcode arrays walkthrough and study notes.",
+        text="Neetcode arrays walkthrough and study notes.",
+    )
+
+    class RewriteDebugContextSearch(FakeContextSearch):
+        async def search_context(self, query, filters=None, top_k=5):
+            return {
+                "query": query,
+                "results": [result],
+                "_grounding": {
+                    "original_term_groups": [["neetcode"], ["graph"], ["docs"]],
+                    "effective_term_groups": [["neetcode"], ["graph"], ["docs"], ["guide"]],
+                },
+                "debug": {
+                    "effective_term_groups": [["neetcode"], ["graph"], ["docs"], ["guide"]],
+                    "rewritten_queries": ["neetcode docs guide"],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=RewriteDebugContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("neetcode graph docs"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
 
 
 def test_answer_service_adds_debug_markdown_for_insufficient_evidence():
@@ -248,12 +363,336 @@ def test_answer_service_adds_debug_markdown_for_insufficient_evidence():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("AWS에 적은 문서를 찾아줘"))
+    answer = asyncio.run(service.answer_with_citations("AWS에 적은 문서를 찾아줘", include_debug=True))
 
     assert answer["evidence_status"] == "insufficient"
     assert answer["answer_mode"] == "contextwiki_debug"
     assert "## Query" in answer["debug_markdown"]
     assert "amazon web services" in answer["debug_markdown"]
+
+
+def test_answer_service_redacts_http_paths_in_debug_output():
+    result = ContextSearchResult(
+        chunk_id="chunk-secret-url",
+        document_id="doc-secret-url",
+        source_id="source_web",
+        source_type="web",
+        title="Signed URL guide",
+        url="https://example.com/private/token/opaque-value?signature=secret-value",
+        path="https://example.com/private/token/opaque-value?signature=secret-value",
+        line_start=1,
+        line_end=5,
+        version_id="web-1",
+        score=0.92,
+        preview="Signed URL guide.",
+        text="Signed URL guide.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("signed url guide", include_debug=True))
+
+    debug_markdown = answer["debug_markdown"]
+    assert "opaque-value" not in debug_markdown
+    assert "/private/token" not in debug_markdown
+    assert "https://example.com [path redacted]" in debug_markdown
+
+
+def test_answer_service_redacts_paths_and_credential_urls_inside_preview_text():
+    result = ContextSearchResult(
+        chunk_id="chunk-preview-secret",
+        document_id="doc-preview-secret",
+        source_id="source_web",
+        source_type="web",
+        title="Preview leak check",
+        score=0.92,
+        preview="see file:///tmp/secret.md and /Users/eunhwa/private/doc.md and https://user:pass@example.com/path",
+        text="see file:///tmp/secret.md and /Users/eunhwa/private/doc.md and https://user:pass@example.com/path",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("preview leak check", include_debug=True))
+
+    debug_markdown = answer["debug_markdown"]
+    assert "file://" not in debug_markdown
+    assert "/Users/eunhwa" not in debug_markdown
+    assert "user:pass@" not in debug_markdown
+
+
+def test_answer_service_debug_scores_show_grounding_score():
+    result = ContextSearchResult(
+        chunk_id="chunk-grounding-score",
+        document_id="doc-grounding-score",
+        source_id="source_github",
+        source_type="github",
+        title="NeetCode Graph",
+        score=0.92,
+        vector_score=0.2,
+        preview="neetcode graph",
+        text="neetcode graph",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.1,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("neetcode graph", include_debug=True))
+
+    selected = answer["debug"]["selected_chunks"][0]
+    assert selected["score"] == 0.2
+    assert selected["search_score"] == 0.92
+    assert "grounding score: 0.200" in answer["debug_markdown"]
+
+
+def test_answer_service_defaults_to_non_debug_payload():
+    result = ContextSearchResult(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        source_id="source_fake",
+        source_type="notion",
+        title="ContextWiki",
+        url="https://notion.so/doc-1",
+        path="ContextWiki",
+        score=0.92,
+        preview="ContextWiki is an MCP knowledge backend.",
+        text="ContextWiki is an MCP knowledge backend.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert "debug" not in answer
+    assert "debug_markdown" not in answer
+    assert "answer_mode" not in answer
+
+
+def test_answer_service_redacts_debug_locations_for_credentials_and_local_paths():
+    result = ContextSearchResult(
+        chunk_id="chunk-secret",
+        document_id="doc-secret",
+        source_id="source_web",
+        source_type="web",
+        title="secret token=ghp_example123",
+        url="https://user:pass@example.com/private?token=abcd",
+        path="/Users/eunhwa/private/project.md",
+        line_start=1,
+        line_end=5,
+        version_id="v1",
+        score=0.93,
+        preview="contains secrets",
+        text="contains secrets",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("secret", include_debug=True))
+
+    assert answer["debug"]["selected_chunks"][0]["url"] == "redacted"
+    assert answer["debug"]["selected_chunks"][0]["path"] == "redacted"
+    assert "`redacted`" in answer["debug_markdown"]
+
+
+def test_answer_service_redacts_query_fields_when_they_include_paths_or_credential_urls():
+    result = ContextSearchResult(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        source_id="source_web",
+        source_type="web",
+        title="Private doc",
+        url="https://docs.example.com/private-doc",
+        path="docs/private-doc.md",
+        score=0.95,
+        preview="private doc",
+        text="private doc",
+    )
+
+    class QueryDebugContextSearch(FakeContextSearch):
+        async def search_context(self, query, filters=None, top_k=5):
+            return {
+                "query": query,
+                "results": [result],
+                "debug": {
+                    "effective_term_groups": [["private"], ["doc"]],
+                    "retrieval_queries": [
+                        "/Users/eunhwa/private/doc.md",
+                        "https://user:pass@example.com/path?token=abc",
+                    ],
+                    "rewritten_queries": ["~/private/doc.md C:/Users/test/private/doc.md"],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=QueryDebugContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations(
+            "https://user:pass@example.com/private /Users/eunhwa/private/doc.md",
+            include_debug=True,
+        )
+    )
+
+    assert answer["debug"]["question"] == "redacted redacted"
+    assert answer["debug"]["retrieval_queries"] == ["redacted", "redacted"]
+    assert answer["debug"]["rewritten_queries"] == ["redacted redacted"]
+    assert "/Users/eunhwa" not in answer["debug_markdown"]
+    assert "user:pass@" not in answer["debug_markdown"]
+    assert "~/" not in answer["debug_markdown"]
+    assert "C:/Users" not in answer["debug_markdown"]
+
+
+def test_answer_service_grounding_uses_vector_score_not_rerank_bonus():
+    result = ContextSearchResult(
+        chunk_id="chunk-low-vector",
+        document_id="doc-low-vector",
+        source_id="source_github",
+        source_type="github",
+        title="GitHub sync guide",
+        url="https://github.com/example/repo/blob/main/docs/github-sync.md",
+        path="docs/github-sync.md",
+        score=0.91,
+        vector_score=0.21,
+        preview="GitHub sync guide and checklist.",
+        text="GitHub sync guide and checklist.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("github sync 문서"))
+
+    assert answer["evidence_status"] == "insufficient"
+
+
+def test_answer_service_requires_problem_hint_for_strong_anchor_problem_queries():
+    result = ContextSearchResult(
+        chunk_id="chunk-neetcode-readme",
+        document_id="doc-neetcode-readme",
+        source_id="source_github",
+        source_type="github",
+        title="NeetCode README",
+        url="https://github.com/example/neetcode/blob/main/README.md",
+        path="README.md",
+        score=0.92,
+        preview="NeetCode repository overview and setup notes.",
+        text="NeetCode repository overview and setup notes.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("neetcode 문제"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_redacts_secret_like_debug_query_and_locations():
+    result = ContextSearchResult(
+        chunk_id="chunk-secret",
+        document_id="doc-secret",
+        source_id="source_github",
+        source_type="github",
+        title="Signed URL notes",
+        url="https://example.com/docs?token=super-secret-value",
+        path="docs/access_token=super-secret-value.md",
+        score=0.92,
+        preview="Contains api_key=super-secret-value in example text.",
+        text="Contains api_key=super-secret-value in example text.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations("show token=super-secret-value docs", include_debug=True)
+    )
+
+    assert "super-secret-value" not in answer["debug_markdown"]
+    assert "super-secret-value" not in str(answer["debug"])
+
+
+def test_answer_service_preserves_public_question_raw_for_mcp_contract():
+    result = ContextSearchResult(
+        chunk_id="chunk-secret",
+        document_id="doc-secret",
+        source_id="source_github",
+        source_type="github",
+        title="Signed URL notes",
+        url="https://user:pass@example.com/docs?token=super-secret-value",
+        path="/Users/eunhwa/private/doc.md",
+        score=0.92,
+        preview="Contains api_key=super-secret-value in example text.",
+        text="Contains api_key=super-secret-value in example text.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations(
+            "https://user:pass@example.com/private?token=super-secret-value /Users/eunhwa/private/doc.md"
+        )
+    )
+
+    assert answer["question"] == "https://user:pass@example.com/private?token=super-secret-value /Users/eunhwa/private/doc.md"
+    assert "super-secret-value" not in str(answer["citations"])
+    assert answer["citations"][0]["url"] == "redacted"
+    assert answer["citations"][0]["path"] == "redacted"
+
+
+def test_answer_service_does_not_redact_benign_secret_management_phrases():
+    result = ContextSearchResult(
+        chunk_id="chunk-secret-guide",
+        document_id="doc-secret-guide",
+        source_id="source_github",
+        source_type="github",
+        title="Secret management guide",
+        path="docs/secret-management.md",
+        score=0.92,
+        preview="Secret management guide and token rotation docs.",
+        text="Secret management guide and token rotation docs.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations("secret management guide", include_debug=True)
+    )
+
+    assert "secret [REDACTED]" not in answer["answer"]
+    assert "token [REDACTED]" not in answer["answer"]
+    assert "secret [REDACTED]" not in answer["debug_markdown"]
+    assert "token [REDACTED]" not in answer["debug_markdown"]
 
 
 def test_answer_service_ground_neetcode_korean_query_from_github_repository_metadata(tmp_path):

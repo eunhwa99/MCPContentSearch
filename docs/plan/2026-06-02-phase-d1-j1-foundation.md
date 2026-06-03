@@ -93,10 +93,10 @@ Implement the most important remaining next step for ContextWiki:
 
 | Feature or workflow | Caller surface | Safest data mode | Expected visible result | Command or action | Result | Evidence location | Blocker / substitute |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| D1 eval runner | local CLI script | deterministic fixture data + temp SQLite | JSON summary with retrieval and answer suite pass/fail counts | `PYTHONPATH=. python scripts/run_contextwiki_eval.py` | pending | Pending | None |
-| J1 retrieval regressions | focused pytest | deterministic fixture data + temp SQLite | new ranking cases pass | `tests/search/test_context_service.py` | pending | Pending | None |
-| Existing answer quality checks | focused pytest | deterministic fixture data | answer eval suite still passes | `tests/evals/test_answer_quality.py` | pending | Pending | None |
-| Broader repo functional gate | repo e2e script | deterministic local fake/temp paths | no regression in current browser/source-sync/wiki smoke | `./scripts/verify_functional_e2e.sh` | pending | Pending | None |
+| D1 eval runner | local CLI script | deterministic fixture data + temp SQLite | JSON summary with retrieval and answer suite pass/fail counts | `PYTHONPATH=. python scripts/run_contextwiki_eval.py` | completed | Latest run passed with retrieval `5/5` and answer `3/3`. | None |
+| J1 retrieval regressions | focused pytest | deterministic fixture data + temp SQLite | new ranking cases pass | `PYTHONPATH=. uv run pytest tests/evals/test_retrieval_quality.py tests/search/test_context_service.py` | completed | Latest focused retrieval suite passed. | None |
+| Existing answer quality checks | focused pytest | deterministic fixture data | answer eval suite still passes | `PYTHONPATH=. uv run pytest tests/evals/test_answer_quality.py tests/search/test_answer_service.py tests/fetching/test_notion.py` | completed | Latest focused answer/eval/fetching checks passed. | None |
+| Broader repo functional gate | repo e2e script | deterministic local fake/temp paths | no regression in current browser/source-sync/wiki smoke | `./scripts/verify_functional_e2e.sh` | completed | Latest repo functional smoke passed, including Playwright web-console smoke. | None |
 
 ## Architecture and ADR Constraints
 
@@ -128,4 +128,6 @@ Implement the most important remaining next step for ContextWiki:
 | Implementation | completed | Added D1 deterministic retrieval/answer eval modules, fixture data, local eval runner, J1 rerank boosts for source-type and metadata-phrase matches, and roadmap/doc updates for D1/D2 and J1/J2. | `evals/retrieval_quality.py`; `evals/contextwiki_eval.py`; `evals/contextwiki_fixture_documents.json`; `evals/retrieval_quality_cases.json`; `evals/contextwiki_answer_quality_cases.json`; `scripts/run_contextwiki_eval.py`; `search/context_service.py`; docs |
 | Focused verification | completed | Compile, focused eval/search tests, and the D1 eval runner passed. | `python -m compileall evals scripts search tests/evals tests/search`; `PYTHONPATH=. uv run pytest tests/evals/test_answer_quality.py tests/evals/test_retrieval_quality.py tests/search/test_context_service.py` -> 113 passed; `PYTHONPATH=. python scripts/run_contextwiki_eval.py` -> passed |
 | Functional smoke | completed | Repo functional E2E gate passed after D1/J1 changes. | `./scripts/verify_functional_e2e.sh` -> fake wiki smoke passed; e2e/web console suite passed; Playwright smoke passed |
-| Review gate | completed | `$subagent-review-loop` remains intentionally bypassed on this user-approved single-agent branch. | Earlier user approval for option 2 |
+| Review remediation | in_progress | User explicitly requested `$subagent-review-loop`; first pass findings were remediated, second pass surfaced offline-eval, Notion retry, and debug redaction follow-ups now being fixed before a fresh reviewer pass. | `fetching/web_searcher.py`; `search/context_service.py`; `search/answer_service.py`; `fetching/notion.py`; `evals/contextwiki_eval.py`; targeted tests rerun |
+| Contract alignment | in_progress | MCP contract 우선 선택(1번)으로 `answer_with_citations` public payload의 `question`을 raw 유지하고, 비콘텐츠 `question` redaction 테스트를 MCP 계약 기준으로 정렬. | `search/answer_service.py`; `tests/search/test_answer_service.py` |
+| Review gate | in_progress | Initial bypass no longer applies because the user later requested the review loop. A fresh clean five-reviewer pass is still pending after remediation and verification. | Review pass notes on this branch |
