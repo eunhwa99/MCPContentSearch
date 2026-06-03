@@ -116,6 +116,80 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
     assert any("ec2" in query.lower() for query in retrieval_queries)
 
 
+def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_web", SourceType.WEB, "Web")
+    seed_document_chunks(
+        store,
+        "doc-architecture-guide",
+        "architecture-guide-chunk",
+        "source_web",
+        "Project architecture guide",
+        "Overview of services and boundaries.",
+        path="docs/project-architecture-guide.md",
+        url="https://docs.example.com/project-architecture-guide",
+    )
+    seed_document_chunks(
+        store,
+        "doc-runtime-notes",
+        "runtime-notes-chunk",
+        "source_web",
+        "Runtime notes",
+        "This note mentions project architecture guide ideas in passing.",
+        path="notes/runtime.txt",
+        url="https://docs.example.com/runtime-notes",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "project architecture guide",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "architecture-guide-chunk",
+        "runtime-notes-chunk",
+    ]
+
+
+def test_keyword_search_rerank_prefers_matching_source_type_intent(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "doc-notion-sync",
+        "notion-sync-chunk",
+        "source_notion",
+        "Notion sync notes",
+        "Notion sync troubleshooting and checklist.",
+        url="https://notion.so/notion-sync",
+    )
+    seed_document_chunks(
+        store,
+        "doc-github-sync",
+        "github-sync-chunk",
+        "source_github",
+        "GitHub sync notes",
+        "GitHub sync troubleshooting and checklist.",
+        path="docs/github-sync.md",
+        url="https://github.com/example/repo/blob/main/docs/github-sync.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "notion sync notes",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "notion-sync-chunk",
+        "github-sync-chunk",
+    ]
+
+
 def test_vector_search_pushes_source_filter_into_retriever(monkeypatch, tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -4847,6 +4921,8 @@ def seed_document_chunks(
     text,
     *,
     version_id="",
+    path="",
+    url="",
 ):
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -4855,9 +4931,9 @@ def seed_document_chunks(
             source_id=source_id,
             title=title,
             content=text,
-            url=f"https://example.com/{document_id}",
+            url=url or f"https://example.com/{document_id}",
             platform="Test",
-            path=title,
+            path=path or title,
             version_id=version_id,
         ),
         [
@@ -4867,9 +4943,18 @@ def seed_document_chunks(
                 source_id=source_id,
                 title=title,
                 text=text,
+                url=url or f"https://example.com/{document_id}",
+                path=path or title,
                 chunk_index=0,
                 content_hash=chunk_id,
                 version_id=version_id,
             )
         ],
     )
+
+
+def list_search_documents(store):
+    return [
+        chunk.to_document_model(platform="Test")
+        for chunk in store.list_chunks()
+    ]

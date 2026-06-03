@@ -311,16 +311,34 @@ Important boundaries:
 current `answer_with_citations` responses. It can score already-produced local
 payloads for expected status, expected answer terms, forbidden unsupported
 claims, citation coverage, `used_chunks` consistency, and obvious secret-like
-output. The focused test entry point is:
+output.
+
+`evals/retrieval_quality.py` adds D1 retrieval checks for expected top chunks,
+expected sources, required chunk presence, and forbidden chunk absence.
+
+`scripts/run_contextwiki_eval.py` is the D1 local runner. It seeds temporary
+fixture documents into temp SQLite, executes `search_context` and
+`answer_with_citations`, and emits a JSON summary without touching user data or
+calling live providers.
+
+Focused entry points:
 
 ```bash
 uv run pytest -q tests/evals
+PYTHONPATH=. python scripts/run_contextwiki_eval.py
 ```
 
 This is eval scaffolding, not full evaluation infrastructure. It does not call
 live APIs, embeddings, Chroma, SQLite, or LLM providers. LLM answer generation,
 LLM-as-judge grading, retrieval tuning dashboards, and external trace storage
 remain future work.
+
+Current split:
+
+- `D1`: local retrieval/answer eval foundation
+- `D2`: observability expansion
+- `J1`: deterministic non-LLM retrieval quality
+- `J2`: LLM-assisted rewrite, grounded synthesis, and deeper citation checks
 
 ---
 
@@ -1044,13 +1062,15 @@ SQLite. AI clients use MCP tools such as search_context and answer_with_citation
 to retrieve grounded context without directly accessing the database.
 ```
 
-Current Phase C/C.5 version:
+Current implemented phase slice:
 
 ```text
 Phase B added GitHub and Web/docs connectors. Phase C added read-only Auto Wiki
 generation from active citation-ready chunks with deterministic fallback and
 optional opt-in wiki LLM synthesis. Phase C.5 added a local Web Console for
-manual source sync, answer, wiki, download, and smoke-test workflows.
+manual source sync, answer, wiki, download, and smoke-test workflows. Phase D1
+now adds deterministic local retrieval/answer eval scaffolding, and Phase J1
+adds stronger non-LLM reranking/query-shaping heuristics.
 ```
 
 Honest limitation version:
@@ -1062,12 +1082,11 @@ stale cleanup, SQLite-backed active retrieval checks, historical chunk-id
 provenance, GitHub/Web connectors, structured context search, and citation-gated
 answer responses. It now also includes read-only citation-backed Auto Wiki
 generation, local Web Console developer tooling, and deterministic local
-payload-level answer-quality eval scaffolding.
+payload-level answer-quality eval scaffolding plus fixture-based retrieval eval.
 
 It does not yet include fingerprint dedup, rename detection, function/class-aware
-code chunking, queue-based retry, full ACL-aware retrieval, evaluation metrics,
-richer reranking, LLM query rewriting, full citation verification, or LLM-based answer
-generation.
+code chunking, queue-based retry, full ACL-aware retrieval, D2 observability,
+J2 LLM-assisted grounded answer generation, or deeper citation verification.
 ```
 
 ---

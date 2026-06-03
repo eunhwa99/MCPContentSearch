@@ -23,6 +23,8 @@ class AnswerQualityCase:
 
     case_id: str
     question: str
+    group: str = "generic"
+    top_k: int = 3
     expected_answer_terms: tuple[str, ...] = ()
     forbidden_answer_terms: tuple[str, ...] = ()
     required_citation_chunk_ids: tuple[str, ...] = ()
@@ -34,6 +36,8 @@ class AnswerQualityCase:
         return cls(
             case_id=str(value["case_id"]),
             question=str(value["question"]),
+            group=str(value.get("group", "generic")),
+            top_k=int(value.get("top_k", 3)),
             expected_answer_terms=tuple(value.get("expected_answer_terms", ())),
             forbidden_answer_terms=tuple(value.get("forbidden_answer_terms", ())),
             required_citation_chunk_ids=tuple(value.get("required_citation_chunk_ids", ())),

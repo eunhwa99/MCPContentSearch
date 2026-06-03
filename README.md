@@ -97,7 +97,12 @@ mcp-content-search/
 │
 ├── evals/
 │   ├── answer_quality.py     # Deterministic answer payload grounding checks
-│   └── answer_quality_cases.json  # Local example eval cases
+│   ├── retrieval_quality.py  # Deterministic retrieval ranking checks
+│   ├── contextwiki_eval.py   # Local D1 fixture runner over search + answer services
+│   ├── answer_quality_cases.json  # Local example payload eval cases
+│   ├── contextwiki_answer_quality_cases.json  # D1 grounded-answer fixture cases
+│   ├── retrieval_quality_cases.json  # D1 retrieval fixture cases
+│   └── contextwiki_fixture_documents.json  # D1 fixture documents
 │
 ├── web/
 │   ├── index.html            # Local Web Test Console shell
@@ -491,20 +496,31 @@ uv run pytest -q
 uv run pytest -m "not live"
 ```
 
-Deterministic local answer-quality eval groundwork lives under `evals/` with
-focused tests under `tests/evals/`. These checks evaluate already-produced
-`answer_with_citations`-style payloads for expected terms, forbidden unsupported
-claims, citation coverage, used-chunk consistency, and obvious secret-like
-output. They do not call live APIs, Chroma, SQLite, embedding providers, or
-LLMs.
+Phase D1 local eval groundwork lives under `evals/` with focused tests under
+`tests/evals/`. The deterministic checks now cover both payload-level answer
+grounding and fixture-based retrieval ranking expectations. The D1 runner seeds
+temporary fixture documents into temp SQLite, executes `search_context` and
+`answer_with_citations`, and reports pass/fail without touching user data or
+calling live APIs.
 
 ```bash
 uv run pytest -q tests/evals
+PYTHONPATH=. python scripts/run_contextwiki_eval.py
 ```
 
-Full LLM answer generation, LLM-as-judge grading, retrieval tuning metrics, and
-external observability are future work and should remain opt-in because source
-evidence may contain private content.
+Roadmap split:
+
+- `Phase D1`: local retrieval/answer eval foundation
+- `Phase D2`: observability expansion such as latency, cost, and richer failure
+  reporting
+- `Phase J1`: non-LLM retrieval quality such as deterministic rerank/query
+  shaping
+- `Phase J2`: LLM-assisted rewrite, grounded synthesis, and deeper citation
+  verification
+
+Full LLM answer generation, LLM-as-judge grading, and external observability
+remain future work and should stay opt-in because source evidence may contain
+private content.
 
 Live API smoke tests are non-default and must be explicitly enabled. For wiki
 generation, run the live GitHub smoke only when network is available and an

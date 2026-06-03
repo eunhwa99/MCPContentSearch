@@ -1,0 +1,53 @@
+[
+  {
+    "case_id": "github-sync-docs",
+    "group": "repo-specific",
+    "query": "github sync 문서",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "github-sync-doc-chunk",
+    "expected_source_id": "source_github",
+    "required_chunk_ids": ["github-sync-doc-chunk"],
+    "forbidden_chunk_ids": ["code-only-graph-chunk"]
+  },
+  {
+    "case_id": "neetcode-problems",
+    "group": "repo-specific",
+    "query": "neetcode 문제",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "neetcode-problems-chunk",
+    "expected_source_id": "source_github",
+    "required_chunk_ids": ["neetcode-problems-chunk"]
+  },
+  {
+    "case_id": "notion-source-preferred",
+    "group": "generic-behavior",
+    "query": "notion sync notes",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "notion-sync-chunk",
+    "expected_source_id": "source_notion",
+    "required_chunk_ids": ["notion-sync-chunk"]
+  },
+  {
+    "case_id": "architecture-guide-phrase",
+    "group": "generic-behavior",
+    "query": "project architecture guide",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "architecture-guide-chunk",
+    "expected_source_id": "source_web",
+    "required_chunk_ids": ["architecture-guide-chunk"]
+  },
+  {
+    "case_id": "aws-doc-alias",
+    "group": "generic-behavior",
+    "query": "AWS에 적은 문서를 찾아줘",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "aws-guide-chunk",
+    "expected_source_id": "source_web",
+    "required_chunk_ids": ["aws-guide-chunk"]
+  }
+]

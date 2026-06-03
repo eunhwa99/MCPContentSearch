@@ -1,5 +1,6 @@
 import math
 import re
+from urllib.parse import urlparse
 
 from core.models import ContextSearchResult
 from search.query_terms import (
@@ -12,6 +13,68 @@ from search.query_terms import (
     retrieval_query_variants,
     split_attached_latin_korean_token,
 )
+PROMPT_ASSIGNMENT_SECRET_RE = re.compile(
+    r"(?P<prefix>(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
+    r"client[-_]?secret|cookie|credential|jwt|key|pass|password|passwd|"
+    r"private[-_]?key|pwd|secret|session|token)\s*[:=]\s*['\"]?)"
+    r"(?P<secret>[^'\"\s,;}]+)(?P<suffix>['\"]?)",
+    re.IGNORECASE,
+)
+PROMPT_QUERY_SECRET_RE = re.compile(
+    r"(?P<prefix>[?&](?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
+    r"client[-_]?secret|credential|key|password|secret|session|sig|signature|"
+    r"token)=)(?P<secret>[^&#\s]+)",
+    re.IGNORECASE,
+)
+PROMPT_SPACE_SECRET_RE = re.compile(
+    r"(?P<prefix>\b(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
+    r"client[-_]?secret|cookie|credential|jwt|key|pass|password|passwd|"
+    r"private[-_]?key|pwd|secret|session|token)\b\s+)"
+    r"(?P<secret>(?:gh[pousr]_[^\s,;}]+|github_pat_[^\s,;}]+|"
+    r"xox[baprs]-[^\s,;}]+|sk-(?:proj-)?[^\s,;}]+|AIza[^\s,;}]+|"
+    r"eyJ[^\s,;}]+|[A-Za-z0-9_-]{16,}))",
+    re.IGNORECASE,
+)
+SECRET_LIKE_RE = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"
+    r"xox[baprs]-[A-Za-z0-9-]+|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
+    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
+    r"AIza[A-Za-z0-9_-]{20,}|"
+    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+SECRET_VALUE_SHAPE_RE = re.compile(
+    r"\b(?=[A-Za-z0-9_-]{16,}\b)(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9]{2,}(?:[-_][A-Za-z0-9]{2,}){2,}\b"
+)
+DEBUG_SECRET_VALUE_SHAPE_RE = re.compile(
+    r"\b(?=[A-Za-z0-9_-]{16,}\b)(?:"
+    r"[A-Za-z0-9_-]*(?:secret|token|passwd|password|apikey|api-key|access-token|credential)[A-Za-z0-9_-]*"
+    r"|[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*"
+    r")\b",
+    re.IGNORECASE,
+)
+DEBUG_HTTP_URL_RE = re.compile(r"https?://[^\s`]+", re.IGNORECASE)
+DEBUG_FILE_URL_RE = re.compile(r"file://[^\s`]+", re.IGNORECASE)
+DEBUG_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s`]+/)+[^\s`]+")
+DEBUG_LOCAL_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])/(?:Users|home|private|tmp|var)/(?:[^\s`]+/)*[^\s`]+"
+)
+DEBUG_HOME_PATH_RE = re.compile(r"~/(?:[^\s`]+/)*[^\s`]+")
+DEBUG_HOME_BACKSLASH_PATH_RE = re.compile(r"~\\(?:[^\s`\\]+\\)*[^\s`\\]+")
+DEBUG_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/](?:[^\s`\\/]+[\\/])*[^\s`\\/]+")
+DEBUG_URL_FRAGMENT_TOKEN_RE = re.compile(r"\b[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[^\s`]+")
+DEBUG_TLD_FRAGMENT_RE = re.compile(r"\b(?:com|net|org|io|dev|app|ai|co)/[^\s`]+")
+PROBLEM_HINT_TERMS = {
+    "problem",
+    "problems",
+    "question",
+    "questions",
+    "solution",
+    "solutions",
+    "문제",
+    "풀이",
+}
 DOCUMENT_LIKE_PATH_RE = re.compile(
     r"(^|[/:])(readme(\.|/|$)|docs?/|documentation/)|\.(md|mdx|markdown|rst|txt)(\s|$)",
     re.IGNORECASE,
@@ -20,6 +83,8 @@ DOCUMENT_LIKE_PATH_RE = re.compile(
 
 class CitationAnswerService:
     """Ground answers in returned context and emit explicit citations."""
+
+    _METADATA_GROUNDING_VECTOR_FLOOR = 0.1
 
     def __init__(self, context_search, min_score: float = 0.35, min_results: int = 1):
         self.context_search = context_search
@@ -31,91 +96,131 @@ class CitationAnswerService:
         question: str,
         filters: dict | None = None,
         top_k: int = 5,
+        *,
+        include_debug: bool = False,
     ) -> dict:
         search_result = await self.context_search.search_context(question, filters=filters, top_k=top_k)
         results = [self._as_result(item) for item in search_result.get("results", [])]
         search_debug = search_result.get("debug", {})
-        query_term_groups = self._effective_query_term_groups(question, search_debug)
+        grounding_state = search_result.get("_grounding", {})
+        query_term_groups = self._effective_query_term_groups(question, grounding_state, search_debug)
+        required_term_groups = self._required_query_term_groups(question, grounding_state, search_debug)
+        preserve_original_constraints = self._should_preserve_original_constraints(
+            grounding_state=grounding_state,
+            search_debug=search_debug,
+        )
+        display_term_groups = self._display_query_term_groups(
+            query_term_groups,
+            search_debug=search_debug,
+        )
         query_terms = {term for group in query_term_groups for term in group}
         relaxed_match = bool(search_debug.get("rewritten_queries"))
         evidence = [
             item
             for item in results
-            if item.score >= self.min_score
+            if self._grounding_score(item) >= self.min_score
             and self._is_relevant_to_query(
                 item,
                 query_terms,
                 query_term_groups,
+                required_term_groups=required_term_groups,
+                preserve_original_constraints=preserve_original_constraints,
                 relaxed_match=relaxed_match,
             )
         ]
         citations = [
             {
                 "chunk_id": item.chunk_id,
-                "title": item.title,
-                "url": item.url,
-                "path": item.path,
+                "title": self._redact_public_answer_text(item.title),
+                "url": self._safe_public_location(item.url),
+                "path": self._safe_public_location(item.path),
                 "line_start": item.line_start,
                 "line_end": item.line_end,
                 "version_id": item.version_id,
             }
             for item in evidence
         ]
-        debug_payload = self._build_debug_payload(
-            question,
-            results,
-            evidence,
-            query_term_groups,
-            retrieval_queries=search_debug.get("retrieval_queries"),
-            rewritten_queries=search_debug.get("rewritten_queries"),
+        debug_payload = (
+            self._build_debug_payload(
+                question,
+                results,
+                evidence,
+                display_term_groups,
+                retrieval_queries=search_debug.get("retrieval_queries"),
+                rewritten_queries=search_debug.get("rewritten_queries"),
+            )
+            if include_debug
+            else None
         )
 
         if len(evidence) < self.min_results:
-            return {
+            payload = {
                 "question": question,
                 "answer": "Insufficient evidence in indexed context to answer this question.",
-                "answer_mode": "contextwiki_debug",
                 "evidence_status": "insufficient",
                 "citations": [],
                 "used_chunks": [],
-                "debug": debug_payload,
-                "debug_markdown": self._render_debug_markdown(
-                    question,
-                    query_term_groups,
-                    results,
-                    evidence,
-                    "insufficient",
-                    retrieval_queries=search_debug.get("retrieval_queries"),
-                    rewritten_queries=search_debug.get("rewritten_queries"),
-                ),
             }
+            if include_debug:
+                payload.update(
+                    {
+                        "answer_mode": "contextwiki_debug",
+                        "debug": debug_payload,
+                        "debug_markdown": self._render_debug_markdown(
+                            question,
+                            display_term_groups,
+                            results,
+                            evidence,
+                            "insufficient",
+                            retrieval_queries=search_debug.get("retrieval_queries"),
+                            rewritten_queries=search_debug.get("rewritten_queries"),
+                        ),
+                    }
+                )
+            return payload
 
         answer = self._render_structured_answer(question, evidence)
 
-        return {
+        payload = {
             "question": question,
             "answer": answer,
-            "answer_mode": "contextwiki_debug",
             "evidence_status": "grounded",
             "citations": citations,
             "used_chunks": [item.chunk_id for item in evidence],
-            "debug": debug_payload,
-            "debug_markdown": self._render_debug_markdown(
-                question,
-                query_term_groups,
-                results,
-                evidence,
-                "grounded",
-                retrieval_queries=search_debug.get("retrieval_queries"),
-                rewritten_queries=search_debug.get("rewritten_queries"),
-            ),
         }
+        if include_debug:
+            payload.update(
+                {
+                    "answer_mode": "contextwiki_debug",
+                    "debug": debug_payload,
+                    "debug_markdown": self._render_debug_markdown(
+                        question,
+                        display_term_groups,
+                        results,
+                        evidence,
+                        "grounded",
+                        retrieval_queries=search_debug.get("retrieval_queries"),
+                        rewritten_queries=search_debug.get("rewritten_queries"),
+                    ),
+                }
+            )
+        return payload
 
     @staticmethod
     def _as_result(item) -> ContextSearchResult:
         if isinstance(item, ContextSearchResult):
             return item
         return ContextSearchResult(**item)
+
+    @staticmethod
+    def _grounding_score(item: ContextSearchResult) -> float:
+        vector_score = float(getattr(item, "vector_score", 0.0) or 0.0)
+        if (
+            int(getattr(item, "metadata_priority", 0) or 0) > 0
+            and vector_score >= CitationAnswerService._METADATA_GROUNDING_VECTOR_FLOOR
+        ):
+            return float(item.score or 0.0)
+        return vector_score if vector_score > 0 else float(item.score or 0.0)
 
     @classmethod
     def _query_terms(cls, question: str) -> set[str]:
@@ -129,12 +234,66 @@ class CitationAnswerService:
     def _effective_query_term_groups(
         cls,
         question: str,
+        grounding_state: dict | None = None,
         search_debug: dict | None = None,
     ) -> list[set[str]]:
-        effective = (search_debug or {}).get("effective_term_groups") or []
+        effective = (
+            (grounding_state or {}).get("effective_term_groups")
+            or (search_debug or {}).get("effective_term_groups")
+            or []
+        )
         if effective:
             return [set(group) for group in effective]
         return cls._query_term_groups(question)
+
+    @classmethod
+    def _required_query_term_groups(
+        cls,
+        question: str,
+        grounding_state: dict | None = None,
+        search_debug: dict | None = None,
+    ) -> list[set[str]]:
+        original = (
+            (grounding_state or {}).get("original_term_groups")
+            or (search_debug or {}).get("original_term_groups")
+            or []
+        )
+        if original:
+            return [set(group) for group in original]
+        effective = (
+            (grounding_state or {}).get("effective_term_groups")
+            or (search_debug or {}).get("effective_term_groups")
+            or []
+        )
+        if effective:
+            return [set(group) for group in effective]
+        return cls._query_term_groups(question)
+
+    @classmethod
+    def _display_query_term_groups(
+        cls,
+        query_term_groups: list[set[str]],
+        *,
+        search_debug: dict | None = None,
+    ) -> list[set[str]]:
+        display_groups = (search_debug or {}).get("effective_term_groups") or []
+        if display_groups:
+            return [set(group) for group in display_groups]
+        return query_term_groups
+
+    @classmethod
+    def _should_preserve_original_constraints(
+        cls,
+        *,
+        grounding_state: dict | None = None,
+        search_debug: dict | None = None,
+    ) -> bool:
+        original_groups = cls._required_query_term_groups(
+            "",
+            grounding_state=grounding_state,
+            search_debug=search_debug,
+        )
+        return any(group.intersection(STRONG_ANCHOR_TERMS) for group in original_groups)
 
     @classmethod
     def _append_query_term_group(cls, raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]):
@@ -149,6 +308,8 @@ class CitationAnswerService:
         item: ContextSearchResult,
         query_terms: set[str],
         query_term_groups: list[set[str]] | None = None,
+        required_term_groups: list[set[str]] | None = None,
+        preserve_original_constraints: bool = False,
         relaxed_match: bool = False,
     ) -> bool:
         if not query_terms:
@@ -174,6 +335,7 @@ class CitationAnswerService:
         is_github = item.source_id == "source_github" or item.source_type == "github"
         is_document_like = not is_github or bool(DOCUMENT_LIKE_PATH_RE.search(metadata_haystack))
         groups = query_term_groups or [{term} for term in query_terms]
+        required_groups_for_match = required_term_groups or groups
         matched_groups = [
             term_group
             for term_group in groups
@@ -190,31 +352,53 @@ class CitationAnswerService:
                 )
             )
         ]
-        strong_anchors = query_terms.intersection(STRONG_ANCHOR_TERMS)
-        if strong_anchors:
+        strong_anchor_terms = {
+            term
+            for group in required_groups_for_match
+            for term in group
+            if term in STRONG_ANCHOR_TERMS
+        }
+        strong_anchors = strong_anchor_terms or query_terms.intersection(STRONG_ANCHOR_TERMS)
+        if strong_anchors and (preserve_original_constraints or not relaxed_match):
             anchor_matched = any(term in metadata_haystack for term in strong_anchors)
             doc_intent_groups = [
                 term_group
-                for term_group in groups
+                for term_group in required_groups_for_match
                 if term_group.intersection(DOCUMENT_INTENT_TERMS)
             ]
             topical_groups = [
                 term_group
-                for term_group in groups
+                for term_group in required_groups_for_match
                 if not term_group.intersection(STRONG_ANCHOR_TERMS)
                 and not term_group.intersection(DOCUMENT_INTENT_TERMS)
                 and not term_group.intersection(BROAD_TOPIC_TERMS)
+            ]
+            broad_topical_groups = [
+                term_group
+                for term_group in required_groups_for_match
+                if not term_group.intersection(STRONG_ANCHOR_TERMS)
+                and not term_group.intersection(DOCUMENT_INTENT_TERMS)
+                and term_group.intersection(PROBLEM_HINT_TERMS)
             ]
             return (
                 anchor_matched
                 and all(term_group in matched_groups for term_group in doc_intent_groups)
                 and all(term_group in matched_groups for term_group in topical_groups)
+                and (
+                    not broad_topical_groups
+                    or any(term_group in matched_groups for term_group in broad_topical_groups)
+                )
             )
         required_groups = [
             term_group
-            for term_group in groups
+            for term_group in required_groups_for_match
             if not term_group.intersection(BROAD_TOPIC_TERMS)
-        ] or groups
+            and not (
+                relaxed_match
+                and not preserve_original_constraints
+                and term_group.intersection(STRONG_ANCHOR_TERMS)
+            )
+        ] or required_groups_for_match
         matched_required_groups = [
             term_group for term_group in required_groups if term_group in matched_groups
         ]
@@ -223,11 +407,8 @@ class CitationAnswerService:
             if len(required_groups) <= 3
             else math.ceil(len(required_groups) / 2)
         )
-        if relaxed_match and len(required_groups) >= 3:
-            required_matches = max(2, math.ceil(len(required_groups) / 2))
-        if relaxed_match and len(groups) >= 3:
-            relaxed_required_matches = max(2, math.ceil(len(groups) / 2))
-            return len(matched_groups) >= relaxed_required_matches
+        if relaxed_match and required_groups:
+            required_matches = max(1, math.ceil(len(required_groups) / 2))
         return len(matched_required_groups) >= required_matches
 
     @staticmethod
@@ -238,17 +419,19 @@ class CitationAnswerService:
         lines = [
             "## Summary",
             "",
-            f"- Indexed evidence matched this request for `{question}`.",
+            f"- Indexed evidence matched this request for `{CitationAnswerService._redact_public_answer_text(question)}`.",
             f"- Grounded chunks used: {len(evidence)}.",
             "",
             "## Best Matches",
             "",
         ]
         for index, item in enumerate(evidence[:3], 1):
-            location = item.path or item.url or item.document_id or "unknown location"
+            location = CitationAnswerService._safe_debug_location(
+                item.path or item.url or item.document_id or "unknown location"
+            )
             lines.append(
-                f"- [C{index}] **{item.title or item.document_id or item.chunk_id}** "
-                f"(`{location}`): {CitationAnswerService._snippet(item)}"
+                f"- [C{index}] **{CitationAnswerService._redact_public_answer_text(item.title or item.document_id or item.chunk_id)}** "
+                f"(`{location}`): {CitationAnswerService._redact_public_answer_text(CitationAnswerService._snippet(item))}"
             )
         if len(evidence) > 3:
             lines.extend(
@@ -281,10 +464,16 @@ class CitationAnswerService:
     ) -> dict:
         variants = retrieval_queries or retrieval_query_variants(question, query_term_groups)
         return {
-            "question": question,
-            "retrieval_queries": variants,
-            "rewritten_queries": rewritten_queries or [],
-            "normalized_term_groups": [sorted(group) for group in query_term_groups],
+            "question": cls._redact_debug_query_text(question),
+            "retrieval_queries": [cls._redact_debug_query_text(variant) for variant in variants],
+            "rewritten_queries": [
+                cls._redact_debug_query_text(variant)
+                for variant in (rewritten_queries or [])
+            ],
+            "normalized_term_groups": [
+                [cls._redact_debug_text(term) for term in sorted(group)]
+                for group in query_term_groups
+            ],
             "retrieved_count": len(results),
             "grounded_count": len(evidence),
             "selected_chunks": [
@@ -304,15 +493,18 @@ class CitationAnswerService:
         item: ContextSearchResult,
         query_term_groups: list[set[str]],
     ) -> dict:
+        grounding_score = cls._grounding_score(item)
+        search_score = float(item.score or 0.0)
         return {
             "rank": rank,
             "chunk_id": item.chunk_id,
-            "score": round(float(item.score or 0.0), 4),
-            "title": item.title,
-            "path": item.path,
-            "url": item.url,
+            "score": round(grounding_score, 4),
+            "search_score": round(search_score, 4),
+            "title": cls._redact_debug_text(item.title),
+            "path": cls._safe_debug_location(item.path),
+            "url": cls._safe_debug_location(item.url),
             "matched_terms": cls._matched_terms(item, query_term_groups),
-            "preview": cls._snippet(item, limit=220),
+            "preview": cls._redact_debug_text(cls._snippet(item, limit=220)),
         }
 
     @classmethod
@@ -335,7 +527,7 @@ class CitationAnswerService:
         for group in query_term_groups:
             for term in sorted(group):
                 if term in haystack:
-                    matched.append(term)
+                    matched.append(cls._redact_debug_text(term))
                     break
         return matched
 
@@ -354,17 +546,19 @@ class CitationAnswerService:
         lines = [
             "## Query",
             "",
-            f"- original: `{question}`",
+            f"- original: `{cls._redact_debug_query_text(question)}`",
         ]
         retrieval_queries = retrieval_queries or retrieval_query_variants(question, query_term_groups)
         if retrieval_queries:
-            lines.append(f"- retrieval queries: `{retrieval_queries[0]}`")
+            lines.append(f"- retrieval queries: `{cls._redact_debug_query_text(retrieval_queries[0])}`")
             for variant in retrieval_queries[1:]:
-                lines.append(f"  - expanded: `{variant}`")
+                lines.append(f"  - expanded: `{cls._redact_debug_query_text(variant)}`")
         if rewritten_queries:
-            lines.append(f"- rewritten queries used: `{rewritten_queries[0]}`")
+            lines.append(
+                f"- rewritten queries used: `{cls._redact_debug_query_text(rewritten_queries[0])}`"
+            )
             for variant in rewritten_queries[1:]:
-                lines.append(f"  - rewrite: `{variant}`")
+                lines.append(f"  - rewrite: `{cls._redact_debug_query_text(variant)}`")
         lines.extend(
             [
                 f"- evidence status: `{evidence_status}`",
@@ -375,7 +569,9 @@ class CitationAnswerService:
         )
         if query_term_groups:
             for group in query_term_groups:
-                lines.append(f"- {', '.join(sorted(group))}")
+                lines.append(
+                    f"- {', '.join(cls._redact_debug_text(term) for term in sorted(group))}"
+                )
         else:
             lines.append("- none")
 
@@ -396,11 +592,12 @@ class CitationAnswerService:
                 matched = ", ".join(cls._matched_terms(item, query_term_groups)) or "none"
                 lines.extend(
                     [
-                        f"{index}. [C{index}] **{item.title or item.chunk_id}**",
-                        f"   - score: {float(item.score or 0.0):.3f}",
-                        f"   - path: `{item.path or item.url or item.document_id or 'unknown'}`",
+                        f"{index}. [C{index}] **{cls._redact_debug_text(item.title or item.chunk_id)}**",
+                        f"   - grounding score: {cls._grounding_score(item):.3f}",
+                        f"   - search score: {float(item.score or 0.0):.3f}",
+                        f"   - path: `{cls._safe_debug_location(item.path or item.url or item.document_id or 'unknown')}`",
                         f"   - matched terms: {matched}",
-                        f"   - preview: {cls._snippet(item, limit=220)}",
+                        f"   - preview: {cls._redact_debug_text(cls._snippet(item, limit=220))}",
                     ]
                 )
         else:
@@ -412,11 +609,82 @@ class CitationAnswerService:
                 matched = ", ".join(cls._matched_terms(item, query_term_groups)) or "none"
                 lines.extend(
                     [
-                        f"{index}. **{item.title or item.chunk_id}**",
-                        f"   - score: {float(item.score or 0.0):.3f}",
+                        f"{index}. **{cls._redact_debug_text(item.title or item.chunk_id)}**",
+                        f"   - grounding score: {cls._grounding_score(item):.3f}",
+                        f"   - search score: {float(item.score or 0.0):.3f}",
                         f"   - matched terms: {matched}",
                     ]
                 )
 
         lines.extend(["", "## Structured Answer", "", cls._render_structured_answer(question, evidence)])
         return "\n".join(lines)
+
+    @staticmethod
+    def _redact_secret_only(value: str) -> str:
+        text = str(value or "")
+        text = SECRET_LIKE_RE.sub("[REDACTED]", text)
+        text = PROMPT_ASSIGNMENT_SECRET_RE.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]{match.group('suffix')}",
+            text,
+        )
+        text = PROMPT_SPACE_SECRET_RE.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            text,
+        )
+        text = PROMPT_QUERY_SECRET_RE.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            text,
+        )
+        return SECRET_VALUE_SHAPE_RE.sub("[REDACTED]", text)
+
+    @staticmethod
+    def _redact_debug_text(value: str) -> str:
+        text = CitationAnswerService._redact_public_answer_text(value)
+        text = DEBUG_ABSOLUTE_PATH_RE.sub("redacted", text)
+        return DEBUG_SECRET_VALUE_SHAPE_RE.sub("[REDACTED]", text)
+
+    @staticmethod
+    def _redact_public_answer_text(value: str) -> str:
+        text = str(value or "")
+        text = DEBUG_HTTP_URL_RE.sub(
+            lambda match: CitationAnswerService._safe_debug_location(match.group(0)),
+            text,
+        )
+        text = DEBUG_FILE_URL_RE.sub("redacted", text)
+        text = DEBUG_HOME_PATH_RE.sub("redacted", text)
+        text = DEBUG_HOME_BACKSLASH_PATH_RE.sub("redacted", text)
+        text = DEBUG_WINDOWS_PATH_RE.sub("redacted", text)
+        text = DEBUG_LOCAL_ABSOLUTE_PATH_RE.sub("redacted", text)
+        text = DEBUG_URL_FRAGMENT_TOKEN_RE.sub("redacted", text)
+        text = DEBUG_TLD_FRAGMENT_RE.sub("redacted", text)
+        return CitationAnswerService._redact_secret_only(text)
+
+    @classmethod
+    def _redact_debug_query_text(cls, value: str) -> str:
+        return cls._redact_debug_text(value)
+
+    @classmethod
+    def _safe_debug_location(cls, value: str) -> str:
+        text = str(value or "")
+        parsed = urlparse(text)
+        if parsed.scheme in {"http", "https"}:
+            if parsed.username or parsed.password:
+                return "redacted"
+            suffix = " [path redacted]" if parsed.path and parsed.path != "/" else ""
+            sanitized = f"{parsed.scheme}://{parsed.netloc}{suffix}"
+            return sanitized
+        if parsed.scheme or text.startswith("/"):
+            return "redacted"
+        return cls._redact_secret_only(text)
+
+    @classmethod
+    def _safe_public_location(cls, value: str) -> str:
+        text = str(value or "")
+        parsed = urlparse(text)
+        if parsed.scheme in {"http", "https"}:
+            if parsed.username or parsed.password:
+                return "redacted"
+            return cls._redact_secret_only(text)
+        if parsed.scheme == "file" or text.startswith("/"):
+            return "redacted"
+        return cls._redact_secret_only(text)
