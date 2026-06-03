@@ -8,17 +8,13 @@ from environments.config import AppConfig, NotionConfig
 from fetching.notion import (
     NotionAPIClient,
     NotionPageProcessor,
+    NotionSearcher,
     fetch_notion_target,
     parse_notion_object_id,
 )
 
 
 pytestmark = pytest.mark.unit
-
-
-def _notion_response(status_code: int, payload: dict | None = None) -> httpx.Response:
-    request = httpx.Request("GET", "https://api.notion.com/v1/test")
-    return httpx.Response(status_code, json=payload or {}, request=request)
 
 
 def test_notion_block_fetch_can_surface_strict_full_sync_failures():
@@ -33,6 +29,11 @@ def test_notion_block_fetch_can_surface_strict_full_sync_failures():
         asyncio.run(client.fetch_block_content(object(), "block-id", strict=True))
 
     assert asyncio.run(client.fetch_block_content(object(), "block-id")) == ""
+
+
+def _notion_response(status_code: int, payload: dict | None = None) -> httpx.Response:
+    request = httpx.Request("GET", "https://api.notion.com/v1/test")
+    return httpx.Response(status_code, json=payload or {}, request=request)
 
 
 def test_notion_block_children_retries_transient_502(monkeypatch):
@@ -200,6 +201,109 @@ def test_notion_database_query_retries_transient_429(monkeypatch):
     assert len(calls) == 2
 
 
+def test_notion_retry_uses_retry_after_header_for_429(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    class RateLimitedHTTPClient:
+        async def post(self, url, **kwargs):
+            response = _notion_response(
+                429,
+                {"code": "rate_limited", "message": "slow down"},
+            )
+            response.headers["Retry-After"] = "7"
+            return response
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(APIError, match="HTTP 429"):
+        asyncio.run(client.search_pages(RateLimitedHTTPClient()))
+
+    assert slept == [7.0, 7.0]
+
+
+def test_notion_retry_caps_large_retry_after_header(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    class RateLimitedHTTPClient:
+        async def post(self, url, **kwargs):
+            response = _notion_response(
+                429,
+                {"code": "rate_limited", "message": "slow down"},
+            )
+            response.headers["Retry-After"] = "3600"
+            return response
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(APIError, match="HTTP 429"):
+        asyncio.run(client.search_pages(RateLimitedHTTPClient()))
+
+    assert slept == [10.0, 10.0]
+
+
+def test_notion_request_retries_timeout_exception(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    class FlakyHTTPClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                raise httpx.ReadTimeout("timeout", request=httpx.Request("GET", url))
+            return _notion_response(200, {"id": "page-id"})
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fake_sleep)
+
+    page = asyncio.run(client.fetch_page(FlakyHTTPClient(), "page-id"))
+
+    assert page["id"] == "page-id"
+    assert len(calls) == 2
+    assert slept == [2]
+
+
+def test_notion_searcher_routes_search_through_request_helper(monkeypatch):
+    calls = []
+
+    async def fake_request_json(self, http_client, method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return {
+            "results": [
+                {
+                    "id": "page-1",
+                    "url": "https://www.notion.so/page-1",
+                    "created_time": "2026-05-25T00:00:00Z",
+                    "last_edited_time": "2026-05-26T00:00:00Z",
+                    "properties": {"title": {"title": [{"plain_text": "Target page"}]}},
+                }
+            ]
+        }
+
+    async def fake_fetch_block_content(self, client, block_id, depth=0, strict=False):
+        return "target page content"
+
+    monkeypatch.setattr(NotionAPIClient, "_request_json", fake_request_json)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    documents = asyncio.run(NotionSearcher("secret", AppConfig()).search("target", max_results=1))
+
+    assert calls
+    assert calls[0][0] == "post"
+    assert calls[0][1].endswith("/search")
+    assert documents[0].title == "Target page"
+
+
 def test_notion_page_processor_populates_native_external_id():
     processor = NotionPageProcessor(NotionConfig(api_key="secret"))
 
@@ -352,6 +456,38 @@ def test_fetch_notion_target_falls_back_to_database_on_page_404(monkeypatch):
     ]
 
 
+def test_fetch_notion_target_preserves_page_error_when_database_fallback_also_fails(monkeypatch):
+    page_id = "01234567-89ab-cdef-0123-456789abcdef"
+
+    async def fail_fetch_page(self, client, object_id):
+        raise APIError("Notion", 404, "object_not_found | page not found")
+
+    async def fail_query_database(self, client, database_id):
+        raise APIError("Notion", 404, "object_not_found | database not found")
+
+    monkeypatch.setattr(NotionAPIClient, "fetch_page", fail_fetch_page)
+    monkeypatch.setattr(NotionAPIClient, "query_database", fail_query_database)
+
+    with pytest.raises(APIError, match="page not found"):
+        asyncio.run(fetch_notion_target("secret", AppConfig(), page_id))
+
+
+def test_fetch_notion_target_surfaces_database_error_when_fallback_fails_differently(monkeypatch):
+    page_id = "01234567-89ab-cdef-0123-456789abcdef"
+
+    async def fail_fetch_page(self, client, object_id):
+        raise APIError("Notion", 404, "object_not_found | page not found")
+
+    async def fail_query_database(self, client, database_id):
+        raise APIError("Notion", 403, "restricted_resource | not shared")
+
+    monkeypatch.setattr(NotionAPIClient, "fetch_page", fail_fetch_page)
+    monkeypatch.setattr(NotionAPIClient, "query_database", fail_query_database)
+
+    with pytest.raises(APIError, match="HTTP 403"):
+        asyncio.run(fetch_notion_target("secret", AppConfig(), page_id))
+
+
 def test_fetch_notion_target_does_not_fallback_to_database_on_non_404_page_error(monkeypatch):
     page_id = "01234567-89ab-cdef-0123-456789abcdef"
 
@@ -365,4 +501,22 @@ def test_fetch_notion_target_does_not_fallback_to_database_on_non_404_page_error
     monkeypatch.setattr(NotionAPIClient, "query_database", fail_query_database)
 
     with pytest.raises(APIError, match="HTTP 403"):
+        asyncio.run(fetch_notion_target("secret", AppConfig(), page_id))
+
+
+def test_fetch_notion_target_restores_page_error_when_database_fallback_is_not_a_database(
+    monkeypatch,
+):
+    page_id = "01234567-89ab-cdef-0123-456789abcdef"
+
+    async def fail_fetch_page(self, client, object_id):
+        raise APIError("Notion", 404, "object_not_found | page not found")
+
+    async def fail_query_database(self, client, database_id):
+        raise APIError("Notion", 400, "validation_error | object is not a database")
+
+    monkeypatch.setattr(NotionAPIClient, "fetch_page", fail_fetch_page)
+    monkeypatch.setattr(NotionAPIClient, "query_database", fail_query_database)
+
+    with pytest.raises(APIError, match="page not found"):
         asyncio.run(fetch_notion_target("secret", AppConfig(), page_id))

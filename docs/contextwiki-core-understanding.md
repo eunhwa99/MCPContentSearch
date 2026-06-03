@@ -289,7 +289,8 @@ Current Auto Wiki limits:
 The local Web Console is developer/test tooling around the MCP services. It is
 not a production UI or a full MCP-client replacement. It serves the browser app
 from `web/` through `web_console.app`, exposes local HTTP wrappers for source
-listing/sync, answering, wiki generation, fake/GitHub smoke, and target sync,
+listing/sync, answering, and target sync in the browser, and keeps wiki
+generation plus fake/GitHub smoke as script/API-only wrappers. The browser UI
 then displays citations, used chunks, downloads, and status/error payloads for
 manual inspection.
 
@@ -314,12 +315,14 @@ claims, citation coverage, `used_chunks` consistency, and obvious secret-like
 output.
 
 `evals/retrieval_quality.py` adds D1 retrieval checks for expected top chunks,
-expected sources, required chunk presence, and forbidden chunk absence.
+expected top-ranked source IDs, required chunk presence, and forbidden chunk
+absence.
 
 `scripts/run_contextwiki_eval.py` is the D1 local runner. It seeds temporary
-fixture documents into temp SQLite, executes `search_context` and
-`answer_with_citations`, and emits a JSON summary without touching user data or
-calling live providers.
+fixture documents into temp SQLite, swaps in a local fixture
+`VectorIndexRetriever` so `search_context` still exercises the normal indexer
+path, disables query rewrite, executes `answer_with_citations`, and emits a
+JSON summary without touching user data or calling live providers.
 
 Focused entry points:
 
@@ -329,7 +332,8 @@ PYTHONPATH=. python scripts/run_contextwiki_eval.py
 ```
 
 This is eval scaffolding, not full evaluation infrastructure. It does not call
-live APIs, embeddings, Chroma, SQLite, or LLM providers. LLM answer generation,
+live APIs, production embeddings, Chroma, or LLM providers. It does use
+temporary SQLite fixture state. LLM answer generation,
 LLM-as-judge grading, retrieval tuning dashboards, and external trace storage
 remain future work.
 
@@ -875,12 +879,16 @@ Its evidence relevance gate checks the returned chunk text and preview plus
 GitHub-friendly metadata fields such as title, document id, URL, and path. This
 keeps repository-name questions grounded when the repository name lives in the
 citation metadata rather than in the chunk body.
-When evidence is sufficient, the answer payload now returns:
+When evidence is sufficient, the core `answer_with_citations` MCP/service
+payload now returns:
 
 - a concise structured summary instead of raw chunk concatenation
 - stable citation metadata
-- `debug` + `debug_markdown` fields that explain normalized terms, retrieval
-  query variants, selected chunks, and grounded chunk counts
+
+The local Web Console opts into extra `debug` + `debug_markdown` fields that
+explain normalized terms, retrieval query variants, selected chunks, and
+grounded chunk counts. Those debug fields are console-specific rather than part
+of the default MCP `answer_with_citations` contract.
 
 The local Web Console uses that structured debug markdown for its default
 indexed-evidence debug path so mixed retrieval results are easier to inspect.
@@ -1137,14 +1145,14 @@ Still not implemented:
 - rename/move detection
 - function/class-aware DocumentChunker code parsing
 - worker queue
-- retry/backoff
+- broader retry/backoff hardening for additional live connector edge cases
 - idempotency hardening beyond current source sync guards
 - ACL-aware retrieval
 - tenant/source permission model
 - full audit logs
 - full eval-driven retrieval tuning
-- reranking
-- query rewriting
+- broader reranking tuning
+- broader query rewriting
 - full citation verification
 - LLM answer generation
 - durable job ids/retry history for legacy background indexing
@@ -1226,7 +1234,7 @@ Good next topics:
 
 5. production ingestion hardening
    - worker queue
-   - retry/backoff
+   - broader retry/backoff hardening
    - idempotency
    - stale document cleanup observability
 
@@ -1238,7 +1246,7 @@ Good next topics:
      term groups, including focused topic-plus-intent queries and topic-only
      queries for natural-language document requests, before falling back to
      SQLite metadata/body lookup
-   - reranking
+   - broader reranking tuning
    - broader query rewriting
    - retrieval hit rate
    - MRR

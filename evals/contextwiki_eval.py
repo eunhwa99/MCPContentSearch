@@ -13,12 +13,100 @@ from evals.retrieval_quality import (
 )
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
+from search.query_terms import query_term_groups
 from storage.metadata_store import MetadataStore
 
 
 FIXTURE_DOCUMENTS_PATH = Path("evals/contextwiki_fixture_documents.json")
 RETRIEVAL_CASES_PATH = Path("evals/retrieval_quality_cases.json")
 ANSWER_CASES_PATH = Path("evals/contextwiki_answer_quality_cases.json")
+
+
+class DisabledQueryRewriter:
+    async def rewrite_query(self, query: str, term_groups: list[set[str]]) -> list[str]:
+        return []
+
+
+class FixtureIndexer:
+    def __init__(self, store: MetadataStore):
+        self.store = store
+
+    def get_or_create_index(self) -> MetadataStore:
+        return self.store
+
+
+class FixtureNode:
+    def __init__(self, chunk: ChunkModel, score: float):
+        self.metadata = {
+            "chunk_id": chunk.chunk_id,
+            "document_id": chunk.document_id,
+            "source_id": chunk.source_id,
+            "contextwiki_managed": "true",
+        }
+        self.score = score
+
+
+class FixtureVectorIndexRetriever:
+    def __init__(
+        self,
+        *,
+        index: MetadataStore,
+        similarity_top_k: int,
+        vector_store_query_mode: str | None = None,
+        filters=None,
+    ):
+        self.store = index
+        self.similarity_top_k = similarity_top_k
+        self.filters = filters
+
+    def retrieve(self, query: str) -> list[FixtureNode]:
+        required_source_ids = _source_ids_from_filters(self.filters)
+        term_groups = query_term_groups(query)
+        ranked: list[tuple[float, ChunkModel]] = []
+        for chunk in self.store.list_chunks():
+            if required_source_ids and chunk.source_id not in required_source_ids:
+                continue
+            haystack = " ".join(
+                [
+                    chunk.title or "",
+                    chunk.text or "",
+                    chunk.path or "",
+                    chunk.url or "",
+                ]
+            ).lower()
+            overlap = sum(
+                1 for group in term_groups if any(term in haystack for term in group)
+            )
+            if overlap <= 0:
+                continue
+            ranked.append((overlap / max(len(term_groups), 1), chunk))
+        ranked.sort(key=lambda item: (-item[0], item[1].chunk_id))
+        return [
+            FixtureNode(chunk, score)
+            for score, chunk in ranked[: self.similarity_top_k]
+        ]
+
+
+FIXTURE_VECTOR_RETRIEVER_CLASS = FixtureVectorIndexRetriever
+
+
+def _source_ids_from_filters(filters) -> set[str]:
+    if filters is None:
+        return set()
+    try:
+        filter_list = getattr(filters, "filters", None) or []
+        source_ids = set()
+        for single in filter_list:
+            if getattr(single, "key", "") != "source_id":
+                continue
+            value = getattr(single, "value", None)
+            if isinstance(value, (list, tuple, set)):
+                source_ids.update(str(item) for item in value if item)
+            elif value:
+                source_ids.add(str(value))
+        return source_ids
+    except Exception:
+        return set()
 
 
 def run_contextwiki_eval(
@@ -34,11 +122,12 @@ def run_contextwiki_eval(
     with tempfile.TemporaryDirectory(prefix="contextwiki-eval-") as temp_dir:
         store = MetadataStore(Path(temp_dir) / "contextwiki.sqlite3")
         _seed_fixture_documents(store, documents)
-        retriever_documents = _list_search_documents(store)
+
         search_service = ContextSearchService(
             store,
-            retriever=retriever_documents,
-            query_rewriter=None,
+            indexer=FixtureIndexer(store),
+            query_rewriter=DisabledQueryRewriter(),
+            vector_retriever_cls=FIXTURE_VECTOR_RETRIEVER_CLASS,
         )
         answer_service = CitationAnswerService(search_service)
 
@@ -115,10 +204,3 @@ def _seed_fixture_documents(store: MetadataStore, documents: list[dict]) -> None
                 )
             ],
         )
-
-
-def _list_search_documents(store: MetadataStore) -> list[DocumentModel]:
-    return [
-        chunk.to_document_model(platform="Test")
-        for chunk in store.list_chunks()
-    ]

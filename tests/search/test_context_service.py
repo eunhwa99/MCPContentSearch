@@ -116,6 +116,88 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
     assert any("ec2" in query.lower() for query in retrieval_queries)
 
 
+def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_already_confident(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/ImageGallery:docs/usage.md",
+        "imagegallery-doc-chunk",
+        "source_github",
+        "Usage guide",
+        "Generic component notes without the repo name in body.",
+        path="docs/ImageGallery/usage.md",
+        url="https://github.com/eunhwa99/ImageGallery/blob/main/docs/usage.md",
+    )
+
+    class MetadataOnlyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", MetadataOnlyVectorRetriever)
+
+    rewriter = FakeQueryRewriter(["should-not-run"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("ImageGallery docs", top_k=1)
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "imagegallery-doc-chunk"
+    assert rewriter.calls == []
+    assert result["debug"]["rewritten_queries"] == []
+
+
+def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("ec2-chunk", 0.22 if "virtual machine" in query.lower() else 0.91)
+            node.metadata["document_id"] = "doc-ec2"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    rewriter = FakeQueryRewriter(["aws ec2 setup"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("aws virtual machine startup", top_k=1)
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "ec2-chunk"
+    assert result["results"][0].score >= 0.91
+
+
 def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_web", SourceType.WEB, "Web")
@@ -188,6 +270,398 @@ def test_keyword_search_rerank_prefers_matching_source_type_intent(tmp_path):
         "notion-sync-chunk",
         "github-sync-chunk",
     ]
+
+
+def test_keyword_search_docs_term_does_not_bias_toward_web_source(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_web", SourceType.WEB, "Web")
+    seed_document_chunks(
+        store,
+        "doc-notion-guide",
+        "notion-guide-chunk",
+        "source_notion",
+        "AWS deployment guide",
+        "Amazon Web Services deployment checklist for environment setup and launch steps.",
+        path="AWS deployment guide",
+        url="https://www.notion.so/aws-deployment-guide",
+    )
+    seed_document_chunks(
+        store,
+        "doc-web-guide",
+        "web-guide-chunk",
+        "source_web",
+        "General docs index",
+        "Documentation hub with broad navigation links.",
+        path="docs/index.md",
+        url="https://docs.example.com/index",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "aws docs",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "notion-guide-chunk",
+        "web-guide-chunk",
+    ]
+
+
+def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="team-knowledge",
+            source_type=SourceType.NOTION,
+            name="Team Knowledge",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="arbitrary-web-source",
+            source_type=SourceType.WEB,
+            name="Arbitrary Web",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    seed_document_chunks(
+        store,
+        "doc-notion-sync",
+        "notion-sync-arbitrary-id",
+        "team-knowledge",
+        "Notion sync notes",
+        "Notion sync troubleshooting and checklist.",
+        url="https://www.notion.so/notion-sync",
+    )
+    seed_document_chunks(
+        store,
+        "doc-web-sync",
+        "web-sync-arbitrary-id",
+        "arbitrary-web-source",
+        "Generic sync notes",
+        "Notion sync troubleshooting and checklist.",
+        url="https://docs.example.com/notion-sync",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "notion sync notes",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "notion-sync-arbitrary-id",
+        "web-sync-arbitrary-id",
+    ]
+
+
+def test_keyword_search_does_not_infer_web_source_from_generic_site_term(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_source(store, "source_web", SourceType.WEB, "Web")
+    seed_document_chunks(
+        store,
+        "doc-github-sre",
+        "github-sre-chunk",
+        "source_github",
+        "Site reliability guide",
+        "Site reliability guide for service ownership and incident response.",
+        path="docs/site-reliability-guide.md",
+    )
+    seed_document_chunks(
+        store,
+        "doc-web-runtime",
+        "web-runtime-chunk",
+        "source_web",
+        "Runtime notes",
+        "This note mentions site reliability in passing.",
+        path="notes/runtime.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "site reliability guide",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "github-sre-chunk",
+        "web-runtime-chunk",
+    ]
+
+
+def test_query_source_type_terms_ignore_aws_web_topic_term():
+    term_groups = ContextSearchService._query_term_groups("amazon web services deployment")
+
+    assert "web" not in ContextSearchService._query_source_type_terms(term_groups)
+
+
+def test_query_source_type_terms_ignore_korean_aws_web_topic_term():
+    term_groups = ContextSearchService._query_term_groups("아마존 웹 서비스 배포")
+
+    assert "web" not in ContextSearchService._query_source_type_terms(term_groups)
+
+
+def test_query_term_groups_do_not_split_compact_korean_aws_phrase_into_web_group():
+    term_groups = ContextSearchService._query_term_groups("아마존웹서비스 docs")
+
+    assert {"aws", "amazon web services", "아마존웹서비스"} in term_groups
+    assert {"web", "website"} not in term_groups
+
+
+def test_query_source_type_terms_support_explicit_web_queries():
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("web auth guide")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("aws web auth guide")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("docs auth guide")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("documentation auth guide")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("웹 인증 가이드")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("site auth guide")
+    )
+    assert "web" in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("official site docs")
+    )
+
+
+def test_query_source_type_terms_do_not_infer_web_when_other_source_is_explicit():
+    assert "web" not in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("notion docs")
+    )
+    assert "web" not in ContextSearchService._query_source_type_terms(
+        ContextSearchService._query_term_groups("tistory documentation")
+    )
+
+
+def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="notion-mirror",
+            source_type=SourceType.WEB,
+            name="Notion Mirror",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="team-notes",
+            source_type=SourceType.NOTION,
+            name="Team Notes",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    seed_document_chunks(
+        store,
+        "doc-web-mirror",
+        "web-mirror-chunk",
+        "notion-mirror",
+        "Mirror sync notes",
+        "Notion sync troubleshooting and checklist.",
+        url="https://docs.example.com/notion-sync",
+    )
+    seed_document_chunks(
+        store,
+        "doc-real-notion",
+        "real-notion-chunk",
+        "team-notes",
+        "Notion sync notes",
+        "Notion sync troubleshooting and checklist.",
+        url="https://www.notion.so/team-sync",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "notion sync notes",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"][:2]] == [
+        "real-notion-chunk",
+        "web-mirror-chunk",
+    ]
+
+
+def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("ec2-chunk", 0.91)
+            node.metadata["document_id"] = "doc-ec2"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "https://user:pass@example.com/path /Users/eunhwa/private/doc.md",
+            top_k=1,
+        )
+    )
+
+    assert result["debug"]["retrieval_queries"]
+    assert "/Users/eunhwa" not in str(result["debug"])
+    assert "user:pass@" not in str(result["debug"])
+    assert "~/private" not in str(result["debug"])
+    assert "C:/Users" not in str(result["debug"])
+
+
+def test_search_context_debug_retains_raw_term_groups_but_redacts_display_copy(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-debug",
+        "debug-chunk",
+        "source_target",
+        "ContextWiki debug guide",
+        "ContextWiki debug guide content.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "context-wiki-debug guide",
+            top_k=1,
+        )
+    )
+
+    assert ["context-wiki-debug"] in result["_grounding"]["effective_term_groups"]
+    assert ["[REDACTED]"] in result["debug"]["effective_term_groups"]
+
+
+def test_keyword_search_treats_custom_github_source_ids_as_github_documents(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "github-team-docs", SourceType.GITHUB, "GitHub Team Docs")
+    seed_document_chunks(
+        store,
+        "doc-readme",
+        "readme-chunk",
+        "github-team-docs",
+        "Neetcode graph docs",
+        "Graph study guide and linked docs.",
+        path="docs/neetcode-graph.md",
+    )
+    seed_document_chunks(
+        store,
+        "doc-code",
+        "code-chunk",
+        "github-team-docs",
+        "Graph implementation",
+        "Graph code implementation details.",
+        path="src/graph.py",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "neetcode graph docs",
+            top_k=2,
+        )
+    )
+
+    assert [item.chunk_id for item in result["results"]] == ["readme-chunk"]
+
+
+def test_search_context_debug_redacts_http_paths_not_only_query_strings(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-guide",
+        "guide-chunk",
+        "source_target",
+        "Guide",
+        "Guide content.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("guide-chunk", 0.91)
+            node.metadata["document_id"] = "doc-guide"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "https://example.com/private/token/opaque-value?signature=secret-value",
+            top_k=1,
+        )
+    )
+
+    debug_text = str(result["debug"])
+    assert "opaque-value" not in debug_text
+    assert "/private/token" not in debug_text
+
+
+def test_search_context_debug_redacts_secret_like_tokens(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("ec2-chunk", 0.91)
+            node.metadata["document_id"] = "doc-ec2"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "token=ghp_example123 sk-proj-abcdefghijklmnopqrstuvwxyz",
+            top_k=1,
+        )
+    )
+
+    debug_text = str(result["debug"])
+    assert "ghp_example123" not in debug_text
+    assert "sk-proj-" not in debug_text
+    assert "[REDACTED]" in debug_text
 
 
 def test_vector_search_pushes_source_filter_into_retriever(monkeypatch, tmp_path):
@@ -3910,6 +4384,60 @@ def test_plain_long_token_metadata_fallback_matches_chunk_body_when_vector_empty
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "notion-troubleshooting-chunk"
+
+
+def test_search_context_preserves_raw_vector_score_when_metadata_fallback_promotes_chunk(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "doc-image-gallery",
+        "image-gallery-chunk",
+        "source_github",
+        "ImageGallery guide",
+        "ImageGallery component docs and usage notes.",
+        path="docs/image-gallery.md",
+    )
+    seeded_chunk = store.get_chunk("image-gallery-chunk")
+    assert seeded_chunk is not None
+
+    class LowVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("image-gallery-chunk", 0.2)
+            node.metadata["document_id"] = "doc-image-gallery"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    def fake_matching_terms(
+        terms,
+        source_ids=None,
+        limit=200,
+        require_document_like=False,
+        include_text=False,
+        require_all_terms=False,
+        metadata_only_terms=None,
+    ):
+        return [seeded_chunk]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", LowVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks_matching_metadata_terms", fake_matching_terms)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "ImageGallery docs",
+            top_k=1,
+        )
+    )
+
+    assert result["results"][0].chunk_id == "image-gallery-chunk"
+    assert result["results"][0].vector_score == pytest.approx(0.2)
+    assert result["results"][0].score > result["results"][0].vector_score
 
 
 def test_korean_only_non_github_document_query_uses_bounded_original_terms(

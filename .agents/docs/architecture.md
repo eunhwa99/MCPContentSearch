@@ -38,13 +38,13 @@ search_content
   -> DynamicSearchService
   -> SearchService and local Chroma/LlamaIndex search
   -> optional WebSearcher fallback
-  -> NotionSearcher and TistorySearcher
+  -> NotionSearcher, TistorySearcher, and optional GitHubSearcher
   -> background ContentIndexer task
   -> ChromaDB persistent collection
 
-search_notion / search_tistory
+search_notion / search_tistory / search_github
   -> WebSearcher
-  -> NotionSearcher or TistorySearcher
+  -> NotionSearcher, TistorySearcher, or GitHubSearcher
   -> background ContentIndexer task
   -> ChromaDB persistent collection
 
@@ -125,6 +125,7 @@ Legacy tools:
 - `search_content(query: str, n_results: int = 10) -> str`
 - `search_notion(query: str, n_results: int = 10) -> str`
 - `search_tistory(query: str, n_results: int = 10) -> str`
+- `search_github(query: str, n_results: int = 10) -> str`
 - `trigger_index_all_content() -> str`
 - `get_index_status() -> dict`
 

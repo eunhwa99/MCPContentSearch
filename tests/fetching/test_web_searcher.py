@@ -82,3 +82,32 @@ def test_web_searcher_routes_github_platform(monkeypatch):
     assert len(results) == 1
     assert results[0].title == "GitHub doc"
     assert captured == {"query": "readme", "max_results": 5}
+
+
+def test_web_searcher_default_platforms_include_github_when_configured(monkeypatch):
+    captured = {"github_calls": 0}
+
+    async def fake_notion_search(self, query, max_results=10):
+        return []
+
+    async def fake_tistory_search(self, query, max_results=10):
+        return []
+
+    async def fake_github_search(self, query, max_results=10):
+        captured["github_calls"] += 1
+        return []
+
+    monkeypatch.setattr("fetching.notion.NotionSearcher.search", fake_notion_search)
+    monkeypatch.setattr("fetching.tistory.TistorySearcher.search", fake_tistory_search)
+    monkeypatch.setattr("fetching.github.GitHubSearcher.search", fake_github_search)
+
+    searcher = WebSearcher(
+        notion_api_key="token",
+        tistory_blog_name="blog",
+        config=AppConfig(),
+        github_repositories=("eunhwa99/MCPContentSearch@main",),
+    )
+
+    asyncio.run(searcher.search("readme", 5))
+
+    assert captured["github_calls"] == 1

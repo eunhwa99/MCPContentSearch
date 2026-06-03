@@ -96,6 +96,7 @@ QUERY_TERM_EXPANSIONS = {
     "예제": {"example", "examples", "sample", "samples"},
     "풀이": {"solution", "solutions"},
     "소스": {"source"},
+    "웹": {"web", "website"},
     "알고리즘": {"algorithm", "algorithms"},
     "인덱싱": {"indexing", "index"},
     "프로젝트": {"project"},
@@ -126,12 +127,16 @@ def split_attached_latin_korean_token(raw_token: str) -> list[str]:
 def append_query_term_group(raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]) -> None:
     candidates = {raw_term}
     matched_terms = []
-    for term, expansions in QUERY_TERM_EXPANSIONS.items():
-        if term in raw_term:
-            matched_terms.append(term)
-            candidates.update(expansions)
-            if term != raw_term:
-                candidates.add(term)
+    if raw_term in QUERY_TERM_EXPANSIONS:
+        matched_terms.append(raw_term)
+        candidates.update(QUERY_TERM_EXPANSIONS[raw_term])
+    else:
+        for term, expansions in QUERY_TERM_EXPANSIONS.items():
+            if term in raw_term:
+                matched_terms.append(term)
+                candidates.update(expansions)
+                if term != raw_term:
+                    candidates.add(term)
     if len(matched_terms) > 1:
         for term in matched_terms:
             term_candidates = {term, *QUERY_TERM_EXPANSIONS[term]}

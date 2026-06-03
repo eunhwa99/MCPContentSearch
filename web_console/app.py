@@ -42,6 +42,7 @@ from web_console.payloads import (
     safe_github_sync_payload as _safe_github_sync_payload,
     safe_github_target_for_display as _safe_github_target_for_display,
     safe_source_payload as _safe_source_payload,
+    safe_public_config_error as _safe_public_config_error,
     safe_sync_job_payload as _safe_sync_job_payload,
     safe_target_sync_payload as _safe_target_sync_payload,
     safe_url_for_display as _safe_url_for_display,
@@ -197,6 +198,8 @@ class NotionTargetSyncService:
         from indexing.ingestion_service import IngestionService
 
         object_id = parse_notion_object_id(target)
+        if not str(self.notion_api_key or "").strip():
+            raise RuntimeError("NOTION_API_KEY is required for Notion target sync")
         connector = _NotionTargetConnector(
             NotionSourceConnector(self.notion_api_key, self.config).source,
             self.notion_api_key,
@@ -348,20 +351,33 @@ class CodexCliAnswerService:
             for item in search_result.get("results", [])
         ]
         search_debug = search_result.get("debug", {})
+        grounding_state = search_result.get("_grounding", {})
         query_term_groups = CitationAnswerService._effective_query_term_groups(
             question,
+            grounding_state,
             search_debug,
+        )
+        required_term_groups = CitationAnswerService._required_query_term_groups(
+            question,
+            grounding_state,
+            search_debug,
+        )
+        preserve_original_constraints = CitationAnswerService._should_preserve_original_constraints(
+            grounding_state=grounding_state,
+            search_debug=search_debug,
         )
         query_terms = {term for group in query_term_groups for term in group}
         relaxed_match = bool(search_debug.get("rewritten_queries"))
         evidence = [
             item
             for item in results
-            if item.score >= 0.35
+            if CitationAnswerService._grounding_score(item) >= 0.35
             and CitationAnswerService._is_relevant_to_query(
                 item,
                 query_terms,
                 query_term_groups,
+                required_term_groups=required_term_groups,
+                preserve_original_constraints=preserve_original_constraints,
                 relaxed_match=relaxed_match,
             )
         ][: self.max_chunks]
@@ -729,15 +745,20 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
                 source_type,
                 await dependencies.target_sync_service.sync_target(source_type, target),
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
             _log_suppressed_error("Target sync failed")
             return {
                 "source_id": _source_id_for_target_type(source_type),
                 "target_type": source_type,
                 "status": "error",
-                "message": "Target sync failed. See server logs for details.",
+                "message": _safe_public_config_error(
+                    str(exc),
+                    fallback="Target sync failed. See server logs for details.",
+                ),
             }
 
     @app.post("/api/answer")
@@ -754,6 +775,7 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
                     question,
                     filters=filters,
                     top_k=_normalize_top_k(request.top_k, default=5),
+                    include_debug=True,
                 )
             )
         except HTTPException:

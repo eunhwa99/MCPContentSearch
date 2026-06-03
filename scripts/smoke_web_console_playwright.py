@@ -16,14 +16,24 @@ class FakeAnswerService:
     def __init__(self):
         self.calls: list[dict] = []
 
-    async def answer_with_citations(self, question, filters=None, top_k=5):
-        self.calls.append({"question": question, "filters": filters or {}, "top_k": top_k})
+    async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
+        self.calls.append(
+            {
+                "question": question,
+                "filters": filters or {},
+                "top_k": top_k,
+                "include_debug": include_debug,
+            }
+        )
         return {
             "question": question,
-            "answer": "Playwright answer [C1]",
+            "answer": "## Summary\n\n- Playwright debug summary.",
+            "answer_mode": "contextwiki_debug",
             "evidence_status": "grounded",
             "citations": [{"chunk_id": "chunk-1", "title": "README"}],
             "used_chunks": ["chunk-1"],
+            "debug_markdown": "## Query\n\n- original: `What changed in ContextWiki?`\n\n## Summary\n\n- Playwright debug summary.\n",
+            "debug": {"retrieved_count": 1, "grounded_count": 1},
         }
 
 
@@ -177,6 +187,12 @@ def _run_browser_checks(base_url: str) -> None:
         page.wait_for_function(
             "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed answer')"
         )
+        page.wait_for_function(
+            "() => document.querySelector('#answerPane')?.textContent?.includes('## Query')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#answerPane')?.textContent?.includes('Playwright debug summary.')"
+        )
 
         # Download buttons should emit files.
         with page.expect_download() as md_download:
@@ -244,6 +260,8 @@ def main() -> None:
         raise AssertionError(f"Expected source_github filter in answer call, got {call}")
     if call["top_k"] != 4:
         raise AssertionError(f"Expected top_k=4 in answer call, got {call['top_k']}")
+    if not call.get("include_debug"):
+        raise AssertionError("Expected browser answer flow to request include_debug=True")
 
     print(
         json.dumps(
@@ -253,7 +271,7 @@ def main() -> None:
                 "base_url": base_url,
                 "checks": [
                     "failure path: empty target sync validation",
-                    "filter + answer request",
+                    "filter + debug-first answer request",
                     "markdown/json download",
                     "configured source sync",
                     "target sync",

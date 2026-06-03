@@ -123,7 +123,7 @@ class ChunkModel(BaseModel):
             content=self.text,
             url=self.url,
             canonical_url=self.url,
-            platform=platform or self.source_id,
+            platform=platform or "",
             path=self.path,
             updated_at=self.updated_at,
             content_hash=self.content_hash,
@@ -144,6 +144,8 @@ class ContextSearchResult(BaseModel):
     url: str = ""
     path: str = ""
     score: float = 0.0
+    vector_score: float = 0.0
+    metadata_priority: int = 0
     preview: str = ""
     text: str = ""
     line_start: Optional[int] = None

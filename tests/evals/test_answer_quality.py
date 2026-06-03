@@ -158,3 +158,10 @@ def test_fixture_cases_load_and_suite_summarizes_results():
     assert summary["passed"]
     assert summary["total"] == 2
     assert summary["passed_count"] == 2
+
+
+def test_answer_suite_fails_when_case_list_is_empty():
+    summary = evaluate_answer_suite({}, [])
+
+    assert not summary["passed"]
+    assert summary["total"] == 0

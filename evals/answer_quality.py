@@ -122,6 +122,14 @@ def evaluate_answer_suite(
     payloads_by_case_id: dict[str, dict[str, Any]],
     cases: list[AnswerQualityCase],
 ) -> dict[str, Any]:
+    if not cases:
+        return {
+            "passed": False,
+            "total": 0,
+            "passed_count": 0,
+            "average_score": 0.0,
+            "results": [],
+        }
     results = [
         evaluate_answer_payload(payloads_by_case_id.get(case.case_id, {}), case)
         for case in cases

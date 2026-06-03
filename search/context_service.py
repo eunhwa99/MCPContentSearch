@@ -2,6 +2,7 @@ import re
 import os
 from collections.abc import Callable, Iterable
 from typing import Any
+from urllib.parse import urlparse
 
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
@@ -66,6 +67,39 @@ DOCUMENT_LIKE_PATH_RE = re.compile(
     r"(^|[/:])(readme(\.|/|$)|docs?/|documentation/)|\.(md|mdx|markdown|rst|txt)(\s|$)",
     re.IGNORECASE,
 )
+DEBUG_HTTP_URL_RE = re.compile(r"https?://[^\s`]+", re.IGNORECASE)
+DEBUG_FILE_URL_RE = re.compile(r"file://[^\s`]+", re.IGNORECASE)
+DEBUG_HOME_PATH_RE = re.compile(r"~/(?:[^\s`]+/)*[^\s`]+")
+DEBUG_HOME_BACKSLASH_PATH_RE = re.compile(r"~\\(?:[^\s`\\]+\\)*[^\s`\\]+")
+DEBUG_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/](?:[^\s`\\/]+[\\/])*[^\s`\\/]+")
+DEBUG_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s`]+/)+[^\s`]+")
+DEBUG_URL_FRAGMENT_PATH_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}/")
+DEBUG_URL_FRAGMENT_TOKEN_RE = re.compile(r"\b[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[^\s`]+")
+DEBUG_TLD_FRAGMENT_RE = re.compile(r"\b(?:com|net|org|io|dev|app|ai|co)/[^\s`]+")
+DEBUG_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
+    r"client[-_]?secret|credential|key|password|secret|session|sig|signature|token)"
+    r"\s*[:=]\s*['\"]?)(?P<secret>[^'\"\s,;}]+)(?P<suffix>['\"]?)",
+    re.IGNORECASE,
+)
+DEBUG_SECRET_QUERY_RE = re.compile(
+    r"(?P<prefix>[?&](?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
+    r"client[-_]?secret|credential|key|password|secret|session|sig|signature|token)=)"
+    r"(?P<secret>[^&#\s]+)",
+    re.IGNORECASE,
+)
+DEBUG_SECRET_LIKE_RE = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"
+    r"xox[baprs]-[A-Za-z0-9-]+|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
+    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
+    r"AIza[A-Za-z0-9_-]{20,}|"
+    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+DEBUG_SECRET_VALUE_SHAPE_RE = re.compile(
+    r"\b[A-Za-z0-9]{2,}(?:[-_][A-Za-z0-9]{2,}){2,}\b"
+)
 
 
 class ContextSearchService:
@@ -78,11 +112,13 @@ class ContextSearchService:
         config: AppConfig | None = None,
         retriever: Callable | Iterable[DocumentModel] | None = None,
         query_rewriter=None,
+        vector_retriever_cls=None,
     ):
         self.metadata_store = metadata_store
         self.indexer = indexer
         self.config = config or AppConfig()
         self.retriever = retriever
+        self.vector_retriever_cls = vector_retriever_cls or VectorIndexRetriever
         api_key = os.getenv(self.config.search_llm_api_key_env_var, "").strip()
         self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
 
@@ -114,6 +150,8 @@ class ContextSearchService:
                     url=chunk.url,
                     path=chunk.path,
                     score=candidate["score"],
+                    vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
+                    metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
                     preview=self._preview(chunk.text),
                     text=chunk.text,
                     line_start=chunk.line_start,
@@ -128,10 +166,23 @@ class ContextSearchService:
         return {
             "query": query,
             "results": results,
-            "debug": {
-                "retrieval_queries": retrieval_debug["retrieval_queries"],
-                "rewritten_queries": retrieval_debug["rewritten_queries"],
+            "_grounding": {
+                "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
                 "effective_term_groups": [sorted(group) for group in effective_term_groups],
+            },
+            "debug": {
+                "retrieval_queries": [
+                    self._redact_debug_query_text(value)
+                    for value in retrieval_debug["retrieval_queries"]
+                ],
+                "rewritten_queries": [
+                    self._redact_debug_query_text(value)
+                    for value in retrieval_debug["rewritten_queries"]
+                ],
+                "effective_term_groups": [
+                    [self._redact_debug_term(term) for term in sorted(group)]
+                    for group in effective_term_groups
+                ],
             },
         }
 
@@ -173,6 +224,7 @@ class ContextSearchService:
                 "candidates": reranked,
                 "retrieval_queries": [query],
                 "rewritten_queries": [],
+                "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
             }
 
@@ -183,6 +235,7 @@ class ContextSearchService:
                     "candidates": [],
                     "retrieval_queries": [query],
                     "rewritten_queries": [],
+                    "original_term_groups": [],
                     "effective_term_groups": [],
                 }
             candidates = self._metadata_fallback_candidates(
@@ -197,6 +250,7 @@ class ContextSearchService:
                 "candidates": reranked,
                 "retrieval_queries": [query],
                 "rewritten_queries": [],
+                "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
             }
 
@@ -215,12 +269,7 @@ class ContextSearchService:
             rewritten_queries = await self._rewrite_queries(query, term_groups)
             if rewritten_queries:
                 effective_term_groups = self._merged_term_groups(
-                    [
-                        group
-                        for group in term_groups
-                        if group.intersection(STRONG_ANCHOR_TERMS)
-                        or group.intersection(DOCUMENT_INTENT_TERMS)
-                    ],
+                    term_groups,
                     *[self._query_term_groups(rewrite) for rewrite in rewritten_queries],
                 )
                 retrieval_queries = self._dedupe_queries(
@@ -250,6 +299,7 @@ class ContextSearchService:
             "candidates": reranked,
             "retrieval_queries": retrieval_queries,
             "rewritten_queries": rewritten_queries,
+            "original_term_groups": term_groups,
             "effective_term_groups": effective_term_groups,
         }
 
@@ -265,13 +315,12 @@ class ContextSearchService:
         index = self.indexer.get_or_create_index()
         base_limit = max(top_k, top_k * self.config.search_multiplier)
         max_limit = self._max_retrieval_limit(base_limit)
-        seen = set()
+        candidate_map: dict[str, dict[str, Any]] = {}
         rejected = set()
-        candidates = []
         limit = base_limit
 
         while limit <= max_limit:
-            retriever = VectorIndexRetriever(
+            retriever = self.vector_retriever_cls(
                 index=index,
                 similarity_top_k=limit,
                 vector_store_query_mode="hybrid",
@@ -283,7 +332,7 @@ class ContextSearchService:
                 max_node_count = max(max_node_count, len(nodes))
                 for node in nodes:
                     chunk_id = node.metadata.get("chunk_id") or node.metadata.get("doc_id")
-                    if not chunk_id or chunk_id in seen:
+                    if not chunk_id:
                         continue
                     chunk = self.metadata_store.get_chunk(chunk_id)
                     if not chunk:
@@ -298,13 +347,14 @@ class ContextSearchService:
                         rejected.add(chunk_id)
                         continue
                     rejected.discard(chunk_id)
-                    seen.add(chunk_id)
-                    candidates.append(
-                        {
+                    score = float(node.score or 0.0)
+                    existing = candidate_map.get(chunk_id)
+                    if existing is None or score > float(existing.get("score", 0.0)):
+                        candidate_map[chunk_id] = {
                             "chunk_id": chunk_id,
-                            "score": float(node.score or 0.0),
+                            "score": score,
                         }
-                    )
+            candidates = list(candidate_map.values())
             if len(candidates) >= top_k:
                 break
             if max_node_count < limit:
@@ -340,7 +390,7 @@ class ContextSearchService:
             )
 
         return self._merge_ranked_candidates(
-            candidates,
+            list(candidate_map.values()),
             metadata_candidates,
             rejected,
             top_k,
@@ -423,7 +473,7 @@ class ContextSearchService:
         ) or self._document_intent_metadata_lookup_terms(term_groups)
         metadata_only_terms = None
         if self._allows_github_document_body_lookup(term_groups) and (
-            not fallback_source_ids or "source_github" in fallback_source_ids
+            not fallback_source_ids or self._source_ids_include_github(fallback_source_ids)
         ):
             identity_terms, topical_terms = self._strong_anchor_lookup_terms(term_groups)
             if identity_terms and topical_terms:
@@ -518,8 +568,8 @@ class ContextSearchService:
             )
         return MetadataFilters(filters=filters)
 
-    @staticmethod
     def _keyword_candidates(
+        self,
         query: str,
         documents: Iterable[DocumentModel],
         top_k: int,
@@ -539,7 +589,7 @@ class ContextSearchService:
             haystack = ContextSearchService._document_haystack(document)
             metadata_haystack = ContextSearchService._document_metadata_haystack(document)
             if (
-                document.source_id == "source_github"
+                self._is_github_document(document)
                 and github_anchor_groups
                 and not all(
                     any(term in metadata_haystack for term in term_group)
@@ -550,8 +600,8 @@ class ContextSearchService:
             has_document_intent = any(
                 term_group.intersection(DOCUMENT_INTENT_TERMS) for term_group in scoring_groups
             )
-            is_document_like = ContextSearchService._is_document_like(document, metadata_haystack)
-            if has_document_intent and document.source_id == "source_github" and not is_document_like:
+            is_document_like = self._is_document_like(document, metadata_haystack)
+            if has_document_intent and self._is_github_document(document) and not is_document_like:
                 continue
             matches = sum(
                 1
@@ -572,7 +622,7 @@ class ContextSearchService:
                 if any(term in body_haystack for term in term_group)
             )
             score = matches / max(len(scoring_groups), 1)
-            if document.source_id == "source_github" and not is_document_like and body_matches == 0:
+            if self._is_github_document(document) and not is_document_like and body_matches == 0:
                 score = min(score, 0.49)
             candidates.append(
                 {
@@ -601,14 +651,15 @@ class ContextSearchService:
         term_groups = term_groups or self._query_term_groups(query)
         if not term_groups and not metadata_terms:
             return []
-        if source_ids and "source_github" in source_ids and len(source_ids) > 1 and include_text is False:
+        github_source_ids = self._github_source_ids(source_ids)
+        if source_ids and github_source_ids and len(source_ids) > len(github_source_ids) and include_text is False:
             non_github_source_ids = [
-                source_id for source_id in source_ids if source_id != "source_github"
+                source_id for source_id in source_ids if source_id not in github_source_ids
             ]
             github_candidates = self._metadata_keyword_candidates(
                 query,
                 top_k,
-                ["source_github"],
+                list(github_source_ids),
                 term_groups=term_groups,
                 metadata_terms=metadata_terms,
                 require_all_metadata_terms=require_all_metadata_terms,
@@ -645,7 +696,10 @@ class ContextSearchService:
                 metadata_only_terms=metadata_only_terms,
             )
             if chunks is not None:
-                documents = [chunk.to_document_model() for chunk in chunks]
+                documents = [
+                    chunk.to_document_model(platform=self._document_platform(chunk.source_id))
+                    for chunk in chunks
+                ]
                 candidates = self._keyword_candidates(query, documents, top_k, source_ids, term_groups)
                 if candidates:
                     return candidates
@@ -654,7 +708,7 @@ class ContextSearchService:
                 metadata_terms
                 and (
                     self._metadata_terms_are_repo_or_identity(metadata_terms)
-                    or (source_ids and "source_github" in source_ids)
+                    or bool(github_source_ids)
                 )
             )
         chunks = self._metadata_chunks(
@@ -667,7 +721,10 @@ class ContextSearchService:
         )
         if chunks is None:
             return []
-        documents = [chunk.to_document_model() for chunk in chunks]
+        documents = [
+            chunk.to_document_model(platform=self._document_platform(chunk.source_id))
+            for chunk in chunks
+        ]
         return self._keyword_candidates(query, documents, top_k, source_ids, term_groups)
 
     def _metadata_chunks(
@@ -711,8 +768,8 @@ class ContextSearchService:
             for term in metadata_terms
         )
 
-    @staticmethod
     def _merge_ranked_candidates(
+        self,
         vector_candidates: list[dict[str, Any]],
         metadata_candidates: list[dict[str, Any]],
         rejected_chunk_ids: set[str],
@@ -723,7 +780,12 @@ class ContextSearchService:
 
         for index, candidate in enumerate(vector_candidates):
             chunk_id = candidate["chunk_id"]
-            ranked[chunk_id] = dict(candidate)
+            ranked_candidate = dict(candidate)
+            ranked_candidate.setdefault(
+                "vector_score",
+                float(candidate.get("vector_score", candidate.get("score", 0.0))),
+            )
+            ranked[chunk_id] = ranked_candidate
             order.setdefault(chunk_id, index)
 
         metadata_offset = len(order)
@@ -731,7 +793,7 @@ class ContextSearchService:
             chunk_id = candidate["chunk_id"]
             score = float(candidate["score"])
             if chunk_id in rejected_chunk_ids and not (
-                candidate.get("source_id") == "source_github" and score >= 1.0
+                self._is_github_source_id(str(candidate.get("source_id") or "")) and score >= 1.0
             ):
                 continue
             boost_priority = 1 if score >= 1.0 else 0
@@ -740,6 +802,7 @@ class ContextSearchService:
                 **candidate,
                 "score": boosted_score,
                 "metadata_priority": boost_priority,
+                "vector_score": float(candidate.get("vector_score", 0.0) or 0.0),
             }
             if chunk_id not in ranked:
                 ranked[chunk_id] = boosted
@@ -749,9 +812,17 @@ class ContextSearchService:
                     **boosted,
                     "score": max(float(ranked[chunk_id]["score"]), boosted["score"]),
                     "metadata_priority": boost_priority,
+                    "vector_score": float(
+                        ranked[chunk_id].get("vector_score", boosted.get("vector_score", 0.0)) or 0.0
+                    ),
                 }
             elif boosted["score"] > float(ranked[chunk_id]["score"]):
-                ranked[chunk_id] = boosted
+                ranked[chunk_id] = {
+                    **boosted,
+                    "vector_score": float(
+                        ranked[chunk_id].get("vector_score", boosted.get("vector_score", 0.0)) or 0.0
+                    ),
+                }
             order.setdefault(chunk_id, metadata_offset + index)
 
         return sorted(
@@ -779,7 +850,13 @@ class ContextSearchService:
             chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
             if not chunk:
                 return False
-            text = " ".join([chunk.title or "", chunk.text or ""]).lower()
+            document = chunk.to_document_model(platform=self._document_platform(chunk.source_id))
+            text = " ".join(
+                [
+                    self._document_haystack(document),
+                    self._document_metadata_haystack(document),
+                ]
+            ).lower()
             if not any(
                 any(term in text for term in term_group)
                 for term_group in concrete_groups
@@ -804,7 +881,7 @@ class ContextSearchService:
             chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
             if not chunk:
                 continue
-            document = chunk.to_document_model()
+            document = chunk.to_document_model(platform=self._document_platform(chunk.source_id))
             haystack = self._document_haystack(document)
             metadata_haystack = self._document_metadata_haystack(document)
             is_document_like = self._is_document_like(document, metadata_haystack)
@@ -832,7 +909,7 @@ class ContextSearchService:
                 rerank_score += 0.12
             if (
                 any(group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups)
-                and document.source_id == "source_github"
+                and self._is_github_document(document)
                 and is_document_like
             ):
                 rerank_score += 0.05
@@ -846,6 +923,8 @@ class ContextSearchService:
             reranked.append(
                 {
                     **candidate,
+                    "vector_score": float(candidate.get("vector_score", candidate.get("score", 0.0))),
+                    "score": rerank_score,
                     "rerank_score": rerank_score,
                     "_order": order,
                 }
@@ -892,22 +971,20 @@ class ContextSearchService:
             ]
         ).lower()
 
-    @staticmethod
-    def _is_document_like(document: DocumentModel, metadata_haystack: str) -> bool:
-        if document.source_id != "source_github":
+    def _is_document_like(self, document: DocumentModel, metadata_haystack: str) -> bool:
+        if not self._is_github_document(document):
             return True
         return bool(DOCUMENT_LIKE_PATH_RE.search(metadata_haystack))
 
-    @staticmethod
-    def _document_intent_allows_chunk(term_groups: list[set[str]], chunk: ChunkModel) -> bool:
+    def _document_intent_allows_chunk(self, term_groups: list[set[str]], chunk: ChunkModel) -> bool:
         has_document_intent = any(
             term_group.intersection(DOCUMENT_INTENT_TERMS) for term_group in term_groups
         )
-        if not has_document_intent or chunk.source_id != "source_github":
+        if not has_document_intent or not self._is_github_source_id(chunk.source_id):
             return True
-        document = chunk.to_document_model()
-        metadata_haystack = ContextSearchService._document_metadata_haystack(document)
-        return ContextSearchService._is_document_like(document, metadata_haystack)
+        document = chunk.to_document_model(platform=self._document_platform(chunk.source_id))
+        metadata_haystack = self._document_metadata_haystack(document)
+        return self._is_document_like(document, metadata_haystack)
 
     @staticmethod
     def _term_group_matches(
@@ -966,23 +1043,24 @@ class ContextSearchService:
             return True
         return ContextSearchService._query_is_metadata_like(query, term_groups)
 
-    @staticmethod
     def _metadata_fallback_source_ids(
+        self,
         query: str,
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> list[str] | None:
         if source_ids:
             return source_ids
+        github_source_ids = sorted(self._github_source_ids())
         if any(term in GITHUB_IDENTITY_TERMS for group in term_groups for term in group):
-            return ["source_github"]
+            return github_source_ids or ["source_github"]
         if (
             ContextSearchService._repository_lookup_terms_from_groups(term_groups)
             and ContextSearchService._query_has_strong_repository_signal(query, term_groups)
         ):
-            return ["source_github"]
+            return github_source_ids or ["source_github"]
         if ContextSearchService._query_has_lowercase_repository_probe(term_groups):
-            return ["source_github"]
+            return github_source_ids or ["source_github"]
         return None
 
     @staticmethod
@@ -1084,22 +1162,128 @@ class ContextSearchService:
     @staticmethod
     def _query_source_type_terms(term_groups: list[set[str]]) -> set[str]:
         source_terms = set()
-        for group in term_groups:
-            lowered = {term.lower() for term in group}
-            if lowered.intersection({"github", "깃허브", "repo", "repository", "리포지토리"}):
+        lowered_groups = [{term.lower() for term in group} for group in term_groups]
+        has_explicit_non_web_source = any(
+            group.intersection({"github", "깃허브", "notion", "노션", "tistory", "티스토리"})
+            for group in lowered_groups
+        )
+        has_site_web_context = any(
+            group.intersection(
+                {
+                    "auth",
+                    "authentication",
+                    "docs",
+                    "documentation",
+                    "login",
+                    "official",
+                    "signin",
+                    "signup",
+                    "web",
+                    "website",
+                    "웹",
+                }
+            )
+            for group in lowered_groups
+        )
+        has_docs_topical_sibling = any(
+            not group.intersection(BROAD_TOPIC_TERMS)
+            and not group.intersection({"aws", "amazon", "amazon web services", "services"})
+            and not group.intersection({"docs", "documentation"})
+            and not group.intersection(DOCUMENT_INTENT_TERMS)
+            for group in lowered_groups
+        )
+        for index, lowered in enumerate(lowered_groups):
+            if lowered.intersection({"github", "깃허브"}):
                 source_terms.add("github")
             if lowered.intersection({"notion", "노션"}):
                 source_terms.add("notion")
             if lowered.intersection({"tistory", "티스토리"}):
                 source_terms.add("tistory")
-            if lowered.intersection({"web", "website", "site", "docs", "documentation", "웹"}):
+            docs_like_web = (
+                ("docs" in lowered or "documentation" in lowered)
+                and not has_explicit_non_web_source
+                and has_docs_topical_sibling
+            )
+            explicit_web = (
+                "web" in lowered
+                or "웹" in lowered
+                or "website" in lowered
+                or ("site" in lowered and has_site_web_context)
+                or docs_like_web
+            )
+            aws_phrase_middle = (
+                lowered.issubset({"web", "website"})
+                and "web" in lowered
+                and index > 0
+                and index + 1 < len(lowered_groups)
+                and lowered_groups[index - 1].intersection({"amazon", "아마존", "aws"})
+                and lowered_groups[index + 1].intersection({"services", "service", "서비스"})
+            )
+            aws_only_expansion = aws_phrase_middle
+            if explicit_web and not aws_only_expansion:
                 source_terms.add("web")
         return source_terms
 
-    @staticmethod
-    def _document_matches_source_type_terms(document: DocumentModel, source_type_terms: set[str]) -> bool:
+    def _document_matches_source_type_terms(
+        self,
+        document: DocumentModel,
+        source_type_terms: set[str],
+    ) -> bool:
+        source = self.metadata_store.get_source(document.source_id) if document.source_id else None
+        actual_source_type = (
+            getattr(getattr(source, "source_type", None), "value", "") or ""
+        ).lower()
+        if source is not None:
+            return bool(actual_source_type and actual_source_type in source_type_terms)
         source_id = (document.source_id or "").lower()
+        if source_id == "source_github" and "github" in source_type_terms:
+            return True
         return any(term and term in source_id for term in source_type_terms)
+
+    @classmethod
+    def _redact_debug_query_text(cls, value: str) -> str:
+        text = str(value or "")
+        text = DEBUG_HTTP_URL_RE.sub(
+            lambda match: cls._safe_debug_location(match.group(0)),
+            text,
+        )
+        text = DEBUG_FILE_URL_RE.sub("redacted", text)
+        text = DEBUG_HOME_PATH_RE.sub("redacted", text)
+        text = DEBUG_HOME_BACKSLASH_PATH_RE.sub("redacted", text)
+        text = DEBUG_WINDOWS_PATH_RE.sub("redacted", text)
+        text = DEBUG_ABSOLUTE_PATH_RE.sub("redacted", text)
+        text = DEBUG_URL_FRAGMENT_TOKEN_RE.sub("redacted", text)
+        text = DEBUG_TLD_FRAGMENT_RE.sub("redacted", text)
+        text = DEBUG_SECRET_ASSIGNMENT_RE.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]{match.group('suffix')}",
+            text,
+        )
+        text = DEBUG_SECRET_QUERY_RE.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            text,
+        )
+        text = DEBUG_SECRET_LIKE_RE.sub("[REDACTED]", text)
+        return DEBUG_SECRET_VALUE_SHAPE_RE.sub("[REDACTED]", text)
+
+    @classmethod
+    def _redact_debug_term(cls, value: str) -> str:
+        text = str(value or "")
+        if DEBUG_URL_FRAGMENT_PATH_RE.match(text) or DEBUG_TLD_FRAGMENT_RE.match(text):
+            return "redacted"
+        return cls._redact_debug_query_text(text)
+
+    @staticmethod
+    def _safe_debug_location(value: str) -> str:
+        text = str(value or "")
+        parsed = urlparse(text)
+        if parsed.scheme in {"http", "https"}:
+            if parsed.username or parsed.password:
+                return "redacted"
+            suffix = "/..." if parsed.path and parsed.path != "/" else ""
+            return f"{parsed.scheme}://{parsed.netloc}{suffix}"
+        if parsed.scheme or text.startswith("/"):
+            return "redacted"
+        return text
 
     @staticmethod
     def _metadata_lookup_topical_terms(term_groups: list[set[str]]) -> set[str]:
@@ -1141,17 +1325,17 @@ class ContextSearchService:
             and bool(ContextSearchService._metadata_lookup_topical_terms(term_groups))
         )
 
-    @staticmethod
     def _includes_text_in_metadata_lookup(
+        self,
         query: str,
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        if source_ids and "source_github" not in source_ids:
+        if source_ids and not self._source_ids_include_github(source_ids):
             return True
         if ContextSearchService._allows_github_document_body_lookup(term_groups):
             return True
-        if source_ids and "source_github" in source_ids:
+        if source_ids and self._source_ids_include_github(source_ids):
             return False
         if ContextSearchService._query_has_strong_repository_signal(query, term_groups):
             return False
@@ -1159,22 +1343,22 @@ class ContextSearchService:
             return False
         return True
 
-    @staticmethod
     def _requires_document_like_metadata_lookup(
+        self,
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        if source_ids and "source_github" not in source_ids:
+        if source_ids and not self._source_ids_include_github(source_ids):
             return False
         return any(group.intersection(DOCUMENT_INTENT_TERMS) for group in term_groups)
 
-    @staticmethod
     def _prefers_document_like_metadata_lookup(
+        self,
         query: str,
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        if not source_ids or "source_github" not in source_ids:
+        if not source_ids or not self._source_ids_include_github(source_ids):
             return False
         if any(group.intersection(DOCUMENT_INTENT_TERMS) for group in term_groups):
             return False
@@ -1199,6 +1383,55 @@ class ContextSearchService:
             ContextSearchService._query_has_strong_repository_signal(query, term_groups)
             or ContextSearchService._query_has_lowercase_repository_probe(term_groups)
         )
+
+    def _github_source_ids(self, source_ids: list[str] | None = None) -> set[str]:
+        candidate_ids = list(source_ids or [])
+        if not candidate_ids:
+            list_sources = getattr(self.metadata_store, "list_sources", None)
+            if callable(list_sources):
+                candidate_ids = [
+                    source.source_id
+                    for source in list_sources()
+                    if (
+                        getattr(getattr(source, "source_type", None), "value", "")
+                        or str(getattr(source, "source_type", ""))
+                    ).lower()
+                    == "github"
+                ]
+        github_ids = {source_id for source_id in candidate_ids if self._is_github_source_id(source_id)}
+        if not github_ids and (not source_ids or "source_github" in source_ids):
+            source = self.metadata_store.get_source("source_github")
+            if source is not None or not source_ids:
+                github_ids.add("source_github")
+        return github_ids
+
+    def _source_ids_include_github(self, source_ids: list[str] | None) -> bool:
+        return bool(source_ids and self._github_source_ids(source_ids))
+
+    def _is_github_source_id(self, source_id: str) -> bool:
+        normalized = str(source_id or "")
+        if not normalized:
+            return False
+        source = self.metadata_store.get_source(normalized)
+        source_type = (
+            getattr(getattr(source, "source_type", None), "value", "")
+            or str(getattr(source, "source_type", ""))
+        ).lower()
+        if source_type:
+            return source_type == "github"
+        return normalized == "source_github"
+
+    def _is_github_document(self, document: DocumentModel) -> bool:
+        if self._is_github_source_id(document.source_id):
+            return True
+        return str(document.platform or "").lower() == "github"
+
+    def _document_platform(self, source_id: str) -> str:
+        if self._is_github_source_id(source_id):
+            return "github"
+        source = self.metadata_store.get_source(source_id)
+        source_type = getattr(getattr(source, "source_type", None), "value", "") or ""
+        return str(source_type)
 
     @staticmethod
     def _should_try_lowercase_github_probe(
