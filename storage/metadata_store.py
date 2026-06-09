@@ -850,14 +850,20 @@ class MetadataStore:
         with self._connect() as conn:
             if source_ids:
                 placeholders = ",".join("?" for _ in source_ids)
+                # Dynamic SQL is limited to generated placeholders; source IDs
+                # remain parameterized in the execute call below.
+                query = "\n".join(
+                    [
+                        "SELECT c.* FROM chunks c",
+                        "JOIN documents d ON d.document_id = c.document_id",
+                        "    AND d.source_id = c.source_id",
+                        "WHERE c.source_id IN (" + placeholders + ")",
+                        "  AND COALESCE(d.deleted_at, '') = ''",
+                        "ORDER BY c.document_id, c.chunk_index",
+                    ]
+                )
                 rows = conn.execute(
-                    f"""
-                    SELECT c.* FROM chunks c
-                    JOIN documents d ON d.document_id = c.document_id
-                        AND d.source_id = c.source_id
-                    WHERE c.source_id IN ({placeholders}) AND COALESCE(d.deleted_at, '') = ''
-                    ORDER BY c.document_id, c.chunk_index
-                    """,
+                    query,
                     source_ids,
                 ).fetchall()
             else:
@@ -991,15 +997,20 @@ class MetadataStore:
         params.append(limit)
 
         with self._connect() as conn:
+            # The WHERE fragments are selected from fixed SQL templates above;
+            # caller values are appended to params and bound with placeholders.
+            query = "\n".join(
+                [
+                    "SELECT c.* FROM chunks c",
+                    "JOIN documents d ON d.document_id = c.document_id",
+                    "    AND d.source_id = c.source_id",
+                    "WHERE " + " AND ".join(where_clauses),
+                    "ORDER BY c.document_id, c.chunk_index",
+                    "LIMIT ?",
+                ]
+            )
             rows = conn.execute(
-                f"""
-                SELECT c.* FROM chunks c
-                JOIN documents d ON d.document_id = c.document_id
-                    AND d.source_id = c.source_id
-                WHERE {' AND '.join(where_clauses)}
-                ORDER BY c.document_id, c.chunk_index
-                LIMIT ?
-                """,
+                query,
                 params,
             ).fetchall()
         return [self._chunk_from_row(row) for row in rows]
@@ -1499,28 +1510,36 @@ class MetadataStore:
                 for prefix in document_id_prefixes
                 for item in (len(prefix), prefix)
             )
+        # marker_column is selected from a fixed allowlist; prefix clauses are
+        # generated from substr placeholders and bind prefix values separately.
+        stale_chunk_lines = [
+            "SELECT c.chunk_id FROM chunks c",
+            "JOIN documents d ON d.document_id = c.document_id",
+            "    AND d.source_id = c.source_id",
+            "WHERE d.source_id = ?",
+            "  AND COALESCE(d.deleted_at, '') = ''",
+            "  AND COALESCE(d." + marker_column + ", '') != ?",
+        ]
+        if chunk_prefix_clause:
+            stale_chunk_lines.append(chunk_prefix_clause)
+        stale_chunk_lines.append("ORDER BY c.document_id, c.chunk_index")
+        stale_chunk_query = "\n".join(stale_chunk_lines)
         chunk_rows = conn.execute(
-            f"""
-            SELECT c.chunk_id FROM chunks c
-            JOIN documents d ON d.document_id = c.document_id
-                AND d.source_id = c.source_id
-            WHERE d.source_id = ?
-              AND COALESCE(d.deleted_at, '') = ''
-              AND COALESCE(d.{marker_column}, '') != ?
-              {chunk_prefix_clause}
-            ORDER BY c.document_id, c.chunk_index
-            """,
+            stale_chunk_query,
             (source_id, marker_value, *prefix_params),
         ).fetchall()
+        tombstone_lines = [
+            "UPDATE documents",
+            "SET deleted_at = ?",
+            "WHERE source_id = ?",
+            "  AND COALESCE(deleted_at, '') = ''",
+            "  AND COALESCE(" + marker_column + ", '') != ?",
+        ]
+        if document_prefix_clause:
+            tombstone_lines.append(document_prefix_clause)
+        tombstone_query = "\n".join(tombstone_lines)
         conn.execute(
-            f"""
-            UPDATE documents
-            SET deleted_at = ?
-            WHERE source_id = ?
-              AND COALESCE(deleted_at, '') = ''
-              AND COALESCE({marker_column}, '') != ?
-              {document_prefix_clause}
-            """,
+            tombstone_query,
             (deleted_at, source_id, marker_value, *prefix_params),
         )
         return [row["chunk_id"] for row in chunk_rows]

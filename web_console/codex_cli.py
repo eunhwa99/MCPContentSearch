@@ -53,14 +53,15 @@ async def run_codex_cli(
     work_dir = ""
     process = None
     try:
+        temp_root = codex_temp_root()
         work_dir = tempfile.mkdtemp(
             prefix="contextwiki-codex-work-",
-            dir="/private/tmp",
+            dir=temp_root,
         )
         with tempfile.NamedTemporaryFile(
             prefix="contextwiki-codex-answer-",
             suffix=".txt",
-            dir="/private/tmp",
+            dir=temp_root,
             delete=False,
         ) as output_file:
             output_path = output_file.name
@@ -175,7 +176,7 @@ def write_codex_sandbox_profile(*, binary: str, work_dir: str, output_path: str)
     with tempfile.NamedTemporaryFile(
         prefix="contextwiki-codex-sandbox-",
         suffix=".sb",
-        dir="/private/tmp",
+        dir=codex_temp_root(),
         mode="w",
         encoding="utf-8",
         delete=False,
@@ -267,6 +268,18 @@ def codex_subprocess_env() -> dict[str, str]:
         for key, value in os.environ.items()
         if key in allowed_keys and value
     }
+
+
+def codex_temp_root() -> str:
+    root = (
+        os.environ.get("CONTEXTWIKI_CODEX_TMPDIR")
+        or os.environ.get("RUNNER_TEMP")
+        or os.environ.get("TMPDIR")
+        or tempfile.gettempdir()
+    )
+    path = Path(root)
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def codex_disabled_feature_args() -> list[str]:

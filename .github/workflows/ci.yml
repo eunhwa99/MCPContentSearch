@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    name: Python 3.13 verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      PYTHONPATH: .
+      UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.5"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check lockfile
+        run: uv lock --check
+
+      - name: Sync dependencies
+        run: uv sync --locked --python 3.13 --dev
+
+      - name: Compile Python modules
+        run: uv run --locked python -m compileall api core environments fetching indexing search storage wiki web_console main.py
+
+      - name: Check Web Console JavaScript
+        run: node --check web/app.js
+
+      - name: Run Ruff lint
+        run: uv run --locked ruff check api core environments fetching indexing search storage wiki web_console main.py
+
+      - name: Run scoped mypy
+        run: uv run --locked mypy
+
+      - name: Run scoped Bandit
+        run: |
+          uv run --locked bandit \
+            -q \
+            -c pyproject.toml \
+            -r api core environments fetching indexing search storage wiki web_console main.py \
+            --severity-level medium \
+            --confidence-level low
+
+      - name: Run non-live tests with coverage
+        run: |
+          uv run --locked pytest -m "not live" \
+            --ignore=tests/e2e/test_contextwiki_flow.py \
+            --ignore=tests/e2e/test_phase_b_connectors_flow.py \
+            --cov=api \
+            --cov=core \
+            --cov=environments \
+            --cov=fetching \
+            --cov=indexing \
+            --cov=search \
+            --cov=storage \
+            --cov=wiki \
+            --cov=web_console \
+            --cov-report=term-missing
+
+      - name: Run functional E2E gate
+        run: ./scripts/verify_functional_e2e.sh

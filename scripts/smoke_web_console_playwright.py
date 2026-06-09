@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import socket
 import threading
 import time
@@ -45,9 +46,9 @@ class FakeWikiService:
             "title": f"{topic} Wiki",
             "markdown": "# ContextWiki\n\nGenerated page [C1]\n",
             "sections": [{"heading": "Overview", "content": "Generated page [C1]"}],
-            "citations": [{"marker": "C1", "chunk_id": "chunk-1"}],
-            "backlinks": [{"document_id": "doc-1", "chunk_ids": ["chunk-1"]}],
-            "used_chunks": ["chunk-1"],
+            "citations": [{"marker": "C1", "chunk_id": "wiki-chunk-1"}],
+            "backlinks": [{"document_id": "doc-1", "chunk_ids": ["wiki-chunk-1"]}],
+            "used_chunks": ["wiki-chunk-1"],
         }
 
 
@@ -106,7 +107,11 @@ class FakeMetadataStore:
 
 
 class FakeIngestionService:
+    def __init__(self):
+        self.calls: list[str] = []
+
     async def sync_source(self, source_id):
+        self.calls.append(source_id)
         return SyncJobModel(
             job_id=f"job-sync-{source_id}",
             source_id=source_id,
@@ -118,7 +123,11 @@ class FakeIngestionService:
 
 
 class FakeTargetSyncService:
+    def __init__(self):
+        self.calls: list[dict[str, str]] = []
+
     async def sync_target(self, source_type, target):
+        self.calls.append({"source_type": source_type, "target": target})
         source_id = {
             "github": "source_github",
             "notion": "source_notion",
@@ -188,10 +197,16 @@ def _run_browser_checks(base_url: str) -> None:
             "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed answer')"
         )
         page.wait_for_function(
-            "() => document.querySelector('#answerPane')?.textContent?.includes('## Query')"
+            "() => document.querySelector('#answerPane')?.textContent?.includes('Query')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#markdownPane')?.textContent?.includes('## Query')"
         )
         page.wait_for_function(
             "() => document.querySelector('#answerPane')?.textContent?.includes('Playwright debug summary.')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#citationsList')?.textContent?.includes('chunk-1')"
         )
 
         # Download buttons should emit files.
@@ -204,10 +219,42 @@ def _run_browser_checks(base_url: str) -> None:
         if not md_path or not json_path:
             raise AssertionError("Expected markdown/json downloads were not produced")
 
+        # New portfolio path: build a wiki page and show generated Markdown visibly.
+        page.locator("#buildWikiButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed wiki')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#answerPane')?.textContent?.includes('Generated page')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#markdownPane')?.textContent?.includes('# ContextWiki')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#citationsList')?.textContent?.includes('wiki-chunk-1')"
+        )
+        with page.expect_download() as wiki_md_download:
+            page.locator("#downloadMarkdownButton").click()
+        with page.expect_download() as wiki_json_download:
+            page.locator("#downloadJsonButton").click()
+        wiki_md_path = wiki_md_download.value.path()
+        wiki_json_path = wiki_json_download.value.path()
+        if not wiki_md_path or not wiki_json_path:
+            raise AssertionError("Expected wiki markdown/json downloads were not produced")
+        wiki_markdown = Path(wiki_md_path).read_text(encoding="utf-8")
+        wiki_json = json.loads(Path(wiki_json_path).read_text(encoding="utf-8"))
+        if "# ContextWiki" not in wiki_markdown or "Generated page" not in wiki_markdown:
+            raise AssertionError("Downloaded wiki markdown did not contain generated page content")
+        if wiki_json.get("status") != "generated":
+            raise AssertionError("Downloaded wiki JSON did not preserve generated status")
+
         # Configured source sync path.
         page.locator('[data-sync-source-id="source_github"]').click()
         page.wait_for_function(
             "() => document.querySelector('#syncProgressLabel')?.textContent?.toLowerCase().includes('source_github')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#statusText')?.textContent?.toLowerCase().includes('completed sync source_github')"
         )
 
         # Target sync success path.
@@ -224,14 +271,16 @@ def _run_browser_checks(base_url: str) -> None:
 def main() -> None:
     answer_service = FakeAnswerService()
     codex_answer_service = FakeCodexAnswerService()
+    ingestion_service = FakeIngestionService()
+    target_sync_service = FakeTargetSyncService()
     app = create_console_app(
         ConsoleDependencies(
             answer_service=answer_service,
             wiki_service=FakeWikiService(),
             codex_answer_service=codex_answer_service,
             metadata_store=FakeMetadataStore(),
-            ingestion_service=FakeIngestionService(),
-            target_sync_service=FakeTargetSyncService(),
+            ingestion_service=ingestion_service,
+            target_sync_service=target_sync_service,
             auto_sync_source_ids=(),
         )
     )
@@ -262,6 +311,22 @@ def main() -> None:
         raise AssertionError(f"Expected top_k=4 in answer call, got {call['top_k']}")
     if not call.get("include_debug"):
         raise AssertionError("Expected browser answer flow to request include_debug=True")
+    if "source_github" not in ingestion_service.calls:
+        raise AssertionError(
+            f"Expected configured source sync for source_github, got {ingestion_service.calls}"
+        )
+    if "source_web" in ingestion_service.calls:
+        raise AssertionError(
+            f"Target sync should not call configured source ingestion, got {ingestion_service.calls}"
+        )
+    expected_target_call = {
+        "source_type": "web",
+        "target": "https://docs.example.com/target",
+    }
+    if target_sync_service.calls != [expected_target_call]:
+        raise AssertionError(
+            f"Expected one web target sync call {expected_target_call}, got {target_sync_service.calls}"
+        )
 
     print(
         json.dumps(
@@ -273,6 +338,9 @@ def main() -> None:
                     "failure path: empty target sync validation",
                     "filter + debug-first answer request",
                     "markdown/json download",
+                    "visible citations",
+                    "build wiki visible markdown",
+                    "build wiki downloads",
                     "configured source sync",
                     "target sync",
                 ],

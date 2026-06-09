@@ -104,6 +104,44 @@ h2 {
   margin-top: 4px;
 }
 
+.workflow-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.workflow-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #344054;
+  padding: 0 10px;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.workflow-pill span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+}
+
+.workflow-pill.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
 .status-stack {
   display: flex;
   align-items: flex-end;
@@ -180,34 +218,38 @@ h2 {
   margin-bottom: 14px;
 }
 
-.input-panel {
+.workflow-panel {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
-.console-note {
+.step-block {
   display: grid;
+  gap: 12px;
+}
+
+.step-block + .step-block {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+
+.step-heading {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 14px;
 }
 
-.console-note h2 {
-  font-size: 0.92rem;
-}
-
-.console-note ul {
-  margin: 0;
-  padding-left: 18px;
-  color: #1e3a5f;
-  font-size: 0.9rem;
-  line-height: 1.5;
-}
-
-.console-note li + li {
-  margin-top: 6px;
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 0.86rem;
+  font-weight: 800;
 }
 
 .field {
@@ -266,6 +308,34 @@ button:focus-visible {
   margin-top: 10px;
 }
 
+.sync-controls {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.32fr) minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.sync-controls .field.compact,
+.ask-toolbar .field.compact {
+  margin-top: 0;
+}
+
+.ask-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.42fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.ask-actions {
+  justify-content: flex-end;
+}
+
+.ask-actions button,
+.compact-actions button {
+  min-width: 112px;
+}
+
 .source-types {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -294,10 +364,10 @@ button:focus-visible {
   margin-top: 14px;
 }
 
-.target-sync-box {
+.filter-note {
   margin-top: 14px;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .sync-progress {
@@ -549,8 +619,13 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .filter-panel {
-    order: -1;
+  .workflow-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sync-controls,
+  .ask-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .source-types {
@@ -576,6 +651,14 @@ button:focus-visible {
   .inline-actions button,
   .download-actions button {
     flex: 1 1 150px;
+  }
+
+  .workflow-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-pill {
+    min-height: 34px;
   }
 
   .source-types {

@@ -27,7 +27,24 @@ from fetching.connectors import GitHubSourceConnector, SourceConnector, SourceRe
 from wiki.synthesis import OpenAIWikiSynthesizer
 
 
-DEFAULT_OUTPUT_DIR = Path("/private/tmp/contextwiki-wiki-smoke")
+def _smoke_temp_root() -> Path:
+    root = Path(
+        os.getenv("CONTEXTWIKI_SMOKE_TMPDIR")
+        or os.getenv("RUNNER_TEMP")
+        or tempfile.gettempdir()
+    ).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _default_output_dir() -> Path:
+    configured = os.getenv("CONTEXTWIKI_WIKI_SMOKE_OUTPUT_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return _smoke_temp_root() / "contextwiki-wiki-smoke"
+
+
+DEFAULT_OUTPUT_DIR = _default_output_dir()
 
 
 class SmokeFailure(RuntimeError):
@@ -223,7 +240,7 @@ async def _run_with_temp_app(
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
         with tempfile.TemporaryDirectory(
-            prefix=f"contextwiki-{mode}-", dir="/private/tmp"
+            prefix=f"contextwiki-{mode}-", dir=_smoke_temp_root()
         ) as temp_root:
             temp_path = Path(temp_root)
             config = AppConfig(
