@@ -4795,6 +4795,57 @@ def test_plain_lowercase_topic_keeps_sufficient_lexical_vector_hit_over_github_m
     assert result["results"][0].chunk_id == "notion-typescript-vector"
 
 
+def test_plain_lowercase_topic_recovers_non_github_body_when_vector_window_is_irrelevant(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion-unrelated-vector",
+        "notion-unrelated-vector",
+        "source_notion",
+        "Roadmap notes",
+        "Planning notes without the requested language term.",
+    )
+    seed_document_chunks(
+        store,
+        "notion-typescript-body",
+        "notion-typescript-body",
+        "source_notion",
+        "Language notes",
+        "The frontend architecture uses TypeScript in key modules.",
+    )
+
+    class IrrelevantVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-unrelated-vector", 0.9)
+            node.metadata["document_id"] = "notion-unrelated-vector"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    def fail_list_chunks(source_ids=None):
+        raise AssertionError("lowercase full-window recovery should use bounded lookup")
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", IrrelevantVectorRetriever)
+    monkeypatch.setattr(store, "list_chunks", fail_list_chunks)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "typescript",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "notion-typescript-body"
+
+
 @pytest.mark.parametrize("query", ["api/v1", "api/v1 docs"])
 def test_api_path_queries_recover_non_github_body_when_vector_empty(
     monkeypatch,

@@ -4,8 +4,9 @@ Baseline:
 
 - Original baseline: `eunhwa99/MCPContentSearch` PR #2
 - Updated through: Phase B-0 / PR #4
-- Current update: Phase C Auto Wiki, Phase C.5 local Web Console, and local
-  eval/background-status documentation groundwork
+- Current update: Phase C Auto Wiki, Phase C.5 local Web Console, local
+  eval/background-status documentation groundwork, and portfolio hardening
+  module-boundary cleanup
 
 Goal:
 
@@ -289,10 +290,10 @@ Current Auto Wiki limits:
 The local Web Console is developer/test tooling around the MCP services. It is
 not a production UI or a full MCP-client replacement. It serves the browser app
 from `web/` through `web_console.app`, exposes local HTTP wrappers for source
-listing/sync, answering, and target sync in the browser, and keeps wiki
-generation plus fake/GitHub smoke as script/API-only wrappers. The browser UI
-then displays citations, used chunks, downloads, and status/error payloads for
-manual inspection.
+listing/sync, answering, target sync, and wiki generation in the browser, and
+keeps fake/GitHub smoke as script/API-only wrappers. The browser UI then
+displays citations, used chunks, downloads, wiki Markdown, and status/error
+payloads for manual inspection.
 
 Important boundaries:
 
@@ -327,8 +328,8 @@ JSON summary without touching user data or calling live providers.
 Focused entry points:
 
 ```bash
-uv run pytest -q tests/evals
-PYTHONPATH=. python scripts/run_contextwiki_eval.py
+uv run --locked pytest -q tests/evals
+PYTHONPATH=. uv run --locked python scripts/run_contextwiki_eval.py
 ```
 
 This is eval scaffolding, not full evaluation infrastructure. It does not call
@@ -827,6 +828,9 @@ Relevant files:
 
 ```text
 search/context_service.py
+search/retrieval_pipeline.py
+search/ranking.py
+search/debug_redaction.py
 search/answer_service.py
 api/tools.py
 ```
@@ -1126,12 +1130,23 @@ J2 LLM-assisted grounded answer generation, or deeper citation verification.
    - Website/docs crawler and text extraction.
 
 9. `search/context_service.py`
-   - Chroma candidate search plus SQLite active chunk hydration.
+   - Public ContextWiki search service and compatibility surface.
 
-10. `search/answer_service.py`
+10. `search/retrieval_pipeline.py`
+    - Chroma candidate retrieval, query variants, rewrite retry, and SQLite
+      active chunk hydration flow.
+
+11. `search/ranking.py`
+    - Metadata fallback, query term matching, reranking, and source-type
+      scoring helpers.
+
+12. `search/debug_redaction.py`
+    - Safe debug query and term redaction for browser/API diagnostics.
+
+13. `search/answer_service.py`
     - Evidence-gated answer and citation response.
 
-11. `main.py`
+14. `main.py`
     - Dependency composition.
 
 ---

@@ -5,10 +5,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/uv-cache}"
+DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
+mkdir -p "$UV_CACHE_DIR"
 
 uv_workspace_healthy() {
-  command -v uv >/dev/null 2>&1 && uv run python - <<'PY' >/dev/null 2>&1
+  command -v uv >/dev/null 2>&1 && uv lock --check >/dev/null 2>&1 && uv run --locked python - <<'PY' >/dev/null 2>&1
 import pytest  # noqa: F401
 from llama_index.core import Document, StorageContext, VectorStoreIndex  # noqa: F401
 from llama_index.core.llms import ChatMessage  # noqa: F401
@@ -19,10 +21,11 @@ USE_UV=0
 if uv_workspace_healthy; then
   USE_UV=1
 fi
+ALLOW_SYSTEM_PYTHON="${VERIFY_E2E_ALLOW_SYSTEM_PYTHON:-0}"
 
 run_py() {
   if [[ "$USE_UV" == "1" ]]; then
-    uv run python "$@"
+    uv run --locked python "$@"
   else
     python "$@"
   fi
@@ -36,7 +39,7 @@ PY
     return
   fi
   echo "Playwright Python package is not available in the active runtime." >&2
-  echo "Run 'uv sync --dev' (or install playwright in your Python environment) and retry." >&2
+  echo "Run 'uv sync --locked --python 3.13 --dev' (or install playwright in your Python environment) and retry." >&2
   exit 1
 }
 
@@ -46,7 +49,7 @@ run_playwright_smoke_with_optional_bootstrap() {
   local auto_install="${VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT:-1}"
   local install_hint
   if [[ "$USE_UV" == "1" ]]; then
-    install_hint="uv run python -m playwright install chromium"
+    install_hint="uv run --locked python -m playwright install chromium"
   else
     install_hint="python -m playwright install chromium"
   fi
@@ -86,7 +89,7 @@ run_py scripts/smoke_generate_wiki_page.py --mode fake
 
 # Full functional E2E/API/browser-contract coverage for non-live paths.
 if [[ "$USE_UV" == "1" ]]; then
-  uv run pytest \
+  uv run --locked pytest \
     tests/e2e/test_contextwiki_flow.py \
     tests/e2e/test_phase_b_connectors_flow.py \
     tests/web_console/test_app.py
@@ -96,6 +99,10 @@ else
     tests/e2e/test_contextwiki_flow.py \
     tests/e2e/test_phase_b_connectors_flow.py \
     tests/web_console/test_app.py
+  if [[ "$ALLOW_SYSTEM_PYTHON" != "1" ]]; then
+    echo "Functional E2E fallback ran outside locked uv dependencies; set VERIFY_E2E_ALLOW_SYSTEM_PYTHON=1 only for explicit local fallback acceptance." >&2
+    exit 1
+  fi
 fi
 
 # Browser-click E2E smoke using Playwright and local fake Web Console app.

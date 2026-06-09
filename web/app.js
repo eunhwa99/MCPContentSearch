@@ -22,6 +22,7 @@ const elements = {
   targetSyncInput: document.querySelector("#targetSyncInput"),
   answerButton: document.querySelector("#answerButton"),
   targetSyncButton: document.querySelector("#targetSyncButton"),
+  buildWikiButton: document.querySelector("#buildWikiButton"),
   refreshButton: document.querySelector("#refreshButton"),
   downloadMarkdownButton: document.querySelector("#downloadMarkdownButton"),
   downloadJsonButton: document.querySelector("#downloadJsonButton"),
@@ -63,6 +64,7 @@ function bindEvents() {
   });
 
   elements.answerButton.addEventListener("click", () => runAnswer());
+  elements.buildWikiButton.addEventListener("click", () => runWiki());
   elements.targetSourceTypeSelect.addEventListener("change", () => updateTargetPlaceholder());
   elements.targetSyncButton.addEventListener("click", () => runTargetSync());
   elements.sourcesList.addEventListener("click", (event) => {
@@ -111,11 +113,13 @@ async function refreshHealth() {
 async function refreshSources() {
   try {
     const payload = sanitizePayload(await requestJson("/api/sources"));
+    if (String(payload.status || "").toLowerCase() === "error") {
+      renderSourceListingFailure(payload.message || "Source listing failed. See server logs for details.");
+      return;
+    }
     renderSources(normalizeArray(payload.sources || payload.items || payload.data || payload));
   } catch (error) {
-    renderSources([]);
-    elements.sourcesList.textContent = redactSensitiveString(error.message);
-    elements.sourcesList.className = "list empty";
+    renderSourceListingFailure(error.message);
   }
 }
 
@@ -137,6 +141,24 @@ async function runAnswer() {
 
   clearInactiveSyncProgress();
   await runAction(kind, url, body);
+}
+
+async function runWiki() {
+  const topic = elements.questionInput.value.trim();
+  if (!topic) {
+    showClientError("Enter a question or topic before building wiki markdown.");
+    return;
+  }
+
+  const body = {
+    question: topic,
+    topic,
+    ...buildRequestOptions(),
+    top_k: readTopK(8),
+  };
+
+  clearInactiveSyncProgress();
+  await runAction("wiki", "/api/wiki/generate", body);
 }
 
 async function runTargetSync() {
@@ -293,16 +315,30 @@ function renderResult(kind, payload) {
   state.lastPayload = safePayload;
   state.lastMarkdown = normalized.markdown || normalized.answer || "";
 
-  elements.resultMeta.textContent = `${kind} response received at ${new Date().toLocaleTimeString()}`;
+  elements.resultMeta.textContent = resultMetaText(kind, normalized);
   elements.answerPane.innerHTML = buildAnswerHtml(normalized, kind);
   elements.markdownPane.textContent = state.lastMarkdown || "";
   elements.jsonPane.textContent = JSON.stringify(safePayload, null, 2);
   renderList(elements.citationsList, normalized.citations, "citation");
   renderList(elements.backlinksList, normalized.backlinks, "backlink");
   renderList(elements.chunksList, normalized.usedChunks, "chunk");
+  elements.downloadMarkdownButton.textContent = isGeneratedWiki(kind, normalized)
+    ? "Download Wiki"
+    : "Download Markdown";
   elements.downloadMarkdownButton.disabled = !state.lastMarkdown;
   elements.downloadJsonButton.disabled = !state.lastPayload;
   setActiveTab("answer");
+}
+
+function resultMetaText(kind, result) {
+  const pieces = [`${titleCase(kind)} ${resultStateLabel(kind, result)} at ${new Date().toLocaleTimeString()}`];
+  if (result.citations.length) {
+    pieces.push(`${result.citations.length} citations`);
+  }
+  if (result.usedChunks.length) {
+    pieces.push(`${result.usedChunks.length} chunks`);
+  }
+  return pieces.join(" | ");
 }
 
 function normalizeResult(payload) {
@@ -325,6 +361,7 @@ function normalizeResult(payload) {
     usedChunks: normalizeEvidenceArray(
       root.used_chunks || root.usedChunks || root.chunks || root.evidence || payload.used_chunks,
     ),
+    status: String(root.status || root.wiki_status || root.evidence_status || "").toLowerCase(),
     raw: root,
   };
 }
@@ -366,24 +403,104 @@ function redactSensitiveString(value) {
     .replace(/\b((?:access|api|auth|bearer|client|github|notion|openai|refresh|session|id)?[_-]?(?:key|password|secret|token))\s*[:=]\s*[^'"\s,;}]+/gi, "$1=[REDACTED]");
 }
 
-function actionSucceeded(payload) {
+function actionSucceeded(payload, kind = "") {
   const root = payload.result || payload.data || payload;
-  const status = String(root.status || root.evidence_status || "").toLowerCase();
+  const status = String(root.status || "").toLowerCase();
+  const evidenceStatus = String(root.evidence_status || "").toLowerCase();
   const codexStatus = String(root.codex_status || "").toLowerCase();
-  return !["error", "failed"].includes(status) &&
-    !["failed", "missing_cli", "timeout"].includes(codexStatus);
+  if (String(kind).toLowerCase() === "wiki") {
+    return status === "generated";
+  }
+  const nonSuccessStatuses = [
+    "configuration_error",
+    "error",
+    "failed",
+    "insufficient",
+    "insufficient_evidence",
+    "skipped",
+  ];
+  const nonSuccessCodexStatuses = ["failed", "missing_cli", "timeout"];
+  return !nonSuccessStatuses.includes(status) &&
+    !nonSuccessStatuses.includes(evidenceStatus) &&
+    !nonSuccessCodexStatuses.includes(codexStatus);
 }
 
 function actionStatusMessage(kind, payload) {
   const root = payload && typeof payload === "object" ? payload.result || payload.data || payload : {};
   const status = String(root.status || "").toLowerCase();
+  const evidenceStatus = String(root.evidence_status || "").toLowerCase();
+  if (String(kind).toLowerCase() === "wiki") {
+    if (status === "generated") {
+      return "Completed wiki.";
+    }
+    if (status === "insufficient_evidence") {
+      return "Wiki needs more indexed evidence.";
+    }
+    if (["error", "failed"].includes(status)) {
+      return "Failed wiki.";
+    }
+  }
   if (status === "already_running") {
     return "Sync already running for this source.";
   }
   if (status === "running") {
     return "Sync is running for this source.";
   }
-  return actionSucceeded(payload) ? `Completed ${kind}.` : `Failed ${kind}.`;
+  if (status === "skipped") {
+    return `Skipped ${kind}.`;
+  }
+  if (status === "configuration_error" || evidenceStatus === "configuration_error") {
+    return `${titleCase(kind)} needs configuration.`;
+  }
+  if (["insufficient", "insufficient_evidence"].includes(status) ||
+      ["insufficient", "insufficient_evidence"].includes(evidenceStatus)) {
+    return `${titleCase(kind)} needs more indexed evidence.`;
+  }
+  return actionSucceeded(payload, kind) ? `Completed ${kind}.` : `Failed ${kind}.`;
+}
+
+function isGeneratedWiki(kind, result) {
+  return String(kind).toLowerCase() === "wiki" && String(result.status || "").toLowerCase() === "generated";
+}
+
+function resultStateLabel(kind, result) {
+  const status = String(result.status || "").toLowerCase();
+  const evidenceStatus = String(result.raw?.evidence_status || "").toLowerCase();
+  if (String(kind).toLowerCase() !== "wiki") {
+    if (status === "already_running") {
+      return "already running";
+    }
+    if (status === "running") {
+      return "running";
+    }
+    if (status === "succeeded") {
+      return "succeeded";
+    }
+    if (status === "skipped") {
+      return "skipped";
+    }
+    if (status === "configuration_error" || evidenceStatus === "configuration_error") {
+      return "needs configuration";
+    }
+    if (["insufficient", "insufficient_evidence"].includes(status) ||
+        ["insufficient", "insufficient_evidence"].includes(evidenceStatus)) {
+      return "needs more indexed evidence";
+    }
+    if (["error", "failed"].includes(status)) {
+      return "failed";
+    }
+    return "ready";
+  }
+  if (status === "generated") {
+    return "ready";
+  }
+  if (status === "insufficient_evidence") {
+    return "needs more evidence";
+  }
+  if (["error", "failed"].includes(status)) {
+    return "failed";
+  }
+  return status ? status.replace(/_/g, " ") : "returned";
 }
 
 function buildStatusSummary(root) {
@@ -440,7 +557,10 @@ function normalizeEvidenceArray(value) {
 }
 
 function buildAnswerHtml(result, kind) {
-  const text = result.answer || result.markdown || "Response did not include a text answer.";
+  const isWiki = String(kind).toLowerCase() === "wiki";
+  const text = isWiki
+    ? result.markdown || result.answer || "Response did not include a wiki page."
+    : result.answer || result.markdown || "Response did not include a text answer.";
   const context = answerContextCopy(kind, result.raw || {});
   return `
     <div class="answer-block">
@@ -459,25 +579,42 @@ function buildAnswerHtml(result, kind) {
 }
 
 function answerContextCopy(kind, raw) {
+  if (String(kind).toLowerCase() === "wiki") {
+    const status = String(raw.status || raw.wiki_status || "").toLowerCase();
+    if (status === "insufficient_evidence") {
+      return {
+        title: "Not enough evidence",
+        body: "Showing the diagnostic Markdown returned by the wiki generator.",
+      };
+    }
+    if (["error", "failed"].includes(status)) {
+      return {
+        title: "Wiki generation failed",
+        body: "Showing the safe failure response returned by the server.",
+      };
+    }
+    return {
+      title: "Wiki markdown",
+      body: "Citation-backed page ready for download.",
+    };
+  }
+
   const mode = String(raw.answer_mode || "").toLowerCase();
   if (mode === "contextwiki_debug") {
     return {
-      title: "Indexed retrieval debug",
-      body:
-        "This view shows what the local RAG index returned for your question. It is best for checking whether the right sources, chunks, and retrieval hints were found.",
+      title: "Local evidence",
+      body: "Retrieved chunks, citations, and filters used for this answer.",
     };
   }
   if (mode === "codex_cli" || String(kind).toLowerCase() === "codex answer") {
     return {
-      title: "Convenience summary",
-      body:
-        "This summary is synthesized from already-retrieved chunks. It does not perform the same multi-step tool loop as Claude using the MCP server directly.",
+      title: "Codex summary",
+      body: "Synthesized from already-retrieved chunks.",
     };
   }
   return {
-    title: "Indexed evidence view",
-    body:
-      "This console searches synced and indexed content only. If a source has not been synced into local RAG storage yet, it will not appear here.",
+    title: "Indexed evidence",
+    body: "Synced local content only.",
   };
 }
 
@@ -620,6 +757,15 @@ function renderSources(sources) {
   updateSourceSyncButtons();
 }
 
+function renderSourceListingFailure(message) {
+  const safeMessage = redactSensitiveString(
+    firstString(message, "Source listing failed. See server logs for details."),
+  );
+  elements.sourcesList.textContent = safeMessage;
+  elements.sourcesList.className = "list empty";
+  setStatus(safeMessage);
+}
+
 function buildSourceHtml(source, index) {
   if (typeof source !== "object" || source === null) {
     return buildItemHtml(source, index, "source");
@@ -731,6 +877,7 @@ function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   [
     elements.answerButton,
+    elements.buildWikiButton,
     elements.targetSyncButton,
     elements.refreshButton,
   ].forEach((button) => {
@@ -745,8 +892,8 @@ function setBusy(isBusy, message = "") {
 
 function updateTargetPlaceholder() {
   const placeholders = {
-    github: "github.com/eunhwa99 or owner/repo@main",
-    notion: "https://www.notion.so/... page/database URL or id",
+    github: "owner/repo@main",
+    notion: "Notion page/database URL or id",
     web: "https://docs.example.com",
   };
   elements.targetSyncInput.placeholder =
@@ -807,14 +954,7 @@ async function refreshSyncStatus(sourceId, token = state.syncPollToken) {
       return;
     }
     if (String(payload.status || "").toLowerCase() === "error") {
-      if (!state.activeSyncJobId) {
-        elements.syncProgress.hidden = false;
-        elements.syncProgress.classList.remove("indeterminate");
-        elements.syncProgressLabel.textContent = "Sync status unavailable";
-        elements.syncProgressPercent.textContent = "Error";
-        elements.syncProgressDetail.textContent =
-          payload.message || "Unable to load sync status.";
-      }
+      renderSyncStatusUnavailable(payload.message || "Unable to load sync status.");
       return;
     }
     const job = payload.latest_job || null;
@@ -830,12 +970,19 @@ async function refreshSyncStatus(sourceId, token = state.syncPollToken) {
     if (token !== state.syncPollToken || sourceId !== state.activeSyncSourceId) {
       return;
     }
-    elements.syncProgress.hidden = false;
-    elements.syncProgress.classList.remove("indeterminate");
-    elements.syncProgressLabel.textContent = "Sync status unavailable";
-    elements.syncProgressPercent.textContent = "Error";
-    elements.syncProgressDetail.textContent = error.message;
+    renderSyncStatusUnavailable(error.message);
   }
+}
+
+function renderSyncStatusUnavailable(message) {
+  elements.syncProgress.hidden = false;
+  elements.syncProgress.classList.remove("indeterminate");
+  elements.syncProgressLabel.textContent = "Sync status unavailable";
+  elements.syncProgressPercent.textContent = "Error";
+  setSyncProgressValue(0, true);
+  elements.syncProgressDetail.textContent = redactSensitiveString(
+    firstString(message, "Unable to load sync status."),
+  );
 }
 
 function renderSyncProgress(job, sourceId) {

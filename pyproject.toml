@@ -25,8 +25,12 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit[toml]>=1.8.6",
+    "mypy>=1.19.0",
     "playwright>=1.55.0",
+    "pytest-cov>=7.0.0",
     "pytest>=9.0.0",
+    "ruff>=0.14.0",
 ]
 
 [tool.pytest.ini_options]
@@ -42,3 +46,76 @@ markers = [
     "e2e: deterministic end-to-end tests using fake sources",
     "live: opt-in live external API smoke tests",
 ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+extend-exclude = [
+    ".venv",
+    "chroma_db",
+]
+
+[tool.ruff.lint]
+# Start with high-signal correctness checks so the gate is stable on the
+# current codebase without burying portfolio reviewers in style churn.
+select = [
+    "E9",
+    "F63",
+    "F7",
+    "F82",
+]
+
+[tool.mypy]
+python_version = "3.13"
+files = [
+    "core",
+    "search/debug_redaction.py",
+    "search/ranking.py",
+    "search/retrieval_pipeline.py",
+    "web_console/codex_cli.py",
+    "web_console/services",
+]
+explicit_package_bases = true
+follow_imports = "skip"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+[tool.bandit]
+exclude_dirs = [
+    ".venv",
+    "tests",
+]
+skips = [
+    # Existing non-security content hashes produce noisy findings. Keep the
+    # gate focused on new medium/high issues until those call sites are
+    # reviewed in an application-behavior task.
+    "B324",
+    # Sitemap XML parsing is a known connector hardening follow-up. Do not make
+    # the portfolio CI gate fail on this pre-existing behavior.
+    "B314",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "api",
+    "core",
+    "environments",
+    "fetching",
+    "indexing",
+    "search",
+    "storage",
+    "wiki",
+    "web_console",
+]
+omit = [
+    "tests/*",
+]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = true

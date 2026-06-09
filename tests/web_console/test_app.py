@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.models import ContextSearchResult, SourceModel, SourceType, SyncJobModel, SyncJobStatus, SyncStatus
+from environments.config import AppConfig
 from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 from web_console.app import (
     CodexCliExecutionError,
@@ -1223,6 +1224,69 @@ def test_github_target_sync_checks_running_job_before_owner_discovery(monkeypatc
     assert "target" not in payload
 
 
+def test_github_target_sync_recovers_stale_running_job_before_short_circuit(monkeypatch, tmp_path):
+    from fetching.github import GitHubRepositoryDiscovery
+
+    discovery_calls = []
+    sync_calls = []
+
+    async def fake_discovery(self, target):
+        discovery_calls.append(target)
+        return ["eunhwa99/MCPContentSearch@main"]
+
+    async def fake_sync_source(self, source_id):
+        sync_calls.append(source_id)
+        return SyncJobModel(
+            job_id="job-sync-source_github",
+            source_id=source_id,
+            status=SyncJobStatus.SUCCEEDED,
+            total_documents=1,
+            processed_documents=1,
+            indexed_chunks=1,
+        )
+
+    monkeypatch.setattr(GitHubRepositoryDiscovery, "discover_repository_specs", fake_discovery)
+    monkeypatch.setattr("indexing.ingestion_service.IngestionService.sync_source", fake_sync_source)
+
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    metadata_store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    stale_job = metadata_store.create_sync_job("source_github")
+    with metadata_store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs
+            SET status = ?, started_at = ?, heartbeat_at = ''
+            WHERE job_id = ?
+            """,
+            (SyncJobStatus.RUNNING.value, "2000-01-01T00:00:00+00:00", stale_job.job_id),
+        )
+
+    service = GitHubTargetSyncService(
+        config=AppConfig(),
+        metadata_store=metadata_store,
+        indexer=object(),
+        github_token="secret-token",
+    )
+
+    payload = asyncio.run(service.sync_target("github.com/eunhwa99/MCPContentSearch"))
+
+    assert payload["status"] == "succeeded"
+    assert payload["source_id"] == "source_github"
+    assert discovery_calls == ["github.com/eunhwa99/MCPContentSearch"]
+    assert sync_calls == ["source_github"]
+    recovered_job = metadata_store.get_sync_job(stale_job.job_id)
+    assert recovered_job.status == SyncJobStatus.FAILED
+    assert "timed out" in recovered_job.error_message
+
+
 def test_notion_target_sync_does_not_short_circuit_on_stale_running_job(monkeypatch):
     async def fake_sync_source(self, source_id):
         assert source_id == "source_notion"
@@ -2084,6 +2148,8 @@ def test_run_codex_cli_uses_ephemeral_isolated_subprocess(monkeypatch, tmp_path)
     captured = {}
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
+    codex_tmp = tmp_path / "codex-temp"
+    monkeypatch.setenv("CONTEXTWIKI_CODEX_TMPDIR", str(codex_tmp))
     monkeypatch.setenv("CONTEXTWIKI_CODEX_USE_SANDBOX_EXEC", "true")
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
@@ -2133,7 +2199,8 @@ def test_run_codex_cli_uses_ephemeral_isolated_subprocess(monkeypatch, tmp_path)
     assert process_args[0] == "/usr/bin/sandbox-exec"
     assert process_args[1] == "-f"
     sandbox_profile_path = process_args[2]
-    assert sandbox_profile_path.startswith("/private/tmp/contextwiki-codex-sandbox-")
+    assert Path(sandbox_profile_path).parent == codex_tmp
+    assert Path(sandbox_profile_path).name.startswith("contextwiki-codex-sandbox-")
     assert not Path(sandbox_profile_path).exists()
     assert "--ephemeral" in args
     assert "--ignore-user-config" in args
@@ -2161,7 +2228,8 @@ def test_run_codex_cli_uses_ephemeral_isolated_subprocess(monkeypatch, tmp_path)
     assert "--sandbox" in args
     assert args[args.index("--sandbox") + 1] == "read-only"
     assert cd_arg != str(REPO_ROOT)
-    assert cd_arg.startswith("/private/tmp/contextwiki-codex-work-")
+    assert Path(cd_arg).parent == codex_tmp
+    assert Path(cd_arg).name.startswith("contextwiki-codex-work-")
     assert not Path(cd_arg).exists()
     assert captured["kwargs"]["cwd"] == cd_arg
     assert captured["kwargs"]["start_new_session"] is True
@@ -2530,7 +2598,7 @@ def test_web_app_routes_codex_mode_and_marks_codex_failures_failed():
     assert '"failed"' in script
 
 
-def test_web_index_defaults_to_debug_mode_and_hides_smoke_wiki_controls():
+def test_web_index_defaults_to_debug_mode_and_shows_portfolio_flow():
     html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
     assert '<option value="contextwiki" selected>Indexed Evidence Debug</option>' in html
@@ -2538,19 +2606,20 @@ def test_web_index_defaults_to_debug_mode_and_hides_smoke_wiki_controls():
     assert html.index('value="contextwiki"') < html.index('value="codex"')
     assert 'placeholder="5"' in html
     assert "ContextWiki Indexed Evidence Console" in html
-    assert "Inspect synced RAG evidence, debug retrieval, and sync local test targets." in html
-    assert "Find indexed notes about GitHub sync behavior" in html
-    assert "Ask a question to inspect indexed evidence, retrieval output, and source coverage." in html
-    assert "Searches only content that has already been synced and indexed into local RAG storage." in html
+    assert "Sync GitHub repo" in html
+    assert "Ask question" in html
+    assert "See citations" in html
+    assert "Download wiki" in html
+    assert "How does this repo prevent stale citations?" in html
+    assert "buildWikiButton" in html
+    assert "Build Wiki" in html
 
     for removed in [
-        "Generate Wiki",
         "Fake Smoke",
         "GitHub Smoke",
         "Wiki topic",
         "GitHub repository",
         "Require generated smoke output",
-        "wikiButton",
         "fakeSmokeButton",
         "githubSmokeButton",
         "topicInput",
@@ -2566,12 +2635,170 @@ def test_web_app_does_not_render_source_auth_ref_value():
     assert "auth=configured" in script
     assert "firstString(source.last_error, source.auth_ref)" not in script
     assert "const payload = sanitizePayload(await requestJson(\"/api/sources\"))" in script
-    assert "elements.sourcesList.textContent = redactSensitiveString(error.message)" in script
+    assert "renderSourceListingFailure(error.message)" in script
+    assert "elements.sourcesList.textContent = safeMessage" in script
     assert "const safePayload = sanitizePayload(payload)" in script
     assert "isSensitivePayloadKey(key)" in script
     assert "state.lastPayload = safePayload" in script
     assert "elements.jsonPane.textContent = JSON.stringify(safePayload, null, 2)" in script
     assert "normalized.answer || JSON.stringify" not in script
+
+
+def test_web_app_surfaces_source_listing_structured_failures():
+    script_path = REPO_ROOT / "web" / "app.js"
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Date,
+  document,
+  fetch: async () => ({{
+    ok: true,
+    headers: {{ get: () => "application/json" }},
+    json: async () => ({{
+      status: "error",
+      message: "Source listing failed. See server logs for details.",
+      sources: [],
+    }}),
+  }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+(async () => {{
+  await vm.runInContext("refreshSources()", context);
+  const sourceText = document.querySelector("#sourcesList").textContent;
+  const statusText = document.querySelector("#statusText").textContent;
+  if (!sourceText.includes("Source listing failed. See server logs for details.")) {{
+    throw new Error(sourceText);
+  }}
+  if (!statusText.includes("Source listing failed. See server logs for details.")) {{
+    throw new Error(statusText);
+  }}
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_surfaces_active_sync_status_errors():
+    script_path = REPO_ROOT / "web" / "app.js"
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    removeAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Date,
+  document,
+  fetch: async () => ({{
+    ok: true,
+    headers: {{ get: () => "application/json" }},
+    json: async () => ({{
+      status: "error",
+      message: "Source sync status failed. See server logs for details.",
+      source_id: "source_github",
+      latest_job: null,
+    }}),
+  }}),
+  setInterval: () => 1,
+  clearInterval() {{}},
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+(async () => {{
+  vm.runInContext(`
+state.activeSyncSourceId = "source_github";
+state.activeSyncJobId = "job-sync-source_github";
+state.syncPollToken = 7;
+document.querySelector("#syncProgress").hidden = false;
+document.querySelector("#syncProgressLabel").textContent = "source_github running";
+document.querySelector("#syncProgressPercent").textContent = "Running";
+document.querySelector("#syncProgressDetail").textContent = "previous progress";
+`, context);
+  await vm.runInContext(`refreshSyncStatus("source_github", 7)`, context);
+  const label = document.querySelector("#syncProgressLabel").textContent;
+  const percent = document.querySelector("#syncProgressPercent").textContent;
+  const detail = document.querySelector("#syncProgressDetail").textContent;
+  if (!label.includes("Sync status unavailable")) throw new Error(label);
+  if (!percent.includes("Error")) throw new Error(percent);
+  if (!detail.includes("Source sync status failed. See server logs for details.")) {{
+    throw new Error(detail);
+  }}
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
 
 
 def test_web_app_sanitizes_payload_before_render_and_download():
@@ -2822,6 +3049,183 @@ if (!context.__detail.includes("CONTEXTWIKI_GITHUB_REPOSITORIES")) {{
 if (context.__detail.includes("Sync request failed")) {{
   throw new Error(`stopped detail fell back instead of using error_message: ${{context.__detail}}`);
 }}
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_maps_wiki_status_copy_and_download_label():
+    script_path = REPO_ROOT / "web" / "app.js"
+    generated_payload = {
+        "status": "generated",
+        "markdown": "# ContextWiki\n\nGenerated page [C1]",
+        "citations": [{"marker": "C1"}],
+        "used_chunks": ["chunk-1"],
+    }
+    insufficient_payload = {
+        "status": "insufficient_evidence",
+        "markdown": "## Not enough evidence\n\nNeed at least three active chunks.",
+        "reason": "not_enough_chunks",
+    }
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll(selector) {{
+    if (selector === ".tab") return [{{ dataset: {{ tab: "answer" }}, addEventListener() {{}}, classList: {{ toggle() {{}} }}, setAttribute() {{}}, tabIndex: 0 }}];
+    if (selector === ".tab-pane") return [{{ id: "answerPane", classList: {{ toggle() {{}} }}, hidden: false, setAttribute() {{}} }}];
+    return [];
+  }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Blob: function Blob(parts, options) {{ this.parts = parts; this.options = options; }},
+  URL: {{ createObjectURL() {{ return "blob:test"; }}, revokeObjectURL() {{}} }},
+  Date,
+  document,
+  fetch: async () => ({{ ok: true, headers: {{ get: () => "application/json" }}, json: async () => ({{ status: "ok" }}) }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+context.__generatedPayload = {json.dumps(generated_payload)};
+context.__insufficientPayload = {json.dumps(insufficient_payload)};
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+vm.runInContext(`
+renderResult("wiki", globalThis.__generatedPayload);
+globalThis.__generated = {{
+  meta: document.querySelector("#resultMeta").textContent,
+  html: document.querySelector("#answerPane").innerHTML,
+  label: document.querySelector("#downloadMarkdownButton").textContent,
+  disabled: document.querySelector("#downloadMarkdownButton").disabled,
+}};
+renderResult("wiki", globalThis.__insufficientPayload);
+globalThis.__insufficient = {{
+  meta: document.querySelector("#resultMeta").textContent,
+  html: document.querySelector("#answerPane").innerHTML,
+  label: document.querySelector("#downloadMarkdownButton").textContent,
+  status: actionStatusMessage("wiki", {{ status: "insufficient_evidence" }}),
+  succeeded: actionSucceeded({{ status: "insufficient_evidence" }}, "wiki"),
+}};
+`, context);
+if (!context.__generated.meta.includes("Wiki ready")) throw new Error(context.__generated.meta);
+if (!context.__generated.html.includes("Citation-backed page ready for download.")) throw new Error(context.__generated.html);
+if (context.__generated.label !== "Download Wiki") throw new Error(context.__generated.label);
+if (context.__generated.disabled) throw new Error("generated wiki download disabled");
+if (!context.__insufficient.meta.includes("Wiki needs more evidence")) throw new Error(context.__insufficient.meta);
+if (!context.__insufficient.html.includes("Not enough evidence")) throw new Error(context.__insufficient.html);
+if (context.__insufficient.html.includes("Citation-backed page ready for download.")) throw new Error(context.__insufficient.html);
+if (context.__insufficient.label !== "Download Markdown") throw new Error(context.__insufficient.label);
+if (context.__insufficient.status !== "Wiki needs more indexed evidence.") throw new Error(context.__insufficient.status);
+if (context.__insufficient.succeeded !== false) throw new Error("insufficient wiki counted as success");
+"""
+    subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
+
+
+def test_web_app_marks_non_success_answer_and_sync_states():
+    script_path = REPO_ROOT / "web" / "app.js"
+    node_script = f"""
+const fs = require("fs");
+const vm = require("vm");
+function element() {{
+  return {{
+    addEventListener() {{}},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    setAttribute() {{}},
+    appendChild() {{}},
+    click() {{}},
+    remove() {{}},
+    dataset: {{}},
+    style: {{}},
+    value: "",
+    checked: false,
+    disabled: false,
+    hidden: false,
+    textContent: "",
+    innerHTML: "",
+    tabIndex: 0,
+  }};
+}}
+const elements = new Map();
+const document = {{
+  readyState: "loading",
+  addEventListener() {{}},
+  querySelector(selector) {{
+    if (!elements.has(selector)) elements.set(selector, element());
+    return elements.get(selector);
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }},
+  body: {{ appendChild() {{}} }},
+}};
+const context = {{
+  console,
+  Date,
+  document,
+  fetch: async () => ({{ ok: true, headers: {{ get: () => "application/json" }}, json: async () => ({{ status: "ok" }}) }}),
+  setTimeout,
+  clearTimeout,
+}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync({str(script_path)!r}, "utf8"), context);
+vm.runInContext(`
+globalThis.__results = {{
+  configurationStatus: actionStatusMessage("answer", {{ evidence_status: "configuration_error" }}),
+  configurationSuccess: actionSucceeded({{ evidence_status: "configuration_error" }}, "answer"),
+  insufficientStatus: actionStatusMessage("answer", {{ evidence_status: "insufficient" }}),
+  insufficientSuccess: actionSucceeded({{ evidence_status: "insufficient" }}, "answer"),
+  skippedStatus: actionStatusMessage("github target sync", {{ status: "skipped" }}),
+  skippedSuccess: actionSucceeded({{ status: "skipped" }}, "github target sync"),
+}};
+renderResult("answer", {{ evidence_status: "configuration_error", answer: "Missing key." }});
+globalThis.__configurationMeta = document.querySelector("#resultMeta").textContent;
+renderResult("answer", {{ evidence_status: "insufficient", answer: "Not enough evidence." }});
+globalThis.__insufficientMeta = document.querySelector("#resultMeta").textContent;
+renderResult("github target sync", {{ status: "skipped", message: "No repositories discovered." }});
+globalThis.__skippedMeta = document.querySelector("#resultMeta").textContent;
+renderResult("sync source_github", {{ status: "running", job: {{ status: "running" }} }});
+globalThis.__runningMeta = document.querySelector("#resultMeta").textContent;
+renderResult("web target sync", {{ status: "already_running", job: {{ status: "running" }} }});
+globalThis.__alreadyRunningMeta = document.querySelector("#resultMeta").textContent;
+`, context);
+if (context.__results.configurationStatus !== "Answer needs configuration.") throw new Error(context.__results.configurationStatus);
+if (context.__results.configurationSuccess !== false) throw new Error("configuration error counted as success");
+if (context.__results.insufficientStatus !== "Answer needs more indexed evidence.") throw new Error(context.__results.insufficientStatus);
+if (context.__results.insufficientSuccess !== false) throw new Error("insufficient answer counted as success");
+if (context.__results.skippedStatus !== "Skipped github target sync.") throw new Error(context.__results.skippedStatus);
+if (context.__results.skippedSuccess !== false) throw new Error("skipped sync counted as success");
+if (!context.__configurationMeta.includes("Answer needs configuration")) throw new Error(context.__configurationMeta);
+if (!context.__insufficientMeta.includes("Answer needs more indexed evidence")) throw new Error(context.__insufficientMeta);
+if (!context.__skippedMeta.includes("Github Target Sync skipped")) throw new Error(context.__skippedMeta);
+if (!context.__runningMeta.includes("Sync Source Github running")) throw new Error(context.__runningMeta);
+if (!context.__alreadyRunningMeta.includes("Web Target Sync already running")) throw new Error(context.__alreadyRunningMeta);
 """
     subprocess.run(["node", "-e", node_script], check=True, cwd=REPO_ROOT)
 

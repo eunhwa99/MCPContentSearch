@@ -1,3 +1,12 @@
+# Runtime compatibility mirror for pip-only environments.
+#
+# Source of truth:
+# - pyproject.toml declares runtime and dev dependencies.
+# - uv.lock records the resolved dependency graph used by local verification and CI.
+#
+# CI does not install from this file. Keep this mirror runtime-only and update it
+# only when pip-based consumers need a non-uv fallback.
+
 # MCP
 mcp[cli]>=1.19.0
 
@@ -23,6 +32,3 @@ chromadb>=1.2.1
 
 # Others
 numpy>=1.26.0
-
-# Dev
-pytest>=9.0.0

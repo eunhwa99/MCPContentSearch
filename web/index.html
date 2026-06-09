@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ContextWiki Indexed Evidence Console</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260602-indexed-evidence-console" />
+    <title>ContextWiki Portfolio Demo Console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260609-portfolio-demo-console" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
           <h1>ContextWiki Indexed Evidence Console</h1>
-          <p>Inspect synced RAG evidence, debug retrieval, and sync local test targets.</p>
+          <p>Sync GitHub evidence, ask a grounded question, inspect citations, export wiki markdown.</p>
         </div>
         <div class="status-stack" aria-live="polite">
           <span id="healthBadge" class="badge badge-warn">Checking API</span>
@@ -19,38 +19,99 @@
         </div>
       </header>
 
+      <nav class="workflow-strip" aria-label="Portfolio demo workflow">
+        <span class="workflow-pill active"><span>1</span> Sync GitHub repo</span>
+        <span class="workflow-pill"><span>2</span> Ask question</span>
+        <span class="workflow-pill"><span>3</span> See citations</span>
+        <span class="workflow-pill"><span>4</span> Download wiki</span>
+      </nav>
+
       <section class="control-grid" aria-label="Console controls">
-        <form id="queryForm" class="panel input-panel">
-          <div class="field">
-            <label for="questionInput">Question</label>
-            <textarea id="questionInput" rows="5" placeholder="Find indexed notes about GitHub sync behavior"></textarea>
-          </div>
+        <form id="queryForm" class="panel workflow-panel">
+          <section class="step-block target-sync-box" aria-label="Target sync">
+            <div class="step-heading">
+              <span class="step-number">1</span>
+              <div>
+                <h2>Sync GitHub repo</h2>
+                <p class="muted">One-off target sync</p>
+              </div>
+            </div>
 
-          <div class="field compact answer-mode-field">
-            <label for="answerModeSelect">Console mode</label>
-            <select id="answerModeSelect">
-              <option value="contextwiki" selected>Indexed Evidence Debug</option>
-              <option value="codex">Codex CLI Summary (experimental)</option>
-            </select>
-          </div>
+            <div class="sync-controls">
+              <div class="field compact">
+                <label for="targetSourceTypeSelect">Target type</label>
+                <select id="targetSourceTypeSelect">
+                  <option value="github">GitHub repo</option>
+                  <option value="notion">Notion</option>
+                  <option value="web">Web URL</option>
+                </select>
+              </div>
 
-          <div class="console-note" aria-label="Console guidance">
-            <h2>What this console is for</h2>
-            <ul>
-              <li>Searches only content that has already been synced and indexed into local RAG storage.</li>
-              <li><strong>Indexed Evidence Debug</strong> is the default because it shows what retrieval actually found and why.</li>
-              <li><strong>Codex CLI Summary</strong> is a convenience summary over retrieved chunks, not a full multi-step agent like Claude using MCP.</li>
-            </ul>
-          </div>
+              <div class="field compact target-field">
+                <label for="targetSyncInput">Target</label>
+                <input id="targetSyncInput" type="text" placeholder="owner/repo@main" />
+              </div>
 
-          <div class="inline-actions">
-            <button id="answerButton" type="button">Answer</button>
-          </div>
+              <div class="inline-actions compact-actions">
+                <button id="targetSyncButton" type="button" class="secondary">Sync Target</button>
+              </div>
+            </div>
+
+            <div id="syncProgress" class="sync-progress" role="status" aria-live="polite" hidden>
+              <div class="progress-heading">
+                <span id="syncProgressLabel">Sync not started.</span>
+                <span id="syncProgressPercent">0%</span>
+              </div>
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-label="Sync progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <div id="syncProgressBar" class="progress-bar" style="width: 0%"></div>
+              </div>
+              <div id="syncProgressDetail" class="muted">Idle</div>
+            </div>
+          </section>
+
+          <section class="step-block ask-step" aria-label="Question and wiki actions">
+            <div class="step-heading">
+              <span class="step-number">2</span>
+              <div>
+                <h2>Ask question</h2>
+                <p class="muted">Local indexed evidence</p>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="questionInput">Question or wiki topic</label>
+              <textarea id="questionInput" rows="4" placeholder="How does this repo prevent stale citations?"></textarea>
+            </div>
+
+            <div class="ask-toolbar">
+              <div class="field compact answer-mode-field">
+                <label for="answerModeSelect">Mode</label>
+                <select id="answerModeSelect">
+                  <option value="contextwiki" selected>Indexed Evidence Debug</option>
+                  <option value="codex">Codex CLI Summary (experimental)</option>
+                </select>
+              </div>
+
+              <div class="inline-actions ask-actions">
+                <button id="answerButton" type="button">Ask</button>
+                <button id="buildWikiButton" type="button" class="secondary">Build Wiki</button>
+              </div>
+            </div>
+          </section>
         </form>
 
         <aside class="panel filter-panel" aria-label="Request filters">
           <div class="panel-heading">
-            <h2>Filters</h2>
+            <div>
+              <h2>Filters</h2>
+              <p class="muted">Optional scope</p>
+            </div>
             <button id="refreshButton" type="button" class="secondary">Refresh Sources</button>
           </div>
 
@@ -72,42 +133,7 @@
             <input id="topKInput" type="number" min="1" max="20" step="1" placeholder="5" />
           </div>
 
-          <div class="target-sync-box" aria-label="Target sync">
-            <div class="field compact">
-              <label for="targetSourceTypeSelect">Target sync type</label>
-              <select id="targetSourceTypeSelect">
-                <option value="github">GitHub</option>
-                <option value="notion">Notion</option>
-                <option value="web">Web URL</option>
-              </select>
-            </div>
-
-            <div class="field compact">
-              <label for="targetSyncInput">Target URL or id</label>
-              <input id="targetSyncInput" type="text" placeholder="github.com/eunhwa99 or owner/repo@main" />
-            </div>
-
-            <div class="inline-actions compact-actions">
-              <button id="targetSyncButton" type="button" class="secondary">Sync Target</button>
-            </div>
-
-            <div id="syncProgress" class="sync-progress" role="status" aria-live="polite" hidden>
-              <div class="progress-heading">
-                <span id="syncProgressLabel">Sync not started.</span>
-                <span id="syncProgressPercent">0%</span>
-              </div>
-              <div
-                class="progress-track"
-                role="progressbar"
-                aria-label="Sync progress"
-                aria-valuemin="0"
-                aria-valuemax="100"
-              >
-                <div id="syncProgressBar" class="progress-bar" style="width: 0%"></div>
-              </div>
-              <div id="syncProgressDetail" class="muted">Idle</div>
-            </div>
-          </div>
+          <p class="filter-note">Configured source sync stays in the Sources panel.</p>
         </aside>
       </section>
 
@@ -115,23 +141,23 @@
         <section class="panel result-panel">
           <div class="panel-heading">
             <div>
-              <h2>Result</h2>
+              <h2>Answer and wiki</h2>
               <p id="resultMeta" class="muted">No request has run yet.</p>
             </div>
             <div class="download-actions">
-              <button id="downloadMarkdownButton" type="button" class="secondary" disabled>Download Markdown</button>
+              <button id="downloadMarkdownButton" type="button" class="secondary" disabled>Download Wiki</button>
               <button id="downloadJsonButton" type="button" class="secondary" disabled>Download JSON</button>
             </div>
           </div>
 
           <div class="tabs" role="tablist" aria-label="Result views">
             <button id="answerTab" class="tab active" type="button" data-tab="answer" role="tab" aria-selected="true" aria-controls="answerPane">Answer</button>
-            <button id="markdownTab" class="tab" type="button" data-tab="markdown" role="tab" aria-selected="false" aria-controls="markdownPane" tabindex="-1">Markdown</button>
+            <button id="markdownTab" class="tab" type="button" data-tab="markdown" role="tab" aria-selected="false" aria-controls="markdownPane" tabindex="-1">Wiki Markdown</button>
             <button id="jsonTab" class="tab" type="button" data-tab="json" role="tab" aria-selected="false" aria-controls="jsonPane" tabindex="-1">JSON</button>
           </div>
 
           <article id="answerPane" class="tab-pane active" role="tabpanel" aria-labelledby="answerTab">
-            <p class="empty">Ask a question to inspect indexed evidence, retrieval output, and source coverage.</p>
+            <p class="empty">Sync a repo, ask a question, then build wiki markdown.</p>
           </article>
           <pre id="markdownPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="markdownTab" hidden></pre>
           <pre id="jsonPane" class="tab-pane code-pane" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
@@ -158,6 +184,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260602-indexed-evidence-console"></script>
+    <script src="/static/app.js?v=20260609-portfolio-demo-console"></script>
   </body>
 </html>
