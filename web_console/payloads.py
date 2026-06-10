@@ -16,6 +16,10 @@ PUBLIC_CONFIG_ERROR_MESSAGES = {
         "Source source_github is disabled because no GitHub repositories are "
         "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
     ),
+    (
+        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "is not set or is not an existing directory."
+    ),
     "NOTION_API_KEY is required for Notion target sync",
     ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
 }
@@ -261,6 +265,9 @@ def safe_url_for_display(value: Any) -> str:
         from fetching.web_docs import _redact_url_credentials
 
         parsed = urlparse(str(value))
+        if parsed.scheme == "obsidian":
+            # obsidian:// deep-links carry no credentials; vault/file params are the meaningful content.
+            return str(value)
         if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
             return "redacted"
         redacted = _redact_url_credentials(str(value))

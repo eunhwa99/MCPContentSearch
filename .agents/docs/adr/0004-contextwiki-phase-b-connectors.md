@@ -22,10 +22,11 @@ The canonical Phase B source ids are:
 
 - `source_github`
 - `source_web`
+- `source_obsidian`
 
 Connector configuration is non-secret and environment-driven through `AppConfig` fields such as repository specs, web seed URLs, page/file limits, user agent, and crawl delay. GitHub authentication is optional and referenced in source metadata as `env:GITHUB_TOKEN`; the raw token is read only at runtime and must not be stored in SQLite, docs, tests, or logs.
 
-Both connectors produce `DocumentModel` records that satisfy the Phase B-0 lifecycle contract:
+All Phase B connectors produce `DocumentModel` records that satisfy the Phase B-0 lifecycle contract:
 
 - stable `external_id` and `document_id`
 - `canonical_url`
@@ -45,6 +46,8 @@ later configured syncs until a provenance-aware or explicit manual cleanup
 contract exists.
 
 Website/docs ingestion supports bounded same-origin crawling and sitemap URLs. It fetches and applies robots.txt disallow rules before page fetches, enforces a per-response byte cap, extracts readable text/title/canonical URLs, and uses canonical URLs as stable document identities.
+
+Obsidian vault ingestion walks a local directory for `.md` files, extracts YAML frontmatter for title resolution, and generates `obsidian://open?vault=...&file=...` canonical URLs. System directories (`.obsidian`, `.trash`) and any dot-prefixed path segment at any depth are skipped. The vault-relative path is used as `external_id` and `document_id` for stable identity within a vault. Configuration is via `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`; the connector disables gracefully when the path is unset or non-existent.
 
 Connector fetches must fail the sync on required API/page fetch errors so source-wide tombstoning only runs after a complete bounded snapshot. Live external validation remains optional and must be explicitly requested.
 

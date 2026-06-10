@@ -5,6 +5,7 @@ from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
 from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
+from fetching.obsidian import fetch_obsidian_documents
 from fetching.tistory import fetch_tistory_posts
 from fetching.web_docs import WebsiteDocsFetcher
 
@@ -206,6 +207,37 @@ class WebsiteSourceConnector(SourceConnector):
             return documents
 
 
+class ObsidianSourceConnector(SourceConnector):
+    supports_stale_cleanup = True
+
+    def __init__(self, config: AppConfig):
+        self.vault_path = config.obsidian_vault_path
+        enabled = bool(self.vault_path and self.vault_path.is_dir())
+        self.source = SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=enabled,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.IDLE,
+        )
+        self.disabled_reason = (
+            "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+            "is not set or is not an existing directory."
+            if not enabled
+            else ""
+        )
+
+    async def fetch_documents(self) -> list[DocumentModel]:
+        if not self.source.enabled:
+            return []
+        try:
+            return await fetch_obsidian_documents(self.vault_path)
+        except Exception:
+            self.supports_stale_cleanup = False
+            raise
+
+
 def build_source_registry(
     *,
     config: AppConfig,
@@ -231,5 +263,6 @@ def build_source_registry(
                 config,
                 http_client=web_http_client,
             ),
+            ObsidianSourceConnector(config),
         ]
     )

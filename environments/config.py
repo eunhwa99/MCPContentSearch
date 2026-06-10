@@ -200,6 +200,13 @@ class AppConfig:
         default_factory=lambda: _int_env("CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS", 1200)
     )
 
+    # Obsidian connector
+    obsidian_vault_path: Path | None = field(
+        default_factory=lambda: (
+            Path(p) if (p := os.getenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "").strip()) else None
+        )
+    )
+
     # Local Web Console startup sync. Empty env value intentionally disables it.
     contextwiki_auto_sync_sources: tuple[str, ...] = field(
         default_factory=lambda: _split_env_with_default(
@@ -230,6 +237,8 @@ class AppConfig:
         )
         _require_non_negative("search_llm_timeout", self.search_llm_timeout)
         _require_positive_int("search_llm_max_rewrites", self.search_llm_max_rewrites)
+        if self.obsidian_vault_path is not None and not self.obsidian_vault_path.is_absolute():
+            raise ValueError("CONTEXTWIKI_OBSIDIAN_VAULT_PATH must be an absolute path")
         if (
             self.wiki_llm_enabled
             and self.wiki_llm_provider == "openai"

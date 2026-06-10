@@ -99,6 +99,7 @@ def test_build_source_registry_includes_phase_b_sources():
         "source_notion",
         "source_tistory",
         "source_web",
+        "source_obsidian",
     }
     assert isinstance(registry.get_connector("source_github"), GitHubSourceConnector)
     assert isinstance(registry.get_connector("source_web"), WebsiteSourceConnector)
@@ -106,6 +107,7 @@ def test_build_source_registry_includes_phase_b_sources():
     assert sources["source_github"].auth_ref == "env:GITHUB_TOKEN"
     assert sources["source_web"].enabled is True
     assert sources["source_web"].auth_ref == "env:CONTEXTWIKI_WEB_URLS"
+    assert sources["source_obsidian"].auth_ref == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
 
 
 def test_github_connector_uses_validated_custom_token_env_ref():
