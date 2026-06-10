@@ -68,6 +68,21 @@ def _search_llm_enabled_default() -> bool:
     return _bool_env("CONTEXTWIKI_SEARCH_LLM_ENABLED", False)
 
 
+def _obsidian_vault_path_default() -> Path | None:
+    raw_value = os.getenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "").strip()
+    if not raw_value:
+        return None
+    return _expanduser_safe(raw_value)
+
+
+def _expanduser_safe(value: str | Path) -> Path:
+    path_value = Path(value)
+    try:
+        return path_value.expanduser()
+    except RuntimeError:
+        return path_value
+
+
 def _require_positive_int(name: str, value: int):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer")
@@ -200,6 +215,11 @@ class AppConfig:
         default_factory=lambda: _int_env("CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS", 1200)
     )
 
+    # Obsidian connector
+    obsidian_vault_path: Path | None = field(
+        default_factory=_obsidian_vault_path_default
+    )
+
     # Local Web Console startup sync. Empty env value intentionally disables it.
     contextwiki_auto_sync_sources: tuple[str, ...] = field(
         default_factory=lambda: _split_env_with_default(
@@ -209,6 +229,15 @@ class AppConfig:
     )
 
     def __post_init__(self):
+        if self.obsidian_vault_path is not None:
+            obsidian_vault_path = self.obsidian_vault_path
+            if not isinstance(obsidian_vault_path, Path):
+                obsidian_vault_path = Path(obsidian_vault_path)
+            object.__setattr__(
+                self,
+                "obsidian_vault_path",
+                _expanduser_safe(obsidian_vault_path),
+            )
         _require_positive_int("github_max_files", self.github_max_files)
         _require_positive_int("github_max_file_bytes", self.github_max_file_bytes)
         _require_positive_int("web_max_pages", self.web_max_pages)

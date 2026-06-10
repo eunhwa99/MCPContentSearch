@@ -69,9 +69,10 @@ ContextWiki currently has source connectors for:
 | Tistory | `source_tistory` | existing Tistory env settings | blog post source |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | repository file source |
 | Web/docs | `source_web` | `CONTEXTWIKI_WEB_URLS` | sitemap or bounded same-origin docs source |
+| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` | local vault markdown source |
 
-So yes: ContextWiki can now bring in GitHub content when repositories are
-configured.
+So yes: ContextWiki can now bring in GitHub, Web/docs, and Obsidian content
+through the same source-sync and citation-safe retrieval pipeline.
 
 Example:
 
@@ -106,6 +107,31 @@ fetches sitemap entries or bounded same-origin pages, respects robots.txt
 disallow rules, extracts readable text and canonical URLs, and indexes the
 resulting documents.
 
+Obsidian works similarly for local vault content:
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH="~/Obsidian/myVault"
+```
+
+Then:
+
+```text
+sync_source("source_obsidian")
+```
+
+walks local `.md` files under the configured vault, skips Obsidian/system
+dot-paths, strips frontmatter from indexed body text, preserves original file
+line numbers for citations, and uses `obsidian://open?vault=...&file=...`
+deep-links as canonical URLs.
+
+Important safety rule:
+
+```text
+Obsidian sync follows the same lifecycle guard as other cleanup-capable sources:
+- complete snapshots can tombstone deleted notes
+- incomplete snapshots fail the sync and must not tombstone notes
+```
+
 ---
 
 ## 2. Overall Mental Model
@@ -122,7 +148,7 @@ flowchart TD
     Answer["CitationAnswerService"]
     Store["MetadataStore<br/>SQLite"]
     Vector["Vector Index<br/>ChromaDB / LlamaIndex"]
-    Sources["Source Connectors<br/>Notion / Tistory / GitHub / Web docs"]
+    Sources["Source Connectors<br/>Notion / Tistory / GitHub / Web docs / Obsidian"]
 
     Client --> MCP
     MCP --> Tools
@@ -162,7 +188,7 @@ The most important models are:
 
 | Model | Meaning | Main use |
 | --- | --- | --- |
-| `SourceModel` | Notion, Tistory, GitHub, Web/docs source | source configuration and sync state |
+| `SourceModel` | Notion, Tistory, GitHub, Web/docs, Obsidian source | source configuration and sync state |
 | `SyncJobModel` | one source sync execution | success/failure and processing counts |
 | `DocumentModel` | one original document | identity, content hash, lifecycle, source metadata |
 | `ChunkModel` | searchable/citeable document segment | vector search and citations |
@@ -172,7 +198,7 @@ Key distinction:
 
 ```text
 DocumentModel = management and sync unit
-Examples: one Notion page, one Tistory post, one GitHub file, one web page.
+Examples: one Notion page, one Tistory post, one GitHub file, one web page, one Obsidian note.
 
 ChunkModel = search and citation unit
 Examples: a markdown section, a code line range, a plain-text window.
@@ -198,7 +224,7 @@ ChromaDB
 
 ```mermaid
 flowchart TD
-    A["Fetch from Notion / Tistory / GitHub / Web"]
+    A["Fetch from Notion / Tistory / GitHub / Web / Obsidian"]
     B["DocumentModel"]
     C["DocumentChunker -> ChunkModel[]"]
     D["SQLite documents<br/>identity/content/hash/lifecycle"]
@@ -728,7 +754,7 @@ bounded GitHub SQLite metadata predicate before Python-side scoring instead of
 materializing every active GitHub chunk, so real GitHub repository matches still
 win deterministically. When vector recall is still insufficient, search also
 merges a normal all-source metadata/body fallback for plain lowercase probes, so
-GitHub metadata does not hide relevant Notion/Web/Tistory evidence for ordinary
+GitHub metadata does not hide relevant Notion/Web/Tistory/Obsidian evidence for ordinary
 technical topics.
 If vector search already returned enough lexically relevant candidates for an
 ambiguous plain lowercase topic, that vector evidence is kept ahead of GitHub
@@ -982,7 +1008,7 @@ flowchart TD
     Chroma["Chroma Collection"]
     Indexer["ContentIndexer"]
     Store["MetadataStore"]
-    Registry["SourceRegistry<br/>Notion / Tistory / GitHub / Web"]
+    Registry["SourceRegistry<br/>Notion / Tistory / GitHub / Web / Obsidian"]
     Ingestion["IngestionService"]
     ContextSearch["ContextSearchService"]
     Answer["CitationAnswerService"]
@@ -1077,7 +1103,7 @@ to retrieve grounded context without directly accessing the database.
 Current implemented phase slice:
 
 ```text
-Phase B added GitHub and Web/docs connectors. Phase C added read-only Auto Wiki
+Phase B added GitHub, Web/docs, and Obsidian connectors. Phase C added read-only Auto Wiki
 generation from active citation-ready chunks with deterministic fallback and
 optional opt-in wiki LLM synthesis. Phase C.5 added a local Web Console for
 manual source sync, answer, wiki, download, and smoke-test workflows. Phase D1
@@ -1091,7 +1117,7 @@ Honest limitation version:
 The current implementation builds the production safety foundation:
 source/job metadata, document identity, source-aware chunking, tombstone-based
 stale cleanup, SQLite-backed active retrieval checks, historical chunk-id
-provenance, GitHub/Web connectors, structured context search, and citation-gated
+provenance, GitHub/Web/Obsidian connectors, structured context search, and citation-gated
 answer responses. It now also includes read-only citation-backed Auto Wiki
 generation, local Web Console developer tooling, and deterministic local
 payload-level answer-quality eval scaffolding plus fixture-based retrieval eval.
@@ -1216,7 +1242,7 @@ You understand the core if you can explain:
 - Difference between `search_context` and `answer_with_citations`.
 - Why `ContextSearchResult` exists.
 - Difference between legacy raw vectors and ContextWiki-managed vectors.
-- What GitHub/Web connectors currently support and intentionally do not support.
+- What GitHub/Web/Obsidian connectors currently support and intentionally do not support.
 
 ---
 
@@ -1230,6 +1256,10 @@ Good next topics:
    - line_start / line_end
    - GitHub blob URL citation
    - blob SHA version_id
+2. Website/docs and Obsidian connector details
+   - bounded crawl/source identity behavior
+   - frontmatter stripping vs line offset preservation
+   - local vault path and citation-safe sync lifecycle
 
 2. Website/docs connector details
    - sitemap discovery

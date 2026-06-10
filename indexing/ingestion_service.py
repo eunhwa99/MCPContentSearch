@@ -65,10 +65,16 @@ class IngestionService:
             for source in self.source_registry.list_sources():
                 self.metadata_store.register_source(source)
 
+    def refresh_registered_sources(self):
+        for source in self.source_registry.list_sources():
+            self.metadata_store.register_source(source)
+
     async def sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)
         if self.register_source_config:
-            self.metadata_store.register_source(connector.source)
+            self.refresh_registered_sources()
+        else:
+            connector.refresh_source_state()
         job, started = self.metadata_store.begin_sync_job(source_id)
         if not started:
             logger.info("Sync already running for source %s", source_id)
@@ -91,6 +97,7 @@ class IngestionService:
             inactive_job = self._refresh_running_job_or_current(job.job_id)
             if inactive_job:
                 return inactive_job
+            cleanup_missing_documents = getattr(connector, "supports_stale_cleanup", False)
             processed = 0
             skipped = 0
             indexed_chunks = 0
@@ -117,7 +124,9 @@ class IngestionService:
                     last_seen_sync_id,
                 )
                 document_id = normalized.document_id or normalized.id
-                content_hash = ContentHasher.hash_content(normalized.content)
+                content_hash = normalized.content_hash or ContentHasher.hash_content(
+                    normalized.content
+                )
                 normalized = normalized.model_copy(update={"content_hash": content_hash})
                 chunks = self.chunker.chunk_document(normalized)
                 old_chunks = self.metadata_store.list_chunks_for_document(document_id)
@@ -221,7 +230,7 @@ class IngestionService:
                 skipped_documents=skipped,
                 last_seen_at=last_seen_at,
                 last_seen_sync_id=last_seen_sync_id,
-                cleanup_missing_documents=getattr(connector, "supports_stale_cleanup", False),
+                cleanup_missing_documents=cleanup_missing_documents,
                 cleanup_document_id_prefixes=getattr(
                     connector,
                     "cleanup_document_id_prefixes",

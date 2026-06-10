@@ -231,9 +231,18 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
             "local_only": True,
         }
 
+    def _refresh_registered_sources_best_effort() -> None:
+        if not hasattr(dependencies.ingestion_service, "refresh_registered_sources"):
+            return
+        try:
+            dependencies.ingestion_service.refresh_registered_sources()
+        except Exception:
+            _log_suppressed_error("Source refresh failed")
+
     @app.get("/api/sources")
     async def sources() -> dict[str, Any]:
         try:
+            _refresh_registered_sources_best_effort()
             return {"sources": _list_sources(dependencies.metadata_store)}
         except Exception:
             _log_suppressed_error("Source listing failed")
@@ -249,6 +258,7 @@ def create_console_app(dependencies: ConsoleDependencies) -> FastAPI:
             raise HTTPException(status_code=503, detail="metadata store is not configured")
         normalized_source_id = _normalize_text(source_id)
         try:
+            _refresh_registered_sources_best_effort()
             return _source_sync_status(dependencies.metadata_store, normalized_source_id)
         except Exception:
             _log_suppressed_error("Source sync status failed")

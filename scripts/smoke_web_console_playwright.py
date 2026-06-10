@@ -84,6 +84,17 @@ class FakeMetadataStore:
                 name="ContextWiki Notes",
                 sync_status=SyncStatus.IDLE,
             ),
+            SourceModel(
+                source_id="source_obsidian",
+                source_type=SourceType.OBSIDIAN,
+                name="Vault",
+                enabled=False,
+                last_error=(
+                    "Source source_obsidian is disabled because "
+                    "CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory."
+                ),
+                sync_status=SyncStatus.IDLE,
+            ),
         ]
 
     def list_sources(self):
@@ -107,8 +118,21 @@ class FakeMetadataStore:
 
 
 class FakeIngestionService:
-    def __init__(self):
+    def __init__(self, metadata_store):
         self.calls: list[str] = []
+        self.metadata_store = metadata_store
+        self.refresh_calls = 0
+
+    def refresh_registered_sources(self):
+        self.refresh_calls += 1
+        if self.refresh_calls < 2:
+            return
+        self.metadata_store.sources = [
+            source.model_copy(update={"enabled": True, "last_error": ""})
+            if source.source_id == "source_obsidian"
+            else source
+            for source in self.metadata_store.sources
+        ]
 
     async def sync_source(self, source_id):
         self.calls.append(source_id)
@@ -181,6 +205,20 @@ def _run_browser_checks(base_url: str) -> None:
         page.set_default_timeout(10000)
         page.goto(base_url, wait_until="domcontentloaded")
 
+        page.wait_for_function(
+            "() => document.querySelector('#sourcesList')?.textContent?.includes('enabled=false')"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#sourcesList')?.textContent?.includes('CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory.')"
+        )
+        page.locator("#refreshButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#sourcesList')?.textContent?.includes('enabled=true')"
+        )
+        page.wait_for_function(
+            "() => !document.querySelector('#sourcesList')?.textContent?.includes('CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory.')"
+        )
+
         # Failure path: empty target sync input should show client-side validation.
         page.locator("#targetSyncButton").click()
         page.wait_for_function(
@@ -188,8 +226,7 @@ def _run_browser_checks(base_url: str) -> None:
         )
 
         # Filter + answer success path.
-        page.locator('input[name="sourceType"][value="github"]').check()
-        page.locator("#sourceIdInput").fill("source_github")
+        page.locator('input[name="sourceType"][value="obsidian"]').check()
         page.locator("#topKInput").fill("4")
         page.locator("#questionInput").fill("What changed in ContextWiki?")
         page.locator("#answerButton").click()
@@ -271,14 +308,15 @@ def _run_browser_checks(base_url: str) -> None:
 def main() -> None:
     answer_service = FakeAnswerService()
     codex_answer_service = FakeCodexAnswerService()
-    ingestion_service = FakeIngestionService()
+    metadata_store = FakeMetadataStore()
+    ingestion_service = FakeIngestionService(metadata_store)
     target_sync_service = FakeTargetSyncService()
     app = create_console_app(
         ConsoleDependencies(
             answer_service=answer_service,
             wiki_service=FakeWikiService(),
             codex_answer_service=codex_answer_service,
-            metadata_store=FakeMetadataStore(),
+            metadata_store=metadata_store,
             ingestion_service=ingestion_service,
             target_sync_service=target_sync_service,
             auto_sync_source_ids=(),
@@ -305,8 +343,8 @@ def main() -> None:
         raise AssertionError("Expected indexed evidence answer request was not issued")
     call = answer_service.calls[-1]
     source_ids = call["filters"].get("source_ids", [])
-    if "source_github" not in source_ids:
-        raise AssertionError(f"Expected source_github filter in answer call, got {call}")
+    if source_ids != ["source_obsidian"]:
+        raise AssertionError(f"Expected source_obsidian filter in answer call, got {call}")
     if call["top_k"] != 4:
         raise AssertionError(f"Expected top_k=4 in answer call, got {call['top_k']}")
     if not call.get("include_debug"):
@@ -318,6 +356,10 @@ def main() -> None:
     if "source_web" in ingestion_service.calls:
         raise AssertionError(
             f"Target sync should not call configured source ingestion, got {ingestion_service.calls}"
+        )
+    if ingestion_service.refresh_calls < 2:
+        raise AssertionError(
+            f"Expected at least two source refreshes during browser flow, got {ingestion_service.refresh_calls}"
         )
     expected_target_call = {
         "source_type": "web",
@@ -336,6 +378,7 @@ def main() -> None:
                 "base_url": base_url,
                 "checks": [
                     "failure path: empty target sync validation",
+                    "refresh sources reflects obsidian recovery",
                     "filter + debug-first answer request",
                     "markdown/json download",
                     "visible citations",

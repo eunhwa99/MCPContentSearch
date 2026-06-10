@@ -9,6 +9,7 @@ from environments.config import AppConfig
 from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
 from fetching.fetcher import DocumentFetcher
 from core.models import IndexState
+from core.public_payloads import safe_source_payload, safe_sync_job_payload
 from indexing.background_tasks import get_default_background_task_registry, safe_error_message
 
 if TYPE_CHECKING:
@@ -276,9 +277,20 @@ def register_tools(
         """등록된 ContextWiki source 목록 조회"""
         if metadata_store is None:
             return {"sources": []}
+        if ingestion_service is not None and hasattr(
+            ingestion_service,
+            "refresh_registered_sources",
+        ):
+            try:
+                ingestion_service.refresh_registered_sources()
+            except Exception as exc:
+                logger.warning(
+                    "Source refresh failed before list_sources: %s",
+                    safe_error_message(exc),
+                )
         return {
             "sources": [
-                source.model_dump(mode="json")
+                safe_source_payload(source)
                 for source in metadata_store.list_sources()
             ]
         }
@@ -290,23 +302,35 @@ def register_tools(
             return {"status": "error", "message": "ingestion service is not configured"}
         try:
             job = await ingestion_service.sync_source(source_id)
-            return job.model_dump(mode="json")
+            return safe_sync_job_payload(job)
         except Exception as e:
-            logger.error(f"Sync source error: {e}")
-            return {"status": "error", "message": str(e)}
+            safe_message = safe_error_message(e)
+            logger.error("Sync source error: %s", safe_message)
+            return {"status": "error", "message": safe_message}
 
     @mcp.tool()
     async def get_sync_status(source_id: str = "") -> dict:
         """source 및 sync job 상태 조회"""
         if metadata_store is None:
             return {"sources": []}
+        if ingestion_service is not None and hasattr(
+            ingestion_service,
+            "refresh_registered_sources",
+        ):
+            try:
+                ingestion_service.refresh_registered_sources()
+            except Exception as exc:
+                logger.warning(
+                    "Source refresh failed before get_sync_status: %s",
+                    safe_error_message(exc),
+                )
 
         if source_id:
             latest_job = metadata_store.get_latest_sync_job(source_id)
             source = metadata_store.get_source(source_id)
             return {
-                "source": source.model_dump(mode="json") if source else None,
-                "latest_job": latest_job.model_dump(mode="json") if latest_job else None,
+                "source": safe_source_payload(source) if source else None,
+                "latest_job": safe_sync_job_payload(latest_job) if latest_job else None,
             }
 
         statuses = []
@@ -315,8 +339,8 @@ def register_tools(
             source = metadata_store.get_source(source.source_id) or source
             statuses.append(
                 {
-                    "source": source.model_dump(mode="json"),
-                    "latest_job": latest_job.model_dump(mode="json") if latest_job else None,
+                    "source": safe_source_payload(source),
+                    "latest_job": safe_sync_job_payload(latest_job) if latest_job else None,
                 }
             )
         return {"sources": statuses}

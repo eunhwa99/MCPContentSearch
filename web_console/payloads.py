@@ -8,17 +8,14 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
+from core.public_payloads import (
+    dump_model,
+    safe_public_config_error,
+    safe_source_payload,
+    safe_sync_job_payload,
+)
 from storage.metadata_store import ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
-SAFE_AUTH_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
-PUBLIC_CONFIG_ERROR_MESSAGES = {
-    (
-        "Source source_github is disabled because no GitHub repositories are "
-        "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
-    ),
-    "NOTION_API_KEY is required for Notion target sync",
-    ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
-}
 PROMPT_TOKEN_SECRET_RE = re.compile(
     r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"
     r"xox[baprs]-[A-Za-z0-9-]+|"
@@ -85,14 +82,6 @@ def source_sync_status(metadata_store: Any, source_id: str) -> dict[str, Any]:
     }
 
 
-def dump_model(value: Any) -> dict[str, Any]:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return value
-    return dict(value)
-
-
 def sync_status_value(job: Any) -> str:
     status = getattr(job, "status", "")
     return getattr(status, "value", status) or ""
@@ -119,36 +108,6 @@ def target_sync_already_running_payload(
         "message": "A sync is already running for this source. The requested target was not started.",
         "job": safe_sync_job_payload(job),
     }
-
-
-def safe_source_payload(source: Any) -> dict[str, Any]:
-    payload = dump_model(source)
-    if payload.get("last_error"):
-        payload["last_error"] = safe_public_config_error(
-            payload["last_error"],
-            fallback="Source sync failed. See server logs for details.",
-        )
-    auth_ref = payload.get("auth_ref")
-    if auth_ref and not SAFE_AUTH_REF_RE.match(str(auth_ref)):
-        payload["auth_ref"] = "redacted"
-    return payload
-
-
-def safe_sync_job_payload(job: Any) -> dict[str, Any]:
-    payload = dump_model(job)
-    if payload.get("error_message"):
-        payload["error_message"] = safe_public_config_error(
-            payload["error_message"],
-            fallback="Sync failed. See server logs for details.",
-        )
-    return payload
-
-
-def safe_public_config_error(value: Any, *, fallback: str) -> str:
-    message = normalize_text(value)
-    if message in PUBLIC_CONFIG_ERROR_MESSAGES:
-        return message
-    return fallback
 
 
 def normalize_auto_sync_source_ids(values: Any) -> tuple[str, ...]:
@@ -261,6 +220,9 @@ def safe_url_for_display(value: Any) -> str:
         from fetching.web_docs import _redact_url_credentials
 
         parsed = urlparse(str(value))
+        if parsed.scheme == "obsidian":
+            # obsidian:// deep-links carry no credentials; vault/file params are the meaningful content.
+            return str(value)
         if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
             return "redacted"
         redacted = _redact_url_credentials(str(value))
@@ -300,6 +262,7 @@ def source_id_for_target_type(source_type: str) -> str:
     return {
         "github": "source_github",
         "notion": "source_notion",
+        "obsidian": "source_obsidian",
         "web": "source_web",
     }.get(normalize_source_type(source_type), "")
 
