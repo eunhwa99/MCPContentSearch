@@ -56,23 +56,35 @@ class DocumentChunker:
             return []
 
         path = (document.path or document.title).lower()
-        if self._has_extension(path, MARKDOWN_EXTENSIONS) and self._has_markdown_heading(document.content):
-            return self._chunk_markdown(document, document.content)
+        if self._has_extension(path, MARKDOWN_EXTENSIONS):
+            if self._has_markdown_heading(document.content):
+                return self._chunk_markdown(document, document.content)
+            return self._chunk_plain_text(document, document.content)
         if self._has_extension(path, CODE_EXTENSIONS):
             return self._chunk_code(document, document.content)
 
         return self._chunk_plain_text(document, document.content.strip())
 
+    @staticmethod
+    def _base_line_offset(document: DocumentModel) -> int:
+        return max(0, (document.line_start or 1) - 1)
+
     def _chunk_plain_text(self, document: DocumentModel, content: str) -> list[ChunkModel]:
         chunks = []
+        base_line_offset = self._base_line_offset(document)
         start = 0
         chunk_index = 0
         while start < len(content):
             end = min(len(content), start + self.max_chars)
-            text = content[start:end].strip()
+            raw_segment = content[start:end]
+            leading_trim = len(raw_segment) - len(raw_segment.lstrip())
+            trailing_trim = len(raw_segment.rstrip())
+            text = raw_segment.strip()
             if text:
-                line_start = content.count("\n", 0, start) + 1
-                line_end = line_start + text.count("\n")
+                effective_start = start + leading_trim
+                effective_end = start + trailing_trim
+                line_start = content.count("\n", 0, effective_start) + 1 + base_line_offset
+                line_end = content.count("\n", 0, effective_end) + 1 + base_line_offset
                 chunks.append(self._build_chunk(document, text, chunk_index, line_start, line_end))
                 chunk_index += 1
 
@@ -84,12 +96,13 @@ class DocumentChunker:
 
     def _chunk_markdown(self, document: DocumentModel, content: str) -> list[ChunkModel]:
         sections: list[tuple[int, list[str]]] = []
-        current_start = 1
+        base_line_start = document.line_start or 1
+        current_start = base_line_start
         current_lines: list[str] = []
         active_fence: tuple[str, int] | None = None
         paragraph_start_index = 0
 
-        for line_number, line in enumerate(content.splitlines(), start=1):
+        for line_number, line in enumerate(content.splitlines(), start=base_line_start):
             if not current_lines and not line.strip():
                 continue
             is_setext_heading = (
@@ -149,9 +162,9 @@ class DocumentChunker:
     def _chunk_code(self, document: DocumentModel, content: str) -> list[ChunkModel]:
         chunks = []
         current_lines: list[str] = []
-        current_start = 1
+        current_start = document.line_start or 1
 
-        for line_number, line in enumerate(content.splitlines(), start=1):
+        for line_number, line in enumerate(content.splitlines(), start=current_start):
             if not current_lines and not line.strip():
                 continue
             if not current_lines:

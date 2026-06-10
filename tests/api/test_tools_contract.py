@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from api.tools import register_tools
+from core.public_payloads import safe_source_payload, safe_sync_job_payload
 from core.models import ContextSearchResult, DocumentModel
 from indexing.background_tasks import BackgroundTaskRegistry
 
@@ -95,6 +96,53 @@ class FakeFailingIngestion:
         raise ValueError(f"Unknown source: {source_id}")
 
 
+class FakeSecretFailingSyncIngestion:
+    async def sync_source(self, source_id):
+        raise RuntimeError("sync failed with token=super-secret-value")
+
+
+class FakeSecretJobSyncIngestion:
+    async def sync_source(self, source_id):
+        return Dumpable(
+            {
+                "job_id": "job-secret",
+                "source_id": source_id,
+                "status": "failed",
+                "error_message": "token=super-secret-value",
+            }
+        )
+
+
+class FakeRefreshingIngestion:
+    def __init__(self, metadata_store):
+        self.metadata_store = metadata_store
+        self.refresh_calls = 0
+
+    def refresh_registered_sources(self):
+        self.refresh_calls += 1
+        self.metadata_store.source = Dumpable(
+            {
+                "source_id": "source_obsidian",
+                "source_type": "obsidian",
+                "name": "Obsidian",
+                "enabled": True,
+                "last_error": "",
+                "sync_status": "idle",
+            },
+            source_id="source_obsidian",
+        )
+
+
+class FakeFailingRefreshIngestion:
+    def refresh_registered_sources(self):
+        raise RuntimeError("refresh failed")
+
+
+class FakeSecretFailingRefreshIngestion:
+    def refresh_registered_sources(self):
+        raise RuntimeError("refresh failed with token=super-secret-value")
+
+
 class Dumpable:
     def __init__(self, value, **attrs):
         self.value = value
@@ -131,6 +179,48 @@ class FakeMetadataStore:
 
     def list_chunks_for_document(self, document_id):
         return []
+
+
+class SecretMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        self.source = Dumpable(
+            {
+                "source_id": "source_fake",
+                "source_type": "github",
+                "sync_status": "failed",
+                "last_error": "source failed with token=super-secret-value",
+                "auth_ref": "token=super-secret-value",
+            },
+            source_id="source_fake",
+        )
+        self.job = Dumpable(
+            {
+                "job_id": "job-1",
+                "status": "failed",
+                "error_message": "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+            }
+        )
+        self.chunk = Dumpable({"chunk_id": "chunk-1", "text": "ContextWiki evidence"})
+
+
+class RefreshingMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        self.source = Dumpable(
+            {
+                "source_id": "source_obsidian",
+                "source_type": "obsidian",
+                "name": "Obsidian",
+                "enabled": False,
+                "last_error": (
+                    "Source source_obsidian is disabled because "
+                    "CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory."
+                ),
+                "sync_status": "idle",
+            },
+            source_id="source_obsidian",
+        )
+        self.job = Dumpable({"job_id": "job-1", "status": "succeeded"})
+        self.chunk = Dumpable({"chunk_id": "chunk-1", "text": "ContextWiki evidence"})
 
 
 class FakeTombstonedMetadataStore(FakeMetadataStore):
@@ -180,6 +270,26 @@ class FakeContextSearch:
                 )
             ],
         }
+
+
+def test_public_payload_sanitizers_redact_non_env_auth_refs_and_secret_errors():
+    source = Dumpable(
+        {
+            "source_id": "source_fake",
+            "source_type": "github",
+            "auth_ref": "token=super-secret-value",
+            "last_error": "token=super-secret-value",
+        }
+    )
+    job = Dumpable({"job_id": "job-1", "error_message": "token=super-secret-value"})
+
+    assert safe_source_payload(source)["auth_ref"] == "redacted"
+    assert safe_source_payload(source)["last_error"] == (
+        "Source sync failed. See server logs for details."
+    )
+    assert safe_sync_job_payload(job)["error_message"] == (
+        "Sync failed. See server logs for details."
+    )
 
 
 class FakeDictContextSearch:
@@ -242,6 +352,45 @@ def test_sync_source_returns_structured_error_for_unknown_source():
 
     assert result["status"] == "error"
     assert "Unknown source" in result["message"]
+
+
+def test_sync_source_redacts_secret_from_error_and_logs(caplog):
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        ingestion_service=FakeSecretFailingSyncIngestion(),
+    )
+
+    with caplog.at_level("ERROR", logger="api.tools"):
+        result = asyncio.run(mcp.tools["sync_source"]("source_obsidian"))
+
+    assert result["status"] == "error"
+    assert "super-secret-value" not in result["message"]
+    assert "token=super-secret-value" not in result["message"]
+    assert "super-secret-value" not in caplog.text
+    assert "token=super-secret-value" not in caplog.text
+
+
+def test_sync_source_redacts_secret_job_payload():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        ingestion_service=FakeSecretJobSyncIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_source"]("source_obsidian"))
+
+    assert result["job_id"] == "job-secret"
+    assert result["status"] == "failed"
+    assert result["error_message"] == "Sync failed. See server logs for details."
 
 
 def test_fetch_context_hides_tombstoned_documents():
@@ -313,6 +462,175 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "answer_mode" not in answer
     assert wiki["status"] == "generated"
     assert wiki["citations"][0]["chunk_id"] == "chunk-1"
+
+
+def test_list_sources_refreshes_registered_sources_before_dumping():
+    metadata_store = RefreshingMetadataStore()
+    ingestion_service = FakeRefreshingIngestion(metadata_store)
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=ingestion_service,
+    )
+
+    result = asyncio.run(mcp.tools["list_sources"]())
+
+    assert ingestion_service.refresh_calls == 1
+    assert result["sources"][0]["source_id"] == "source_obsidian"
+    assert result["sources"][0]["enabled"] is True
+    assert result["sources"][0]["last_error"] == ""
+
+
+def test_list_sources_falls_back_to_stored_metadata_when_refresh_fails():
+    metadata_store = RefreshingMetadataStore()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=FakeFailingRefreshIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["list_sources"]())
+
+    assert result["sources"][0]["source_id"] == "source_obsidian"
+    assert result["sources"][0]["enabled"] is False
+    assert (
+        result["sources"][0]["last_error"]
+        == "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory."
+    )
+
+
+def test_get_sync_status_refreshes_registered_sources_before_dumping():
+    metadata_store = RefreshingMetadataStore()
+    ingestion_service = FakeRefreshingIngestion(metadata_store)
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=ingestion_service,
+    )
+
+    result = asyncio.run(mcp.tools["get_sync_status"]("source_obsidian"))
+
+    assert ingestion_service.refresh_calls == 1
+    assert result["source"]["source_id"] == "source_obsidian"
+    assert result["source"]["enabled"] is True
+    assert result["source"]["last_error"] == ""
+
+
+def test_get_sync_status_falls_back_to_stored_metadata_when_refresh_fails():
+    metadata_store = RefreshingMetadataStore()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=FakeFailingRefreshIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["get_sync_status"]("source_obsidian"))
+
+    assert result["source"]["source_id"] == "source_obsidian"
+    assert result["source"]["enabled"] is False
+    assert (
+        result["source"]["last_error"]
+        == "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH is not set or is not an existing directory."
+    )
+
+
+def test_list_sources_redacts_persisted_source_errors():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=SecretMetadataStore(),
+    )
+
+    result = asyncio.run(mcp.tools["list_sources"]())
+
+    assert result["sources"][0]["last_error"] == "Source sync failed. See server logs for details."
+    assert result["sources"][0]["auth_ref"] == "redacted"
+    assert "super-secret-value" not in str(result)
+
+
+def test_get_sync_status_redacts_persisted_source_and_job_errors():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=SecretMetadataStore(),
+    )
+
+    result = asyncio.run(mcp.tools["get_sync_status"]("source_fake"))
+
+    assert result["source"]["last_error"] == "Source sync failed. See server logs for details."
+    assert result["source"]["auth_ref"] == "redacted"
+    assert result["latest_job"]["error_message"] == "Sync failed. See server logs for details."
+    assert "super-secret-value" not in str(result)
+
+
+def test_list_sources_refresh_warning_redacts_secret(caplog):
+    metadata_store = RefreshingMetadataStore()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=FakeSecretFailingRefreshIngestion(),
+    )
+
+    with caplog.at_level("WARNING", logger="api.tools"):
+        result = asyncio.run(mcp.tools["list_sources"]())
+
+    assert result["sources"][0]["source_id"] == "source_obsidian"
+    assert "super-secret-value" not in caplog.text
+    assert "token=super-secret-value" not in caplog.text
+
+
+def test_get_sync_status_refresh_warning_redacts_secret(caplog):
+    metadata_store = RefreshingMetadataStore()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        indexer=FakeIndexer(),
+        search_service=None,
+        dynamic_search=None,
+        web_searcher=None,
+        metadata_store=metadata_store,
+        ingestion_service=FakeSecretFailingRefreshIngestion(),
+    )
+
+    with caplog.at_level("WARNING", logger="api.tools"):
+        result = asyncio.run(mcp.tools["get_sync_status"]("source_obsidian"))
+
+    assert result["source"]["source_id"] == "source_obsidian"
+    assert "super-secret-value" not in caplog.text
+    assert "token=super-secret-value" not in caplog.text
 
 
 def test_search_context_contract_strips_vector_score_from_dict_results():

@@ -904,6 +904,7 @@ function sourceIdForTargetType(sourceType) {
   return {
     github: "source_github",
     notion: "source_notion",
+    obsidian: "source_obsidian",
     web: "source_web",
   }[sourceType] || "";
 }

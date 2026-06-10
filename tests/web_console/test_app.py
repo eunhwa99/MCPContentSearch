@@ -5,6 +5,7 @@ import builtins
 import json
 import logging
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import time
@@ -14,6 +15,9 @@ from fastapi.testclient import TestClient
 
 from core.models import ContextSearchResult, SourceModel, SourceType, SyncJobModel, SyncJobStatus, SyncStatus
 from environments.config import AppConfig
+from fetching.connectors import ObsidianSourceConnector, SourceRegistry
+from indexing.chunker import DocumentChunker
+from indexing.ingestion_service import IngestionService
 from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 from web_console.app import (
     CodexCliExecutionError,
@@ -184,6 +188,11 @@ class FakeIngestionService:
             processed_documents=2,
             indexed_chunks=5,
         )
+
+
+class FailingRefreshIngestionService(FakeIngestionService):
+    def refresh_registered_sources(self):
+        raise RuntimeError("refresh failed")
 
 
 class SlowRecordingIngestionService(FakeIngestionService):
@@ -658,6 +667,125 @@ def test_sources_returns_metadata_store_sources():
     ]
 
 
+def test_sources_refresh_dynamic_obsidian_state(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    ingestion_service = IngestionService(
+        metadata_store=metadata_store,
+        source_registry=SourceRegistry(
+            [ObsidianSourceConnector(AppConfig(obsidian_vault_path=vault))]
+        ),
+        chunker=DocumentChunker(max_chars=200, overlap_chars=0),
+        indexer=object(),
+    )
+    client = TestClient(
+        create_console_app(
+            ConsoleDependencies(
+                metadata_store=metadata_store,
+                ingestion_service=ingestion_service,
+            )
+        )
+    )
+
+    shutil.rmtree(vault)
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["source_id"] == "source_obsidian"
+    assert response.json()["sources"][0]["enabled"] is False
+
+
+def test_sources_refresh_surfaces_relative_obsidian_path_error(tmp_path):
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    ingestion_service = IngestionService(
+        metadata_store=metadata_store,
+        source_registry=SourceRegistry(
+            [ObsidianSourceConnector(AppConfig(obsidian_vault_path=Path("relative-vault")))]
+        ),
+        chunker=DocumentChunker(max_chars=200, overlap_chars=0),
+        indexer=object(),
+    )
+    client = TestClient(
+        create_console_app(
+            ConsoleDependencies(
+                metadata_store=metadata_store,
+                ingestion_service=ingestion_service,
+            )
+        )
+    )
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    source = response.json()["sources"][0]
+    assert source["source_id"] == "source_obsidian"
+    assert source["enabled"] is False
+    assert (
+        source["last_error"]
+        == "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH must be an absolute path."
+    )
+
+
+def test_sources_refresh_clears_stale_disabled_error_after_obsidian_recovery(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    ingestion_service = IngestionService(
+        metadata_store=metadata_store,
+        source_registry=SourceRegistry(
+            [ObsidianSourceConnector(AppConfig(obsidian_vault_path=vault))]
+        ),
+        chunker=DocumentChunker(max_chars=200, overlap_chars=0),
+        indexer=object(),
+    )
+    client = TestClient(
+        create_console_app(
+            ConsoleDependencies(
+                metadata_store=metadata_store,
+                ingestion_service=ingestion_service,
+            )
+        )
+    )
+
+    shutil.rmtree(vault)
+    failed_job = asyncio.run(ingestion_service.sync_source("source_obsidian"))
+    assert failed_job.status == SyncJobStatus.FAILED
+    assert "source_obsidian is disabled" in failed_job.error_message
+
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    source = response.json()["sources"][0]
+    assert source["source_id"] == "source_obsidian"
+    assert source["enabled"] is True
+    assert source["last_error"] == ""
+
+
+def test_sources_refresh_failure_falls_back_to_stored_metadata():
+    app = create_console_app(
+        ConsoleDependencies(
+            metadata_store=FakeMetadataStore(),
+            ingestion_service=FailingRefreshIngestionService(),
+        )
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    assert [source["source_id"] for source in response.json()["sources"]] == [
+        "source_github",
+        "source_notion",
+    ]
+
+
 def test_sources_returns_empty_list_without_metadata_store():
     client = make_unconfigured_client()
 
@@ -711,6 +839,40 @@ def test_source_sync_status_returns_source_and_latest_job():
     assert response.json()["latest_job"]["indexed_chunks"] == 4
 
 
+def test_source_sync_status_refreshes_dynamic_obsidian_state(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+    metadata_store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    ingestion_service = IngestionService(
+        metadata_store=metadata_store,
+        source_registry=SourceRegistry(
+            [ObsidianSourceConnector(AppConfig(obsidian_vault_path=vault))]
+        ),
+        chunker=DocumentChunker(max_chars=200, overlap_chars=0),
+        indexer=object(),
+    )
+    client = TestClient(
+        create_console_app(
+            ConsoleDependencies(
+                metadata_store=metadata_store,
+                ingestion_service=ingestion_service,
+            )
+        )
+    )
+
+    shutil.rmtree(vault)
+    asyncio.run(ingestion_service.sync_source("source_obsidian"))
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+
+    response = client.get("/api/sources/source_obsidian/sync-status")
+
+    assert response.status_code == 200
+    assert response.json()["source"]["enabled"] is True
+    assert response.json()["source"]["last_error"] == ""
+
+
 def test_source_sync_status_returns_503_without_metadata_store():
     client = make_unconfigured_client()
 
@@ -737,6 +899,22 @@ def test_source_sync_status_returns_structured_failure_without_logging_secret(ca
     }
     assert "secret-value" not in caplog.text
     assert "token=secret-value" not in caplog.text
+
+
+def test_source_sync_status_refresh_failure_falls_back_to_stored_metadata():
+    app = create_console_app(
+        ConsoleDependencies(
+            metadata_store=FakeMetadataStore(),
+            ingestion_service=FailingRefreshIngestionService(),
+        )
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/sources/source_github/sync-status")
+
+    assert response.status_code == 200
+    assert response.json()["source"]["source_id"] == "source_github"
+    assert response.json()["latest_job"]["job_id"] == "job-1"
 
 
 def test_source_sync_status_redacts_persisted_source_and_job_errors():
@@ -1349,6 +1527,48 @@ def test_answer_endpoint_normalizes_source_filters_and_calls_service():
             "question": "What is ContextWiki?",
             "top_k": 3,
             "filters": {"source_ids": ["source_github", "manual_source"]},
+            "include_debug": True,
+        }
+    ]
+
+
+def test_answer_endpoint_normalizes_obsidian_source_filters():
+    answer_service = FakeAnswerService()
+
+    class ObsidianMetadataStore(FakeMetadataStore):
+        def list_sources(self):
+            return [
+                *super().list_sources(),
+                SourceModel(
+                    source_id="source_obsidian",
+                    source_type=SourceType.OBSIDIAN,
+                    name="Vault",
+                ),
+            ]
+
+    client = TestClient(
+        create_console_app(
+            ConsoleDependencies(
+                answer_service=answer_service,
+                metadata_store=ObsidianMetadataStore(),
+            )
+        )
+    )
+
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": "What is in my vault?",
+            "source_types": ["obsidian"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert answer_service.calls == [
+        {
+            "question": "What is in my vault?",
+            "top_k": 5,
+            "filters": {"source_ids": ["source_obsidian"]},
             "include_debug": True,
         }
     ]

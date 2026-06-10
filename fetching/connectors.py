@@ -5,7 +5,12 @@ from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
 from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
-from fetching.obsidian import fetch_obsidian_documents
+from fetching.obsidian import (
+    _OBSIDIAN_DISABLED_REASON,
+    _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON,
+    fetch_obsidian_documents,
+    obsidian_disabled_reason,
+)
 from fetching.tistory import fetch_tistory_posts
 from fetching.web_docs import WebsiteDocsFetcher
 
@@ -22,6 +27,9 @@ class SourceConnector(ABC):
     async def fetch_documents(self) -> list[DocumentModel]:
         """Fetch documents for one source."""
 
+    def refresh_source_state(self) -> None:
+        """Refresh dynamic source availability before sync/list operations."""
+
 
 class SourceRegistry:
     """Runtime registry for available source connectors."""
@@ -35,6 +43,8 @@ class SourceRegistry:
         return self._connectors[source_id]
 
     def list_sources(self) -> list[SourceModel]:
+        for connector in self._connectors.values():
+            connector.refresh_source_state()
         return [connector.source for connector in self._connectors.values()]
 
 
@@ -212,30 +222,43 @@ class ObsidianSourceConnector(SourceConnector):
 
     def __init__(self, config: AppConfig):
         self.vault_path = config.obsidian_vault_path
-        enabled = bool(self.vault_path and self.vault_path.is_dir())
         self.source = SourceModel(
             source_id="source_obsidian",
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
-            enabled=enabled,
+            enabled=False,
             auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
         )
-        self.disabled_reason = (
-            "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
-            "is not set or is not an existing directory."
-            if not enabled
-            else ""
+        self.disabled_reason = _OBSIDIAN_DISABLED_REASON
+        self.refresh_source_state()
+
+    def refresh_source_state(self) -> None:
+        self.disabled_reason = obsidian_disabled_reason(self.vault_path)
+        enabled = self.disabled_reason == ""
+        self.supports_stale_cleanup = enabled
+        self.source = self.source.model_copy(
+            update={
+                "enabled": enabled,
+                "last_error": "" if enabled else self.disabled_reason,
+            }
         )
 
     async def fetch_documents(self) -> list[DocumentModel]:
+        self.refresh_source_state()
         if not self.source.enabled:
-            return []
+            self.supports_stale_cleanup = False
+            raise FileNotFoundError(self.disabled_reason)
         try:
-            return await fetch_obsidian_documents(self.vault_path)
+            snapshot = await fetch_obsidian_documents(self.vault_path)
         except Exception:
             self.supports_stale_cleanup = False
             raise
+        if not snapshot.snapshot_complete:
+            self.supports_stale_cleanup = False
+            raise RuntimeError(_OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON)
+        self.supports_stale_cleanup = snapshot.snapshot_complete
+        return snapshot.documents
 
 
 def build_source_registry(
