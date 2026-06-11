@@ -3,9 +3,9 @@
 Baseline:
 
 - Original baseline: `eunhwa99/MCPContentSearch` PR #2
-- Current update: slim MCP core refactor, retaining GitHub/Notion/Tistory
-  source sync, SQLite lifecycle metadata, Chroma retrieval, and citation-backed
-  answers.
+- Current update: slim MCP core refactor with PR #25 Obsidian restoration,
+  retaining GitHub/Notion/Tistory/Obsidian source sync, SQLite lifecycle
+  metadata, Chroma retrieval, and citation-backed answers.
 
 Goal:
 
@@ -25,7 +25,7 @@ The core flow is:
 ```text
 source registration
 -> source sync
--> document fetch from Notion, Tistory, or GitHub
+-> document fetch from Notion, Tistory, GitHub, or Obsidian
 -> external_id / canonical_url / version_id / last_seen metadata normalize
 -> content_hash computation
 -> deterministic source-aware chunking for chunk-id comparison
@@ -61,6 +61,7 @@ ContextWiki currently has source connectors for:
 | Notion | `source_notion` | `NOTION_API_KEY` | page/document source |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | blog post source |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | repository file source |
+| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` | local Markdown vault source |
 
 Example:
 
@@ -78,6 +79,27 @@ fetches supported text/code/Markdown files from configured repositories,
 converts each file into a `DocumentModel`, chunks it with line-range citation
 metadata, indexes the chunks, and stores lifecycle metadata in SQLite.
 
+Obsidian example:
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH="/path/to/temp-or-real-vault"
+CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
+CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
+```
+
+Then:
+
+```text
+sync_source("source_obsidian")
+```
+
+reads bounded `.md` notes from the configured local vault, skips hidden and
+Obsidian metadata directories, preserves frontmatter-derived titles when
+available, uses `obsidian://open` canonical URLs, and stores lifecycle metadata
+in SQLite. If the configured vault exceeds the max file count or per-file byte
+bound, sync fails as an incomplete snapshot before stale cleanup. It does not
+require a live Obsidian app.
+
 ---
 
 ## 2. Overall Mental Model
@@ -94,7 +116,7 @@ flowchart TD
     Answer["CitationAnswerService"]
     Store["MetadataStore<br/>SQLite"]
     Vector["Vector Index<br/>ChromaDB / LlamaIndex"]
-    Sources["Source Connectors<br/>Notion / Tistory / GitHub"]
+    Sources["Source Connectors<br/>Notion / Tistory / GitHub / Obsidian"]
 
     Client --> MCP
     MCP --> Tools
@@ -152,7 +174,7 @@ The most important models are:
 
 | Model | Meaning | Main use |
 | --- | --- | --- |
-| `SourceModel` | Notion, Tistory, or GitHub source | source configuration and sync state |
+| `SourceModel` | Notion, Tistory, GitHub, or Obsidian source | source configuration and sync state |
 | `SyncJobModel` | one source sync execution | success/failure and processing counts |
 | `DocumentModel` | one original document | identity, content hash, lifecycle, source metadata |
 | `ChunkModel` | searchable/citeable document segment | vector search and citations |
@@ -162,7 +184,7 @@ Key distinction:
 
 ```text
 DocumentModel = management and sync unit
-Examples: one Notion page, one Tistory post, one GitHub file.
+Examples: one Notion page, one Tistory post, one GitHub file, one Obsidian note.
 
 ChunkModel = search and citation unit
 Examples: a markdown section, a code line range, a plain-text window.
@@ -185,7 +207,7 @@ ChromaDB
 
 ```mermaid
 flowchart TD
-    A["Fetch from Notion / Tistory / GitHub"]
+    A["Fetch from Notion / Tistory / GitHub / Obsidian"]
     B["DocumentModel"]
     C["DocumentChunker -> ChunkModel[]"]
     D["SQLite documents<br/>identity/content/hash/lifecycle"]
@@ -327,6 +349,11 @@ GitHub
 -> external_id/document_id = github:owner/repo:path
 -> canonical_url = GitHub blob URL at the resolved commit
 -> version_id = blob SHA
+
+Obsidian
+-> external_id/document_id = relative/note/path.md
+-> canonical_url = obsidian://open URL for the configured vault note
+-> title = frontmatter title when present, otherwise note stem
 ```
 
 Stable identity should not change just because content changes. `version_id`
@@ -347,6 +374,10 @@ For GitHub, cleanup is limited to repository document-id prefixes fetched by the
 connector, such as `github:eunhwa99/mcpcontentsearch:`. This keeps one
 configured repository sync from tombstoning documents that belong to another
 repository scope under the same `source_github` source id.
+
+For Obsidian, cleanup is allowed only after a complete local-vault snapshot.
+Unreadable notes, traversal errors, or exceeded file count/byte bounds should
+fail the sync before stale cleanup can tombstone missing active documents.
 
 Why not hard delete immediately?
 
@@ -385,6 +416,8 @@ Current intentional limits:
 - No Auto Wiki generation or LLM wiki synthesis in production scope.
 - No dynamic web fallback or legacy live search/index MCP tools in production
   scope.
+- No live Obsidian app, plugin, or API server requirement; Obsidian is a
+  configured local-vault source.
 - Optional `CONTEXTWIKI_SEARCH_LLM_ENABLED=true` query rewrite is disabled by
   default. If enabled, it may send the user query and normalized terms to the
   configured provider, but it must not send source evidence, fetch external
@@ -392,11 +425,13 @@ Current intentional limits:
 - No deletion, reset, migration, or inspection of local user Chroma/SQLite data
   without explicit approval.
 - Live Notion, Tistory, GitHub, or embedding-provider validation is opt-in and
-  approval-gated.
+  approval-gated. Real Obsidian vault validation is also approval-gated;
+  routine verification uses temporary vaults.
 
 Historical note:
 
 - ADR 0004's GitHub connector decision remains current.
+- ADR 0004 now also documents the retained Obsidian local-vault connector.
 - ADR 0004's website/docs connector portion is superseded for the current scope
   by ADR 0006.
 - ADR 0005's Auto Wiki decision is superseded for the current scope by ADR
@@ -423,3 +458,5 @@ Functional verification should use fake or temporary persistence and must not
 mutate local user Chroma/SQLite data. Live external checks require explicit
 approval and should report the source used, safety plan, and whether any local
 state was touched.
+Obsidian verification should use temporary vault directories unless the user
+explicitly approves a real vault path.

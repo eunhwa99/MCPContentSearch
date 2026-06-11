@@ -17,6 +17,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SAFE_PUBLIC_ENV_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
+REGISTERABLE_SOURCE_ATTRS = (
+    "source_id",
+    "source_type",
+    "name",
+    "enabled",
+    "auth_ref",
+    "sync_status",
+    "last_synced_at",
+    "last_error",
+    "created_at",
+    "updated_at",
+)
 
 
 def register_tools(
@@ -33,6 +45,7 @@ def register_tools(
     @mcp.tool()
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
+        _refresh_registered_sources(metadata_store, source_registry)
         if metadata_store is not None:
             sources = metadata_store.list_sources()
         elif source_registry is not None:
@@ -73,6 +86,7 @@ def register_tools(
         """source 및 sync job 상태 조회"""
         if metadata_store is None:
             return {"sources": []}
+        _refresh_registered_sources(metadata_store, source_registry)
 
         if source_id:
             source = metadata_store.get_source(source_id)
@@ -218,6 +232,17 @@ def _source_registry_ids(source_registry) -> frozenset[str] | None:
         for source in source_registry.list_sources()
         if getattr(source, "source_id", "")
     )
+
+
+def _refresh_registered_sources(metadata_store, source_registry) -> None:
+    if metadata_store is None or source_registry is None:
+        return
+    register_source = getattr(metadata_store, "register_source", None)
+    if not callable(register_source):
+        return
+    for source in source_registry.list_sources():
+        if all(hasattr(source, attr) for attr in REGISTERABLE_SOURCE_ATTRS):
+            register_source(source)
 
 
 def _model_payload(model) -> dict:

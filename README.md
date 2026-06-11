@@ -9,7 +9,8 @@ an LLM client retrieve grounded context without reading local databases directly
 
 The current scope is intentionally small:
 
-- Source connectors: Notion, Tistory, and GitHub repositories.
+- Source connectors: Notion, Tistory, GitHub repositories, and local Obsidian
+  vaults.
 - Retrieval tools: source listing/status, source sync, context search, context
   fetch, and citation-backed answers.
 - Local persistence: Chroma for semantic candidate retrieval, SQLite for source,
@@ -40,7 +41,7 @@ The retained MCP tools are:
 
 | Tool | Purpose |
 | --- | --- |
-| `list_sources()` | List configured Notion, Tistory, and GitHub sources. |
+| `list_sources()` | List configured Notion, Tistory, GitHub, and Obsidian sources. |
 | `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10)` | Return structured, SQLite-validated evidence chunks. |
@@ -76,12 +77,26 @@ otherwise non-egress embedding configuration for LlamaIndex/Chroma.
 | Notion | `source_notion` | `NOTION_API_KEY` | Syncs pages/documents through the Notion fetcher. |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | Syncs blog posts through the Tistory fetcher. |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | Syncs bounded text/code/Markdown files from configured repositories. |
+| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` | Syncs bounded Markdown notes from a configured local vault. |
 
 GitHub repositories are configured as comma-separated `owner/repo` entries with
 an optional `@ref`, for example:
 
 ```bash
 CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
+```
+
+Obsidian is a local-vault configured source. It reads Markdown files from the
+configured vault path, skips hidden/Obsidian metadata directories, and uses
+`obsidian://open` canonical URLs for citations. It does not require a live
+Obsidian app, plugin, or API server. The max file count and max file byte
+bounds are positive integers; if a configured vault exceeds either bound, the
+sync fails as an incomplete snapshot and stale cleanup stays disabled.
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH="/path/to/temp-or-real-vault"
+CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
+CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
 ```
 
 Raw secrets are read at runtime from environment variables. They are not stored
@@ -123,6 +138,8 @@ source registry, source sync, context search, context fetch, citation answers,
 metadata lifecycle, and Chroma/SQLite citation-safety behavior. It does not run
 browser checks, Playwright, Web Console tests, wiki generation smoke, live
 external APIs, or LLM calls.
+Obsidian verification must use a temporary vault unless the user explicitly
+approves a real vault path.
 
 Useful focused checks:
 
@@ -144,7 +161,7 @@ handoffs should report the actual commands and results from the run.
 - `api/`: MCP-facing tool contracts and response formatting.
 - `core/`: shared models, exceptions, and utilities.
 - `environments/`: runtime configuration and secret/environment access.
-- `fetching/`: Notion, Tistory, and GitHub source connectors/fetchers.
+- `fetching/`: Notion, Tistory, GitHub, and Obsidian source connectors/fetchers.
 - `indexing/`: chunking, deduplication, lifecycle coordination, and Chroma writes.
 - `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata.

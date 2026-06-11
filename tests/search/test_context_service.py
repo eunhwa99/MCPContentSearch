@@ -323,6 +323,102 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
     ]
 
 
+def test_search_context_uses_korean_obsidian_source_intent_for_metadata_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "team-vault", SourceType.OBSIDIAN, "Team Vault")
+    seed_document_chunks(
+        store,
+        "daily-note",
+        "daily-note-chunk",
+        "team-vault",
+        "Daily Note",
+        "Project planning note without a source label.",
+        path="notes/daily.md",
+        url="obsidian://open?vault=team&file=notes/daily.md",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr(
+        "search.context_service.VectorIndexRetriever",
+        EmptyVectorRetriever,
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "옵시디언",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "daily-note-chunk"
+    assert result["results"][0].source_id == "team-vault"
+    assert result["results"][0].source_type == "obsidian"
+
+
+def test_search_context_uses_obsidian_source_intent_when_vector_results_fill_top_k(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "team-vault", SourceType.OBSIDIAN, "Team Vault")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "daily-note",
+        "daily-note-chunk",
+        "team-vault",
+        "Daily Note",
+        "Project planning note without a source label.",
+        path="notes/daily.md",
+        url="obsidian://open?vault=team&file=notes/daily.md",
+    )
+    seed_document_chunks(
+        store,
+        "notion-note",
+        "notion-note-chunk",
+        "source_notion",
+        "Notion Note",
+        "Unrelated workspace note.",
+    )
+
+    class NotionVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("notion-note-chunk", 0.99)
+            node.metadata["document_id"] = "notion-note"
+            node.metadata["source_id"] = "source_notion"
+            return [node]
+
+    monkeypatch.setattr(
+        "search.context_service.VectorIndexRetriever",
+        NotionVectorRetriever,
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "옵시디언",
+            top_k=1,
+        )
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "daily-note-chunk"
+    assert result["results"][0].source_id == "team-vault"
+    assert result["results"][0].source_type == "obsidian"
+
+
 def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
