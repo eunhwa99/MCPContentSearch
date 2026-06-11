@@ -21,17 +21,6 @@ from core.utils import ContentHasher
 ORPHANED_SYNC_JOB_RECOVERY_MESSAGE = (
     "Previous running sync job was recovered after server restart; start sync again."
 )
-OBSIDIAN_REFRESH_CLEARABLE_ERRORS = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
-    "is not set or is not an existing directory.",
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
-    "must be an absolute path.",
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
-    "must not be a symlink.",
-)
-OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR = (
-    "Obsidian vault snapshot was incomplete because one or more notes could not be read."
-)
 
 
 def _now() -> str:
@@ -229,11 +218,7 @@ class MetadataStore:
                     auth_ref = excluded.auth_ref,
                     last_error = CASE
                         WHEN excluded.enabled = 0 AND excluded.last_error != '' THEN excluded.last_error
-                        WHEN sources.last_error = ? AND excluded.enabled = 1 THEN sources.last_error
                         WHEN excluded.enabled = 1 AND sources.enabled = 0 THEN excluded.last_error
-                        WHEN excluded.enabled = 1
-                            AND sources.last_error IN (?, ?, ?)
-                        THEN excluded.last_error
                         ELSE sources.last_error
                     END,
                     updated_at = excluded.updated_at
@@ -249,15 +234,16 @@ class MetadataStore:
                     source.last_error,
                     created_at,
                     updated_at,
-                    OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR,
-                    *OBSIDIAN_REFRESH_CLEARABLE_ERRORS,
                 ),
             )
             row = conn.execute(
                 "SELECT * FROM sources WHERE source_id = ?",
                 (source.source_id,),
             ).fetchone()
-        return self._source_from_row(row)
+        registered = self._source_from_row(row)
+        if registered is None:
+            raise ValueError(f"Registered source has unsupported type: {source.source_id}")
+        return registered
 
     def get_source(self, source_id: str) -> Optional[SourceModel]:
         self.ensure_schema()
@@ -269,7 +255,12 @@ class MetadataStore:
         self.ensure_schema()
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM sources ORDER BY source_id").fetchall()
-        return [self._source_from_row(row) for row in rows]
+        sources = []
+        for row in rows:
+            source = self._source_from_row(row)
+            if source is not None:
+                sources.append(source)
+        return sources
 
     def update_source_status(
         self,
@@ -631,12 +622,18 @@ class MetadataStore:
         *,
         started_before: str,
         error_message: str,
+        source_ids: Iterable[str] | None = None,
     ) -> int:
         """Fail restart-orphaned jobs without stealing a live owned sync."""
         self.ensure_schema()
         cutoff = self._parse_timestamp(started_before)
         if not cutoff:
             raise ValueError("started_before must be an ISO-8601 timestamp")
+        scoped_source_ids = tuple(
+            dict.fromkeys(str(source_id) for source_id in source_ids or () if source_id)
+        )
+        if source_ids is not None and not scoped_source_ids:
+            return 0
         finished_at = _now()
         recovered_job_ids: list[str] = []
         affected_source_ids: set[str] = set()
@@ -650,7 +647,10 @@ class MetadataStore:
                 """,
                 (SyncJobStatus.RUNNING.value,),
             ).fetchall()
+            scoped_source_id_set = set(scoped_source_ids)
             for row in running_rows:
+                if scoped_source_id_set and row["source_id"] not in scoped_source_id_set:
+                    continue
                 job_started_at = self._parse_timestamp(row["started_at"])
                 if job_started_at and job_started_at >= cutoff:
                     continue
@@ -1125,7 +1125,6 @@ class MetadataStore:
             source_cursor = conn.execute(
                 """
                 UPDATE sources SET
-                    enabled = 1,
                     sync_status = ?,
                     last_synced_at = ?,
                     last_error = '',
@@ -1613,14 +1612,19 @@ class MetadataStore:
         )
 
     @staticmethod
-    def _source_from_row(row) -> SourceModel:
+    def _source_from_row(row) -> SourceModel | None:
+        try:
+            source_type = SourceType(row["source_type"])
+            sync_status = SyncStatus(row["sync_status"])
+        except ValueError:
+            return None
         return SourceModel(
             source_id=row["source_id"],
-            source_type=SourceType(row["source_type"]),
+            source_type=source_type,
             name=row["name"],
             enabled=bool(row["enabled"]),
             auth_ref=row["auth_ref"],
-            sync_status=SyncStatus(row["sync_status"]),
+            sync_status=sync_status,
             last_synced_at=row["last_synced_at"],
             last_error=row["last_error"],
             created_at=row["created_at"],

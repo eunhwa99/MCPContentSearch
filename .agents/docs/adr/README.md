@@ -29,8 +29,9 @@ File names should be numbered and descriptive:
 | [0001](0001-layered-mcp-content-search-architecture.md) | accepted | Layered MCP content search architecture |
 | [0002](0002-contextwiki-metadata-and-citation-store.md) | accepted | ContextWiki metadata and citation store |
 | [0003](0003-contextwiki-phase-b0-identity-and-chunking.md) | accepted | ContextWiki Phase B-0 identity lifecycle and source-aware chunking |
-| [0004](0004-contextwiki-phase-b-connectors.md) | accepted | ContextWiki Phase B GitHub and website/docs connectors |
-| [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | accepted | ContextWiki Auto Wiki LLM synthesis boundary |
+| [0004](0004-contextwiki-phase-b-connectors.md) | accepted, website/docs superseded by [0006](0006-slim-mcp-core-scope.md) | ContextWiki Phase B GitHub connector and superseded website/docs connector |
+| [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | superseded by [0006](0006-slim-mcp-core-scope.md) for current scope | Historical ContextWiki Auto Wiki LLM synthesis boundary |
+| [0006](0006-slim-mcp-core-scope.md) | accepted | Slim MCP core scope |
 
 ## When to Add or Update ADRs
 

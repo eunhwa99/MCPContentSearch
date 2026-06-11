@@ -11,18 +11,11 @@ pytestmark = pytest.mark.unit
     [
         ("github_max_files", 0),
         ("github_max_file_bytes", 0),
-        ("web_max_pages", 0),
-        ("web_max_response_bytes", 0),
     ],
 )
-def test_phase_b_limits_must_be_positive(field, value):
+def test_github_limits_must_be_positive(field, value):
     with pytest.raises(ValueError, match=field):
         AppConfig(**{field: value})
-
-
-def test_web_crawl_delay_must_not_be_negative():
-    with pytest.raises(ValueError, match="web_crawl_delay_seconds"):
-        AppConfig(web_crawl_delay_seconds=-0.1)
 
 
 @pytest.mark.parametrize(
@@ -30,27 +23,12 @@ def test_web_crawl_delay_must_not_be_negative():
     [
         ("github_max_files", 1.5),
         ("github_max_file_bytes", 1.5),
-        ("web_max_pages", 1.5),
-        ("web_max_response_bytes", 1.5),
         ("github_max_files", float("inf")),
-        ("web_max_pages", float("inf")),
     ],
 )
-def test_phase_b_limit_values_must_be_integer_instances(field, value):
+def test_github_limit_values_must_be_integer_instances(field, value):
     with pytest.raises(ValueError, match=field):
         AppConfig(**{field: value})
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf")])
-def test_web_crawl_delay_must_be_finite(value):
-    with pytest.raises(ValueError, match="web_crawl_delay_seconds"):
-        AppConfig(web_crawl_delay_seconds=value)
-
-
-@pytest.mark.parametrize("value", [True, False, "1", None])
-def test_web_crawl_delay_must_be_numeric_not_bool(value):
-    with pytest.raises(ValueError, match="web_crawl_delay_seconds"):
-        AppConfig(web_crawl_delay_seconds=value)
 
 
 @pytest.mark.parametrize(
@@ -73,14 +51,10 @@ def test_github_token_env_var_must_be_safe_metadata_reference(value):
         AppConfig(github_token_env_var=value)
 
 
-def test_phase_b_source_lists_parse_comma_newline_and_whitespace(monkeypatch):
+def test_github_source_list_parses_comma_newline_and_whitespace(monkeypatch):
     monkeypatch.setenv(
         "CONTEXTWIKI_GITHUB_REPOSITORIES",
         " eunhwa99/MCPContentSearch@main,\n  eunhwa99/docs@release ,, ",
-    )
-    monkeypatch.setenv(
-        "CONTEXTWIKI_WEB_URLS",
-        " https://docs.example.com,\n  https://api.example.com/docs ,, ",
     )
 
     config = AppConfig()
@@ -89,44 +63,6 @@ def test_phase_b_source_lists_parse_comma_newline_and_whitespace(monkeypatch):
         "eunhwa99/MCPContentSearch@main",
         "eunhwa99/docs@release",
     )
-    assert config.web_seed_urls == (
-        "https://docs.example.com",
-        "https://api.example.com/docs",
-    )
-
-
-def test_contextwiki_auto_sync_sources_default_to_configured_core_sources(monkeypatch):
-    monkeypatch.delenv("CONTEXTWIKI_AUTO_SYNC_SOURCES", raising=False)
-
-    config = AppConfig()
-
-    assert config.contextwiki_auto_sync_sources == (
-        "source_github",
-        "source_notion",
-        "source_tistory",
-    )
-
-
-def test_contextwiki_auto_sync_sources_override_parses_list(monkeypatch):
-    monkeypatch.setenv(
-        "CONTEXTWIKI_AUTO_SYNC_SOURCES",
-        " source_notion,\n source_github ,, ",
-    )
-
-    config = AppConfig()
-
-    assert config.contextwiki_auto_sync_sources == (
-        "source_notion",
-        "source_github",
-    )
-
-
-def test_contextwiki_auto_sync_sources_empty_env_disables(monkeypatch):
-    monkeypatch.setenv("CONTEXTWIKI_AUTO_SYNC_SOURCES", "")
-
-    config = AppConfig()
-
-    assert config.contextwiki_auto_sync_sources == ()
 
 
 @pytest.mark.parametrize(
@@ -134,35 +70,10 @@ def test_contextwiki_auto_sync_sources_empty_env_disables(monkeypatch):
     [
         "CONTEXTWIKI_GITHUB_MAX_FILES",
         "CONTEXTWIKI_GITHUB_MAX_FILE_BYTES",
-        "CONTEXTWIKI_WEB_MAX_PAGES",
-        "CONTEXTWIKI_WEB_MAX_RESPONSE_BYTES",
     ],
 )
-def test_phase_b_limit_env_values_must_be_valid_integers(monkeypatch, name):
+def test_github_limit_env_values_must_be_valid_integers(monkeypatch, name):
     monkeypatch.setenv(name, "oops")
 
     with pytest.raises(ValueError, match=name):
         AppConfig()
-
-
-@pytest.mark.parametrize("value", ["oops", "nan", "inf", "-inf"])
-def test_web_crawl_delay_env_must_be_valid_finite_float(monkeypatch, value):
-    monkeypatch.setenv("CONTEXTWIKI_WEB_CRAWL_DELAY_SECONDS", value)
-
-    with pytest.raises(ValueError, match="CONTEXTWIKI_WEB_CRAWL_DELAY_SECONDS"):
-        AppConfig()
-
-
-def test_wiki_llm_model_is_required_for_enabled_openai_provider():
-    with pytest.raises(ValueError, match="CONTEXTWIKI_WIKI_LLM_MODEL"):
-        AppConfig(wiki_llm_enabled=True, wiki_llm_provider="openai", wiki_llm_model="")
-
-
-def test_wiki_llm_model_is_not_required_for_unsupported_provider_fallback():
-    config = AppConfig(
-        wiki_llm_enabled=True,
-        wiki_llm_provider="anthropic",
-        wiki_llm_model="",
-    )
-
-    assert config.wiki_llm_provider == "anthropic"

@@ -31,33 +31,33 @@
   },
   {
     "chunk_id": "architecture-guide-chunk",
-    "document_id": "web:project-architecture-guide",
-    "source_id": "source_web",
-    "source_type": "web",
+    "document_id": "notion:project-architecture-guide",
+    "source_id": "source_notion",
+    "source_type": "notion",
     "title": "Project architecture guide",
     "text": "Overview of services, queue boundaries, retrieval modules, and system ownership.",
-    "url": "https://docs.example.com/project-architecture-guide",
-    "path": "docs/project-architecture-guide.md"
+    "url": "https://www.notion.so/project-architecture-guide",
+    "path": "Project architecture guide"
   },
   {
     "chunk_id": "runtime-notes-chunk",
-    "document_id": "web:runtime-notes",
-    "source_id": "source_web",
-    "source_type": "web",
+    "document_id": "tistory:runtime-notes",
+    "source_id": "source_tistory",
+    "source_type": "tistory",
     "title": "Runtime notes",
     "text": "This note mentions project architecture guide ideas in passing but focuses on runtime caveats.",
-    "url": "https://docs.example.com/runtime-notes",
-    "path": "notes/runtime.txt"
+    "url": "https://devlog.tistory.com/runtime-notes",
+    "path": "Runtime notes"
   },
   {
     "chunk_id": "aws-guide-chunk",
-    "document_id": "web:aws-deployment-guide",
-    "source_id": "source_web",
-    "source_type": "web",
+    "document_id": "notion:aws-deployment-guide",
+    "source_id": "source_notion",
+    "source_type": "notion",
     "title": "AWS deployment guide",
     "text": "Amazon Web Services deployment checklist for environment setup and launch steps.",
-    "url": "https://docs.example.com/aws-deployment-guide",
-    "path": "docs/aws-deployment-guide.md"
+    "url": "https://www.notion.so/aws-deployment-guide",
+    "path": "AWS deployment guide"
   },
   {
     "chunk_id": "code-only-graph-chunk",

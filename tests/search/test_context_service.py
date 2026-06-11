@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
+from search import ranking
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore
@@ -200,26 +201,26 @@ def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
 
 def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
-    seed_source(store, "source_web", SourceType.WEB, "Web")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
         "doc-architecture-guide",
         "architecture-guide-chunk",
-        "source_web",
+        "source_github",
         "Project architecture guide",
         "Overview of services and boundaries.",
         path="docs/project-architecture-guide.md",
-        url="https://docs.example.com/project-architecture-guide",
+        url="https://github.com/example/repo/blob/main/docs/project-architecture-guide.md",
     )
     seed_document_chunks(
         store,
         "doc-runtime-notes",
         "runtime-notes-chunk",
-        "source_web",
+        "source_github",
         "Runtime notes",
         "This note mentions project architecture guide ideas in passing.",
         path="notes/runtime.txt",
-        url="https://docs.example.com/runtime-notes",
+        url="https://github.com/example/repo/blob/main/notes/runtime.txt",
     )
 
     result = asyncio.run(
@@ -272,44 +273,6 @@ def test_keyword_search_rerank_prefers_matching_source_type_intent(tmp_path):
     ]
 
 
-def test_keyword_search_docs_term_does_not_bias_toward_web_source(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
-    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
-    seed_source(store, "source_web", SourceType.WEB, "Web")
-    seed_document_chunks(
-        store,
-        "doc-notion-guide",
-        "notion-guide-chunk",
-        "source_notion",
-        "AWS deployment guide",
-        "Amazon Web Services deployment checklist for environment setup and launch steps.",
-        path="AWS deployment guide",
-        url="https://www.notion.so/aws-deployment-guide",
-    )
-    seed_document_chunks(
-        store,
-        "doc-web-guide",
-        "web-guide-chunk",
-        "source_web",
-        "General docs index",
-        "Documentation hub with broad navigation links.",
-        path="docs/index.md",
-        url="https://docs.example.com/index",
-    )
-
-    result = asyncio.run(
-        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
-            "aws docs",
-            top_k=2,
-        )
-    )
-
-    assert [item.chunk_id for item in result["results"][:2]] == [
-        "notion-guide-chunk",
-        "web-guide-chunk",
-    ]
-
-
 def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -322,9 +285,9 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
     )
     store.upsert_source(
         SourceModel(
-            source_id="arbitrary-web-source",
-            source_type=SourceType.WEB,
-            name="Arbitrary Web",
+            source_id="arbitrary-tistory-source",
+            source_type=SourceType.TISTORY,
+            name="Arbitrary Tistory",
             sync_status=SyncStatus.IDLE,
         )
     )
@@ -339,12 +302,12 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
     )
     seed_document_chunks(
         store,
-        "doc-web-sync",
-        "web-sync-arbitrary-id",
-        "arbitrary-web-source",
+        "doc-tistory-sync",
+        "tistory-sync-arbitrary-id",
+        "arbitrary-tistory-source",
         "Generic sync notes",
         "Notion sync troubleshooting and checklist.",
-        url="https://docs.example.com/notion-sync",
+        url="https://devlog.tistory.com/42",
     )
 
     result = asyncio.run(
@@ -356,96 +319,8 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
 
     assert [item.chunk_id for item in result["results"][:2]] == [
         "notion-sync-arbitrary-id",
-        "web-sync-arbitrary-id",
+        "tistory-sync-arbitrary-id",
     ]
-
-
-def test_keyword_search_does_not_infer_web_source_from_generic_site_term(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
-    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
-    seed_source(store, "source_web", SourceType.WEB, "Web")
-    seed_document_chunks(
-        store,
-        "doc-github-sre",
-        "github-sre-chunk",
-        "source_github",
-        "Site reliability guide",
-        "Site reliability guide for service ownership and incident response.",
-        path="docs/site-reliability-guide.md",
-    )
-    seed_document_chunks(
-        store,
-        "doc-web-runtime",
-        "web-runtime-chunk",
-        "source_web",
-        "Runtime notes",
-        "This note mentions site reliability in passing.",
-        path="notes/runtime.md",
-    )
-
-    result = asyncio.run(
-        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
-            "site reliability guide",
-            top_k=2,
-        )
-    )
-
-    assert [item.chunk_id for item in result["results"][:2]] == [
-        "github-sre-chunk",
-        "web-runtime-chunk",
-    ]
-
-
-def test_query_source_type_terms_ignore_aws_web_topic_term():
-    term_groups = ContextSearchService._query_term_groups("amazon web services deployment")
-
-    assert "web" not in ContextSearchService._query_source_type_terms(term_groups)
-
-
-def test_query_source_type_terms_ignore_korean_aws_web_topic_term():
-    term_groups = ContextSearchService._query_term_groups("아마존 웹 서비스 배포")
-
-    assert "web" not in ContextSearchService._query_source_type_terms(term_groups)
-
-
-def test_query_term_groups_do_not_split_compact_korean_aws_phrase_into_web_group():
-    term_groups = ContextSearchService._query_term_groups("아마존웹서비스 docs")
-
-    assert {"aws", "amazon web services", "아마존웹서비스"} in term_groups
-    assert {"web", "website"} not in term_groups
-
-
-def test_query_source_type_terms_support_explicit_web_queries():
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("web auth guide")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("aws web auth guide")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("docs auth guide")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("documentation auth guide")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("웹 인증 가이드")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("site auth guide")
-    )
-    assert "web" in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("official site docs")
-    )
-
-
-def test_query_source_type_terms_do_not_infer_web_when_other_source_is_explicit():
-    assert "web" not in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("notion docs")
-    )
-    assert "web" not in ContextSearchService._query_source_type_terms(
-        ContextSearchService._query_term_groups("tistory documentation")
-    )
 
 
 def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(tmp_path):
@@ -453,7 +328,7 @@ def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(
     store.upsert_source(
         SourceModel(
             source_id="notion-mirror",
-            source_type=SourceType.WEB,
+            source_type=SourceType.TISTORY,
             name="Notion Mirror",
             sync_status=SyncStatus.IDLE,
         )
@@ -468,12 +343,12 @@ def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(
     )
     seed_document_chunks(
         store,
-        "doc-web-mirror",
-        "web-mirror-chunk",
+        "doc-tistory-mirror",
+        "tistory-mirror-chunk",
         "notion-mirror",
         "Mirror sync notes",
         "Notion sync troubleshooting and checklist.",
-        url="https://docs.example.com/notion-sync",
+        url="https://devlog.tistory.com/notion-sync",
     )
     seed_document_chunks(
         store,
@@ -494,8 +369,59 @@ def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(
 
     assert [item.chunk_id for item in result["results"][:2]] == [
         "real-notion-chunk",
-        "web-mirror-chunk",
+        "tistory-mirror-chunk",
     ]
+
+
+def test_removed_web_source_terms_stay_ordinary_content_terms_without_source_type_bonus(tmp_path):
+    term_groups = ranking.query_term_groups("web auth guide")
+    assert ranking.query_source_type_terms(term_groups) == set()
+    assert "web" in {term for group in term_groups for term in group}
+
+    for query in ("website auth guide", "site auth guide", "docs auth guide"):
+        assert ranking.query_source_type_terms(ranking.query_term_groups(query)) == set()
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Team Notes")
+    seed_legacy_web_source(store)
+    seed_document_chunks(
+        store,
+        "doc-web-auth-guide",
+        "web-auth-guide-chunk",
+        "source_notion",
+        "Web auth guide",
+        "Web auth guide checklist for the team portal.",
+    )
+    seed_document_chunks(
+        store,
+        "doc-legacy-web-auth",
+        "legacy-web-auth-chunk",
+        "source_web",
+        "Legacy auth guide",
+        "Auth guide checklist.",
+    )
+
+    service = ContextSearchService(
+        store,
+        retriever=list_search_documents(store),
+        default_source_ids=["source_notion"],
+    )
+    legacy_document = DocumentModel(
+        id="doc-legacy-web-auth",
+        document_id="doc-legacy-web-auth",
+        source_id="source_web",
+        title="Legacy auth guide",
+        content="Auth guide checklist.",
+        url="https://example.com/legacy-auth-guide",
+        platform="Legacy",
+    )
+
+    assert not service.ranker.document_matches_source_type_terms(legacy_document, {"web"})
+
+    result = asyncio.run(service.search_context("web auth guide", top_k=1))
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "web-auth-guide-chunk"
 
 
 def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp_path):
@@ -5414,6 +5340,47 @@ def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
     assert answer["citations"][0]["chunk_id"] == "target-chunk"
 
 
+def test_search_context_default_source_ids_filter_legacy_removed_sources(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_legacy_web_source(store)
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "legacy-doc",
+        "legacy-chunk",
+        "source_web",
+        "Legacy Web",
+        "Legacy web content should not be public.",
+    )
+    seed_document_chunks(
+        store,
+        "github-doc",
+        "github-chunk",
+        "source_github",
+        "GitHub Doc",
+        "Retained GitHub content should remain searchable.",
+    )
+    service = ContextSearchService(
+        store,
+        retriever=list_search_documents(store),
+        default_source_ids=["source_github", "source_notion", "source_tistory"],
+    )
+
+    legacy_result = asyncio.run(service.search_context("legacy web", top_k=5))
+    retained_result = asyncio.run(service.search_context("retained github", top_k=5))
+    explicit_legacy_result = asyncio.run(
+        service.search_context(
+            "legacy web",
+            filters={"source_id": "source_web"},
+            top_k=5,
+        )
+    )
+
+    assert legacy_result["results"] == []
+    assert [item.chunk_id for item in retained_result["results"]] == ["github-chunk"]
+    assert explicit_legacy_result["results"] == []
+
+
 def test_search_context_ignores_tombstoned_document_chunks(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.GITHUB, "Target")
@@ -5489,6 +5456,31 @@ def seed_source(store, source_id, source_type, name):
             sync_status=SyncStatus.IDLE,
         )
     )
+
+
+def seed_legacy_web_source(store):
+    store.ensure_schema()
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (
+                source_id, source_type, name, enabled, auth_ref, sync_status,
+                last_synced_at, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "source_web",
+                "web",
+                "Legacy Web",
+                1,
+                "",
+                SyncStatus.SUCCEEDED.value,
+                "2026-06-10T00:00:00+00:00",
+                "",
+                "2026-06-10T00:00:00+00:00",
+                "2026-06-10T00:00:00+00:00",
+            ),
+        )
 
 
 def seed_document_chunks(

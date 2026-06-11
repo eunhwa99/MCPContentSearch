@@ -1,37 +1,14 @@
 import logging
-import re
 from datetime import datetime, timezone
 
 from core.models import DocumentModel, SyncJobStatus
 from core.utils import ContentHasher
 from fetching.connectors import SourceRegistry
+from indexing.background_tasks import safe_error_message
 from indexing.chunker import DocumentChunker
 from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
-SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(access[-_]?key(?:[-_]?id)?|access[-_]?token|api[-_]?key|"
-    r"apikey|auth|authorization|aws[-_]?access[-_]?key[-_]?id|"
-    r"client[-_]?secret|code|cookie|credential|csrf[-_]?token|csrf|"
-    r"j[-_]?session[-_]?id|jwt[-_]?token|jwt|key|pass|password|"
-    r"php[-_]?sess[-_]?id|secret|session[-_]?id|session[-_]?token|"
-    r"session|sessionid|sig|signature|sid|token|x[-_]?amz[-_]?access[-_]?key[-_]?id|"
-    r"x[-_]?amz[-_]?credential|x[-_]?amz[-_]?signature|xsrf[-_]?token|xsrf)"
-    r"\s*[:=]\s*([^&,\s]+)"
-)
-CREDENTIAL_LIKE_RE = re.compile(
-    r"(?:"
-    r"gh[pousr]_[A-Za-z0-9_]+|"
-    r"github_pat_[A-Za-z0-9_]+|"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
-    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
-    r"AIza[A-Za-z0-9_-]{30,}|"
-    r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|"
-    r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"
-    r")",
-    re.IGNORECASE,
-)
 
 
 def _now() -> str:
@@ -39,9 +16,9 @@ def _now() -> str:
 
 
 def _redact_sensitive_error(message: str) -> str:
-    redacted = SENSITIVE_ASSIGNMENT_RE.sub(r"\1=<redacted>", message or "")
-    redacted = CREDENTIAL_LIKE_RE.sub("<redacted>", redacted)
-    return redacted or "Sync failed. See server logs for details."
+    if not message:
+        return "Sync failed. See server logs for details."
+    return safe_error_message(RuntimeError(message))
 
 
 class IngestionService:
@@ -73,8 +50,6 @@ class IngestionService:
         connector = self.source_registry.get_connector(source_id)
         if self.register_source_config:
             self.refresh_registered_sources()
-        else:
-            connector.refresh_source_state()
         job, started = self.metadata_store.begin_sync_job(source_id)
         if not started:
             logger.info("Sync already running for source %s", source_id)

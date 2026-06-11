@@ -2,21 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
+
+from search.debug_redaction import redact_prompt_query_text
+from search.query_terms import query_term_groups
 
 
 logger = logging.getLogger(__name__)
-
-SECRET_PATTERN = re.compile(
-    r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|"
-    r"xox[baprs]-[A-Za-z0-9-]+|"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
-    r"AIza[A-Za-z0-9_-]{20,}|"
-    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
-    re.IGNORECASE,
-)
+PROMPT_PLACEHOLDER_TERMS = {"redacted"}
 
 
 class OpenAIQueryRewriter:
@@ -57,14 +50,7 @@ class OpenAIQueryRewriter:
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {
-                            "query": self._redact_secret_like(query),
-                            "normalized_terms": [
-                                sorted(self._redact_secret_like(list(group)))
-                                for group in term_groups
-                            ],
-                            "max_rewrites": self.max_rewrites,
-                        },
+                        self._prompt_payload(query, self.max_rewrites),
                         ensure_ascii=False,
                     ),
                 },
@@ -97,7 +83,21 @@ class OpenAIQueryRewriter:
             }
         if not isinstance(value, str):
             return value
-        return SECRET_PATTERN.sub("[REDACTED]", value)
+        return redact_prompt_query_text(value)
+
+    @classmethod
+    def _prompt_payload(cls, query: str, max_rewrites: int) -> dict:
+        redacted_query = cls._redact_secret_like(query)
+        normalized_terms = []
+        for group in query_term_groups(redacted_query):
+            terms = sorted(term for term in group if term not in PROMPT_PLACEHOLDER_TERMS)
+            if terms:
+                normalized_terms.append(terms)
+        return {
+            "query": redacted_query,
+            "normalized_terms": normalized_terms,
+            "max_rewrites": max_rewrites,
+        }
 
 
 def build_query_rewriter(config, *, api_key: str):

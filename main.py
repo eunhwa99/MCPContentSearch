@@ -9,17 +9,12 @@ from llama_index.core import StorageContext, Settings
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from indexing.indexer import ContentIndexer
-from search.service import SearchService
-from search.dynamic_search import DynamicSearchService
-from fetching.web_searcher import WebSearcher
 from fetching.connectors import build_source_registry
 from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
-from wiki.service import WikiGenerationService
-from wiki.synthesis import build_wiki_synthesizer
 from api.tools import register_tools
 
 # 로깅 설정
@@ -49,24 +44,6 @@ def create_app() -> FastMCP:
     # 기본 서비스
     indexer = ContentIndexer(config, chroma_collection, storage_context)
     metadata_store = MetadataStore(config.metadata_db_path)
-    search_service = SearchService(config, indexer, metadata_store=metadata_store)
-
-    # 웹 검색기
-    web_searcher = WebSearcher(
-        notion_api_key=NOTION_API_KEY,
-        tistory_blog_name=TISTORY_BLOG_NAME,
-        config=config,
-        github_repositories=config.github_repositories,
-        github_token=get_env_secret(config.github_token_env_var),
-    )
-
-    # 동적 검색 서비스
-    dynamic_search = DynamicSearchService(
-        local_search=search_service,
-        web_searcher=web_searcher,
-        indexer=indexer,
-        min_threshold=3  # 로컬에 3개 미만이면 웹 검색
-    )
 
     # ContextWiki source/sync/search 서비스
     source_registry = build_source_registry(
@@ -75,6 +52,7 @@ def create_app() -> FastMCP:
         tistory_blog_name=TISTORY_BLOG_NAME,
         github_token=get_env_secret(config.github_token_env_var),
     )
+    retained_source_ids = [source.source_id for source in source_registry.list_sources()]
     ingestion_service = IngestionService(
         metadata_store=metadata_store,
         source_registry=source_registry,
@@ -84,6 +62,7 @@ def create_app() -> FastMCP:
     recovered_count = metadata_store.recover_orphaned_running_jobs(
         started_before=process_started_at,
         error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+        source_ids=retained_source_ids,
     )
     if recovered_count:
         logger.info("Recovered %s orphaned running sync job(s)", recovered_count)
@@ -91,21 +70,9 @@ def create_app() -> FastMCP:
         metadata_store=metadata_store,
         indexer=indexer,
         config=config,
+        default_source_ids=retained_source_ids,
     )
     answer_service = CitationAnswerService(context_search)
-    wiki_llm_api_key = (
-        get_env_secret(config.wiki_llm_api_key_env_var)
-        if config.wiki_llm_enabled and config.wiki_llm_provider == "openai"
-        else ""
-    )
-    wiki_synthesizer = build_wiki_synthesizer(
-        config,
-        api_key=wiki_llm_api_key,
-    )
-    wiki_service = WikiGenerationService(
-        context_search,
-        llm_synthesizer=wiki_synthesizer,
-    )
 
     # FastMCP 서버
     mcp = FastMCP("content-search-server")
@@ -113,19 +80,14 @@ def create_app() -> FastMCP:
     # 도구 등록
     register_tools(
         mcp,
-        indexer,
-        search_service,
-        dynamic_search,
-        web_searcher,
         ingestion_service=ingestion_service,
         context_search_service=context_search,
         answer_service=answer_service,
-        wiki_service=wiki_service,
         metadata_store=metadata_store,
         source_registry=source_registry,
     )
 
-    logger.info("✅ Application initialized with dynamic search")
+    logger.info("✅ Application initialized with slim ContextWiki MCP tools")
 
     return mcp
 
@@ -136,5 +98,5 @@ def create_app() -> FastMCP:
 if __name__ == "__main__":
     mcp = create_app()
 
-    logger.info("🚀 Starting MCP server with auto-fallback search...")
+    logger.info("🚀 Starting slim ContextWiki MCP server...")
     mcp.run()

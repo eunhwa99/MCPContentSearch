@@ -4,29 +4,47 @@
 
 accepted
 
+Status note: ADR 0006 supersedes the website/docs and `source_web` portion of
+this ADR for current scope. The GitHub connector decision remains accepted.
+
 ## Date
 
 2026-05-22
 
 ## Context
 
-Phase B adds GitHub repository and generic website/docs ingestion. Unlike the original Notion/Tistory connectors, these sources can contain large file trees, binary files, moved/deleted documents, canonical URLs that differ from crawl URLs, and external rate-limit or robots constraints.
+Phase B originally added GitHub repository and generic website/docs ingestion.
+Unlike the original Notion/Tistory connectors, these sources can contain large
+file trees, binary files, moved/deleted documents, canonical URLs that differ
+from crawl URLs, and external rate-limit or robots constraints. The current slim
+MCP scope retains GitHub and removes website/docs ingestion.
 
 ADR 0002 established SQLite as the metadata and citation store. ADR 0003 established stable document identity, tombstones, version metadata, source-aware chunking, and successful-sync cleanup rules. Phase B needs connector-specific boundaries that preserve those contracts without storing secrets or touching local Chroma data directly.
 
 ## Decision
 
-Add GitHub and website/docs connectors as `fetching/` responsibilities and register them through the existing `SourceRegistry`.
+Add the GitHub connector as a current `fetching/` responsibility and register it
+through the existing `SourceRegistry`.
 
-The canonical Phase B source ids are:
+Historical note: this ADR originally also added website/docs ingestion. ADR 0006
+supersedes that part of the decision for current scope; website/docs is no
+longer a production connector.
+
+The current Phase B source id is:
 
 - `source_github`
-- `source_web`
-- `source_obsidian`
 
-Connector configuration is non-secret and environment-driven through `AppConfig` fields such as repository specs, web seed URLs, page/file limits, user agent, and crawl delay. GitHub authentication is optional and referenced in source metadata as `env:GITHUB_TOKEN`; the raw token is read only at runtime and must not be stored in SQLite, docs, tests, or logs.
+Historical superseded source id:
 
-All Phase B connectors produce `DocumentModel` records that satisfy the Phase B-0 lifecycle contract:
+- `source_web` (superseded by ADR 0006 and removed from current scope)
+
+Connector configuration is non-secret and environment-driven through `AppConfig`
+fields such as GitHub repository specs, file limits, and user agent. GitHub
+authentication is optional and referenced in source metadata as
+`env:GITHUB_TOKEN`; the raw token is read only at runtime and must not be stored
+in SQLite, docs, tests, or logs.
+
+The GitHub connector produces `DocumentModel` records that satisfy the Phase B-0 lifecycle contract:
 
 - stable `external_id` and `document_id`
 - `canonical_url`
@@ -39,15 +57,15 @@ GitHub ingestion uses the GitHub tree/blob API or equivalent mocked client behav
 GitHub stale cleanup is scoped to the repository identities fetched by the
 current connector, such as `github:owner/repo:` document-id prefixes, rather
 than every document under `source_github`. This keeps a configured GitHub sync
-from tombstoning documents indexed by a separate one-off or ad hoc GitHub target
-sync that shares the canonical `source_github` id. A repository removed from the
-current configured repository list is therefore not automatically tombstoned by
-later configured syncs until a provenance-aware or explicit manual cleanup
-contract exists.
+from tombstoning documents indexed by another GitHub connector instance or
+historical helper flow that shares the canonical `source_github` id. A
+repository removed from the current configured repository list is therefore not
+automatically tombstoned by later configured syncs until a provenance-aware or
+explicit manual cleanup contract exists.
 
-Website/docs ingestion supports bounded same-origin crawling and sitemap URLs. It fetches and applies robots.txt disallow rules before page fetches, enforces a per-response byte cap, extracts readable text/title/canonical URLs, and uses canonical URLs as stable document identities.
-
-Obsidian vault ingestion walks a local directory for `.md` files, extracts YAML frontmatter for title resolution, and generates `obsidian://open?vault=...&file=...` canonical URLs. System directories (`.obsidian`, `.trash`) and any dot-prefixed path segment at any depth are skipped. The vault-relative path is used as `external_id` and `document_id` for stable identity within a vault. Configuration is via `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`; the connector disables gracefully when the path is unset or non-existent.
+Historical website/docs ingestion was designed to support bounded same-origin
+crawling and sitemap URLs. ADR 0006 removes that path from current scope,
+including `source_web` and website/docs configuration.
 
 Connector fetches must fail the sync on required API/page fetch errors so source-wide tombstoning only runs after a complete bounded snapshot. Live external validation remains optional and must be explicitly requested.
 
@@ -55,15 +73,25 @@ Connector fetches must fail the sync on required API/page fetch errors so source
 
 - MCP tools can keep using `sync_source(source_id)` and `list_sources()` instead of adding connector-specific sync tools.
 - Phase B connector tests should mock HTTP/API responses and use temporary metadata/vector state.
-- GitHub/Web source cleanup can rely on existing `supports_stale_cleanup=True` only when the connector completed its bounded snapshot. GitHub cleanup is additionally limited to the current connector's fetched repository identities; website cleanup remains source-wide for its configured crawl scope.
-- Large repositories and broad websites are intentionally limited by max file/page/response-size configuration until later queueing, retry/backoff, and observability phases.
+- GitHub cleanup can rely on existing `supports_stale_cleanup=True` only when
+  the connector completed its bounded snapshot. GitHub cleanup is additionally
+  limited to the current connector's fetched repository identities.
+- Large repositories are intentionally limited by max file/response-size
+  configuration until later queueing, retry/backoff, and observability phases.
+- Website/docs cleanup, broad-site crawling, robots handling, and web
+  page-limit constraints are historical superseded scope under ADR 0006.
 - Function/class-aware code chunking, advanced HTML readability extraction, retries, audit logs, ACLs, and live smoke tests remain later-phase work.
 
 ## Alternatives Considered
 
-- Add connector-specific MCP tools such as `sync_github_repository` or `sync_web_url`: deferred because Phase B can reuse the existing source registry and sync contract while keeping MCP surface smaller.
-- Store GitHub/Web source definitions in SQLite through an MCP registration tool: deferred because static environment-driven sources are enough for the first production slice and avoid new mutation/security contracts.
-- Ignore robots.txt during tests and development: rejected because the roadmap explicitly calls for robots/rate-limit safety before website/docs ingestion ships.
+- Add connector-specific MCP tools such as `sync_github_repository`: deferred
+  because Phase B can reuse the existing source registry and sync contract while
+  keeping MCP surface smaller.
+- Store GitHub source definitions in SQLite through an MCP registration tool:
+  deferred because static environment-driven sources are enough for the first
+  production slice and avoid new mutation/security contracts.
+- Website/docs-specific alternatives such as `sync_web_url` and robots handling
+  are historical superseded scope under ADR 0006.
 
 ## Related
 

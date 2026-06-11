@@ -8,7 +8,6 @@ from environments.config import AppConfig, NotionConfig
 from fetching.notion import (
     NotionAPIClient,
     NotionPageProcessor,
-    NotionSearcher,
     fetch_notion_target,
     parse_notion_object_id,
 )
@@ -271,37 +270,6 @@ def test_notion_request_retries_timeout_exception(monkeypatch):
     assert page["id"] == "page-id"
     assert len(calls) == 2
     assert slept == [2]
-
-
-def test_notion_searcher_routes_search_through_request_helper(monkeypatch):
-    calls = []
-
-    async def fake_request_json(self, http_client, method, url, **kwargs):
-        calls.append((method, url, kwargs))
-        return {
-            "results": [
-                {
-                    "id": "page-1",
-                    "url": "https://www.notion.so/page-1",
-                    "created_time": "2026-05-25T00:00:00Z",
-                    "last_edited_time": "2026-05-26T00:00:00Z",
-                    "properties": {"title": {"title": [{"plain_text": "Target page"}]}},
-                }
-            ]
-        }
-
-    async def fake_fetch_block_content(self, client, block_id, depth=0, strict=False):
-        return "target page content"
-
-    monkeypatch.setattr(NotionAPIClient, "_request_json", fake_request_json)
-    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
-
-    documents = asyncio.run(NotionSearcher("secret", AppConfig()).search("target", max_results=1))
-
-    assert calls
-    assert calls[0][0] == "post"
-    assert calls[0][1].endswith("/search")
-    assert documents[0].title == "Target page"
 
 
 def test_notion_page_processor_populates_native_external_id():

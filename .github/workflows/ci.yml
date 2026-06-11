@@ -10,11 +10,12 @@ jobs:
   verify:
     name: Python 3.13 verification
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     env:
       PYTHONPATH: .
       UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+      CONTEXTWIKI_SEARCH_LLM_ENABLED: "false"
 
     steps:
       - name: Check out repository
@@ -31,25 +32,17 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Check lockfile
         run: uv lock --check
 
       - name: Sync dependencies
         run: uv sync --locked --python 3.13 --dev
 
-      - name: Compile Python modules
-        run: uv run --locked python -m compileall api core environments fetching indexing search storage wiki web_console main.py
-
-      - name: Check Web Console JavaScript
-        run: node --check web/app.js
+      - name: Compile retained Python modules
+        run: uv run --locked python -m compileall api core environments fetching indexing search storage main.py
 
       - name: Run Ruff lint
-        run: uv run --locked ruff check api core environments fetching indexing search storage wiki web_console main.py
+        run: uv run --locked ruff check api core environments fetching indexing search storage main.py
 
       - name: Run scoped mypy
         run: uv run --locked mypy
@@ -59,15 +52,13 @@ jobs:
           uv run --locked bandit \
             -q \
             -c pyproject.toml \
-            -r api core environments fetching indexing search storage wiki web_console main.py \
+            -r api core environments fetching indexing search storage main.py \
             --severity-level medium \
             --confidence-level low
 
       - name: Run non-live tests with coverage
         run: |
           uv run --locked pytest -m "not live" \
-            --ignore=tests/e2e/test_contextwiki_flow.py \
-            --ignore=tests/e2e/test_phase_b_connectors_flow.py \
             --cov=api \
             --cov=core \
             --cov=environments \
@@ -75,8 +66,6 @@ jobs:
             --cov=indexing \
             --cov=search \
             --cov=storage \
-            --cov=wiki \
-            --cov=web_console \
             --cov-report=term-missing
 
       - name: Run functional E2E gate

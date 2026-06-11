@@ -2,165 +2,105 @@
 
 [![CI](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml)
 
-ContextWiki is a local-first MCP content search server that turns private or
-project-specific sources into citation-backed answers and wiki pages. It is
-built as a portfolio case study in pragmatic retrieval engineering: Chroma does
-semantic search, SQLite decides which evidence is safe to cite, and deterministic
-smokes prove the flow without live credentials or private data.
+ContextWiki is a focused MCP retrieval server for private or project-specific
+knowledge. It syncs a small set of configured sources into local Chroma vectors,
+keeps citation and lifecycle metadata in SQLite, and exposes MCP tools that let
+an LLM client retrieve grounded context without reading local databases directly.
 
-## Case Study
+The current scope is intentionally small:
 
-### Problem
+- Source connectors: Notion, Tistory, and GitHub repositories.
+- Retrieval tools: source listing/status, source sync, context search, context
+  fetch, and citation-backed answers.
+- Local persistence: Chroma for semantic candidate retrieval, SQLite for source,
+  job, document, chunk, and tombstone metadata.
 
-Personal and team knowledge usually lives across Notion, blogs, repositories,
-and documentation sites. A normal vector search demo can retrieve similar text,
-but it often fails the harder product questions:
-
-- Can the answer show where each claim came from?
-- Can deleted or moved source documents stop appearing in citations?
-- Can the demo run safely without indexing a user's private data?
-- Can reviewers reproduce the core behavior in CI?
-
-ContextWiki treats those as product requirements instead of afterthoughts.
-
-### Product Outcome
-
-- MCP tools for source sync, context search, citation answers, context fetch,
-  and Auto Wiki generation.
-- A local Web Console for the reviewer flow: sync a source, ask a question, see
-  citations and chunks, then download a generated wiki page.
-- Deterministic local evals and fake smokes that use temporary SQLite and
-  Chroma paths under the system temp directory.
-- CI coverage for locked dependency sync, Python syntax, browser JavaScript
-  syntax, Ruff lint, scoped mypy, scoped Bandit, non-live pytest with coverage,
-  and fake wiki generation.
-
-### Architecture Decisions
-
-The system is intentionally split by responsibility:
-
-- `api/` owns MCP tool registration and caller-visible response contracts.
-- `fetching/` owns Notion, Tistory, GitHub, and website/docs connectors.
-- `indexing/` owns chunking, deduplication, lifecycle metadata writes, and
-  Chroma/LlamaIndex indexing.
-- `storage/` owns SQLite source, job, document, chunk, and tombstone metadata.
-- `search/` owns retrieval, ranking, SQLite-backed active gates, and citation
-  answer scaffolding.
-- `wiki/` owns deterministic Auto Wiki generation and optional LLM synthesis.
-- `web_console/` owns the local reviewer/debug console.
-
-The main tradeoff is deliberate: Chroma is optimized for similarity retrieval,
-while SQLite is the source of truth for citation metadata and document lifecycle.
-That adds one more persistence layer, but it makes stale citation prevention and
-deterministic tests much easier to reason about.
+The current slim MCP server does not include the former Web Console, Auto Wiki,
+generic website/docs crawler, dynamic web fallback, or legacy live search/index
+tools. Those features are historical and superseded for the current project
+scope by [ADR 0006](.agents/docs/adr/0006-slim-mcp-core-scope.md).
 
 ## Why SQLite Plus Chroma
 
-Chroma answers "what chunks are semantically close to this query?" SQLite answers
-"is this chunk still active, citation-ready, and attached to the right source?"
+Chroma answers "which chunks are semantically close to this query?" SQLite
+answers "is this chunk still active, citation-ready, and attached to the right
+source?"
 
-ContextWiki only cites chunks that pass SQLite metadata hydration. Full source
-syncs update `last_seen` markers and tombstone documents that disappeared from a
-successful connector snapshot. If a stale vector entry remains in Chroma, the
-SQLite active chunk/document gate filters it before `search_context`,
-`answer_with_citations`, or `generate_wiki_page` can expose it as evidence.
+ContextWiki only returns citeable evidence after Chroma candidates are hydrated
+and validated through SQLite. Successful full syncs refresh `last_seen` metadata
+and tombstone missing documents for cleanup-capable sources. If a stale vector
+entry remains in Chroma, the SQLite active chunk/document gate filters it before
+`search_context` or `answer_with_citations` can expose it.
 
-That design is especially useful for GitHub and docs sources, where files move,
-paths change, and deleted content would otherwise keep surfacing from old vector
-embeddings.
+This split keeps retrieval fast while making citation safety explicit.
 
-## Privacy And Safety
+## MCP Tool Surface
 
-ContextWiki is private by default:
+The retained MCP tools are:
 
-- Fake smokes and evals use temporary local storage, not user Chroma or SQLite.
-- Live Notion, Tistory, GitHub, website/docs, and LLM checks are opt-in.
-- GitHub authentication is read at runtime from `GITHUB_TOKEN`; raw tokens are
-  not stored in SQLite, docs, tests, or logs.
-- Auto Wiki LLM synthesis is disabled unless `CONTEXTWIKI_WIKI_LLM_ENABLED=true`
-  and a configured provider key is available. The deterministic local wiki path
-  runs without sending evidence to an external model.
+| Tool | Purpose |
+| --- | --- |
+| `list_sources()` | List configured Notion, Tistory, and GitHub sources. |
+| `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
+| `get_sync_status(source_id="")` | Read latest source and sync-job state. |
+| `search_context(query, filters=None, top_k=10)` | Return structured, SQLite-validated evidence chunks. |
+| `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
+| `answer_with_citations(question, filters=None, top_k=5)` | Build an evidence-gated answer with citations and used chunks. |
 
-## Reviewer Demo
+Tool handlers live in `api/tools.py`; business behavior stays in `indexing/`,
+`search/`, `fetching/`, and `storage/`.
 
-### Seeded Local Demo
+## Optional Search Query Rewrite
 
-This path proves the MCP registration, fake source sync, active retrieval,
-citations, backlinks, and wiki Markdown output without live services:
+`search_context` can optionally ask an external LLM to produce short query
+rewrites when initial local vector results look weak. This is disabled by
+default. Enabling it may send the user's search query and normalized query terms
+to the configured provider before local Chroma retrieval.
+
+```bash
+CONTEXTWIKI_SEARCH_LLM_ENABLED=true
+CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
+CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+```
+
+The rewrite path is not a dynamic web fallback, does not fetch external source
+content, and does not mutate SQLite or Chroma. Keep it disabled to avoid
+query-rewrite egress. Fully local operation also depends on using a local or
+otherwise non-egress embedding configuration for LlamaIndex/Chroma.
+
+## Source Connectors
+
+| Source | Source id | Configuration | Notes |
+| --- | --- | --- | --- |
+| Notion | `source_notion` | `NOTION_API_KEY` | Syncs pages/documents through the Notion fetcher. |
+| Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | Syncs blog posts through the Tistory fetcher. |
+| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | Syncs bounded text/code/Markdown files from configured repositories. |
+
+GitHub repositories are configured as comma-separated `owner/repo` entries with
+an optional `@ref`, for example:
+
+```bash
+CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
+```
+
+Raw secrets are read at runtime from environment variables. They are not stored
+in SQLite, committed to docs/tests, or printed by verification commands.
+
+## Minimal Setup
 
 ```bash
 uv sync --locked --python 3.13 --dev
-uv run --locked python scripts/smoke_generate_wiki_page.py --mode fake
+uv run --locked python main.py
 ```
 
-Expected result: JSON with `status: "completed"`, a `passed` fake result, and
-Markdown written under the system temp directory in `contextwiki-wiki-smoke`.
-
-### Local Web Console
+For a plain Python syntax check without contacting external services:
 
 ```bash
-uv sync --locked --python 3.13 --dev
-CONTEXTWIKI_AUTO_SYNC_SOURCES= \
-  uv run --locked --python 3.13 uvicorn web_console.app:create_default_app --factory \
-  --host 127.0.0.1 --port 8765
+python -m compileall api core environments fetching indexing search storage main.py
 ```
 
-Open `http://127.0.0.1:8765`, then use the product path:
-
-1. Sync a one-off target or configured source.
-2. Ask a question.
-3. Inspect citations, sources, and used chunks.
-4. Generate and download a wiki page as Markdown or JSON.
-
-The Web Console command above disables startup auto-sync. Manual sync actions
-are still live opt-in actions and write to the default local store under
-`~/.mcp_content_search`; use the seeded fake smoke for a fully temporary demo.
-
-Configured-source sync (`/api/sources/{source_id}/sync`) and one-off target sync
-(`/api/targets/sync`) remain separate on purpose. Configured sync can apply
-source lifecycle cleanup; one-off target sync avoids broad stale cleanup for
-ad hoc review targets.
-
-### Demo Screenshots
-
-The screenshots below show the original local search and fallback behavior. The
-seeded fake smoke above is the reproducible path for reviewers who want to run
-the demo without credentials.
-
-<img width="800" height="1000" alt="ContextWiki local console demo" src="https://github.com/user-attachments/assets/b256eb1e-9126-4778-94a8-dda4ff807e0f" />
-
-Enough local results in DB (`found 3 results in local DB`):
-
-<img width="1000" height="140" alt="Local DB search result" src="https://github.com/user-attachments/assets/79c20cf1-daaa-4954-b1b0-a47aecff7125" />
-
-Web fallback path (`Insufficient results (2/3), searching web...`):
-
-<img width="1232" height="194" alt="Web fallback trigger" src="https://github.com/user-attachments/assets/aa6f0291-a572-4488-9d7a-119dccdc52c3" />
-
-<img width="1352" height="118" alt="Web fallback result" src="https://github.com/user-attachments/assets/ec54b53e-126f-4241-b979-04938aeaae7f" />
-
-## MCP Tools
-
-ContextWiki tools:
-
-- `list_sources()`
-- `sync_source(source_id)`
-- `get_sync_status(source_id="")`
-- `search_context(query, filters=None, top_k=10)`
-- `fetch_context(document_id="", chunk_id="")`
-- `answer_with_citations(question, filters=None, top_k=5)`
-- `generate_wiki_page(topic, filters=None, top_k=8)`
-
-Legacy search/indexing tools:
-
-- `search_content(query, n_results=10)`
-- `search_notion(query, n_results=10)`
-- `search_tistory(query, n_results=10)`
-- `search_github(query, n_results=10)`
-- `trigger_index_all_content()`
-- `get_index_status()`
-
-## Verification Evidence
+## Verification
 
 The full local gate is:
 
@@ -168,114 +108,53 @@ The full local gate is:
 ./scripts/verify_all.sh
 ```
 
-It requires a healthy `uv` workspace, then runs Python compile checks, browser
-JavaScript syntax, high-signal Ruff lint, scoped mypy type checking, scoped
-Bandit security checks, non-live pytest with coverage fail-under, and the
-functional E2E gate.
+It performs retained-runtime syntax checks, Ruff, scoped mypy, scoped Bandit,
+non-live pytest with coverage over retained packages, and the slim functional
+E2E gate.
 
-Latest local evidence from 2026-06-09, using deterministic non-live data:
+The functional E2E gate is:
 
-| Gate | Evidence |
-| --- | --- |
-| Full local gate | `./scripts/verify_all.sh` passed |
-| Non-live pytest + coverage | 872 tests passed, total coverage 84.74% against a 70% fail-under |
-| Functional E2E | 198 tests passed |
-| Fake wiki smoke | generated wiki page with 2 citations, 2 backlinks, 2 used chunks under the system temp directory |
-| Web Console browser smoke | answer/debug, visible citations, Markdown/JSON downloads, Build Wiki visible Markdown, wiki downloads, configured-source sync, target sync, and validation failure path passed |
-| Local eval runner | retrieval 5/5, answer 3/3, average score 1.0 for both suites |
+```bash
+./scripts/verify_functional_e2e.sh
+```
+
+It uses non-live tests and temporary test storage for retained MCP flows:
+source registry, source sync, context search, context fetch, citation answers,
+metadata lifecycle, and Chroma/SQLite citation-safety behavior. It does not run
+browser checks, Playwright, Web Console tests, wiki generation smoke, live
+external APIs, or LLM calls.
 
 Useful focused checks:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage wiki web_console main.py
-node --check web/app.js
-uv run --locked pytest -m "not live"
-uv run --locked pytest -q tests/evals
-PYTHONPATH=. uv run --locked python scripts/run_contextwiki_eval.py
-uv run --locked python scripts/smoke_generate_wiki_page.py --mode fake
+uv run --locked pytest -q tests/fetching/test_connectors.py
+uv run --locked pytest -q tests/api/test_tools_contract.py
+uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
+uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
+uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
 ```
 
-The GitHub Actions workflow mirrors the professional gates while staying
-non-live:
-
-```bash
-uv lock --check
-uv sync --locked --python 3.13 --dev
-uv run --locked python -m compileall api core environments fetching indexing search storage wiki web_console main.py
-node --check web/app.js
-uv run --locked ruff check api core environments fetching indexing search storage wiki web_console main.py
-uv run --locked mypy
-uv run --locked bandit -q -c pyproject.toml \
-  -r api core environments fetching indexing search storage wiki web_console main.py \
-  --severity-level medium --confidence-level low
-uv run --locked pytest -m "not live" \
-  --ignore=tests/e2e/test_contextwiki_flow.py \
-  --ignore=tests/e2e/test_phase_b_connectors_flow.py \
-  --cov=api --cov=core --cov=environments --cov=fetching --cov=indexing \
-  --cov=search --cov=storage --cov=wiki --cov=web_console
-./scripts/verify_functional_e2e.sh
-```
-
-The functional E2E gate covers the fake wiki smoke, deterministic connector E2E
-tests, Web Console contract tests, and the Playwright browser-click smoke.
-
-## Local Evals
-
-`evals/` contains deterministic evaluation scaffolding:
-
-- payload-level answer grounding checks
-- fixture-based retrieval quality checks
-- fixture-based citation answer checks over temporary SQLite state
-
-The eval runner swaps in local fixture retrieval and does not call live APIs,
-user Chroma data, user SQLite data, or LLMs.
-
-## Dependency Source Of Truth
-
-- `pyproject.toml` declares runtime dependencies, dev dependency groups, and
-  tool configuration.
-- `uv.lock` is the resolved dependency lock used by local verification and CI.
-- `requirements.txt` is a runtime-only compatibility mirror for pip-based
-  environments. It is not the authoritative dependency manifest and is not used
-  by CI.
-
-Use `uv sync --locked --python 3.13 --dev` for development and CI parity.
-
-## Configuration
-
-Source configuration:
-
-- `CONTEXTWIKI_GITHUB_REPOSITORIES`: comma-separated `owner/repo` entries,
-  optional `@ref`
-- `GITHUB_TOKEN`: optional GitHub API auth
-- `CONTEXTWIKI_WEB_URLS`: seed URLs for website/docs crawling
-- `CONTEXTWIKI_AUTO_SYNC_SOURCES`: source IDs to auto-sync at startup
-
-Feature toggles:
-
-- `CONTEXTWIKI_SEARCH_LLM_ENABLED`: enable search-quality LLM enhancement
-- `CONTEXTWIKI_WIKI_LLM_ENABLED`: enable LLM-assisted wiki synthesis
-- `CONTEXTWIKI_WIKI_LLM_PROVIDER`, `CONTEXTWIKI_WIKI_LLM_MODEL`
-- `OPENAI_API_KEY`: required only for configured provider usage
+Do not treat these commands as evidence unless they were run in the current
+branch. This README lists the intended verification surface; PR descriptions and
+handoffs should report the actual commands and results from the run.
 
 ## Project Map
 
-- `api/`: MCP-facing tool contracts
-- `core/`: shared models, errors, and utilities
-- `environments/`: runtime configuration and token loading
-- `fetching/`: source connectors and legacy live search helpers
-- `indexing/`: conversion, chunking, deduplication, and vector writes
-- `search/`: retrieval, active metadata gates, answers, and ranking
-- `storage/`: SQLite source/job/document/chunk lifecycle metadata
-- `wiki/`: citation-backed wiki generation
-- `web/`, `web_console/`: local reviewer console
-- `evals/`, `tests/`, `scripts/`: deterministic verification harness
+- `main.py`: FastMCP server composition.
+- `api/`: MCP-facing tool contracts and response formatting.
+- `core/`: shared models, exceptions, and utilities.
+- `environments/`: runtime configuration and secret/environment access.
+- `fetching/`: Notion, Tistory, and GitHub source connectors/fetchers.
+- `indexing/`: chunking, deduplication, lifecycle coordination, and Chroma writes.
+- `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers.
+- `storage/`: SQLite source/job/document/chunk lifecycle metadata.
+- `tests/`, `scripts/`: non-live verification harnesses.
 
 ## Additional Docs
 
 - [ContextWiki Core Understanding](docs/contextwiki-core-understanding.md)
 - [Architecture](.agents/docs/architecture.md)
 - [ADRs](.agents/docs/adr/)
-- [Harness and Workflow](.agents/docs/harness-engineering.md)
+- [Harness and workflow](.agents/docs/harness-engineering.md)
 - [GitHub workflow policy](.agents/docs/github-workflow.md)
 - [Plan log](docs/plan/)

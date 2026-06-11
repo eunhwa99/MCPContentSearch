@@ -16,7 +16,7 @@
 - The main agent owns integration: collect worker outputs, inspect diffs, resolve conflicts, update the plan, run verification, route actionable findings back to the responsible worker persona or a fresh replacement with the same ownership boundary, and minimize human intervention. Ask the user only when safety, credentials, destructive actions, unavailable delegation/review tools, or genuinely unclear requirements require human judgment.
 - Keep `docs/contextwiki-core-understanding.md` updated when changes affect ContextWiki source connectors, source sync, document identity, chunking, tombstones, retrieval, citation metadata, or answer behavior. This note is the maintained human explanation layer and should not drift behind README, architecture docs, ADRs, or implementation.
 - After code-changing work, always run the relevant test or verification command before review. Use the repo-local commands in this file and `.agents/docs/harness-engineering.md`, not plugin-default paths such as `docs/superpowers/...`.
-- After implementation and focused tests, run the functional smoke gate before `$subagent-review-loop`: use `.agents/skills/harness-functional-smoke/SKILL.md` to exercise the task-relevant MCP/Web Console/source-sync/user-visible feature inventory once through the safest real caller surfaces, not only unit-test the changed files. Record explicit safety blockers, approval needed, and nearest fake/temp substitutes in the plan.
+- After implementation and focused tests, run the functional smoke gate before `$subagent-review-loop`: use `.agents/skills/harness-functional-smoke/SKILL.md` to exercise the task-relevant MCP/source-sync/user-visible feature inventory once through the safest real caller surfaces, not only unit-test the changed files. Record explicit safety blockers, approval needed, and nearest fake/temp substitutes in the plan.
 - After verification and before PR delivery for any code, configuration, documentation, or skill change, run `$subagent-review-loop`: spawn exactly five fresh reviewer subagents per pass and repeat until all five reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
 - If the main agent's synthesis or `$subagent-review-loop` reports actionable findings, update the plan, assign the fix back to the responsible worker persona or a fresh replacement with the same ownership boundary, rerun affected verification and affected functional smoke entries, and repeat the loop before delivery.
 - After the final clean `$subagent-review-loop` pass, proceed to commit, push, and create a `main`-base PR by default. This is the standing repository workflow unless the user explicitly asks for local-only work or a safety blocker prevents PR delivery.
@@ -26,17 +26,16 @@
 ## Project Structure
 
 This repository is a Python MCP content search server built around FastMCP,
-LlamaIndex, ChromaDB, SQLite metadata storage, and read-only Auto Wiki generation.
+LlamaIndex, ChromaDB, and SQLite metadata storage.
 
 - `main.py`: application composition and FastMCP server startup.
 - `api/`: MCP tool registration and tool handlers.
 - `core/`: shared models, exceptions, and utility code.
 - `environments/`: runtime configuration and secret/environment loading.
-- `fetching/`: Notion, Tistory, GitHub, website/docs, and unified document fetching/searching.
+- `fetching/`: Notion, Tistory, and GitHub source connectors.
 - `indexing/`: document conversion, chunking, dedup/update detection, and vector indexing.
-- `search/`: local Chroma/LlamaIndex search, dynamic local-to-web fallback, ContextWiki retrieval, and citation answer scaffolding.
+- `search/`: ContextWiki retrieval, ranking, SQLite-backed active gates, query rewrite, and citation answer scaffolding.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata and active retrieval checks.
-- `wiki/`: read-only Auto Wiki generation from active ContextWiki search results.
 - `docs/contextwiki-core-understanding.md`: maintained learning note for the current ContextWiki data flow, source connector behavior, lifecycle metadata, retrieval gate, and limitations.
 - `docs/plan/`: plan documents written before file-changing harness work.
 - `.agents/`: local harness docs, phase skills, and ADRs.
@@ -44,19 +43,17 @@ LlamaIndex, ChromaDB, SQLite metadata storage, and read-only Auto Wiki generatio
 ## Development Commands
 
 - `python main.py`: start the MCP server in the current environment.
-- `python -m compileall api core environments fetching indexing search storage wiki web_console main.py`: syntax-check project modules without contacting external services.
-- `uv run python -m compileall api core environments fetching indexing search storage wiki web_console main.py`: same check through uv when the uv environment is healthy.
+- `python -m compileall api core environments fetching indexing search storage main.py`: syntax-check project modules without contacting external services.
+- `uv run python -m compileall api core environments fetching indexing search storage main.py`: same check through uv when the uv environment is healthy.
 - `uv run pytest`: preferred test command once tests exist.
-- `./scripts/verify_functional_e2e.sh`: local functional E2E gate (fake FastMCP wiki smoke + E2E/Web Console suites + Playwright browser-click smoke). It may bootstrap Chromium once when missing.
-- `./scripts/verify_all.sh`: full verification entrypoint; includes compile, JS syntax, non-live pytest, and functional E2E gate.
-- `python scripts/smoke_generate_wiki_page.py --mode fake`: safe FastMCP smoke for `generate_wiki_page` using fake source data, temporary Chroma/SQLite under `/private/tmp`, and Markdown output under `/private/tmp/contextwiki-wiki-smoke`.
-- `python scripts/smoke_generate_wiki_page.py --mode github --github-repository owner/repo@main --topic README --require-generated`: optional live GitHub wiki smoke when network access and an approved source are available.
+- `./scripts/verify_functional_e2e.sh`: local functional E2E gate for retained source sync, MCP tool contracts, search, citation answer, indexing, and storage paths using tests and temporary data.
+- `./scripts/verify_all.sh`: full verification entrypoint; includes compile, Ruff, mypy, Bandit, non-live pytest with coverage, and the functional E2E gate.
 
 If `uv run ...` fails because the local environment or workspace metadata is not ready, report the failure and run the closest dependency-free check, such as `python -m compileall ...`.
 
 ## Coding Style
 
-- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, storage, wiki, configuration, and core models.
+- Prefer small, focused modules that preserve the current boundaries: API tools, search, fetching, indexing, storage, configuration, and core models.
 - Do not move secrets into logs, docs, tests, or plan files. Treat `environments/token.py`, environment variables, API keys, local Chroma contents, and local SQLite metadata as sensitive.
 - Keep MCP tool response shapes stable unless the user requested a contract change.
 - Use async boundaries deliberately. Do not create background tasks that hide critical failures unless the caller contract explicitly treats the work as background work.
@@ -67,18 +64,15 @@ If `uv run ...` fails because the local environment or workspace metadata is not
 - For docs/instruction-only changes limited to `AGENTS.md`, `README.md`, `.agents/`, and `docs/**/*.md`, use lightweight verification: path listing, `git status --short --branch`, `git diff --check`, then stage the relevant docs-only files and run `git diff --cached --check` so new files are covered before review.
 - For Python code changes, run the smallest relevant test or import/syntax check first, then broaden to `uv run pytest` when tests exist.
 - For code-changing work, before review run `./scripts/verify_functional_e2e.sh` (or `./scripts/verify_all.sh`, which includes it) so end-to-end feature workflows are exercised at least once.
-- The functional E2E gate is local-first and deterministic in behavior. If Playwright browser binaries are missing, it may perform a one-time Chromium bootstrap by default; disable with `VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT=0` and pre-install browsers manually.
-- For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory/GitHub/Web credentials.
-- For MCP/wiki generation changes, always consider live-smoke coverage during PR validation: run the safe fake wiki smoke whenever appropriate, and run the optional live GitHub wiki smoke only when network access, user approval, and an appropriate source are available. Live smoke must use temporary Chroma/SQLite paths, write Markdown under `/private/tmp` or a caller-provided output directory, skip gracefully when the source is unavailable, and avoid printing secrets or raw tokens.
-- For Local Web Console, Web UI, HTTP wrapper, answer/search, wiki generation, source sync, smoke, download, filtering, or browser-facing diagnostics changes, do not rely only on unit tests, curl, or API-level smoke. Start the local Web Console when feasible, open it in the in-app browser, exercise each task-relevant browser feature directly through the UI, click the relevant controls, and verify the visible success/failure state matches the expected contract. Cover workflows such as Answer, Generate Wiki, Markdown/JSON downloads, source type and `source_id` filters, configured source Sync buttons, GitHub target sync, Fake Smoke, GitHub Smoke, health/status display, citations, backlinks, used chunks, sources, and safe error text. Prefer deterministic, fake, local-only, or temporary Chroma/SQLite paths for browser verification. Live GitHub/Web/source sync, GitHub Smoke, or any browser action that can contact external services or mutate local user Chroma/SQLite data requires user approval plus an appropriate source selection and either temporary storage or an explicit user-data plan. Include at least one successful path when indexed evidence exists or a deterministic smoke is available, and at least one failure/insufficient/configuration path when that behavior is part of the change. If browser verification cannot run safely, record the blocker explicitly in the plan and final report.
-- For source sync changes, the functional smoke matrix must distinguish configured-source sync (`/api/sources/{source_id}/sync`, MCP `sync_source`) from one-off target sync (`/api/targets/sync`, legacy `/api/github/sync`). Exercise both when safely possible with fake/temp dependencies; live configured source sync or ad hoc target sync needs explicit user approval and must not mutate user Chroma/SQLite without a plan.
+- The functional E2E gate is local-first and deterministic in behavior.
+- For MCP tool contract changes, add or update tests when feasible and run an import or startup smoke that does not require real Notion/Tistory/GitHub credentials.
+- For source sync changes, the functional smoke matrix must cover MCP `sync_source`, `list_sources`, and `get_sync_status` with fake/temp dependencies whenever possible; live configured source sync needs explicit user approval and must not mutate user Chroma/SQLite without a plan.
 - For indexing/search/storage changes, verify local-only behavior without touching user data when possible. Avoid deleting or resetting local Chroma state or SQLite metadata without explicit user approval.
-- For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory/GitHub/Web checks require user approval and should not expose tokens.
+- For fetcher changes, prefer mocked HTTP/API tests over live credentials. Live Notion/Tistory/GitHub checks require user approval and should not expose tokens.
 - Verification and functional smoke must happen before `$subagent-review-loop`; if review findings require edits, rerun the affected verification and affected functional smoke entries before starting a fresh five-reviewer pass.
 
 ## Security and Configuration
 
 - Do not commit secrets, local database files, Chroma data, cache directories, or `.env` contents.
-- External APIs include Notion, Tistory, GitHub, and configured website/docs sources. Network-dependent validation is optional unless the user explicitly requests it.
-- Auto Wiki LLM synthesis is opt-in because it can send retrieved source evidence to an external model. Keep it disabled in deterministic/local smoke tests unless the user explicitly requests live LLM validation.
+- External APIs include Notion, Tistory, and GitHub sources. Network-dependent validation is optional unless the user explicitly requests it.
 - Local ChromaDB data and SQLite metadata may contain indexed user content. Do not inspect, delete, or migrate them without explicit user approval, a plan, and user-visible rationale.

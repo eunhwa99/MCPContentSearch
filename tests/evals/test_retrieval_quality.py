@@ -19,7 +19,7 @@ def test_retrieval_payload_passes_when_expected_top_chunk_and_source_match():
     payload = {
         "results": [
             {"chunk_id": "github-sync-doc-chunk", "source_id": "source_github"},
-            {"chunk_id": "runtime-notes-chunk", "source_id": "source_web"},
+            {"chunk_id": "runtime-notes-chunk", "source_id": "source_tistory"},
         ]
     }
 
@@ -37,8 +37,8 @@ def test_retrieval_payload_fails_when_expected_chunk_is_not_ranked_first():
     )
     payload = {
         "results": [
-            {"chunk_id": "runtime-notes-chunk", "source_id": "source_web"},
-            {"chunk_id": "architecture-guide-chunk", "source_id": "source_web"},
+            {"chunk_id": "runtime-notes-chunk", "source_id": "source_tistory"},
+            {"chunk_id": "architecture-guide-chunk", "source_id": "source_notion"},
         ]
     }
 
@@ -56,7 +56,7 @@ def test_retrieval_payload_fails_when_expected_source_is_not_ranked_first():
     )
     payload = {
         "results": [
-            {"chunk_id": "web-sync-chunk", "source_id": "source_web"},
+            {"chunk_id": "tistory-sync-chunk", "source_id": "source_tistory"},
             {"chunk_id": "notion-sync-chunk", "source_id": "source_notion"},
         ]
     }
@@ -94,8 +94,8 @@ def test_retrieval_fixture_cases_load_and_suite_summarizes_results():
         "github-sync-docs": {"results": [{"chunk_id": "github-sync-doc-chunk", "source_id": "source_github"}]},
         "neetcode-problems": {"results": [{"chunk_id": "neetcode-problems-chunk", "source_id": "source_github"}]},
         "notion-source-preferred": {"results": [{"chunk_id": "notion-sync-chunk", "source_id": "source_notion"}]},
-        "architecture-guide-phrase": {"results": [{"chunk_id": "architecture-guide-chunk", "source_id": "source_web"}]},
-        "aws-doc-alias": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_web"}]},
+        "architecture-guide-phrase": {"results": [{"chunk_id": "architecture-guide-chunk", "source_id": "source_notion"}]},
+        "aws-doc-alias": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_notion"}]},
     }
 
     summary = evaluate_search_suite(payloads, cases)
