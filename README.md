@@ -149,6 +149,7 @@ uv run --locked pytest -q tests/api/test_tools_contract.py
 uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
 uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
 uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
+uv run --locked pytest -q tests/scripts/test_demo_public_flow.py
 ```
 
 Do not treat these commands as evidence unless they were run in the current
@@ -166,6 +167,67 @@ handoffs should report the actual commands and results from the run.
 - `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata.
 - `tests/`, `scripts/`: non-live verification harnesses.
+
+## One-command Public Demo
+
+Run the retained slim tool-handler and service flow against the bundled public
+sample vault:
+
+```bash
+./scripts/demo.sh
+```
+
+If you have not installed dependencies yet:
+
+```bash
+uv sync --locked --python 3.13 --dev
+./scripts/demo.sh
+```
+
+What it does:
+
+1. uses `sample_vault/` as a bounded public Obsidian source
+2. syncs it through the retained `source_obsidian` connector
+3. runs `search_context`
+4. runs `answer_with_citations`
+5. prints the sync, search, and citation-backed answer payloads
+
+This is a reviewer-facing local transcript runner. It exercises the retained
+tool-handler and service path directly without requiring a separate MCP client
+setup.
+
+This demo is fixture-backed, normalized, and non-live:
+
+- it uses temporary SQLite and Chroma storage
+- it uses `MockEmbedding` instead of a live embedding provider
+- it does not require Notion, Tistory, GitHub, or Obsidian credentials
+- it forces `CONTEXTWIKI_SEARCH_LLM_ENABLED=false` even if your shell sets it
+- it normalizes generated ids and timestamps in the printed payload so the transcript stays stable
+
+Optional flags:
+
+```bash
+./scripts/demo.sh --json
+./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
+```
+
+Expected transcript highlights:
+
+```text
+ContextWiki Public Demo
+1. Sync retained source
+...
+"source_id": "source_obsidian"
+"status": "succeeded"
+...
+3. Search query: stale citations
+...
+"title": "Citation Safety"
+...
+4. Grounded question: How does ContextWiki prevent stale citations?
+...
+"evidence_status": "grounded"
+```
 
 ## Additional Docs
 
