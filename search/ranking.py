@@ -1,6 +1,6 @@
 import re
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 from core.models import ChunkModel, DocumentModel
 from environments.config import AppConfig
@@ -19,10 +19,22 @@ from storage.metadata_store import MetadataStore
 
 GITHUB_IDENTITY_TERMS = {"github", *STRONG_ANCHOR_TERMS}
 GENERIC_GITHUB_TERMS = {"github", "깃허브"}
-RETAINED_SOURCE_TYPE_TERMS = {"github", "notion", "tistory"}
+RETAINED_SOURCE_TYPE_TERMS = {"github", "notion", "obsidian", "tistory"}
+SOURCE_TYPE_ALIASES = {
+    "github": {"github", "깃허브"},
+    "notion": {"notion", "노션"},
+    "obsidian": {"obsidian", "옵시디언"},
+    "tistory": {"tistory", "티스토리"},
+}
+SOURCE_TYPE_BY_ALIAS = {
+    alias: source_type
+    for source_type, aliases in SOURCE_TYPE_ALIASES.items()
+    for alias in aliases
+}
 CANONICAL_SOURCE_ID_BY_TYPE = {
     "github": "source_github",
     "notion": "source_notion",
+    "obsidian": "source_obsidian",
     "tistory": "source_tistory",
 }
 GENERIC_SINGLE_TOKEN_TERMS = {
@@ -151,6 +163,8 @@ def should_run_metadata_fallback(
     top_k: int,
     source_ids: list[str] | None,
 ) -> bool:
+    if query_source_type_terms(term_groups):
+        return True
     if len(candidates) < top_k:
         return True
     if source_ids:
@@ -271,15 +285,30 @@ def phrase_match_bonus(phrases: list[str], metadata_haystack: str) -> float:
 
 def query_source_type_terms(term_groups: list[set[str]]) -> set[str]:
     source_terms = set()
-    lowered_groups = [{term.lower() for term in group} for group in term_groups]
-    for lowered in lowered_groups:
-        if lowered.intersection({"github", "깃허브"}):
-            source_terms.add("github")
-        if lowered.intersection({"notion", "노션"}):
-            source_terms.add("notion")
-        if lowered.intersection({"tistory", "티스토리"}):
-            source_terms.add("tistory")
+    for group in term_groups:
+        source_terms.update(source_type_terms_for_group(group))
     return source_terms
+
+
+def source_type_terms_for_group(term_group: set[str]) -> set[str]:
+    return {
+        source_type
+        for term in term_group
+        if (source_type := SOURCE_TYPE_BY_ALIAS.get(term.lower()))
+    }
+
+
+def non_source_type_term_groups(term_groups: list[set[str]]) -> list[set[str]]:
+    groups = []
+    for group in term_groups:
+        remaining = {
+            term
+            for term in group
+            if term.lower() not in SOURCE_TYPE_BY_ALIAS
+        }
+        if remaining:
+            groups.append(remaining)
+    return groups
 
 
 def metadata_lookup_topical_terms(term_groups: list[set[str]]) -> set[str]:
@@ -432,6 +461,10 @@ class ContextCandidateRanker:
     ) -> list[dict[str, Any]]:
         term_groups = term_groups or query_term_groups(query)
         scoring_groups = scoring_term_groups(term_groups)
+        source_type_term_groups = [
+            source_type_terms_for_group(term_group)
+            for term_group in scoring_groups
+        ]
         github_anchor_groups = github_metadata_anchor_groups(
             query,
             term_groups,
@@ -457,16 +490,21 @@ class ContextCandidateRanker:
             is_document_like_match = self.is_document_like(document, metadata_haystack)
             if has_document_intent and self.is_github_document(document) and not is_document_like_match:
                 continue
-            matches = sum(
-                1
-                for term_group in scoring_groups
+            matches = 0
+            for term_group, source_type_terms in zip(
+                scoring_groups,
+                source_type_term_groups,
+            ):
                 if term_group_matches(
                     term_group,
                     haystack,
                     metadata_haystack,
                     is_document_like_match,
-                )
-            )
+                ) or (
+                    source_type_terms
+                    and self.document_matches_source_type_terms(document, source_type_terms)
+                ):
+                    matches += 1
             if matches == 0:
                 continue
             body_haystack = (document.content or "").lower()
@@ -504,21 +542,32 @@ class ContextCandidateRanker:
             term_groups,
             source_ids,
         )
+        source_type_terms = query_source_type_terms(term_groups)
+        lookup_term_groups = (
+            non_source_type_term_groups(term_groups)
+            if source_type_terms
+            else term_groups
+        )
         metadata_terms = metadata_lookup_terms(
-            term_groups,
+            lookup_term_groups,
             fallback_source_ids,
         ) or ordinary_metadata_lookup_terms(
-            term_groups,
-        ) or document_intent_metadata_lookup_terms(term_groups)
+            lookup_term_groups,
+        ) or document_intent_metadata_lookup_terms(lookup_term_groups)
         metadata_only_terms = None
-        if allows_github_document_body_lookup(term_groups) and (
+        if allows_github_document_body_lookup(lookup_term_groups) and (
             not fallback_source_ids or self.source_ids_include_github(fallback_source_ids)
         ):
-            identity_terms, topical_terms = strong_anchor_lookup_terms(term_groups)
+            identity_terms, topical_terms = strong_anchor_lookup_terms(lookup_term_groups)
             if identity_terms and topical_terms:
                 metadata_only_terms = identity_terms
                 metadata_terms = topical_terms
-        if len(candidates) >= top_k and not metadata_terms and not metadata_only_terms:
+        if (
+            len(candidates) >= top_k
+            and not source_type_terms
+            and not metadata_terms
+            and not metadata_only_terms
+        ):
             return []
 
         metadata_candidates = self.metadata_keyword_candidates(
@@ -527,19 +576,19 @@ class ContextCandidateRanker:
             fallback_source_ids,
             term_groups=term_groups,
             metadata_terms=metadata_terms,
-            require_all_metadata_terms=requires_all_metadata_lookup_terms(term_groups),
+            require_all_metadata_terms=requires_all_metadata_lookup_terms(lookup_term_groups),
             require_document_like=self.requires_document_like_metadata_lookup(
-                term_groups,
+                lookup_term_groups,
                 fallback_source_ids,
             ),
             prefer_document_like=self.prefers_document_like_metadata_lookup(
                 query,
-                term_groups,
+                lookup_term_groups,
                 fallback_source_ids,
             ),
             include_text=self.includes_text_in_metadata_lookup(
                 query,
-                term_groups,
+                lookup_term_groups,
                 fallback_source_ids,
             ),
             metadata_only_terms=metadata_only_terms,
@@ -886,6 +935,11 @@ class ContextCandidateRanker:
     ) -> list[str] | None:
         if source_ids:
             return source_ids
+        source_type_source_ids = self.source_ids_for_source_type_terms(
+            query_source_type_terms(term_groups)
+        )
+        if source_type_source_ids:
+            return source_type_source_ids
         github_source_ids = sorted(self.github_source_ids())
         if any(term in GITHUB_IDENTITY_TERMS for group in term_groups for term in group):
             return github_source_ids or ["source_github"]
@@ -897,6 +951,47 @@ class ContextCandidateRanker:
         if query_has_lowercase_repository_probe(term_groups):
             return github_source_ids or ["source_github"]
         return None
+
+    def source_ids_for_source_type_terms(
+        self,
+        source_type_terms: set[str],
+    ) -> list[str]:
+        normalized_source_type_terms = {
+            term.lower()
+            for term in source_type_terms
+            if term.lower() in RETAINED_SOURCE_TYPE_TERMS
+        }
+        if not normalized_source_type_terms:
+            return []
+
+        source_ids = []
+        list_sources = getattr(self.metadata_store, "list_sources", None)
+        has_source_listing = callable(list_sources)
+        if has_source_listing:
+            source_listing = cast(Callable[[], Iterable[Any]], list_sources)
+            for source in source_listing():
+                source_type = (
+                    getattr(getattr(source, "source_type", None), "value", "")
+                    or str(getattr(source, "source_type", ""))
+                ).lower()
+                source_id = str(getattr(source, "source_id", "") or "")
+                if (
+                    source_type in normalized_source_type_terms
+                    and source_id
+                    and source_id not in source_ids
+                ):
+                    source_ids.append(source_id)
+
+        for source_type in sorted(normalized_source_type_terms):
+            canonical_source_id = CANONICAL_SOURCE_ID_BY_TYPE.get(source_type)
+            if not canonical_source_id or canonical_source_id in source_ids:
+                continue
+            if (
+                not has_source_listing
+                or self.metadata_store.get_source(canonical_source_id) is not None
+            ):
+                source_ids.append(canonical_source_id)
+        return source_ids
 
     def document_matches_source_type_terms(
         self,

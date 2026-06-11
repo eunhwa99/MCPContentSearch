@@ -17,6 +17,17 @@ from storage.metadata_store import MetadataStore
 
 pytestmark = pytest.mark.integration
 
+RETAINED_SOURCE_IDS = (
+    "source_github",
+    "source_notion",
+    "source_obsidian",
+    "source_tistory",
+)
+OBSIDIAN_DISABLED_ERROR = (
+    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "is not set or is not an existing directory."
+)
+
 
 class FakeMCP:
     def __init__(self):
@@ -90,6 +101,46 @@ class FakeSourceRegistry:
 
     def list_sources(self):
         return self.sources
+
+
+class RefreshingObsidianRegistry:
+    def __init__(self):
+        self.calls = 0
+
+    def list_sources(self):
+        self.calls += 1
+        return [
+            SourceModel(
+                source_id="source_obsidian",
+                source_type=SourceType.OBSIDIAN,
+                name="Obsidian",
+                enabled=False,
+                auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+                sync_status=SyncStatus.IDLE,
+                last_error=OBSIDIAN_DISABLED_ERROR,
+            )
+        ]
+
+
+def _enabled_obsidian_source() -> SourceModel:
+    return SourceModel(
+        source_id="source_obsidian",
+        source_type=SourceType.OBSIDIAN,
+        name="Obsidian",
+        enabled=True,
+        auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+        sync_status=SyncStatus.IDLE,
+        last_error="",
+    )
+
+
+def _succeeded_obsidian_source() -> SourceModel:
+    return _enabled_obsidian_source().model_copy(
+        update={
+            "sync_status": SyncStatus.SUCCEEDED,
+            "last_synced_at": "2026-06-11T00:00:00+00:00",
+        }
+    )
 
 
 class FakeMetadataStore:
@@ -393,9 +444,7 @@ def test_status_payloads_redact_persisted_secret_fields(tmp_path):
     register_tools(
         mcp,
         metadata_store=store,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     sources = asyncio.run(mcp.tools["list_sources"]())
@@ -459,9 +508,7 @@ def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_pa
     register_tools(
         mcp,
         metadata_store=store,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     sources = asyncio.run(mcp.tools["list_sources"]())
@@ -508,13 +555,21 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
             sync_status=SyncStatus.IDLE,
         )
     )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
     mcp = FakeMCP()
     register_tools(
         mcp,
         metadata_store=store,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     sources = asyncio.run(mcp.tools["list_sources"]())
@@ -526,9 +581,97 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
 
     assert auth_refs["source_github"] == "env:GITHUB_TOKEN"
     assert auth_refs["source_notion"] == "<redacted>"
+    assert auth_refs["source_obsidian"] == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
     assert auth_refs["source_tistory"] == "<redacted>"
     assert "ghp_secretcredential" not in payload
     assert "super-secret-value" not in payload
+
+
+def test_disabled_obsidian_source_is_visible_in_public_status_payloads(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.IDLE,
+            last_error=OBSIDIAN_DISABLED_ERROR,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_obsidian"))
+
+    assert [source["source_id"] for source in sources["sources"]] == ["source_obsidian"]
+    assert sources["sources"][0]["enabled"] is False
+    assert sources["sources"][0]["auth_ref"] == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert sources["sources"][0]["last_error"] == OBSIDIAN_DISABLED_ERROR
+    assert status["source"]["source_id"] == "source_obsidian"
+    assert status["source"]["enabled"] is False
+    assert status["latest_job"] is None
+
+
+def test_list_sources_and_status_refresh_dynamic_registry_state_without_sync(tmp_path):
+    list_store = MetadataStore(tmp_path / "list.sqlite3")
+    list_store.upsert_source(_succeeded_obsidian_source())
+    list_registry = RefreshingObsidianRegistry()
+    list_mcp = FakeMCP()
+    register_tools(
+        list_mcp,
+        metadata_store=list_store,
+        source_registry=list_registry,
+    )
+
+    assert list_store.get_source("source_obsidian").enabled is True
+
+    list_calls_after_registration = list_registry.calls
+    listed = asyncio.run(list_mcp.tools["list_sources"]())
+
+    assert list_registry.calls > list_calls_after_registration
+    assert listed["sources"] == [
+        {
+            "source_id": "source_obsidian",
+            "source_type": "obsidian",
+            "name": "Obsidian",
+            "enabled": False,
+            "auth_ref": "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            "sync_status": "failed",
+            "last_synced_at": "2026-06-11T00:00:00+00:00",
+            "last_error": OBSIDIAN_DISABLED_ERROR,
+            "created_at": listed["sources"][0]["created_at"],
+            "updated_at": listed["sources"][0]["updated_at"],
+        }
+    ]
+
+    status_store = MetadataStore(tmp_path / "status.sqlite3")
+    status_store.upsert_source(_succeeded_obsidian_source())
+    status_registry = RefreshingObsidianRegistry()
+    status_mcp = FakeMCP()
+    register_tools(
+        status_mcp,
+        metadata_store=status_store,
+        source_registry=status_registry,
+    )
+
+    assert status_store.get_source("source_obsidian").enabled is True
+
+    status_calls_after_registration = status_registry.calls
+    status = asyncio.run(status_mcp.tools["get_sync_status"]("source_obsidian"))
+
+    assert status_registry.calls > status_calls_after_registration
+    assert status["source"]["source_id"] == "source_obsidian"
+    assert status["source"]["enabled"] is False
+    assert status["source"]["sync_status"] == "failed"
+    assert status["source"]["last_error"] == OBSIDIAN_DISABLED_ERROR
+    assert status["latest_job"] is None
 
 
 def test_fetch_context_hides_tombstoned_documents():
@@ -632,9 +775,7 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
         context_search_service=FakeContextSearch(),
         answer_service=FakeAnswerService(),
         metadata_store=store,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     sources = asyncio.run(mcp.tools["list_sources"]())
@@ -675,9 +816,7 @@ def test_answer_with_citations_sanitizes_mixed_source_filters():
     register_tools(
         mcp,
         answer_service=answer_service,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     answer = asyncio.run(
@@ -700,16 +839,19 @@ def test_answer_with_citations_injects_retained_source_filter_when_unfiltered():
     register_tools(
         mcp,
         answer_service=answer_service,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     answer = asyncio.run(mcp.tools["answer_with_citations"]("What is retained?"))
 
     assert answer["evidence_status"] == "grounded"
     assert answer_service.calls[0]["filters"] == {
-        "source_ids": ["source_github", "source_notion", "source_tistory"],
+        "source_ids": [
+            "source_github",
+            "source_notion",
+            "source_obsidian",
+            "source_tistory",
+        ],
     }
 
 
@@ -719,15 +861,18 @@ def test_search_context_injects_retained_source_filter_when_unfiltered():
     register_tools(
         mcp,
         context_search_service=context_search,
-        source_registry=FakeSourceRegistry(
-            ["source_github", "source_notion", "source_tistory"]
-        ),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
     )
 
     asyncio.run(mcp.tools["search_context"]("What is retained?"))
 
     assert context_search.calls[0]["filters"] == {
-        "source_ids": ["source_github", "source_notion", "source_tistory"],
+        "source_ids": [
+            "source_github",
+            "source_notion",
+            "source_obsidian",
+            "source_tistory",
+        ],
     }
 
 

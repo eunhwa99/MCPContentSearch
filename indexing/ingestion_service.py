@@ -50,6 +50,8 @@ class IngestionService:
         connector = self.source_registry.get_connector(source_id)
         if self.register_source_config:
             self.refresh_registered_sources()
+        else:
+            connector.refresh_source_state()
         job, started = self.metadata_store.begin_sync_job(source_id)
         if not started:
             logger.info("Sync already running for source %s", source_id)

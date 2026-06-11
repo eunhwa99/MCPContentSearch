@@ -13,6 +13,7 @@ from search.query_terms import (
     retrieval_query_variants,
     split_attached_latin_korean_token,
 )
+from search.ranking import CANONICAL_SOURCE_ID_BY_TYPE, source_type_terms_for_group
 PROMPT_ASSIGNMENT_SECRET_RE = re.compile(
     r"(?P<prefix>(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|"
     r"client[-_]?secret|cookie|credential|jwt|key|pass|password|passwd|"
@@ -303,8 +304,9 @@ class CitationAnswerService:
     def _split_attached_latin_korean_token(raw_token: str) -> list[str]:
         return split_attached_latin_korean_token(raw_token)
 
-    @staticmethod
+    @classmethod
     def _is_relevant_to_query(
+        cls,
         item: ContextSearchResult,
         query_terms: set[str],
         query_term_groups: list[set[str]] | None = None,
@@ -349,6 +351,7 @@ class CitationAnswerService:
                 and (
                     any(term in haystack for term in term_group)
                     or (term_group.intersection(DOCUMENT_INTENT_TERMS) and is_document_like)
+                    or cls._matches_source_type_term_group(item, term_group)
                 )
             )
         ]
@@ -410,6 +413,24 @@ class CitationAnswerService:
         if relaxed_match and required_groups:
             required_matches = max(1, math.ceil(len(required_groups) / 2))
         return len(matched_required_groups) >= required_matches
+
+    @staticmethod
+    def _matches_source_type_term_group(
+        item: ContextSearchResult,
+        term_group: set[str],
+    ) -> bool:
+        source_type_terms = source_type_terms_for_group(term_group)
+        if not source_type_terms:
+            return False
+        item_source_type = (getattr(item.source_type, "value", item.source_type) or "").lower()
+        item_source_id = (item.source_id or "").lower()
+        if item_source_type in source_type_terms:
+            return True
+        return any(
+            item_source_id == canonical_source_id
+            for source_type, canonical_source_id in CANONICAL_SOURCE_ID_BY_TYPE.items()
+            if source_type in source_type_terms
+        )
 
     @staticmethod
     def _render_structured_answer(question: str, evidence: list[ContextSearchResult]) -> str:
@@ -526,7 +547,7 @@ class CitationAnswerService:
         matched = []
         for group in query_term_groups:
             for term in sorted(group):
-                if term in haystack:
+                if term in haystack or cls._matches_source_type_term_group(item, group):
                     matched.append(cls._redact_debug_text(term))
                     break
         return matched

@@ -36,6 +36,7 @@ Retain:
   - `source_notion`
   - `source_tistory`
   - `source_github`
+  - `source_obsidian`
 - SQLite source/job/document/chunk lifecycle metadata and Chroma vector
   retrieval.
 - MCP tools:
@@ -49,6 +50,12 @@ Retain:
   Notion/GitHub targets for connector tests and implementation reuse, but they
   are not a retained MCP tool surface and must not become one-off target sync
   APIs without a new ADR.
+- Obsidian is retained as a configured local-vault Markdown source through
+  `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, bounded by
+  `CONTEXTWIKI_OBSIDIAN_MAX_FILES` and
+  `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. It does not require a live Obsidian
+  app, plugin, or API server, and verification should use temporary vaults
+  unless a user explicitly approves a real vault path.
 - Optional search LLM query rewrite behind `search_context`, disabled by
   default. If explicitly enabled through `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`
   and a configured provider API key, the server may send the user's search query
@@ -78,7 +85,8 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
   only retained MCP retrieval paths.
 - Tests should focus on retained source registry behavior, source sync,
   metadata lifecycle, Chroma/SQLite active-result gating, context fetch, and
-  citation answers.
+  citation answers. Obsidian tests must use temporary vault directories by
+  default and cover bounded-vault failure without stale cleanup.
 - Stale vectors from previously indexed removed sources may remain in a user's
   local Chroma store, but retained retrieval must continue to gate managed hits
   through SQLite metadata before returning citations.
@@ -100,8 +108,9 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
   user-facing product direction is a smaller MCP retrieval server.
 - Hide the removed surfaces behind optional flags: rejected because dormant
   runtime paths still expand CI, docs, dependency, and review scope.
-- Remove GitHub too and return to only Notion/Tistory: rejected because GitHub
-  repository retrieval is a central retained source connector.
+- Remove GitHub or Obsidian too and return to only Notion/Tistory: rejected
+  because GitHub repository retrieval and local Obsidian vault retrieval are
+  retained source connectors.
 
 ## Related
 
@@ -112,3 +121,4 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
 - `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
 - `.agents/docs/adr/0005-contextwiki-auto-wiki-llm-synthesis.md`
 - `docs/plan/2026-06-10-slim-mcp-core.md`
+- `docs/plan/2026-06-11-restore-obsidian-pr25.md`

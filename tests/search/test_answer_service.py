@@ -171,6 +171,35 @@ def test_answer_service_matches_common_korean_query_terms_to_english_context():
     assert answer["citations"][0]["chunk_id"] == "chunk-1"
 
 
+def test_answer_service_grounds_korean_obsidian_source_intent_from_source_type():
+    result = ContextSearchResult(
+        chunk_id="daily-planning-chunk",
+        document_id="daily/planning.md",
+        source_id="source_obsidian",
+        source_type="obsidian",
+        title="Daily Planning",
+        url="obsidian://open?vault=team&file=daily%2Fplanning.md",
+        path="daily/planning.md",
+        line_start=1,
+        line_end=20,
+        version_id="hash-1",
+        score=0.92,
+        preview="Local markdown planning archive and weekly notes.",
+        text="Local markdown planning archive and weekly notes.",
+    )
+    service = CitationAnswerService(
+        context_search=FakeContextSearch([result]),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("옵시디언"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["daily-planning-chunk"]
+    assert answer["citations"][0]["chunk_id"] == "daily-planning-chunk"
+
+
 def test_answer_service_treats_broad_usage_terms_as_optional_hints():
     result = ContextSearchResult(
         chunk_id="chunk-aws-overview",

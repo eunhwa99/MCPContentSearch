@@ -150,6 +150,34 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
     assert store.list_chunks_for_document("notion_page_1") == [chunk]
 
 
+def test_metadata_store_loads_obsidian_source_rows(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    source = store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.IDLE,
+            last_error=(
+                "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+                "is not set or is not an existing directory."
+            ),
+        )
+    )
+
+    persisted = store.get_source("source_obsidian")
+
+    assert source.source_id == "source_obsidian"
+    assert persisted is not None
+    assert persisted.source_type == SourceType.OBSIDIAN
+    assert persisted.enabled is False
+    assert persisted.auth_ref == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert store.list_sources() == [persisted]
+
+
 def test_legacy_removed_source_rows_are_skipped_without_deleting_data(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     _insert_legacy_web_source_row(store)

@@ -24,8 +24,8 @@ portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
 - Secrets/environment loading: `environments/token.py` and runtime environment
   helpers. Raw tokens must not be persisted or logged.
 - Shared models/errors/utilities: `core/`.
-- Fetching: `fetching/` owns Notion, Tistory, and GitHub source fetching and
-  connector registration.
+- Fetching: `fetching/` owns Notion, Tistory, GitHub, and Obsidian source
+  fetching and connector registration.
 - Indexing: `indexing/` chunks documents, detects unchanged/reindexed content,
   writes vectors to Chroma/LlamaIndex, and coordinates lifecycle metadata.
 - Search: `search/` provides SQLite-gated context search, ranking, direct
@@ -61,7 +61,7 @@ sync_source
   -> IngestionService
   -> SourceRegistry connector lookup
   -> MetadataStore source registration and sync job guard
-  -> Notion, Tistory, or GitHub connector fetch
+  -> Notion, Tistory, GitHub, or Obsidian connector fetch
   -> DocumentChunker
   -> ContentIndexer and Chroma collection
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
@@ -92,11 +92,13 @@ answer_with_citations
 
 - `api`: MCP-facing tool contracts, parameter defaults, result formatting, and
   caller-visible error messages. It delegates business behavior to services.
-- `fetching`: Notion, Tistory, and GitHub external content retrieval plus
-  source connector registration. It owns API-specific parsing, bounded fetch
-  behavior, and partial failure handling. Internal Notion/GitHub target parsing
-  helpers are implementation utilities only; the retained MCP surface is still
-  configured source sync through `sync_source`.
+- `fetching`: Notion, Tistory, GitHub, and Obsidian content retrieval plus
+  source connector registration. It owns API-specific or filesystem-specific
+  parsing, bounded fetch behavior, and partial failure handling. Internal
+  Notion/GitHub target parsing helpers are implementation utilities only; the
+  retained MCP surface is still configured source sync through `sync_source`.
+  Obsidian is a configured local-vault Markdown source, not a live Obsidian app
+  or plugin integration.
 - `indexing`: document indexing lifecycle, deterministic chunking, content
   hash/chunk-id comparison, Chroma mutation, and index status updates.
 - `search`: query orchestration, ranking, SQLite-backed active-result
@@ -150,14 +152,21 @@ ContextWiki source/job/document/chunk lifecycle and citation metadata.
 SQLite is the authoritative active-document gate. Stale Chroma hits must be
 filtered through SQLite metadata before being returned as evidence.
 
-## External Services
+## External Services and Local Sources
 
-Current external integrations:
+Current integrations and local configured sources:
 
 - Notion API, configured by environment token and API version.
 - Tistory, configured by blog name and bounded post fetching.
 - GitHub repositories, configured by repository specs and optional
   `GITHUB_TOKEN`.
+- Obsidian local vaults, configured by `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`,
+  `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, and
+  `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. Obsidian sync reads bounded Markdown
+  notes from the filesystem and does not require a live Obsidian app. If the
+  file count or file byte bound is exceeded, the sync fails as an incomplete
+  snapshot before stale cleanup. Real vault validation requires explicit user
+  approval; tests must use temporary vaults.
 - Optional search LLM query rewrite, disabled by default. When
   `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`, `search_context` may send the user's
   search query and normalized query terms to the configured provider before
@@ -167,8 +176,9 @@ Current external integrations:
   setup. Disabling search query rewrite only disables query-rewrite egress;
   fully local operation also requires local or otherwise non-egress embeddings.
 
-Testing should prefer mocked external APIs. Live network validation requires
-explicit user approval and must not print credentials.
+Testing should prefer mocked external APIs and temporary local vaults. Live
+network or real-vault validation requires explicit user approval and must not
+print credentials or local path details.
 
 ## Configuration and Secrets
 
@@ -203,8 +213,8 @@ Use the smallest useful check first.
   functions.
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mock
   collection; avoid user data.
-- Fetching: mocked Notion/Tistory/GitHub responses; live checks only with
-  explicit approval.
+- Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
+  live API or real-vault checks only with explicit approval.
 - Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
   retained MCP sync/search/fetch/answer paths without browser, wiki, live API,
   or LLM dependencies.

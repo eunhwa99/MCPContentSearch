@@ -21,6 +21,17 @@ from core.utils import ContentHasher
 ORPHANED_SYNC_JOB_RECOVERY_MESSAGE = (
     "Previous running sync job was recovered after server restart; start sync again."
 )
+OBSIDIAN_REFRESH_CLEARABLE_ERRORS = (
+    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "is not set or is not an existing directory.",
+    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "must be an absolute path.",
+    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "must not be a symlink.",
+)
+OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR = (
+    "Obsidian vault snapshot was incomplete because one or more notes could not be read."
+)
 
 
 def _now() -> str:
@@ -216,9 +227,18 @@ class MetadataStore:
                     name = excluded.name,
                     enabled = excluded.enabled,
                     auth_ref = excluded.auth_ref,
+                    sync_status = CASE
+                        WHEN excluded.enabled = 0 AND excluded.last_error != ''
+                        THEN ?
+                        ELSE sources.sync_status
+                    END,
                     last_error = CASE
                         WHEN excluded.enabled = 0 AND excluded.last_error != '' THEN excluded.last_error
+                        WHEN sources.last_error = ? AND excluded.enabled = 1 THEN sources.last_error
                         WHEN excluded.enabled = 1 AND sources.enabled = 0 THEN excluded.last_error
+                        WHEN excluded.enabled = 1
+                            AND sources.last_error IN (?, ?, ?)
+                        THEN excluded.last_error
                         ELSE sources.last_error
                     END,
                     updated_at = excluded.updated_at
@@ -234,6 +254,9 @@ class MetadataStore:
                     source.last_error,
                     created_at,
                     updated_at,
+                    SyncStatus.FAILED.value,
+                    OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR,
+                    *OBSIDIAN_REFRESH_CLEARABLE_ERRORS,
                 ),
             )
             row = conn.execute(

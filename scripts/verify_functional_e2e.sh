@@ -8,6 +8,9 @@ export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
 export CONTEXTWIKI_SEARCH_LLM_ENABLED=false
+unset CONTEXTWIKI_OBSIDIAN_VAULT_PATH
+unset CONTEXTWIKI_OBSIDIAN_MAX_FILES
+unset CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES
 mkdir -p "$UV_CACHE_DIR"
 
 uv_workspace_healthy() {
@@ -28,6 +31,7 @@ RETAINED_FUNCTIONAL_TESTS=(
   tests/fetching/test_connectors.py
   tests/api/test_tools_contract.py
   tests/e2e/test_contextwiki_flow.py
+  tests/e2e/test_obsidian_connector_flow.py
   tests/e2e/test_phase_b_connectors_flow.py
   tests/search/test_context_service.py
   tests/search/test_answer_service.py
