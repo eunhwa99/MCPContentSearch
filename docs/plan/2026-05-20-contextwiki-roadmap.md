@@ -1,5 +1,14 @@
 # ContextWiki Product Roadmap
 
+## Current Scope Banner
+
+This is a historical full-product roadmap. For the current slim MCP core, ADR
+0006 supersedes website/docs crawling, Auto Wiki, Web Console, dynamic web
+fallback, HTTP API/remote API work, and broad web/API expansion. The current
+active scope is the FastMCP source sync, retrieval, context fetch, and
+citation-answer surface over configured GitHub, Notion, and Tistory sources.
+Reintroducing the superseded surfaces requires a new ADR.
+
 ## User Request
 
 Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is an MCP-based knowledge backend that searches private documents, code, Notion, Tistory, and web/docs content, then answers with citations. The system should read as a production-grade AI knowledge system built by a backend engineer, not a generic RAG chatbot.
@@ -15,7 +24,13 @@ Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is a
 - No runtime code has been changed for this roadmap.
 - 2026-05-22 update: reviewed from isolated branch `feature/review-roadmap-hij` in `/private/tmp/MCPContentSearch-roadmap-hij` because the primary worktree had unrelated docs changes. This update is docs-only.
 
-## Current Capability Check
+## Historical Capability Snapshot (2026-05-20)
+
+This snapshot records repository capabilities observed when the full-product
+roadmap was written. It is not the current implementation inventory. Rows that
+name removed modules, website/docs crawling, dynamic web fallback, Auto Wiki,
+Web Console, or broader API surfaces are historical and superseded by ADR 0006
+for the current slim MCP core.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
@@ -23,11 +38,11 @@ Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is a
 | Notion connector | checked | Existing Notion fetch/search implementation exists under `fetching/notion.py`. |
 | Tistory connector | checked | Existing Tistory crawl/search implementation exists under `fetching/tistory.py`. |
 | Chroma vector index | checked | `environments/config.py` configures persistent Chroma. |
-| LlamaIndex search | checked | `search/service.py` retrieves through LlamaIndex. |
+| LlamaIndex search | historical/superseded | `search/service.py` was the May 2026 retrieval path; ADR 0006 slimmed current retrieval around retained `search/context_service.py` behavior. |
 | Hybrid search mode | checked | Existing retriever uses `vector_store_query_mode="hybrid"`. |
-| Local-first fallback search | checked | `DynamicSearchService` falls back from local search to web search. |
-| Full indexing trigger | checked | Existing MCP tool can start background full indexing. |
-| Basic index status | checked | Existing `IndexStatusModel` reports one global indexing state. |
+| Local-first fallback search | superseded by ADR 0006 | `DynamicSearchService` and dynamic web fallback are removed from the current slim MCP core. |
+| Full indexing trigger | superseded by ADR 0006 | The legacy full-indexing MCP trigger is historical; current source ingestion is through retained `sync_source`. |
+| Basic index status | superseded by ADR 0006 | The historical global `IndexStatusModel` is superseded by retained source/job status metadata. |
 | Document content hash detection | checked | Existing metadata and indexing paths compare content hashes for changed-document decisions. |
 | Source/job/status persistence | checked | MVP A added SQLite source and sync job metadata. |
 | Chunk metadata persistence | checked | MVP A added citation-ready chunk metadata and chunk ids. |
@@ -36,7 +51,7 @@ Define the full ContextWiki plan, not only the first MVP slice. ContextWiki is a
 | Source-wide stale document cleanup | partial | Changed-document stale chunks are handled in MVP A, but disappeared documents from a successful source sync still need tombstone/cleanup handling. |
 | Citation-grounded answers | checked | MVP A added `answer_with_citations` with citation validation and insufficient-evidence behavior. |
 | Evaluation/observability | missing | Planned after MVP A. |
-| Auto Wiki | missing | Planned after source/search/citation core stabilizes. |
+| Auto Wiki | superseded by ADR 0006 | Historical roadmap item only; Auto Wiki runtime, tool surface, and wiki smoke are outside current scope. |
 | Resume/JD assistant | missing | Planned as an application layer on top of ContextWiki. |
 
 ## Scope and Non-goals
@@ -58,13 +73,17 @@ Current docs-only planning files:
 - `docs/plan/2026-05-20-contextwiki-mvp-a.md`
 - `docs/plan/2026-05-22-roadmap-hij-review.md`
 
-Likely future implementation areas by phase:
+Historical future implementation areas by phase:
+
+These entries describe the May 2026 full-product roadmap. ADR 0006 supersedes
+website/docs, Auto Wiki, Web Console, HTTP/remote API, and broad web/API
+surfaces for current work.
 
 - Phase A: `.agents/docs/adr/`, `core/`, `storage/`, `fetching/`, `indexing/`, `search/`, `api/`, `main.py`, `README.md`, and `tests/`.
 - Phase B: `fetching/`, `indexing/`, `search/`, `api/`, `environments/`, and connector-focused tests.
-- Phase C: new wiki-generation service modules, `search/`, `indexing/`, `api/`, and README/client docs.
-- Phase D: evaluation/observability modules, test fixtures, report docs, and optional CLI/API surfaces.
-- Phase E: API/deployment modules, runtime configuration, health checks, and deployment docs.
+- Phase C: historical wiki-generation service modules, `search/`, `indexing/`, `api/`, and README/client docs; superseded by ADR 0006.
+- Phase D: evaluation/observability modules, test fixtures, report docs, and optional CLI/report surfaces. Historical API endpoint variants need a new ADR before reintroduction.
+- Phase E: historical API/deployment modules, runtime configuration, health checks, and deployment docs; superseded by ADR 0006 for current work.
 - Phase F: resume/JD assistant application-layer modules and MCP tools.
 - Phase G: upload/file parsing modules and ingestion tests.
 - Phase H: storage/search/API security metadata, ACL filters, audit logging, secret-reference handling, and deletion/tombstone policy tests.
@@ -103,9 +122,13 @@ Detailed plan: `docs/plan/2026-05-20-contextwiki-mvp-a.md`.
 
 ### Phase B: Code and Website Connectors
 
+Current scope note: ADR 0006 supersedes the website/docs connector portion for
+the slim MCP core. From this phase, only GitHub connector identity, line-aware
+chunking, stale cleanup, and citation-safety requirements remain active.
+
 Goal: Expand ContextWiki from personal documents/blog posts into codebase and docs intelligence.
 
-Included:
+Historical included items, with current-scope status noted:
 
 - GitHub repository ingestion.
 - Commit or blob SHA based change detection stored separately from stable document identity.
@@ -114,9 +137,10 @@ Included:
   - Markdown: heading-based chunks.
   - Code: line-range chunks suitable for file/line citations.
   - Plain text: continue using the current character chunker.
-- Generic website/docs URL ingestion.
-- Sitemap or bounded crawler support.
-- Robots/rate-limit safety and source-level crawl configuration.
+- Generic website/docs URL ingestion (historical; superseded by ADR 0006).
+- Sitemap or bounded crawler support (historical; superseded by ADR 0006).
+- Robots/rate-limit safety and source-level crawl configuration for
+  website/docs sources (historical; superseded by ADR 0006).
 - Minimum document identity hardening:
   - `external_id`: connector-native stable id across revisions, such as GitHub `owner/repo:path` plus branch/ref when needed.
   - `canonical_url`: stable citation URL for the document or file.
@@ -137,14 +161,17 @@ Expected impact:
 Minimum Phase B gate:
 
 - GitHub connector work should not start with only character chunking. The first GitHub slice must include line-range code chunks even if function/class-aware code chunking waits for a later hardening phase.
-- GitHub/Web connector work should not ship without `last_seen_at`/`deleted_at` lifecycle support, because source deletion/move behavior is common and stale chunks become immediately user-visible.
+- Retained GitHub connector work should not ship without `last_seen_at`/`deleted_at` lifecycle support, because source deletion/move behavior is common and stale chunks become immediately user-visible. Historical Web connector work is superseded by ADR 0006.
 - Fingerprint-level duplicate detection can wait; connector-native identity plus canonical URL and tombstones are the required minimum.
 
 ### Phase C: Auto Wiki
 
+Current scope note: Auto Wiki is superseded by ADR 0006 for current work and is
+kept here only as historical roadmap context.
+
 Goal: Move from "search my content" to "generate and maintain a living wiki."
 
-Included:
+Historical included items, superseded by ADR 0006 for current work:
 
 - Repo summary pages.
 - Project architecture pages.
@@ -170,7 +197,8 @@ Included:
 - Latency tracking.
 - Token and estimated cost tracking.
 - Failed query logs.
-- Evaluation report MCP/API endpoint or CLI command.
+- Evaluation report MCP/CLI command. Historical API endpoint variants need a
+  new ADR before reintroduction.
 - Required verification command includes unit, integration, and fake E2E tests.
 - Live API smoke tests remain opt-in and separate from required CI.
 
@@ -193,9 +221,13 @@ Sub-stages:
 
 ### Phase E: Remote MCP and API Server
 
+Current scope note: HTTP API and remote API/server expansion are superseded by
+ADR 0006 for the current slim MCP scope. Any reintroduction needs a new ADR with
+contracts, verification, and data-safety plans.
+
 Goal: Make ContextWiki usable by remote agents and clients.
 
-Included:
+Historical included items, superseded by ADR 0006 for current work:
 
 - HTTP API around source, sync, search, answer, and status operations.
 - Optional remote MCP deployment.
@@ -279,7 +311,8 @@ Included:
 Expected impact:
 
 - Converts connector ingestion from a demo sync path into a production-style pipeline.
-- Makes GitHub/Web/PDF connectors safer when documents move, disappear, or change frequently.
+- Makes retained GitHub and any future reintroduced Web/PDF connectors safer
+  when documents move, disappear, or change frequently.
 
 Dependency note:
 
@@ -325,7 +358,8 @@ Dependency note:
   - `api/`: MCP tool contracts and delegation.
   - `search/`: search orchestration and result contracts.
   - `indexing/`: conversion, deduplication, chunking, status, and vector writes.
-  - `fetching/`: Notion/Tistory/external source retrieval.
+  - `fetching/`: retained Notion/Tistory/GitHub source retrieval. Historical
+    website/docs source retrieval is superseded by ADR 0006.
   - `core/`: shared models, exceptions, utilities.
   - `environments/`: configuration and secret access.
 - Phase A added ADR 0002 for SQLite metadata persistence and citation contracts, satisfying the roadmap requirement to document that long-term persistence decision.
@@ -344,7 +378,12 @@ ContextWiki MCP tools are the canonical public contract for the MVP demo and eva
 - `fetch_context`
 - `answer_with_citations`
 
-Existing MCP tools should be treated as legacy compatibility during early phases:
+Historical note: before ADR 0006, these MCP tools were treated as legacy
+compatibility during early phases. For the current slim MCP core, ADR 0006
+supersedes this legacy API surface and the retained ContextWiki tools above are
+the canonical public contract.
+
+Historical legacy MCP tools:
 
 - `search_content`
 - `search_notion`
@@ -352,12 +391,12 @@ Existing MCP tools should be treated as legacy compatibility during early phases
 - `trigger_index_all_content`
 - `get_index_status`
 
-Legacy tool policy:
+Historical legacy tool policy:
 
-- Keep legacy tools during Phase A to avoid breaking the existing server while the ContextWiki layer is introduced.
-- Phase B or C should either adapt legacy tools to delegate to ContextWiki services or explicitly mark them deprecated in README and demo docs.
-- Removing or renaming legacy tools is an MCP contract change and needs a dedicated implementation plan, README update, and verification pass.
-- The portfolio/demo path should use the ContextWiki tools, not the legacy tools.
+- Keep legacy tools during Phase A to avoid breaking the existing server while the ContextWiki layer was introduced.
+- Phase B or C would have either adapted legacy tools to delegate to ContextWiki services or explicitly marked them deprecated in README and demo docs.
+- Removing or renaming legacy tools was an MCP contract change requiring a dedicated implementation plan, README update, and verification pass.
+- The portfolio/demo path used the ContextWiki tools, not the legacy tools.
 
 Legacy Chroma data policy:
 
@@ -388,7 +427,8 @@ All implementation phases should follow this testing policy:
   - Integration tests for service boundaries using temporary SQLite, temporary Chroma, fake vector stores, or mocks.
   - Fake E2E tests that exercise the full product flow without external credentials.
 - Optional manual validation:
-  - Live external API smoke tests for Notion, GitHub, Tistory, and web/docs connectors.
+  - Live external API smoke tests for Notion, GitHub, and Tistory. Historical
+    web/docs connector validation is superseded by ADR 0006.
   - Live smoke tests must require an explicit environment flag such as `RUN_LIVE_E2E=1`.
   - Live smoke tests must never be required for normal CI or ordinary completion because they depend on network, credentials, rate limits, and external service availability.
 - Each runtime slice should expose a single required verification command, planned as `scripts/verify_all.sh`, that runs compile checks and `uv run pytest -m "not live"`.
@@ -397,11 +437,16 @@ All implementation phases should follow this testing policy:
 ## Risks and Rollback Notes
 
 - Risk: Trying to implement all phases at once would blur MCP contracts, persistence behavior, and connector boundaries.
-- Mitigation: Ship Phase A first, then build GitHub/Website, Auto Wiki, and Eval on top of stable source/job/chunk contracts.
+- Mitigation: Ship Phase A first, then build retained GitHub and eval work on
+  top of stable source/job/chunk contracts. Website and Auto Wiki expansion are
+  historical roadmap items superseded by ADR 0006 for current scope.
 - Risk: New SQLite metadata could drift from Chroma state.
 - Mitigation: Phase A must define document/chunk identity, idempotent upsert behavior, and retry semantics.
-- Risk: GitHub/Web connectors can leave deleted or moved documents searchable.
-- Mitigation: Phase B must add `last_seen_at`/`deleted_at` and source-wide stale cleanup or tombstone behavior.
+- Risk: GitHub and historically planned Web connectors can leave deleted or
+  moved documents searchable.
+- Mitigation: Retained GitHub work must add `last_seen_at`/`deleted_at` and
+  source-wide stale cleanup or tombstone behavior. Web/docs connector scope is
+  superseded by ADR 0006.
 - Risk: Character-only chunks make code citations too weak for backend/codebase Q&A.
 - Mitigation: Phase B must include at least code line-range chunks and Markdown heading chunks; function/class-aware chunking can wait for Phase I.
 - Risk: Remote/API deployment can expose private source content without governance controls.

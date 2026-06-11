@@ -5,14 +5,7 @@ from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
 from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
-from fetching.obsidian import (
-    _OBSIDIAN_DISABLED_REASON,
-    _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON,
-    fetch_obsidian_documents,
-    obsidian_disabled_reason,
-)
 from fetching.tistory import fetch_tistory_posts
-from fetching.web_docs import WebsiteDocsFetcher
 
 
 class SourceConnector(ABC):
@@ -27,9 +20,6 @@ class SourceConnector(ABC):
     async def fetch_documents(self) -> list[DocumentModel]:
         """Fetch documents for one source."""
 
-    def refresh_source_state(self) -> None:
-        """Refresh dynamic source availability before sync/list operations."""
-
 
 class SourceRegistry:
     """Runtime registry for available source connectors."""
@@ -43,8 +33,6 @@ class SourceRegistry:
         return self._connectors[source_id]
 
     def list_sources(self) -> list[SourceModel]:
-        for connector in self._connectors.values():
-            connector.refresh_source_state()
         return [connector.source for connector in self._connectors.values()]
 
 
@@ -173,94 +161,6 @@ class GitHubSourceConnector(SourceConnector):
             return documents
 
 
-class WebsiteSourceConnector(SourceConnector):
-    supports_stale_cleanup = True
-
-    def __init__(
-        self,
-        seed_urls: tuple[str, ...],
-        config: AppConfig,
-        *,
-        http_client=None,
-        allow_stale_cleanup: bool = True,
-    ):
-        self.seed_urls = tuple(seed_urls)
-        self.config = config
-        self.allow_stale_cleanup = allow_stale_cleanup
-        self.fetcher = WebsiteDocsFetcher(
-            self.seed_urls,
-            config,
-            http_client=http_client,
-        )
-        self.seed_urls = self.fetcher.seed_urls
-        self.source = SourceModel(
-            source_id="source_web",
-            source_type=SourceType.WEB,
-            name="Website Docs",
-            enabled=bool(self.seed_urls),
-            auth_ref="env:CONTEXTWIKI_WEB_URLS",
-            sync_status=SyncStatus.IDLE,
-        )
-
-    async def fetch_documents(self) -> list[DocumentModel]:
-        if not self.source.enabled:
-            return []
-        try:
-            documents = await self.fetcher.fetch_documents()
-        except Exception:
-            self.supports_stale_cleanup = False
-            raise
-        else:
-            self.supports_stale_cleanup = (
-                self.allow_stale_cleanup and self.fetcher.snapshot_complete
-            )
-            return documents
-
-
-class ObsidianSourceConnector(SourceConnector):
-    supports_stale_cleanup = True
-
-    def __init__(self, config: AppConfig):
-        self.vault_path = config.obsidian_vault_path
-        self.source = SourceModel(
-            source_id="source_obsidian",
-            source_type=SourceType.OBSIDIAN,
-            name="Obsidian",
-            enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
-            sync_status=SyncStatus.IDLE,
-        )
-        self.disabled_reason = _OBSIDIAN_DISABLED_REASON
-        self.refresh_source_state()
-
-    def refresh_source_state(self) -> None:
-        self.disabled_reason = obsidian_disabled_reason(self.vault_path)
-        enabled = self.disabled_reason == ""
-        self.supports_stale_cleanup = enabled
-        self.source = self.source.model_copy(
-            update={
-                "enabled": enabled,
-                "last_error": "" if enabled else self.disabled_reason,
-            }
-        )
-
-    async def fetch_documents(self) -> list[DocumentModel]:
-        self.refresh_source_state()
-        if not self.source.enabled:
-            self.supports_stale_cleanup = False
-            raise FileNotFoundError(self.disabled_reason)
-        try:
-            snapshot = await fetch_obsidian_documents(self.vault_path)
-        except Exception:
-            self.supports_stale_cleanup = False
-            raise
-        if not snapshot.snapshot_complete:
-            self.supports_stale_cleanup = False
-            raise RuntimeError(_OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON)
-        self.supports_stale_cleanup = snapshot.snapshot_complete
-        return snapshot.documents
-
-
 def build_source_registry(
     *,
     config: AppConfig,
@@ -268,9 +168,8 @@ def build_source_registry(
     tistory_blog_name: str,
     github_token: str = "",
     github_http_client=None,
-    web_http_client=None,
 ) -> SourceRegistry:
-    """Build the production source registry with all configured ContextWiki connectors."""
+    """Build the production source registry with retained ContextWiki connectors."""
     return SourceRegistry(
         [
             NotionSourceConnector(notion_api_key, config),
@@ -281,11 +180,5 @@ def build_source_registry(
                 token=github_token,
                 http_client=github_http_client,
             ),
-            WebsiteSourceConnector(
-                config.web_seed_urls,
-                config,
-                http_client=web_http_client,
-            ),
-            ObsidianSourceConnector(config),
         ]
     )

@@ -19,6 +19,12 @@ from storage.metadata_store import MetadataStore
 
 GITHUB_IDENTITY_TERMS = {"github", *STRONG_ANCHOR_TERMS}
 GENERIC_GITHUB_TERMS = {"github", "깃허브"}
+RETAINED_SOURCE_TYPE_TERMS = {"github", "notion", "tistory"}
+CANONICAL_SOURCE_ID_BY_TYPE = {
+    "github": "source_github",
+    "notion": "source_notion",
+    "tistory": "source_tistory",
+}
 GENERIC_SINGLE_TOKEN_TERMS = {
     "algorithm",
     "algorithms",
@@ -266,65 +272,13 @@ def phrase_match_bonus(phrases: list[str], metadata_haystack: str) -> float:
 def query_source_type_terms(term_groups: list[set[str]]) -> set[str]:
     source_terms = set()
     lowered_groups = [{term.lower() for term in group} for group in term_groups]
-    has_explicit_non_web_source = any(
-        group.intersection({"github", "깃허브", "notion", "노션", "tistory", "티스토리"})
-        for group in lowered_groups
-    )
-    has_site_web_context = any(
-        group.intersection(
-            {
-                "auth",
-                "authentication",
-                "docs",
-                "documentation",
-                "login",
-                "official",
-                "signin",
-                "signup",
-                "web",
-                "website",
-                "웹",
-            }
-        )
-        for group in lowered_groups
-    )
-    has_docs_topical_sibling = any(
-        not group.intersection(BROAD_TOPIC_TERMS)
-        and not group.intersection({"aws", "amazon", "amazon web services", "services"})
-        and not group.intersection({"docs", "documentation"})
-        and not group.intersection(DOCUMENT_INTENT_TERMS)
-        for group in lowered_groups
-    )
-    for index, lowered in enumerate(lowered_groups):
+    for lowered in lowered_groups:
         if lowered.intersection({"github", "깃허브"}):
             source_terms.add("github")
         if lowered.intersection({"notion", "노션"}):
             source_terms.add("notion")
         if lowered.intersection({"tistory", "티스토리"}):
             source_terms.add("tistory")
-        docs_like_web = (
-            ("docs" in lowered or "documentation" in lowered)
-            and not has_explicit_non_web_source
-            and has_docs_topical_sibling
-        )
-        explicit_web = (
-            "web" in lowered
-            or "웹" in lowered
-            or "website" in lowered
-            or ("site" in lowered and has_site_web_context)
-            or docs_like_web
-        )
-        aws_phrase_middle = (
-            lowered.issubset({"web", "website"})
-            and "web" in lowered
-            and index > 0
-            and index + 1 < len(lowered_groups)
-            and lowered_groups[index - 1].intersection({"amazon", "아마존", "aws"})
-            and lowered_groups[index + 1].intersection({"services", "service", "서비스"})
-        )
-        aws_only_expansion = aws_phrase_middle
-        if explicit_web and not aws_only_expansion:
-            source_terms.add("web")
     return source_terms
 
 
@@ -949,6 +903,13 @@ class ContextCandidateRanker:
         document: DocumentModel,
         source_type_terms: set[str],
     ) -> bool:
+        source_type_terms = {
+            term.lower()
+            for term in source_type_terms
+            if term.lower() in RETAINED_SOURCE_TYPE_TERMS
+        }
+        if not source_type_terms:
+            return False
         source = self.metadata_store.get_source(document.source_id) if document.source_id else None
         actual_source_type = (
             getattr(getattr(source, "source_type", None), "value", "") or ""
@@ -956,9 +917,11 @@ class ContextCandidateRanker:
         if source is not None:
             return bool(actual_source_type and actual_source_type in source_type_terms)
         source_id = (document.source_id or "").lower()
-        if source_id == "source_github" and "github" in source_type_terms:
-            return True
-        return any(term and term in source_id for term in source_type_terms)
+        return any(
+            source_id == canonical_source_id
+            for source_type, canonical_source_id in CANONICAL_SOURCE_ID_BY_TYPE.items()
+            if source_type in source_type_terms
+        )
 
     def includes_text_in_metadata_lookup(
         self,

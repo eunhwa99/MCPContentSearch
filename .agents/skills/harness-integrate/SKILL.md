@@ -28,7 +28,7 @@ untracked docs and plan files are not checked by the cached diff until staged.
 Python code:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage wiki main.py
+python -m compileall api core environments fetching indexing search storage main.py
 uv run pytest
 ```
 
@@ -36,15 +36,15 @@ MCP contract changes should include a startup/import or tool-registration smoke 
 
 Indexing/search/storage changes should avoid user data by using temp Chroma paths, temp SQLite paths, mocks, or clearly documented dry checks.
 
-Live Notion/Tistory/GitHub/Web validation requires user approval. Do not print tokens.
+Live Notion/Tistory/GitHub validation requires user approval. Do not print tokens.
 
 Refresh the functional smoke matrix from
 `.agents/skills/harness-functional-smoke/SKILL.md` during integration. If
 refactor or integration changed any caller-visible path, rerun the affected
 smoke entries. The final matrix must be present in the plan before the final
-review gate and must explicitly cover configured-source sync and target/ad hoc
-sync when source sync behavior is in scope, or mark live/user-data checks as
-blocked/gated with a local substitute.
+review gate and must explicitly cover retained MCP `sync_source`,
+`list_sources`, and `get_sync_status` flows when source sync behavior is in
+scope, or mark live/user-data checks as blocked/gated with a local substitute.
 
 ## Completion
 

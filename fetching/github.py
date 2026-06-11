@@ -438,7 +438,7 @@ class GitHubRepositoryFetcher:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": self.config.web_user_agent,
+            "User-Agent": self.config.github_user_agent,
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -454,56 +454,6 @@ class GitHubRepositoryFetcher:
             f"https://github.com/{spec.owner}/{spec.repo}/blob/"
             f"{quote(commit_sha, safe='')}/{quote(path, safe='/')}"
         )
-
-
-class GitHubSearcher:
-    """GitHub real-time search over configured repositories."""
-
-    def __init__(
-        self,
-        repositories: tuple[str, ...],
-        config: AppConfig,
-        *,
-        token: str = "",
-        http_client=None,
-    ):
-        self.repositories = tuple(repositories)
-        self.config = config
-        self.token = token
-        self.http_client = http_client
-
-    async def search(self, query: str, max_results: int = 10) -> list[DocumentModel]:
-        if not self.repositories:
-            logger.warning("GitHub repositories are not configured")
-            return []
-
-        try:
-            documents = await GitHubRepositoryFetcher(
-                self.repositories,
-                self.config,
-                token=self.token,
-                http_client=self.http_client,
-            ).fetch_documents()
-        except Exception as exc:
-            logger.error("GitHub search error: %s", exc)
-            return []
-
-        ranked = []
-        query_terms = [term for term in _search_terms(query) if len(term) >= 2]
-        for document in documents:
-            score = _github_search_score(document, query_terms)
-            if score <= 0:
-                continue
-            ranked.append((score, document))
-
-        ranked.sort(
-            key=lambda item: (
-                -item[0],
-                item[1].title.lower(),
-                item[1].path or "",
-            )
-        )
-        return [document for _, document in ranked[:max_results]]
 
 
 class GitHubRepositoryDiscovery:
@@ -590,7 +540,7 @@ class GitHubRepositoryDiscovery:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": self.config.web_user_agent,
+            "User-Agent": self.config.github_user_agent,
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -805,29 +755,6 @@ def _github_blob_response_byte_limit(max_file_bytes: int) -> int:
 def _encoded_base64_exceeds(compact_content: str, max_file_bytes: int) -> bool:
     max_encoded_length = ((max_file_bytes + 2) // 3) * 4
     return len(compact_content) > max_encoded_length
-
-
-def _search_terms(query: str) -> list[str]:
-    return re.findall(r"[0-9A-Za-z가-힣._/-]+", str(query or "").lower())
-
-
-def _github_search_score(document: DocumentModel, query_terms: list[str]) -> float:
-    if not query_terms:
-        return 0.0
-    title = (document.title or "").lower()
-    path = (document.path or "").lower()
-    content = (document.content or "").lower()
-    score = 0.0
-    for term in query_terms:
-        if term in title:
-            score += 4.0
-        if term in path:
-            score += 3.0
-        if term in content:
-            score += 1.0
-    if any(term in path for term in query_terms) and "/readme" in f"/{path}".lower():
-        score += 0.5
-    return score
 
 
 def _content_length_exceeds(headers, max_response_bytes: int) -> bool:

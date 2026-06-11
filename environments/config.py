@@ -11,22 +11,11 @@ SECRET_LIKE_ENV_VALUE_RE = re.compile(
     r"^(?:GH[POUSR]_[A-Z0-9_]+|GITHUB_PAT_[A-Z0-9_]+|(?:AKIA|ASIA)[A-Z0-9]{16})$",
     re.IGNORECASE,
 )
-DEFAULT_CONTEXTWIKI_AUTO_SYNC_SOURCES = (
-    "source_github",
-    "source_notion",
-    "source_tistory",
-)
 
 
 def _split_env(name: str) -> tuple[str, ...]:
     value = os.getenv(name, "")
     return tuple(item.strip() for item in value.replace("\n", ",").split(",") if item.strip())
-
-
-def _split_env_with_default(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    if name not in os.environ:
-        return default
-    return _split_env(name)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -66,21 +55,6 @@ def _bool_env(name: str, default: bool) -> bool:
 
 def _search_llm_enabled_default() -> bool:
     return _bool_env("CONTEXTWIKI_SEARCH_LLM_ENABLED", False)
-
-
-def _obsidian_vault_path_default() -> Path | None:
-    raw_value = os.getenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "").strip()
-    if not raw_value:
-        return None
-    return _expanduser_safe(raw_value)
-
-
-def _expanduser_safe(value: str | Path) -> Path:
-    path_value = Path(value)
-    try:
-        return path_value.expanduser()
-    except RuntimeError:
-        return path_value
 
 
 def _require_positive_int(name: str, value: int):
@@ -172,101 +146,23 @@ class AppConfig:
     github_max_file_bytes: int = field(
         default_factory=lambda: _int_env("CONTEXTWIKI_GITHUB_MAX_FILE_BYTES", 512_000)
     )
-
-    # Website/docs connector
-    web_seed_urls: tuple[str, ...] = field(
-        default_factory=lambda: _split_env("CONTEXTWIKI_WEB_URLS")
-    )
-    web_max_pages: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_WEB_MAX_PAGES", 50)
-    )
-    web_max_response_bytes: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_WEB_MAX_RESPONSE_BYTES", 1_048_576)
-    )
-    web_crawl_delay_seconds: float = field(
-        default_factory=lambda: _float_env("CONTEXTWIKI_WEB_CRAWL_DELAY_SECONDS", 0.2)
-    )
-    web_user_agent: str = field(
+    github_user_agent: str = field(
         default_factory=lambda: os.getenv(
-            "CONTEXTWIKI_WEB_USER_AGENT",
+            "CONTEXTWIKI_GITHUB_USER_AGENT",
             "ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)",
         )
     )
 
-    # Auto Wiki LLM synthesis. Disabled by default because source evidence may
-    # include private user content and should only leave the machine by opt-in.
-    wiki_llm_enabled: bool = field(
-        default_factory=lambda: _bool_env("CONTEXTWIKI_WIKI_LLM_ENABLED", False)
-    )
-    wiki_llm_provider: str = field(
-        default_factory=lambda: os.getenv("CONTEXTWIKI_WIKI_LLM_PROVIDER", "openai")
-        .strip()
-        .lower()
-    )
-    wiki_llm_model: str = field(
-        default_factory=lambda: os.getenv("CONTEXTWIKI_WIKI_LLM_MODEL", "gpt-4.1-mini")
-        .strip()
-    )
-    wiki_llm_api_key_env_var: str = "OPENAI_API_KEY"
-    wiki_llm_timeout: float = field(
-        default_factory=lambda: _float_env("CONTEXTWIKI_WIKI_LLM_TIMEOUT", 20.0)
-    )
-    wiki_llm_max_evidence_chars: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_WIKI_LLM_MAX_EVIDENCE_CHARS", 1200)
-    )
-
-    # Obsidian connector
-    obsidian_vault_path: Path | None = field(
-        default_factory=_obsidian_vault_path_default
-    )
-
-    # Local Web Console startup sync. Empty env value intentionally disables it.
-    contextwiki_auto_sync_sources: tuple[str, ...] = field(
-        default_factory=lambda: _split_env_with_default(
-            "CONTEXTWIKI_AUTO_SYNC_SOURCES",
-            DEFAULT_CONTEXTWIKI_AUTO_SYNC_SOURCES,
-        )
-    )
-
     def __post_init__(self):
-        if self.obsidian_vault_path is not None:
-            obsidian_vault_path = self.obsidian_vault_path
-            if not isinstance(obsidian_vault_path, Path):
-                obsidian_vault_path = Path(obsidian_vault_path)
-            object.__setattr__(
-                self,
-                "obsidian_vault_path",
-                _expanduser_safe(obsidian_vault_path),
-            )
         _require_positive_int("github_max_files", self.github_max_files)
         _require_positive_int("github_max_file_bytes", self.github_max_file_bytes)
-        _require_positive_int("web_max_pages", self.web_max_pages)
-        _require_positive_int("web_max_response_bytes", self.web_max_response_bytes)
-        _require_non_negative("web_crawl_delay_seconds", self.web_crawl_delay_seconds)
         _require_safe_env_var_name("github_token_env_var", self.github_token_env_var)
-        _require_safe_env_var_name(
-            "wiki_llm_api_key_env_var",
-            self.wiki_llm_api_key_env_var,
-        )
         _require_safe_env_var_name(
             "search_llm_api_key_env_var",
             self.search_llm_api_key_env_var,
         )
-        _require_non_negative("wiki_llm_timeout", self.wiki_llm_timeout)
-        _require_positive_int(
-            "wiki_llm_max_evidence_chars",
-            self.wiki_llm_max_evidence_chars,
-        )
         _require_non_negative("search_llm_timeout", self.search_llm_timeout)
         _require_positive_int("search_llm_max_rewrites", self.search_llm_max_rewrites)
-        if (
-            self.wiki_llm_enabled
-            and self.wiki_llm_provider == "openai"
-            and not self.wiki_llm_model
-        ):
-            raise ValueError(
-                "CONTEXTWIKI_WIKI_LLM_MODEL must be set when wiki LLM is enabled"
-            )
         if (
             self.search_llm_enabled
             and self.search_llm_provider == "openai"

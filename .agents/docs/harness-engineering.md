@@ -219,20 +219,19 @@ otherwise the cached check does not cover new untracked docs or plan files.
 Python code changes use the smallest useful check first:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage wiki web_console main.py
+python -m compileall api core environments fetching indexing search storage main.py
 ```
 
 Prefer uv when the local uv workspace is healthy:
 
 ```bash
-uv run python -m compileall api core environments fetching indexing search storage wiki web_console main.py
+uv run python -m compileall api core environments fetching indexing search storage main.py
 uv run pytest
 ```
 
 Before final review for code-changing work, run the functional E2E harness gate
-that exercises end-to-end feature workflows (ContextWiki MCP flows, connector
-E2E flows, Web Console contract/UI logic, deterministic FastMCP wiki smoke,
-and Playwright browser-click smoke):
+that exercises retained end-to-end feature workflows (ContextWiki MCP flows,
+connector E2E flows, search, citation answer, indexing, and storage behavior):
 
 ```bash
 ./scripts/verify_functional_e2e.sh
@@ -241,49 +240,21 @@ and Playwright browser-click smoke):
 `./scripts/verify_all.sh` should include this functional E2E gate so the full
 verification path runs it automatically.
 
-The Playwright step is local-first. If Chromium binaries are missing, the gate
-may perform a one-time bootstrap install by default; set
-`VERIFY_E2E_AUTO_INSTALL_PLAYWRIGHT=0` to require preinstalled browsers.
-
 MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
-External live checks against Notion, Tistory, GitHub, or configured website/docs
-sources require user approval.
+External live checks against Notion, Tistory, or GitHub sources require user
+approval.
 
 After focused verification and before any review gate, run the functional smoke
 gate in `.agents/skills/harness-functional-smoke/SKILL.md`. The smoke matrix
-must start from the task-relevant inventory of MCP tools, Web Console controls,
-source-sync paths, script smokes, downloads, status panels, and other
-user-visible features. Mark each row `passed`, `failed`, `not affected`, or
+must start from the task-relevant inventory of retained MCP tools, source-sync
+paths, status surfaces, search, citation answers, and other user-visible
+features. Mark each row `passed`, `failed`, `not affected`, or
 `blocked/gated`; do not silently omit unchanged but relevant core workflows.
-Use fake services, mocked connectors, temporary Chroma/SQLite paths, script
-smoke, and the in-app browser before considering live external checks. For
-source sync, cover configured-source sync separately from target/ad hoc sync
-whenever safely possible. A skipped live check is acceptable only when the
-matrix records the safety reason, needed user approval, and nearest local
+Use fake services, mocked connectors, and temporary Chroma/SQLite paths before
+considering live external checks. A skipped live check is acceptable only when
+the matrix records the safety reason, needed user approval, and nearest local
 substitute.
-
-MCP/wiki generation changes should include the safe FastMCP wiki smoke whenever
-appropriate:
-
-```bash
-python scripts/smoke_generate_wiki_page.py --mode fake
-```
-
-For PR validation, always consider whether live wiki smoke is appropriate. Run
-the optional GitHub live smoke only when network access is available, the user
-has approved the source, and an appropriate repository is configured. The live
-smoke must use temporary Chroma/SQLite paths, write Markdown under
-`/private/tmp` or a caller-provided output directory, skip gracefully when the
-source or network is unavailable, and avoid printing raw secrets or tokens:
-
-```bash
-python scripts/smoke_generate_wiki_page.py \
-  --mode github \
-  --github-repository owner/repo@main \
-  --topic README \
-  --require-generated
-```
 
 Verification and functional smoke must precede `$subagent-review-loop`. If review findings require changes, rerun the affected verification and affected smoke entries before starting the next fresh five-reviewer subagent review pass.
 

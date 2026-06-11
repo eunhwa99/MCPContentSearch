@@ -28,19 +28,24 @@ class ContextSearchService:
         retriever: Callable | Iterable[DocumentModel] | None = None,
         query_rewriter=None,
         vector_retriever_cls=None,
+        default_source_ids: Iterable[str] | None = None,
     ):
         self.metadata_store = metadata_store
         self.indexer = indexer
         self.config = config or AppConfig()
         self.retriever = retriever
         self.vector_retriever_cls = vector_retriever_cls or VectorIndexRetriever
+        self.default_source_ids = self._normalize_default_source_ids(default_source_ids)
+        self._default_source_id_set = set(self.default_source_ids or ())
         api_key = os.getenv(self.config.search_llm_api_key_env_var, "").strip()
         self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
         self.ranker = ContextCandidateRanker(self.metadata_store, self.config)
 
     async def search_context(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
         filters = filters or {}
-        source_ids = self._normalize_source_ids(filters)
+        source_ids = self._effective_source_ids(filters)
+        if source_ids == []:
+            return self._empty_search_result(query)
         retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
         candidates = retrieval_debug["candidates"]
         effective_term_groups = retrieval_debug["effective_term_groups"]
@@ -101,6 +106,48 @@ class ContextSearchService:
                 ],
             },
         }
+
+    @staticmethod
+    def _empty_search_result(query: str) -> dict:
+        return {
+            "query": query,
+            "results": [],
+            "_grounding": {
+                "original_term_groups": [],
+                "effective_term_groups": [],
+            },
+            "debug": {
+                "retrieval_queries": [],
+                "rewritten_queries": [],
+                "effective_term_groups": [],
+            },
+        }
+
+    def _effective_source_ids(self, filters: dict) -> list[str] | None:
+        requested_source_ids = self._normalize_source_ids(filters)
+        if self.default_source_ids is None:
+            return requested_source_ids
+        if requested_source_ids is None:
+            return list(self.default_source_ids)
+        return [
+            source_id
+            for source_id in requested_source_ids
+            if source_id in self._default_source_id_set
+        ]
+
+    @staticmethod
+    def _normalize_default_source_ids(source_ids: Iterable[str] | None) -> tuple[str, ...] | None:
+        if source_ids is None:
+            return None
+        if isinstance(source_ids, str):
+            values = [source_ids]
+        else:
+            values = list(source_ids)
+        normalized = []
+        for source_id in values:
+            if source_id and source_id not in normalized:
+                normalized.append(str(source_id))
+        return tuple(normalized)
 
     @staticmethod
     def _normalize_source_ids(filters: dict) -> list[str] | None:

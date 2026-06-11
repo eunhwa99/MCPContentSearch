@@ -47,6 +47,45 @@ def _mark_job_running(
     return store.get_sync_job(job_id)
 
 
+def _insert_legacy_web_source_row(store: MetadataStore):
+    now = datetime.now(timezone.utc).isoformat()
+    store.ensure_schema()
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (
+                source_id, source_type, name, enabled, auth_ref, sync_status,
+                last_synced_at, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "source_web",
+                "web",
+                "Legacy Web",
+                1,
+                "",
+                SyncStatus.SUCCEEDED.value,
+                now,
+                "",
+                now,
+                now,
+            ),
+        )
+
+
+def _raw_source_and_job_status(store: MetadataStore, source_id: str, job_id: str) -> tuple[str, str]:
+    with store._connect() as conn:
+        source_row = conn.execute(
+            "SELECT sync_status FROM sources WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        job_row = conn.execute(
+            "SELECT status FROM sync_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    return source_row["sync_status"], job_row["status"]
+
+
 def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.ensure_schema()
@@ -109,6 +148,103 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
     assert store.get_chunk(chunk.chunk_id).document_id == "notion_page_1"
     assert store.get_chunk(chunk.chunk_id).version_id == "page-version-1"
     assert store.list_chunks_for_document("notion_page_1") == [chunk]
+
+
+def test_legacy_removed_source_rows_are_skipped_without_deleting_data(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    _insert_legacy_web_source_row(store)
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="legacy-doc",
+            document_id="legacy-doc",
+            source_id="source_web",
+            title="Legacy Web Doc",
+            content="Legacy web content should stay in storage.",
+            url="https://example.com/legacy",
+            platform="Web",
+            path="/legacy",
+        ),
+        [
+            ChunkModel(
+                chunk_id="legacy-chunk",
+                document_id="legacy-doc",
+                source_id="source_web",
+                title="Legacy Web Doc",
+                text="Legacy web content should stay in storage.",
+                url="https://example.com/legacy",
+                path="/legacy",
+                chunk_index=0,
+                content_hash="legacy-hash",
+            )
+        ],
+    )
+
+    assert store.get_source("source_web") is None
+    assert store.list_sources() == []
+    assert store.get_document("legacy-doc").source_id == "source_web"
+    assert store.get_chunk("legacy-chunk").source_id == "source_web"
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT source_type FROM sources WHERE source_id = ?",
+            ("source_web",),
+        ).fetchone()
+    assert row["source_type"] == "web"
+
+
+def test_scoped_orphan_recovery_does_not_mutate_legacy_removed_sources(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=0,
+        unowned_running_job_grace_seconds=0,
+    )
+    _insert_legacy_web_source_row(store)
+    legacy_job = store.create_sync_job("source_web")
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    _mark_job_running(
+        store,
+        legacy_job.job_id,
+        started_at=old_timestamp,
+        heartbeat_at=old_timestamp,
+    )
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sources SET sync_status = ?, updated_at = ?
+            WHERE source_id = ?
+            """,
+            (SyncStatus.RUNNING.value, old_timestamp, "source_web"),
+        )
+
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    retained_job = store.create_sync_job("source_github")
+    _mark_job_running(
+        store,
+        retained_job.job_id,
+        started_at=old_timestamp,
+        heartbeat_at=old_timestamp,
+    )
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before=datetime.now(timezone.utc).isoformat(),
+        error_message="restart recovery",
+        source_ids=["source_github"],
+    )
+
+    assert recovered_count == 1
+    assert _raw_source_and_job_status(store, "source_web", legacy_job.job_id) == (
+        SyncStatus.RUNNING.value,
+        SyncJobStatus.RUNNING.value,
+    )
+    assert store.get_source("source_github").sync_status == SyncStatus.FAILED
+    assert store.get_sync_job(retained_job.job_id).status == SyncJobStatus.FAILED
 
 
 def test_atomic_document_chunk_commit_rolls_back_when_chunk_insert_fails(tmp_path):

@@ -8,6 +8,14 @@ accepted
 
 2026-05-22
 
+## Current Scope Note
+
+This ADR remains accepted for document identity, tombstones, source-aware
+chunking, and SQLite-backed active retrieval gates. References below to
+Web/docs connectors are historical: ADR 0006 supersedes website/docs connector
+scope for the current slim MCP core. The retained current-scope application is
+GitHub/Notion/Tistory source sync and citation-safe retrieval.
+
 ## Context
 
 Phase B will add GitHub and Web connectors. Those connectors make document identity, deletion, and citation precision more important than the MVP A Notion/Tistory flow:
@@ -34,7 +42,7 @@ Use `external_id` as the stable `document_id` when it is present. Keep `version_
 
 After a successful full source sync, tombstone previously active documents from that source whose `document_id` was not seen in the sync. Tombstoning removes active chunk metadata from retrieval and returns managed chunk ids so the vector indexer can delete those Chroma documents when delete support is available. Failed or partial syncs must not tombstone missing documents.
 
-Treat SQLite chunk metadata as the authoritative active-document gate. Vector cleanup happens after metadata commits and is best-effort; stale managed vector hits must be filtered through SQLite-backed retrieval and legacy search formatting.
+Treat SQLite chunk metadata as the authoritative active-document gate. Vector cleanup happens after metadata commits and is best-effort; stale managed vector hits must be filtered through SQLite-backed retrieval before any retained search, fetch, or answer response is returned.
 
 Successful sync finalization, including optional stale document tombstoning and source/job success metadata, must commit atomically before best-effort vector cleanup runs.
 
@@ -59,7 +67,10 @@ Function/class-aware code chunking, fingerprint deduplication, worker queues, re
 - Reappearing documents clear `deleted_at`, update `last_seen_at` and `last_seen_sync_id`, and reindex if tombstoned or content changed.
 - Rechunking an unchanged document must reindex when generated chunk ids differ from stored chunk ids.
 - A crashed process can leave a `RUNNING` job row behind, but the next sync attempt can recover it after the heartbeat timeout instead of requiring manual SQLite repair.
-- GitHub/Web connector implementation can rely on stable identity, canonical URLs, tombstones, and line-range chunks before adding connector-specific fetching.
+- Retained current-scope connector implementation can rely on stable identity,
+  canonical URLs, tombstones, and line-range chunks before adding
+  connector-specific fetching. Historical Web/docs connector scope is
+  superseded by ADR 0006.
 - Tests should use fake sources and temporary SQLite paths. Live external validation remains opt-in only.
 
 ## Alternatives Considered

@@ -39,7 +39,8 @@ The plan must include:
 - MCP tool contract documentation updates when tool behavior changes.
 - Local ChromaDB or SQLite metadata impact, if any.
 - External source connector credential or network requirements, including
-  Notion, Tistory, GitHub, and website/docs, if any.
+  Notion, Tistory, GitHub, optional search LLM query rewrite, or embedding
+  providers, if any.
 - Risks, open questions, environment requirements, and rollback point.
 - Architecture/ADR constraints.
 - PR split or stacked PR plan if PRs are requested.

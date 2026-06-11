@@ -16,8 +16,6 @@ class SourceType(str, Enum):
     NOTION = "notion"
     TISTORY = "tistory"
     GITHUB = "github"
-    WEB = "web"
-    OBSIDIAN = "obsidian"
 
 
 class SyncStatus(str, Enum):

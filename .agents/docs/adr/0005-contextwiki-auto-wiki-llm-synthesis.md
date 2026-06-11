@@ -2,7 +2,11 @@
 
 ## Status
 
-accepted
+superseded
+
+Status note: ADR 0006 supersedes Auto Wiki, `generate_wiki_page`, and
+`wiki/` runtime scope for current work. This record remains as historical
+context for the removed Auto Wiki LLM synthesis boundary.
 
 ## Date
 

@@ -1,297 +1,57 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
-from environments.config import AppConfig
-from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
-from fetching.fetcher import DocumentFetcher
-from core.models import IndexState
-from core.public_payloads import safe_source_payload, safe_sync_job_payload
-from indexing.background_tasks import get_default_background_task_registry, safe_error_message
+from indexing.background_tasks import safe_error_message
 
 if TYPE_CHECKING:
-    from fetching.web_searcher import WebSearcher
-    from indexing.background_tasks import BackgroundTaskRegistry
-    from indexing.indexer import ContentIndexer
-    from search.dynamic_search import DynamicSearchService
-    from search.service import SearchService
+    from fetching.connectors import SourceRegistry
+    from indexing.ingestion_service import IngestionService
+    from search.answer_service import CitationAnswerService
+    from search.context_service import ContextSearchService
+    from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
+SAFE_PUBLIC_ENV_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
 
 
 def register_tools(
     mcp: FastMCP,
-    indexer: ContentIndexer,
-    search_service: SearchService,
-    dynamic_search: DynamicSearchService,
-    web_searcher: WebSearcher,
-    ingestion_service=None,
-    context_search_service=None,
-    answer_service=None,
-    wiki_service=None,
-    metadata_store=None,
-    source_registry=None,
-    background_task_registry: BackgroundTaskRegistry | None = None,
+    ingestion_service: IngestionService | None = None,
+    context_search_service: ContextSearchService | None = None,
+    answer_service: CitationAnswerService | None = None,
+    metadata_store: MetadataStore | None = None,
+    source_registry: SourceRegistry | None = None,
 ):
-    """MCP 도구 등록"""
-    task_registry = background_task_registry
-    if task_registry is None and dynamic_search is not None:
-        task_registry = getattr(dynamic_search, "background_task_registry", None)
-    if task_registry is None:
-        task_registry = get_default_background_task_registry()
-    if dynamic_search is not None:
-        dynamic_search.background_task_registry = task_registry
-    
-    # ================================================================
-    # 검색 도구
-    # ================================================================
-    
-    @mcp.tool()
-    async def search_content(query: str, n_results: int = 10) -> str:
-        """
-        콘텐츠 검색 (자동 폴백)
-        
-        1. 로컬 DB에서 검색
-        2. 결과 부족 시 자동으로 웹에서 검색
-        3. 웹 결과는 자동으로 DB에 추가
-        
-        Args:
-            query: 검색어
-            n_results: 원하는 결과 수
-        
-        Returns:
-            검색 결과 (마크다운)
-        """
-        try:
-            result = await dynamic_search.search(query, n_results)
-            
-            # 웹 검색 사용 시 알림 추가
-            if result.source == "web":
-                footer = (
-                    f"\n\n---\n"
-                    f"💡 **로컬 DB에 결과가 부족하여 웹에서 검색했습니다.**\n"
-                    f"📚 {result.new_docs_count}개의 새 문서가 데이터베이스에 추가됩니다.\n"
-                    f"⏱️ 다음 검색부터는 더 빠르게 찾을 수 있습니다!"
-                )
-                return result.results + footer
-            
-            return result.results
-            
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            return f"검색 중 오류 발생: {str(e)}"
-    
-    
-    @mcp.tool()
-    async def search_notion(query: str, n_results: int = 10) -> str:
-        """
-        Notion에서만 실시간 검색
-        
-        Args:
-            query: 검색어
-            n_results: 결과 수
-        
-        Returns:
-            검색 결과
-        """
-        try:
-            logger.info(f"🔍 Searching Notion for: '{query}'")
-            docs = await web_searcher.search(query, n_results, platforms=["notion"])
-            
-            if not docs:
-                return f"Notion에서 '{query}'에 대한 검색 결과가 없습니다."
-            
-            # 포맷팅
-            output = [
-                f"# 📘 Notion Search: '{query}'",
-                "",
-                f"Found {len(docs)} documents",
-                ""
-            ]
-            
-            for i, doc in enumerate(docs, 1):
-                output.extend([
-                    f"## {i}. [{doc.title}]({doc.url})",
-                    f"**Date**: {doc.date}",
-                    f"**Preview**: {doc.content[:200]}...",
-                    ""
-                ])
-            
-            # 백그라운드 인덱싱
-            task_registry.schedule(
-                "search_notion",
-                _index_background(indexer, docs),
-                total_docs=len(docs),
-            )
-            
-            return "\n".join(output) + f"\n\n💡 {len(docs)}개 문서를 DB에 추가합니다."
-            
-        except Exception as e:
-            logger.error(f"Notion search error: {e}")
-            return f"Notion 검색 오류: {str(e)}"
-    
-    
-    @mcp.tool()
-    async def search_tistory(query: str, n_results: int = 10) -> str:
-        """
-        Tistory에서만 실시간 검색
-        
-        Args:
-            query: 검색어
-            n_results: 결과 수
-        
-        Returns:
-            검색 결과
-        """
-        try:
-            logger.info(f"🔍 Searching Tistory for: '{query}'")
-            docs = await web_searcher.search(query, n_results, platforms=["tistory"])
-            
-            if not docs:
-                return f"Tistory에서 '{query}'에 대한 검색 결과가 없습니다."
-            
-            # 포맷팅
-            output = [
-                f"# 📝 Tistory Search: '{query}'",
-                "",
-                f"Found {len(docs)} posts",
-                ""
-            ]
-            
-            for i, doc in enumerate(docs, 1):
-                output.extend([
-                    f"## {i}. [{doc.title}]({doc.url})",
-                    f"**Date**: {doc.date}",
-                    f"**Preview**: {doc.content[:200]}...",
-                    ""
-                ])
-            
-            # 백그라운드 인덱싱
-            task_registry.schedule(
-                "search_tistory",
-                _index_background(indexer, docs),
-                total_docs=len(docs),
-            )
-            
-            return "\n".join(output) + f"\n\n💡 {len(docs)}개 문서를 DB에 추가합니다."
-            
-        except Exception as e:
-            logger.error(f"Tistory search error: {e}")
-            return f"Tistory 검색 오류: {str(e)}"
-
-
-    @mcp.tool()
-    async def search_github(query: str, n_results: int = 10) -> str:
-        """
-        GitHub에서만 실시간 검색
-
-        Args:
-            query: 검색어
-            n_results: 결과 수
-
-        Returns:
-            검색 결과
-        """
-        try:
-            logger.info(f"🔍 Searching GitHub for: '{query}'")
-            docs = await web_searcher.search(query, n_results, platforms=["github"])
-
-            if not docs:
-                return f"GitHub에서 '{query}'에 대한 검색 결과가 없습니다."
-
-            output = [
-                f"# 🐙 GitHub Search: '{query}'",
-                "",
-                f"Found {len(docs)} documents",
-                ""
-            ]
-
-            for i, doc in enumerate(docs, 1):
-                preview = (doc.content or "")[:200]
-                ellipsis = "..." if len(doc.content or "") > 200 else ""
-                output.extend([
-                    f"## {i}. [{doc.title}]({doc.url})",
-                    f"**Path**: {doc.path or '-'}",
-                    f"**Preview**: {preview}{ellipsis}",
-                    ""
-                ])
-
-            task_registry.schedule(
-                "search_github",
-                _index_background(indexer, docs),
-                total_docs=len(docs),
-            )
-
-            return "\n".join(output) + f"\n\n💡 {len(docs)}개 GitHub 문서를 DB에 추가합니다."
-
-        except Exception as e:
-            logger.error(f"GitHub search error: {e}")
-            return f"GitHub 검색 오류: {str(e)}"
-    
-    
-    # ================================================================
-    # 인덱싱 도구
-    # ================================================================
-    
-    @mcp.tool()
-    async def trigger_index_all_content() -> str:
-        """
-        모든 콘텐츠 인덱싱 (백그라운드)
-        
-        Returns:
-            시작 메시지
-        """
-        if indexer.status.state == IndexState.RUNNING:
-            return "이미 인덱싱이 진행 중입니다."
-        
-        task_registry.schedule(
-            "trigger_index_all_content",
-            _index_all_background(indexer),
-        )
-        return "인덱싱을 백그라운드에서 시작했습니다. 'get_index_status'로 상태 확인하세요."
-    
-    
-    @mcp.tool()
-    async def get_index_status() -> dict:
-        """
-        인덱싱 상태 조회
-        
-        Returns:
-            상태 정보
-        """
-        status = indexer.status.model_dump()
-        if status.get("state") == IndexState.ERROR and status.get("message"):
-            status["message"] = safe_error_message(RuntimeError(str(status["message"])))
-        status["background_tasks"] = task_registry.snapshot()
-        return status
-
-    # ================================================================
-    # ContextWiki MVP 도구
-    # ================================================================
+    """Register the retained slim ContextWiki MCP tool surface."""
+    allowed_source_ids = _source_registry_ids(source_registry)
 
     @mcp.tool()
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
-        if metadata_store is None:
-            return {"sources": []}
-        if ingestion_service is not None and hasattr(
-            ingestion_service,
-            "refresh_registered_sources",
-        ):
-            try:
-                ingestion_service.refresh_registered_sources()
-            except Exception as exc:
-                logger.warning(
-                    "Source refresh failed before list_sources: %s",
-                    safe_error_message(exc),
-                )
+        if metadata_store is not None:
+            sources = metadata_store.list_sources()
+        elif source_registry is not None:
+            sources = source_registry.list_sources()
+        else:
+            sources = []
+        sources = [
+            source
+            for source in sources
+            if _source_id_is_public(
+                getattr(source, "source_id", ""),
+                metadata_store,
+                allowed_source_ids,
+            )
+        ]
         return {
             "sources": [
-                safe_source_payload(source)
-                for source in metadata_store.list_sources()
+                _safe_source_payload(source)
+                for source in sources
             ]
         }
 
@@ -302,45 +62,50 @@ def register_tools(
             return {"status": "error", "message": "ingestion service is not configured"}
         try:
             job = await ingestion_service.sync_source(source_id)
-            return safe_sync_job_payload(job)
-        except Exception as e:
-            safe_message = safe_error_message(e)
-            logger.error("Sync source error: %s", safe_message)
-            return {"status": "error", "message": safe_message}
+            return _safe_sync_job_payload(job)
+        except Exception as exc:
+            message = safe_error_message(exc)
+            logger.error("Sync source error: %s", message)
+            return {"status": "error", "message": message}
 
     @mcp.tool()
     async def get_sync_status(source_id: str = "") -> dict:
         """source 및 sync job 상태 조회"""
         if metadata_store is None:
             return {"sources": []}
-        if ingestion_service is not None and hasattr(
-            ingestion_service,
-            "refresh_registered_sources",
-        ):
-            try:
-                ingestion_service.refresh_registered_sources()
-            except Exception as exc:
-                logger.warning(
-                    "Source refresh failed before get_sync_status: %s",
-                    safe_error_message(exc),
-                )
 
         if source_id:
-            latest_job = metadata_store.get_latest_sync_job(source_id)
             source = metadata_store.get_source(source_id)
+            if not source or not _source_id_is_public(
+                source_id,
+                metadata_store,
+                allowed_source_ids,
+            ):
+                return {
+                    "source": None,
+                    "latest_job": None,
+                }
+            latest_job = metadata_store.get_latest_sync_job(source_id)
+            source = metadata_store.get_source(source_id) or source
             return {
-                "source": safe_source_payload(source) if source else None,
-                "latest_job": safe_sync_job_payload(latest_job) if latest_job else None,
+                "source": _safe_source_payload(source) if source else None,
+                "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
             }
 
         statuses = []
         for source in metadata_store.list_sources():
+            if not _source_id_is_public(
+                source.source_id,
+                metadata_store,
+                allowed_source_ids,
+            ):
+                continue
             latest_job = metadata_store.get_latest_sync_job(source.source_id)
             source = metadata_store.get_source(source.source_id) or source
             statuses.append(
                 {
-                    "source": safe_source_payload(source),
-                    "latest_job": safe_sync_job_payload(latest_job) if latest_job else None,
+                    "source": _safe_source_payload(source),
+                    "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
                 }
             )
         return {"sources": statuses}
@@ -350,13 +115,33 @@ def register_tools(
         """Citation 가능한 structured context 검색"""
         if context_search_service is None:
             return {"query": query, "results": []}
-        result = await context_search_service.search_context(query, filters=filters, top_k=top_k)
-        return {
-            "query": result["query"],
-            "results": [
+        public_filters, has_no_public_source = _public_filters(
+            filters,
+            metadata_store,
+            allowed_source_ids,
+        )
+        if has_no_public_source:
+            return {"query": query, "results": []}
+        public_filters = _with_default_public_source_filter(
+            public_filters,
+            allowed_source_ids,
+        )
+        result = await context_search_service.search_context(
+            query,
+            filters=public_filters,
+            top_k=top_k,
+        )
+        results = [
+            payload
+            for payload in (
                 _search_context_result_payload(item)
                 for item in result["results"]
-            ],
+            )
+            if _payload_source_is_public(payload, metadata_store, allowed_source_ids)
+        ]
+        return {
+            "query": result["query"],
+            "results": results,
         }
 
     @mcp.tool()
@@ -369,17 +154,28 @@ def register_tools(
 
         if chunk_id:
             chunk = metadata_store.get_chunk(chunk_id)
+            if chunk and not _model_source_is_public(chunk, metadata_store, allowed_source_ids):
+                chunk = None
             return {
                 "chunk": chunk.model_dump(mode="json") if chunk else None,
             }
 
         document = metadata_store.get_document(document_id)
-        if document and getattr(document, "deleted_at", ""):
+        if (
+            not document
+            or not _model_source_is_public(document, metadata_store, allowed_source_ids)
+            or getattr(document, "deleted_at", "")
+        ):
             return {
                 "document": None,
                 "chunks": [],
             }
         chunks = metadata_store.list_chunks_for_document(document_id)
+        chunks = [
+            chunk
+            for chunk in chunks
+            if _model_source_is_public(chunk, metadata_store, allowed_source_ids)
+        ]
         return {
             "document": document.model_dump(mode="json") if document else None,
             "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
@@ -388,6 +184,17 @@ def register_tools(
     @mcp.tool()
     async def answer_with_citations(question: str, filters: dict = None, top_k: int = 5) -> dict:
         """검색된 chunk 근거만 사용해 citation 포함 답변 생성"""
+        public_filters, has_no_public_source = _public_filters(
+            filters,
+            metadata_store,
+            allowed_source_ids,
+        )
+        if has_no_public_source:
+            return _insufficient_answer_for_filtered_sources(question)
+        public_filters = _with_default_public_source_filter(
+            public_filters,
+            allowed_source_ids,
+        )
         if answer_service is None:
             return {
                 "question": question,
@@ -396,53 +203,155 @@ def register_tools(
                 "citations": [],
                 "used_chunks": [],
             }
-        return await answer_service.answer_with_citations(question, filters=filters, top_k=top_k)
+        return await answer_service.answer_with_citations(
+            question,
+            filters=public_filters,
+            top_k=top_k,
+        )
 
-    @mcp.tool()
-    async def generate_wiki_page(topic: str, filters: dict = None, top_k: int = 8) -> dict:
-        """검색된 ContextWiki 근거로 citation-backed wiki page 생성"""
-        if wiki_service is None:
-            return {
-                "topic": topic,
-                "status": "not_configured",
-                "title": f"{topic} Wiki" if topic else "",
-                "markdown": "Wiki generation service is not configured.",
-                "sections": [],
-                "citations": [],
-                "backlinks": [],
-                "used_chunks": [],
-                "message": "Wiki generation service is not configured.",
-            }
-        try:
-            return await wiki_service.generate_wiki_page(topic, filters=filters, top_k=top_k)
-        except Exception:
-            logger.exception("Generate wiki page error")
-            return {
-                "topic": topic,
-                "status": "error",
-                "title": f"{topic} Wiki" if topic else "",
-                "markdown": "Wiki page generation failed.",
-                "sections": [],
-                "citations": [],
-                "backlinks": [],
-                "used_chunks": [],
-                "message": "Wiki page generation failed.",
-                "error_code": "wiki_generation_failed",
-            }
-# ================================================================
-# 헬퍼 함수
-# ================================================================
 
-async def _index_all_background(indexer: ContentIndexer) -> int:
-    """전체 인덱싱 백그라운드 작업"""
-    config = AppConfig()
-    fetcher = DocumentFetcher(config, NOTION_API_KEY, TISTORY_BLOG_NAME)
+def _source_registry_ids(source_registry) -> frozenset[str] | None:
+    if source_registry is None:
+        return None
+    return frozenset(
+        str(source.source_id)
+        for source in source_registry.list_sources()
+        if getattr(source, "source_id", "")
+    )
 
-    documents = await fetcher.fetch_all()
-    await indexer.index_documents(documents)
 
-    logger.info("✅ Background indexing completed")
-    return len(documents)
+def _model_payload(model) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(mode="json")
+    if isinstance(model, dict):
+        return dict(model)
+    return {}
+
+
+def _redact_public_error_text(value):
+    if not value:
+        return value
+    return safe_error_message(ValueError(str(value)))
+
+
+def _safe_auth_ref(value):
+    if not value:
+        return value
+    auth_ref = str(value)
+    if SAFE_PUBLIC_ENV_REF_RE.match(auth_ref):
+        return auth_ref
+    return "<redacted>"
+
+
+def _safe_source_payload(source) -> dict:
+    payload = _model_payload(source)
+    if "auth_ref" in payload:
+        payload["auth_ref"] = _safe_auth_ref(payload["auth_ref"])
+    if "last_error" in payload:
+        payload["last_error"] = _redact_public_error_text(payload["last_error"])
+    return payload
+
+
+def _safe_sync_job_payload(job) -> dict:
+    payload = _model_payload(job)
+    if "error_message" in payload:
+        payload["error_message"] = _redact_public_error_text(payload["error_message"])
+    return payload
+
+
+def _model_source_is_public(model, metadata_store, allowed_source_ids: frozenset[str] | None) -> bool:
+    source_id = getattr(model, "source_id", "")
+    return _source_id_is_public(source_id, metadata_store, allowed_source_ids)
+
+
+def _payload_source_is_public(
+    payload,
+    metadata_store,
+    allowed_source_ids: frozenset[str] | None,
+) -> bool:
+    if not isinstance(payload, dict):
+        return allowed_source_ids is None
+    return _source_id_is_public(payload.get("source_id", ""), metadata_store, allowed_source_ids)
+
+
+def _public_filters(
+    filters: dict | None,
+    metadata_store,
+    allowed_source_ids: frozenset[str] | None,
+) -> tuple[dict | None, bool]:
+    if not filters:
+        return filters, False
+    source_ids = _filter_source_ids(filters or {})
+    if source_ids is None:
+        return filters, False
+    public_source_ids = [
+        source_id
+        for source_id in source_ids
+        if _source_id_is_public(source_id, metadata_store, allowed_source_ids)
+    ]
+    if not public_source_ids:
+        return None, True
+    sanitized = dict(filters)
+    sanitized.pop("source_id", None)
+    sanitized["source_ids"] = public_source_ids
+    return sanitized, False
+
+
+def _with_default_public_source_filter(
+    filters: dict | None,
+    allowed_source_ids: frozenset[str] | None,
+) -> dict | None:
+    if allowed_source_ids is None or _filter_source_ids(filters or {}):
+        return filters
+    public_filters = dict(filters or {})
+    public_filters["source_ids"] = sorted(allowed_source_ids)
+    return public_filters
+
+
+def _filter_source_ids(filters: dict) -> list[str] | None:
+    normalized = []
+    for key in ("source_ids", "source_id"):
+        value = filters.get(key)
+        if not value:
+            continue
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, list | tuple | set):
+            values = list(value)
+        else:
+            values = [value]
+        for source_id in values:
+            if source_id and source_id not in normalized:
+                normalized.append(str(source_id))
+    return normalized or None
+
+
+def _source_id_is_public(
+    source_id: str,
+    metadata_store,
+    allowed_source_ids: frozenset[str] | None,
+) -> bool:
+    if not source_id:
+        return allowed_source_ids is None
+    normalized_source_id = str(source_id)
+    if allowed_source_ids is not None:
+        return normalized_source_id in allowed_source_ids
+    if metadata_store is None:
+        return True
+    get_source = getattr(metadata_store, "get_source", None)
+    if not callable(get_source):
+        return True
+    return get_source(normalized_source_id) is not None
+
+
+def _insufficient_answer_for_filtered_sources(question: str) -> dict:
+    return {
+        "question": question,
+        "answer": "No retained source matched the requested filters.",
+        "evidence_status": "insufficient",
+        "citations": [],
+        "used_chunks": [],
+    }
 
 
 def _search_context_result_payload(item):
@@ -455,10 +364,3 @@ def _search_context_result_payload(item):
             if key not in {"vector_score", "metadata_priority"}
         }
     return item
-
-
-async def _index_background(indexer: ContentIndexer, documents: list) -> int:
-    """웹 검색 결과 백그라운드 인덱싱"""
-    await indexer.index_documents(documents)
-    logger.info(f"✅ Indexed {len(documents)} documents")
-    return len(documents)

@@ -3,58 +3,51 @@
 Baseline:
 
 - Original baseline: `eunhwa99/MCPContentSearch` PR #2
-- Updated through: Phase B-0 / PR #4
-- Current update: Phase C Auto Wiki, Phase C.5 local Web Console, local
-  eval/background-status documentation groundwork, and portfolio hardening
-  module-boundary cleanup
+- Current update: slim MCP core refactor, retaining GitHub/Notion/Tistory
+  source sync, SQLite lifecycle metadata, Chroma retrieval, and citation-backed
+  answers.
 
 Goal:
 
-This note is not a source file walkthrough to memorize generated code. It is a
-maintained mental model for explaining ContextWiki's design intent, data flow,
-and current limitations.
-
-When ContextWiki source, ingestion, lifecycle, retrieval, citation, or answer
-behavior changes, update this note together with README, architecture docs, ADRs,
-or plan docs as appropriate.
+This note is the maintained mental model for explaining ContextWiki's current
+design intent, data flow, and limitations. When source connectors, ingestion,
+lifecycle metadata, retrieval, citation, or answer behavior changes, update this
+note together with README, architecture docs, ADRs, or plan docs as appropriate.
 
 ---
 
 ## 0. One-line Summary
 
-ContextWiki extends the original `MCPContentSearch` project into an MCP-first
-knowledge backend.
+ContextWiki is a focused MCP retrieval server.
 
 The core flow is:
 
 ```text
 source registration
 -> source sync
--> document fetch
+-> document fetch from Notion, Tistory, or GitHub
 -> external_id / canonical_url / version_id / last_seen metadata normalize
 -> content_hash computation
 -> deterministic source-aware chunking for chunk-id comparison
 -> unchanged documents skip vector reindexing when hash and chunk ids match
--> new, changed, reappeared, or rechunked documents are stored in the vector index
+-> new, changed, reappeared, or rechunked documents are stored in Chroma
 -> source / job / document / chunk / tombstone metadata is stored in SQLite
--> cleanup-capable sources tombstone stale documents after complete successful snapshots
+-> cleanup-capable sources tombstone stale documents after complete snapshots
+-> search_context may optionally rewrite weak queries through a configured LLM
+   when CONTEXTWIKI_SEARCH_LLM_ENABLED=true
+-> retrieval candidates are hydrated through SQLite before citation use
 -> search_context asks Chroma for candidates and validates them through SQLite
 -> answer_with_citations returns evidence-gated answers
--> generate_wiki_page returns citation-backed read-only Markdown pages
 ```
 
 Interview or README version:
 
 ```text
 ContextWiki exposes MCP tools for source sync, incremental indexing,
-citation-ready search, and evidence-gated answers.
+citation-ready search, context fetch, and evidence-gated answers.
 
-It separates source metadata, sync jobs, original documents, citation chunks,
-and search results so AI clients can retrieve grounded context without
-accessing the database directly.
-
-SQLite is the source of truth for lifecycle and citation metadata,
-while ChromaDB is a semantic retrieval index.
+SQLite is the source of truth for lifecycle and citation metadata, while
+ChromaDB is the semantic retrieval index.
 ```
 
 ---
@@ -65,20 +58,14 @@ ContextWiki currently has source connectors for:
 
 | Source | Source id | How it is configured | Notes |
 | --- | --- | --- | --- |
-| Notion | `source_notion` | existing Notion env settings | page/document source |
-| Tistory | `source_tistory` | existing Tistory env settings | blog post source |
+| Notion | `source_notion` | `NOTION_API_KEY` | page/document source |
+| Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | blog post source |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | repository file source |
-| Web/docs | `source_web` | `CONTEXTWIKI_WEB_URLS` | sitemap or bounded same-origin docs source |
-| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` | local vault markdown source |
-
-So yes: ContextWiki can now bring in GitHub, Web/docs, and Obsidian content
-through the same source-sync and citation-safe retrieval pipeline.
 
 Example:
 
 ```bash
 CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
-GITHUB_TOKEN="..."
 ```
 
 Then:
@@ -87,50 +74,9 @@ Then:
 sync_source("source_github")
 ```
 
-will fetch supported text/code/markdown files from the configured repository,
-convert each file into a `DocumentModel`, chunk it with line-range citation
-metadata, index the chunks, and store lifecycle metadata in SQLite.
-
-Web/docs works similarly:
-
-```bash
-CONTEXTWIKI_WEB_URLS="https://docs.example.com/sitemap.xml,https://docs.example.com/start"
-```
-
-Then:
-
-```text
-sync_source("source_web")
-```
-
-fetches sitemap entries or bounded same-origin pages, respects robots.txt
-disallow rules, extracts readable text and canonical URLs, and indexes the
-resulting documents.
-
-Obsidian works similarly for local vault content:
-
-```bash
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH="~/Obsidian/myVault"
-```
-
-Then:
-
-```text
-sync_source("source_obsidian")
-```
-
-walks local `.md` files under the configured vault, skips Obsidian/system
-dot-paths, strips frontmatter from indexed body text, preserves original file
-line numbers for citations, and uses `obsidian://open?vault=...&file=...`
-deep-links as canonical URLs.
-
-Important safety rule:
-
-```text
-Obsidian sync follows the same lifecycle guard as other cleanup-capable sources:
-- complete snapshots can tombstone deleted notes
-- incomplete snapshots fail the sync and must not tombstone notes
-```
+fetches supported text/code/Markdown files from configured repositories,
+converts each file into a `DocumentModel`, chunks it with line-range citation
+metadata, indexes the chunks, and stores lifecycle metadata in SQLite.
 
 ---
 
@@ -140,7 +86,7 @@ ContextWiki is easiest to understand as four layers.
 
 ```mermaid
 flowchart TD
-    Client["AI Client<br/>ChatGPT / Codex / Claude / Cursor"]
+    Client["AI Client"]
     MCP["FastMCP Server"]
     Tools["MCP Tools<br/>api/tools.py"]
     Ingestion["IngestionService"]
@@ -148,7 +94,7 @@ flowchart TD
     Answer["CitationAnswerService"]
     Store["MetadataStore<br/>SQLite"]
     Vector["Vector Index<br/>ChromaDB / LlamaIndex"]
-    Sources["Source Connectors<br/>Notion / Tistory / GitHub / Web docs / Obsidian"]
+    Sources["Source Connectors<br/>Notion / Tistory / GitHub"]
 
     Client --> MCP
     MCP --> Tools
@@ -175,7 +121,25 @@ SQLite decides whether those chunks are currently active, citeable evidence.
 
 ---
 
-## 3. Core Model Relationships
+## 3. MCP Tool Surface
+
+Current tools:
+
+| Tool | Use |
+| --- | --- |
+| `list_sources()` | see configured sources |
+| `sync_source(source_id)` | refresh one source |
+| `get_sync_status(source_id?)` | inspect source/job state |
+| `search_context(query, filters, top_k)` | find SQLite-validated evidence |
+| `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
+| `answer_with_citations(question, filters, top_k)` | answer from validated evidence |
+
+Tool handlers call service boundaries and return JSON-safe values through
+Pydantic `model_dump(mode="json")` where needed.
+
+---
+
+## 4. Core Model Relationships
 
 Relevant files:
 
@@ -188,7 +152,7 @@ The most important models are:
 
 | Model | Meaning | Main use |
 | --- | --- | --- |
-| `SourceModel` | Notion, Tistory, GitHub, Web/docs, Obsidian source | source configuration and sync state |
+| `SourceModel` | Notion, Tistory, or GitHub source | source configuration and sync state |
 | `SyncJobModel` | one source sync execution | success/failure and processing counts |
 | `DocumentModel` | one original document | identity, content hash, lifecycle, source metadata |
 | `ChunkModel` | searchable/citeable document segment | vector search and citations |
@@ -198,18 +162,15 @@ Key distinction:
 
 ```text
 DocumentModel = management and sync unit
-Examples: one Notion page, one Tistory post, one GitHub file, one web page, one Obsidian note.
+Examples: one Notion page, one Tistory post, one GitHub file.
 
 ChunkModel = search and citation unit
 Examples: a markdown section, a code line range, a plain-text window.
-
-ContextSearchResult = response DTO
-ChunkModel + score + source_type + preview + version metadata.
 ```
 
 ---
 
-## 4. SQLite vs ChromaDB
+## 5. SQLite vs ChromaDB
 
 SQLite and Chroma both store chunk-related information, but they have different
 jobs.
@@ -224,7 +185,7 @@ ChromaDB
 
 ```mermaid
 flowchart TD
-    A["Fetch from Notion / Tistory / GitHub / Web / Obsidian"]
+    A["Fetch from Notion / Tistory / GitHub"]
     B["DocumentModel"]
     C["DocumentChunker -> ChunkModel[]"]
     D["SQLite documents<br/>identity/content/hash/lifecycle"]
@@ -244,132 +205,8 @@ flowchart TD
     G --> H --> I --> J
 ```
 
-Important explanation:
-
-```text
-SQLite is not just a metadata cache. It is the active truth gate.
-ChromaDB is a helper index for semantic candidate retrieval.
-
-Search results are not trusted directly from Chroma.
-They are hydrated and validated through SQLite.
-```
-
----
-
-## 5. MCP Tool Surface
-
-Relevant file:
-
-```text
-api/tools.py
-```
-
-Current ContextWiki tools:
-
-| Tool | Input | Return | Use |
-| --- | --- | --- | --- |
-| `list_sources()` | none | configured sources | see available sources |
-| `sync_source(source_id)` | source id | sync job result | refresh one source |
-| `get_sync_status(source_id?)` | optional source id | source/job status | inspect sync state |
-| `search_context(query, filters, top_k)` | query/filter/top_k | structured chunk results | find evidence |
-| `fetch_context(document_id, chunk_id)` | document or chunk id | original document/chunk | inspect evidence |
-| `answer_with_citations(question, filters, top_k)` | question/filter/top_k | answer + citations | answer from evidence |
-| `generate_wiki_page(topic, filters, top_k)` | topic/filter/top_k | Markdown wiki page + citations/backlinks | generate a read-only Auto Wiki page from evidence |
-
-`model_dump(mode="json")` means:
-
-```text
-Convert Pydantic models into JSON-safe dict/list values for MCP responses.
-```
-
----
-
-
-### Auto Wiki Generation
-
-`generate_wiki_page(topic, filters, top_k)` is the first Phase C surface. It does not persist wiki pages and does not call external connectors directly. The tool delegates to `WikiGenerationService`, which delegates to `ContextSearchService`, then emits a stable response with:
-
-```text
-topic, status, title, markdown, sections, citations, backlinks, used_chunks
-```
-
-The generated page is citation-gated: low-score or missing evidence returns `status="insufficient_evidence"` instead of creating a weak wiki page. `backlinks` are derived from the distinct source documents represented by the used chunks.
-
-Auto Wiki also has an optional LLM synthesis layer. It is disabled by default
-and only wired into the app when `CONTEXTWIKI_WIKI_LLM_ENABLED=true` and the
-configured API key is available. When enabled, the LLM receives citation-ready
-evidence and must return Markdown/sections with the provided citation markers;
-if the provider fails or omits/changes required citations, ContextWiki falls
-back to deterministic evidence Markdown instead of returning ungrounded prose.
-
-Current Auto Wiki limits:
-
-```text
-- no server-side wiki page persistence
-- no direct source fetch during page generation
-- no live LLM call unless explicitly enabled and configured
-- deterministic fallback stays the default path
-```
-
-### Phase C.5 Local Web Console
-
-The local Web Console is developer/test tooling around the MCP services. It is
-not a production UI or a full MCP-client replacement. It serves the browser app
-from `web/` through `web_console.app`, exposes local HTTP wrappers for source
-listing/sync, answering, target sync, and wiki generation in the browser, and
-keeps fake/GitHub smoke as script/API-only wrappers. The browser UI then
-displays citations, used chunks, downloads, wiki Markdown, and status/error
-payloads for manual inspection.
-
-Important boundaries:
-
-```text
-- loopback-only by default; remote allowance is explicit and still guarded
-- Target Sync and smoke endpoints can contact external services only when invoked
-- configured-source startup auto-sync can contact GitHub/Notion/Tistory unless disabled
-- Answer/Search against the real vector index may call the configured embedding provider
-- the default browser mode is indexed-evidence inspection, not final-answer UX
-- Codex CLI Summary is a local subprocess wrapper for manual testing, not a production answer service
-- generated wiki pages are returned/downloaded, not persisted as server-side wiki state
-```
-
-### Local Eval Groundwork
-
-`evals/answer_quality.py` provides deterministic payload-level checks for
-current `answer_with_citations` responses. It can score already-produced local
-payloads for expected status, expected answer terms, forbidden unsupported
-claims, citation coverage, `used_chunks` consistency, and obvious secret-like
-output.
-
-`evals/retrieval_quality.py` adds D1 retrieval checks for expected top chunks,
-expected top-ranked source IDs, required chunk presence, and forbidden chunk
-absence.
-
-`scripts/run_contextwiki_eval.py` is the D1 local runner. It seeds temporary
-fixture documents into temp SQLite, swaps in a local fixture
-`VectorIndexRetriever` so `search_context` still exercises the normal indexer
-path, disables query rewrite, executes `answer_with_citations`, and emits a
-JSON summary without touching user data or calling live providers.
-
-Focused entry points:
-
-```bash
-uv run --locked pytest -q tests/evals
-PYTHONPATH=. uv run --locked python scripts/run_contextwiki_eval.py
-```
-
-This is eval scaffolding, not full evaluation infrastructure. It does not call
-live APIs, production embeddings, Chroma, or LLM providers. It does use
-temporary SQLite fixture state. LLM answer generation,
-LLM-as-judge grading, retrieval tuning dashboards, and external trace storage
-remain future work.
-
-Current split:
-
-- `D1`: local retrieval/answer eval foundation
-- `D2`: observability expansion
-- `J1`: deterministic non-LLM retrieval quality
-- `J2`: LLM-assisted rewrite, grounded synthesis, and deeper citation checks
+Search results are not trusted directly from Chroma. They are hydrated and
+validated through SQLite before they become evidence or citations.
 
 ---
 
@@ -386,56 +223,21 @@ storage/metadata_store.py
 
 `IngestionService.sync_source()` is the core business flow.
 
-```mermaid
-flowchart TD
-    A["sync_source(source_id)"]
-    B["IngestionService"]
-    C["SourceRegistry connector lookup"]
-    C2["MetadataStore register_source<br/>+ begin_sync_job guard"]
-    C3{"new sync started?"}
-    D{"source enabled?"}
-    E["job failed<br/>source disabled"]
-    F["return existing running job"]
-    G["connector.fetch_documents()"]
-    H["normalize document source/id/url/version/last_seen"]
-    I["content_hash"]
-    M["deterministic source-aware chunking"]
-    J{"active content_hash same?"}
-    K{"generated chunk ids same?"}
-    L["skip vector reindexing<br/>refresh SQLite metadata"]
-    N["index chunks in vector store"]
-    O["commit document + chunk metadata"]
-    P["finalize successful sync"]
-    Q["tombstone stale documents<br/>when cleanup is safe"]
-    R["best-effort vector cleanup"]
-    S["job succeeded"]
-    X["exception"]
-    Y["job failed"]
-
-    A --> B --> C --> C2 --> C3
-    C3 -- no --> F
-    C3 -- yes --> D
-    D -- no --> E
-    D -- yes --> G --> H --> I --> M --> J
-    J -- yes --> K
-    K -- yes --> L --> O
-    K -- no --> N
-    J -- no --> N
-    N --> O --> P --> Q --> R --> S
-    G -. error .-> X --> Y
-    N -. error .-> X
-    O -. error .-> X
-```
-
-Incremental indexing:
-
 ```text
-If active document content_hash is unchanged and generated chunk ids are
-unchanged, skip reindexing.
+sync_source(source_id)
+-> SourceRegistry connector lookup
+-> MetadataStore register_source + begin_sync_job guard
+-> connector.fetch_documents()
+-> normalize document source/id/url/version/last_seen
+-> compute content_hash
+-> deterministic source-aware chunking
+-> skip vector reindexing when active content_hash and chunk ids are unchanged
+-> index new/changed/reappeared/rechunked chunks in Chroma
+-> commit document + chunk metadata
+-> finalize successful sync
+-> tombstone stale documents when cleanup is safe
+-> best-effort vector cleanup
 ```
-
-Documents are still deterministically chunked before the skip decision so the
-sync can compare generated chunk ids and refresh SQLite lifecycle metadata.
 
 Reindexing still happens when:
 
@@ -446,55 +248,7 @@ Reindexing still happens when:
 - document identity changes
 ```
 
-Source/document/chunk ownership or contract mismatches are rejected instead of
-being repaired by vector reindexing. Metadata-only updates may refresh SQLite
-without rewriting Chroma when hash and chunk ids match.
-
-Example sync result:
-
-```json
-{
-  "job_id": "uuid",
-  "source_id": "source_github",
-  "status": "succeeded",
-  "total_documents": 25,
-  "processed_documents": 3,
-  "indexed_chunks": 18,
-  "skipped_documents": 22,
-  "error_message": ""
-}
-```
-
-Interpretation:
-
-```text
-The connector observed 25 documents.
-22 were unchanged and skipped for vector reindexing.
-3 were new, changed, reappeared, or rechunked.
-Those 3 processed documents produced 18 indexed chunks.
-```
-
-Startup recovery:
-
-```text
-When the MCP server or local Web Console starts, it captures the current process
-startup timestamp, registers configured sources, and then runs recovery before
-auto-sync or tool use.
-New running jobs carry a `sync_jobs.owner_id` generated by the current
-`MetadataStore` instance. The store also records that owner in
-`sync_job_owners` with the local process id and an owner heartbeat. Startup
-recovery marks pre-start RUNNING rows FAILED when they are legacy owner-less rows
-that have not heartbeated recently, when their recorded owner process is no
-longer alive, or when the current owner's row is stale under the normal
-running-job timeout. Recovery clears document_claims and reconciles the source to
-FAILED when no newer RUNNING job for that source remains.
-```
-
-This is different from the normal heartbeat timeout. The timeout protects a
-live process from duplicate or stalled jobs over time; startup recovery handles
-restart-orphaned jobs promptly while avoiding fresh owned jobs from another live
-same-DB process, so configured-source sync can start a fresh job instead of
-showing an old `0 chunks indexed` running state.
+Failed or partial syncs must not tombstone missing documents.
 
 ---
 
@@ -504,19 +258,6 @@ Relevant file:
 
 ```text
 indexing/chunker.py
-```
-
-`DocumentChunker` converts original documents into citation-ready chunks.
-
-```text
-DocumentModel.content -> ChunkModel[]
-```
-
-Why chunking exists:
-
-```text
-A full document can be too long, too broad, and too imprecise for retrieval.
-Chunking keeps embeddings focused and makes citations point to smaller evidence.
 ```
 
 Current chunking strategy:
@@ -532,7 +273,6 @@ Code
 -> deterministic line-range chunks
 -> blank lines preserved
 -> long lines split by max_chars
--> function/class-aware parsing remains later work
 
 Plain text
 -> deterministic character windows
@@ -553,15 +293,6 @@ line_end
 content_hash
 version_id
 updated_at
-```
-
-Interview wording:
-
-```text
-DocumentChunker converts original documents into citation-ready chunks.
-Markdown with headings is split by sections, headingless Markdown falls back to
-deterministic text windows, code is chunked with deterministic line ranges, and
-plain text falls back to deterministic character windows.
 ```
 
 ---
@@ -587,8 +318,6 @@ Current mapping:
 Notion
 -> external_id = page_id
 -> document_id = page_id
--> transient API status codes 429/500/502/503/504 are retried with bounded
-   backoff while fetching search results, pages, databases, and block children
 
 Tistory
 -> external_id = blog_name:post_id
@@ -598,36 +327,10 @@ GitHub
 -> external_id/document_id = github:owner/repo:path
 -> canonical_url = GitHub blob URL at the resolved commit
 -> version_id = blob SHA
-
-Web/docs
--> external_id/document_id = web:canonical_url
--> canonical_url = extracted canonical URL or final URL
--> version_id = safe ETag or Last-Modified validator when available
 ```
 
-Important distinction:
-
-```text
-Stable identity should not change just because content changes.
-version_id records source revision metadata.
-content_hash records actual indexed content.
-```
-
-Still not implemented:
-
-```text
-- rename/move detection
-- fingerprint-based duplicate detection
-- automatic remap when external_id changes
-```
-
-So today:
-
-```text
-external_id changed + same content
-= new document create; for cleanup-capable sources after a complete successful
-  snapshot, the old missing document is tombstoned
-```
+Stable identity should not change just because content changes. `version_id`
+records source revision metadata; `content_hash` records actual indexed content.
 
 ---
 
@@ -640,26 +343,10 @@ documents.deleted_at records when a document disappears from a cleanup-capable
 source after a complete successful sync.
 ```
 
-For GitHub, cleanup is limited to the repository document-id prefixes fetched by
-the connector, such as `github:eunhwa99/mcpcontentsearch:`. This keeps an
-explicit configured repo sync from tombstoning documents that were indexed by a
-separate Web Console target sync under the same `source_github` source id.
-The repo must still be part of the current GitHub connector scope for its
-missing files to be tombstoned; removing a previously configured repo from
-`CONTEXTWIKI_GITHUB_REPOSITORIES` intentionally leaves its old documents active
-until a future provenance-aware cleanup or an explicit manual cleanup plan is
-added.
-
-Example:
-
-```text
-GitHub file api/tools.py is deleted
--> next complete cleanup-capable successful GitHub sync for that configured repo
-   does not see that external_id
--> documents.deleted_at is set
--> active search excludes it
--> if stale Chroma vectors remain, SQLite validation blocks them
-```
+For GitHub, cleanup is limited to repository document-id prefixes fetched by the
+connector, such as `github:eunhwa99/mcpcontentsearch:`. This keeps one
+configured repository sync from tombstoning documents that belong to another
+repository scope under the same `source_github` source id.
 
 Why not hard delete immediately?
 
@@ -669,643 +356,70 @@ If Chroma cleanup fails, SQLite still needs historical provenance to suppress
 stale managed vector hits.
 ```
 
-Current strategy:
-
-```text
-documents.deleted_at
--> document tombstone
-
-chunks rows
--> active/citation metadata and provenance
-
-chunk_tombstones
--> pre-replacement historical chunk-id provenance
-```
-
-Stale document cleanup uses `documents.deleted_at` while preserving chunk-row
-provenance for SQLite-backed stale vector suppression.
-
 SQLite is the last defense against stale vector results.
 
 ---
 
-## 10. Managed Vector Boundary
+## 10. Answer Behavior
 
-ContextWiki-managed chunks are marked in Chroma metadata:
-
-```text
-contextwiki_managed = true
-```
-
-`search_context` flow:
+`answer_with_citations` delegates retrieval to `ContextSearchService` and only
+uses validated chunks as evidence. The answer response should make evidence
+status explicit:
 
 ```text
-Chroma candidate
--> extract chunk_id
--> hydrate ChunkModel from SQLite
--> validate source_id/document_id/managed marker
--> ensure document is not tombstoned
--> return ContextSearchResult
+grounded / insufficient / error
 ```
 
-When vector retrieval does not produce enough active managed candidates,
-`search_context` also performs a SQLite-backed keyword fallback over active
-chunks. That fallback searches chunk text plus citation metadata such as
-document id, title, URL, canonical URL, path, and platform, so GitHub queries
-can match repository names like `ImageGallery` even when the term is only in
-the repo/path/URL metadata. Korean query terms such as `깃허브`, `니트코드`,
-and `문서` are expanded to common English equivalents before keyword matching.
-If the vector indexer is unavailable, the same bounded SQLite fallback is used
-instead of materializing every active chunk.
-Metadata keyword matches are merged with vector candidates before the final
-`top_k` slice so an exact repository/path match can compete with semantic hits
-instead of being skipped when vector retrieval already filled the window.
-Full metadata identity matches are ranked in a priority tier above vector-only
-hits, so exact repository/path matches remain deterministic even when vector
-scores tie or exceed `1.0`.
-The indexed-vector path applies the same GitHub document-intent guard as the
-metadata fallback: if the query asks for documents, hydrated GitHub vector hits
-must also come from README/docs/Markdown/text-like metadata before they are
-returned.
-Only full metadata query coverage is boosted for ranking. Partial metadata
-matches keep their fractional score so a low-signal term such as `docs` cannot
-turn unrelated GitHub chunks into grounded answer evidence by itself.
-Common request words such as `show`, `tell`, `give`, `repo`, and `repository`
-are treated as query noise before metadata scoring, so natural requests like
-`show me ImageGallery docs` can still prioritize the repository/path match.
-English search phrasing such as `search ImageGallery docs` and `search for
-ImageGallery docs` is treated the same way.
-Korean filler/search words such as `라고`, `라는`, `리포지토리`, `검색`, and
-`검색해도` are also treated as request noise, so phrasing like `ImageGallery라는
-리포지토리 검색` can still prioritize the exact repository metadata. Broad topic
-words such as Korean `알고리즘` are treated as non-boost terms only when a
-strong anchor such as NeetCode is also present, so `니트코드 알고리즘 그래프`
-does not demote the NeetCode graph match while general `algorithm docs` queries
-can still use `algorithm` as a real topic. Korean `니트코드` maps to NeetCode
-rather than generic LeetCode so a competing `leetcode-solutions` repository
-does not tie the intended `neetcode-submissions` repository for Korean NeetCode
-requests.
-When Korean intents are attached without spaces, such as `니트코드문서찾아와`,
-known intent terms are split into separate query groups before scoring.
-Single-token repository-looking queries are matched case-insensitively against
-GitHub metadata, so `ImageGallery`, `imagegallery`, and similar lowercase repo
-probes follow the same recall path. Lowercase single-token lookups first use a
-bounded GitHub SQLite metadata predicate before Python-side scoring instead of
-materializing every active GitHub chunk, so real GitHub repository matches still
-win deterministically. When vector recall is still insufficient, search also
-merges a normal all-source metadata/body fallback for plain lowercase probes, so
-GitHub metadata does not hide relevant Notion/Web/Tistory/Obsidian evidence for ordinary
-technical topics.
-If vector search already returned enough lexically relevant candidates for an
-ambiguous plain lowercase topic, that vector evidence is kept ahead of GitHub
-metadata recovery.
-Known generic topic words such as `configuration`, `javascript`, `kubernetes`,
-or suffix-shaped technical words such as `monitoring`, `authorization`, and
-`scalability` are excluded from that lowercase repository probe path.
-Other plain technical terms such as `typescript` and `postgresql` therefore
-remain recoverable from Notion/Web/Tistory evidence when no GitHub repository
-metadata actually matches.
-Korean source-only terms are preserved for ordinary/document fallback too; the
-ASCII-preferred term selection is limited to GitHub identity/repository lookup,
-so Korean-only Notion/Tistory/Web evidence can still match Korean queries.
-Explicit non-GitHub source filters keep body-text lookup enabled for these
-plain technical terms, while explicit GitHub filters and stronger repository
-signals continue to use metadata-only repository matching.
-Mixed filters that include GitHub and non-GitHub sources split the lookup so
-GitHub rows keep repository-safe metadata matching while non-GitHub rows can
-still match body text.
-When vector recall is empty, bounded lookup also checks chunk text for these
-plain long-word fallback cases, so body-only matches such as troubleshooting
-notes can still be recovered. Metadata term matching is literal substring
-matching, so repository names containing `_` are not treated as SQL wildcard
-patterns. Repository identity lookups use citation metadata fields rather than
-chunk body text, so an unrelated README that merely mentions `ImageGallery`
-does not outrank the actual `ImageGallery` repository metadata match.
-For anchored topical GitHub requests, such as Korean NeetCode graph-document
-queries, the bounded lookup keeps the anchor and the required topical term
-together before the result limit is applied.
-The lookup enforces those two parts in different places: repository/identity
-anchors must match GitHub citation metadata, while topical terms may match the
-doc-like chunk body. This prevents many unrelated READMEs that only mention a
-repository name in text from filling the bounded SQL window before the intended
-repository metadata row is considered.
-When that anchored GitHub request is already constrained to README/docs-like
-rows, the topical term may match chunk body text, so a NeetCode README whose
-path establishes the repository and whose body discusses graph traversal remains
-discoverable.
-The repository anchor still has to match GitHub metadata fields such as
-document id, path, URL, or title; body-only mentions of `NeetCode` in an
-unrelated README do not establish repository identity.
-Only stronger repository signals, such as CamelCase names (`ImageGallery`),
-owner/repo paths, underscore-separated names, or hyphenated names with digits,
-can narrow default fallback to GitHub. Plain topic words such as `performance`
-or `configuration docs` keep the normal cross-source fallback behavior.
-Slash-shaped API topics such as `api/v1` are treated as ordinary topic terms
-unless another repository signal is present, so they can still recover
-non-GitHub evidence.
-For queries such as `github ImageGallery docs`, generic GitHub words narrow the
-fallback to `source_github` but are not used as the bounded lookup term when a
-more selective repository term exists.
-For GitHub document-intent queries, the fallback treats README files,
-Markdown/text documentation files, and `docs/` paths as document-like metadata
-inside SQLite before applying the bounded result limit. The SQLite prefilter is
-source-aware: it applies only to GitHub rows even when the caller did not pass a
-source filter, so Notion/Web/Tistory documents are not excluded. Its README/docs
-matching is path/extension-oriented rather than a loose title substring, so code
-files such as `ReadmeComponent.java` or `DocumentationHelper.java` do not fill
-the bounded document window ahead of real docs.
-For repository-name-only GitHub lookups, README/docs/Markdown/text-like rows are
-preferred before code rows, while code rows remain available if the repository
-has no document-like files.
-Code-only paths such as `Graph.java` are not returned merely because their
-repository URL matches `neetcode` when the query asks for documents.
-When vector results are already sufficient for an ordinary non-metadata query,
-the GitHub metadata fallback is skipped. Generic document-only phrasing such as
-`configuration docs` also skips metadata fallback when vector results are already
-sufficient and there are no bounded metadata lookup terms, preventing an
-unbounded active-chunk scan. Metadata fallback still runs when vector results are
-insufficient, or when the query is metadata-like with selective lookup terms.
-For vector-empty ordinary queries, search derives bounded lookup terms from the
-normalized query groups and uses SQLite's limited metadata/text term lookup
-instead of loading every active chunk; the unbounded active-chunk list remains a
-last resort only for truly termless queries.
-Stop-word-only queries such as `search for` or `찾아와` are treated as termless
-and skip metadata fallback rather than scanning active chunks.
-Explicit source filters keep fallback within the requested sources when fallback
-is otherwise needed, but they no longer force a full metadata scan for ordinary
-queries that already have enough vector candidates.
-
-Legacy raw Chroma rows may still exist. `search_context` filters for managed
-ContextWiki vectors only. Legacy `search_content` suppresses unmanaged hits that
-match known ContextWiki document or chunk identities so old raw vectors do not
-bypass the SQLite lifecycle gate.
-
-Goal:
-
-```text
-Old raw vectors should not bypass the SQLite lifecycle gate.
-```
+The service must not invent citations from unmanaged or tombstoned chunks. If
+retrieval cannot find enough active evidence, the response should say that the
+available evidence is insufficient instead of fabricating an answer.
 
 ---
 
-## 11. search_context vs answer_with_citations
+## 11. Current Limits
 
-Relevant files:
+Current intentional limits:
 
-```text
-search/context_service.py
-search/retrieval_pipeline.py
-search/ranking.py
-search/debug_redaction.py
-search/answer_service.py
-api/tools.py
-```
+- No generic website/docs crawler in production scope.
+- No browser Web Console or local HTTP reviewer UI in production scope.
+- No Auto Wiki generation or LLM wiki synthesis in production scope.
+- No dynamic web fallback or legacy live search/index MCP tools in production
+  scope.
+- Optional `CONTEXTWIKI_SEARCH_LLM_ENABLED=true` query rewrite is disabled by
+  default. If enabled, it may send the user query and normalized terms to the
+  configured provider, but it must not send source evidence, fetch external
+  source content, or mutate SQLite/Chroma.
+- No deletion, reset, migration, or inspection of local user Chroma/SQLite data
+  without explicit approval.
+- Live Notion, Tistory, GitHub, or embedding-provider validation is opt-in and
+  approval-gated.
 
-```text
-search_context = find evidence
-answer_with_citations = answer only from evidence
-```
+Historical note:
 
-`search_context`:
-
-```mermaid
-flowchart TD
-    A["search_context(query, filters, top_k)"]
-    B["normalize source filters"]
-    C["retrieve vector candidates"]
-    D["extract chunk_id"]
-    E["hydrate active ChunkModel from SQLite"]
-    F["attach SourceModel source_type"]
-    G["ContextSearchResult"]
-
-    A --> B --> C --> D --> E --> F --> G
-```
-
-`answer_with_citations`:
-
-```mermaid
-flowchart TD
-    A["answer_with_citations(question)"]
-    B["call search_context(question)"]
-    C["normalize ContextSearchResult"]
-    D{"score >= min_score?"}
-    E["insufficient evidence"]
-    F["build citations"]
-    G["return evidence-grounded answer scaffold"]
-
-    A --> B --> C --> D
-    D -- no --> E
-    D -- yes --> F --> G
-```
-
-Current limitation:
-
-```text
-answer_with_citations is still deterministic and evidence-gated first.
-It is not a free-form LLM answer generator by default.
-```
-
-Its evidence relevance gate checks the returned chunk text and preview plus
-GitHub-friendly metadata fields such as title, document id, URL, and path. This
-keeps repository-name questions grounded when the repository name lives in the
-citation metadata rather than in the chunk body.
-When evidence is sufficient, the core `answer_with_citations` MCP/service
-payload now returns:
-
-- a concise structured summary instead of raw chunk concatenation
-- stable citation metadata
-
-The local Web Console opts into extra `debug` + `debug_markdown` fields that
-explain normalized terms, retrieval query variants, selected chunks, and
-grounded chunk counts. Those debug fields are console-specific rather than part
-of the default MCP `answer_with_citations` contract.
-
-The local Web Console uses that structured debug markdown for its default
-indexed-evidence debug path so mixed retrieval results are easier to inspect.
-For strong repository anchors such as NeetCode, the gate also requires a
-remaining intent term when the question includes one, so a code file whose URL
-contains `neetcode` is not enough to answer a `니트코드 문서` request unless it
-also matches the document/docs intent.
-Document intent can be satisfied by doc-like GitHub metadata such as `README.md`,
-Markdown/text file extensions, or `docs/` paths. This keeps Korean document
-queries useful for normal repository documentation while preserving the
-code-only rejection.
-For GitHub evidence, document intent is satisfied by doc-like metadata rather
-than arbitrary chunk text. A code file that merely contains the word
-`documentation` in a comment is still not enough for a `문서/docs` request if
-its path is code-only.
-The answer relevance gate uses the same Korean search/filler normalization and
-no-space intent splitting as context search, so `ImageGallery라는 리포지토리
-검색` and attached forms like `니트코드그래프문서` are filtered consistently
-after retrieval.
-English request verbs such as `get`, `please`, `find`, and `search for` are
-treated as noise there too, so polite phrasing does not become an extra
-evidence requirement.
-Broad problem-collection terms such as `문제`, `problem`, `question`, and
-`solution` are normalized together as generic topical hints. For strong anchors
-like NeetCode, those broad terms do not over-constrain the answer gate the way
-specific topical terms such as `graph` still do, so `neetcode 문제` can ground
-on indexed NeetCode problem lists while `neetcode graph` still requires graph
-evidence.
-The same idea now applies more broadly to intent-like hint words such as
-`예제/example`, `사용법/usage`, `가이드/guide`, `설정/setup`, and
-`개념/concept`. Retrieval can still use them as query hints, but answer
-grounding does not require those broad hints to appear literally when a more
-specific anchor/topic already matches. This makes natural requests such as
-`AWS 사용법` or `redis 예제` less brittle while preserving stricter matching for
-truly specific topical words.
-When base retrieval looks low-confidence, ContextWiki can now ask an optional
-OpenAI-backed query rewriter for a few short search rewrites, such as adding a
-canonical product name or a more index-friendly phrase. Only the user query and
-normalized query terms are sent; indexed evidence is not sent during rewrite.
-If rewrites are used, context search merges those retrieval variants back into
-the candidate set, reranks candidates with lightweight metadata/text match
-bonuses, and exposes both `retrieval_queries` and `rewritten_queries` in debug
-output.
-When rewrite-assisted retrieval is used, answer grounding is slightly relaxed
-for ordinary non-strong-anchor requests so semantic equivalents recovered by
-rewrite are not discarded just because every rewritten hint word does not
-appear literally in the final chunk.
-Because the browser console is now explicitly retrieval/debug-first, this raw
-evidence path is the default browser mode and the optional Codex summary is
-presented only as a convenience layer over already-retrieved chunks.
-When a strong-anchor query includes both document intent and another topical
-term, such as `니트코드 그래프 문서`, the answer gate requires the topical term
-too. A generic NeetCode README can satisfy the document intent, but it still
-cannot answer the graph-specific part unless the evidence also matches graph.
-
-Future direction:
-
-```text
-retrieve_context
--> grade_evidence
--> generate_answer_with_llm
--> verify_citations
--> return grounded answer
-```
+- ADR 0004's GitHub connector decision remains current.
+- ADR 0004's website/docs connector portion is superseded for the current scope
+  by ADR 0006.
+- ADR 0005's Auto Wiki decision is superseded for the current scope by ADR
+  0006.
 
 ---
 
-## 12. App Wiring
+## 12. Verification Model
 
-Relevant files:
+Retained local checks:
 
-```text
-main.py
-fetching/connectors.py
-environments/config.py
-environments/runtime_env.py
-api/tools.py
-wiki/synthesis.py
+```bash
+python -m compileall api core environments fetching indexing search storage main.py
+uv run --locked pytest -q tests/fetching/test_connectors.py
+uv run --locked pytest -q tests/api/test_tools_contract.py
+uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
+uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
+uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
+./scripts/verify_functional_e2e.sh
+./scripts/verify_all.sh
 ```
 
-`main.py` composes the application:
-
-```mermaid
-flowchart TD
-    Config["AppConfig"]
-    Runtime["Runtime env lookup"]
-    Chroma["Chroma Collection"]
-    Indexer["ContentIndexer"]
-    Store["MetadataStore"]
-    Registry["SourceRegistry<br/>Notion / Tistory / GitHub / Web / Obsidian"]
-    Ingestion["IngestionService"]
-    ContextSearch["ContextSearchService"]
-    Answer["CitationAnswerService"]
-    WikiSynth["Optional Wiki Synthesizer"]
-    Wiki["WikiGenerationService"]
-    MCP["FastMCP"]
-    Tools["register_tools"]
-
-    Config --> Chroma
-    Config --> Registry
-    Runtime --> Registry
-    Chroma --> Indexer
-    Config --> Store
-    Registry --> Ingestion
-    Store --> Ingestion
-    Indexer --> Ingestion
-    Store --> ContextSearch
-    Indexer --> ContextSearch
-    ContextSearch --> Answer
-    Runtime --> WikiSynth
-    Config --> WikiSynth
-    ContextSearch --> Wiki
-    WikiSynth --> Wiki
-    MCP --> Tools
-```
-
-GitHub and optional wiki LLM secrets are read only at runtime through
-environment lookup. Source metadata stores environment references such as
-`env:GITHUB_TOKEN`, not raw tokens. Wiki LLM synthesis is opt-in because it can
-send retrieved source evidence to an external model.
-
----
-
-## 13. Background Status Model
-
-ContextWiki source sync status is durable enough for user-visible inspection:
-`sync_source` writes SQLite source/job metadata, and `get_sync_status` returns
-the latest source/job state. The local Web Console polls the same status path
-while configured-source sync or target sync is running.
-When a configured GitHub source is disabled because
-`CONTEXTWIKI_GITHUB_REPOSITORIES` is empty, sync records and Web Console
-payloads expose that exact public configuration reason; arbitrary errors still
-use generic secret-safe failure text.
-
-Legacy background indexing is different. `trigger_index_all_content`,
-`search_content`, `search_notion`, `search_tistory`, and `search_github`
-schedule process-local `asyncio.create_task` work. The caller-visible surface
-is `get_index_status`, which returns the in-memory indexer status model plus
-process-local `background_tasks` records. Each background record includes a
-runtime task id, label, state, total/processed document counts, timestamps, and
-a sanitized error summary when a task fails. The top-level indexer error
-message is also sanitized before it is stored, logged, or returned through
-status responses.
-
-Those legacy tasks still do not expose durable job ids, retry history, or
-persisted progress after process restart. Their records are runtime observability
-only, capped in memory, and are not a replacement for SQLite-backed source sync
-jobs.
-
-Design implication:
-
-```text
-source sync status = SQLite-backed operational status
-legacy background indexing status = process-local runtime status
-```
-
----
-
-## 14. README / Interview Architecture Summary
-
-Short version:
-
-```text
-ContextWiki is an MCP-first knowledge backend that indexes external sources
-incrementally and exposes citation-ready search and evidence-gated answer tools
-to AI clients.
-```
-
-Longer version:
-
-```text
-The system separates source metadata, sync jobs, original documents, citation
-chunks, and search result DTOs. During sync, it fetches documents from a source
-connector, normalizes source identity and version metadata, deterministically
-chunks documents for chunk-id comparison, skips vector reindexing when content
-hash and chunk ids are unchanged, writes chunks for new, changed, reappeared,
-or rechunked documents to the vector index, and stores lifecycle metadata in
-SQLite. AI clients use MCP tools such as search_context and answer_with_citations
-to retrieve grounded context without directly accessing the database.
-```
-
-Current implemented phase slice:
-
-```text
-Phase B added GitHub, Web/docs, and Obsidian connectors. Phase C added read-only Auto Wiki
-generation from active citation-ready chunks with deterministic fallback and
-optional opt-in wiki LLM synthesis. Phase C.5 added a local Web Console for
-manual source sync, answer, wiki, download, and smoke-test workflows. Phase D1
-now adds deterministic local retrieval/answer eval scaffolding, and Phase J1
-adds stronger non-LLM reranking/query-shaping heuristics.
-```
-
-Honest limitation version:
-
-```text
-The current implementation builds the production safety foundation:
-source/job metadata, document identity, source-aware chunking, tombstone-based
-stale cleanup, SQLite-backed active retrieval checks, historical chunk-id
-provenance, GitHub/Web/Obsidian connectors, structured context search, and citation-gated
-answer responses. It now also includes read-only citation-backed Auto Wiki
-generation, local Web Console developer tooling, and deterministic local
-payload-level answer-quality eval scaffolding plus fixture-based retrieval eval.
-
-It does not yet include fingerprint dedup, rename detection, function/class-aware
-code chunking, queue-based retry, full ACL-aware retrieval, D2 observability,
-J2 LLM-assisted grounded answer generation, or deeper citation verification.
-```
-
----
-
-## 15. Files to Understand First
-
-1. `core/models.py`
-   - Shared data contracts: source, job, document, chunk, search result.
-
-2. `api/tools.py`
-   - MCP entry points exposed to AI clients.
-
-3. `indexing/ingestion_service.py`
-   - Source sync and incremental indexing lifecycle.
-
-4. `indexing/chunker.py`
-   - Document-to-citation-chunk conversion.
-
-5. `storage/metadata_store.py`
-   - SQLite source/job/document/chunk/tombstone metadata.
-
-6. `fetching/connectors.py`
-   - Source registry and connector composition.
-
-7. `fetching/github.py`
-   - GitHub repository file ingestion.
-
-8. `fetching/web_docs.py`
-   - Website/docs crawler and text extraction.
-
-9. `search/context_service.py`
-   - Public ContextWiki search service and compatibility surface.
-
-10. `search/retrieval_pipeline.py`
-    - Chroma candidate retrieval, query variants, rewrite retry, and SQLite
-      active chunk hydration flow.
-
-11. `search/ranking.py`
-    - Metadata fallback, query term matching, reranking, and source-type
-      scoring helpers.
-
-12. `search/debug_redaction.py`
-    - Safe debug query and term redaction for browser/API diagnostics.
-
-13. `search/answer_service.py`
-    - Evidence-gated answer and citation response.
-
-14. `main.py`
-    - Dependency composition.
-
----
-
-## 16. Current Limitations
-
-Still not implemented:
-
-```text
-- fingerprint-based duplicate detection
-- rename/move detection
-- function/class-aware DocumentChunker code parsing
-- worker queue
-- broader retry/backoff hardening for additional live connector edge cases
-- idempotency hardening beyond current source sync guards
-- ACL-aware retrieval
-- tenant/source permission model
-- full audit logs
-- full eval-driven retrieval tuning
-- broader reranking tuning
-- broader query rewriting
-- full citation verification
-- LLM answer generation
-- durable job ids/retry history for legacy background indexing
-```
-
-Deferred or non-default validation:
-
-```text
-- tests/evals covers deterministic local payload checks only
-- live external smoke tests are outside CI/default pytest verification
-- MCP/wiki PR validation should run the safe fake wiki smoke and run optional
-  live wiki smoke when network access, user approval, and an appropriate source
-  are available
-```
-
-Document identity limitation:
-
-```text
-If external_id changes while content stays identical, ContextWiki does not merge
-the documents today.
-
-Current:
-external_id changed -> new document create; old document is tombstoned only when
-cleanup applies for that source/snapshot
-
-Future:
-fingerprint dedup / rename detection could identify same-document candidates.
-```
-
----
-
-## 16. Self-check Questions
-
-You understand the core if you can explain:
-
-- Difference between `SourceModel`, `DocumentModel`, and `ChunkModel`.
-- Why documents are chunked before vector indexing.
-- How Markdown/code/plain text chunking differs.
-- Difference between `document_id`, `external_id`, `canonical_url`, and `version_id`.
-- Why GitHub blob SHA is version metadata, not stable document identity.
-- How `content_hash` supports incremental indexing.
-- Meaning of `processed_documents`, `skipped_documents`, and `indexed_chunks`.
-- Why tombstones use `deleted_at` instead of hard delete.
-- Why `chunk_tombstones` exists.
-- Why SQLite is the active truth gate and Chroma is not.
-- Difference between `search_context` and `answer_with_citations`.
-- Why `ContextSearchResult` exists.
-- Difference between legacy raw vectors and ContextWiki-managed vectors.
-- What GitHub/Web/Obsidian connectors currently support and intentionally do not support.
-
----
-
-## 17. Next Study Topics
-
-Good next topics:
-
-```text
-1. GitHub/codebase connector details
-   - DocumentModel.path
-   - line_start / line_end
-   - GitHub blob URL citation
-   - blob SHA version_id
-2. Website/docs and Obsidian connector details
-   - bounded crawl/source identity behavior
-   - frontmatter stripping vs line offset preservation
-   - local vault path and citation-safe sync lifecycle
-
-2. Website/docs connector details
-   - sitemap discovery
-   - robots.txt handling
-   - canonical URL identity
-   - ETag / Last-Modified version metadata
-
-3. source-aware chunking hardening
-   - Markdown heading semantics
-   - code function/class parsing
-   - plain text paragraph splitting
-
-4. document identity hardening
-   - fingerprint dedup
-   - rename/move detection
-   - external_id remapping
-
-5. production ingestion hardening
-   - worker queue
-   - broader retry/backoff hardening
-   - idempotency
-   - stale document cleanup observability
-
-6. retrieval quality
-   - deterministic alias/synonym expansion now exists for common Korean intent
-     words plus bounded cloud/platform terms such as AWS, IAM, S3, EC2, RDS,
-     VPC, EKS, ECS, and DynamoDB/DDB
-   - vector retrieval now also builds generic query variants from normalized
-     term groups, including focused topic-plus-intent queries and topic-only
-     queries for natural-language document requests, before falling back to
-     SQLite metadata/body lookup
-   - broader reranking tuning
-   - broader query rewriting
-   - retrieval hit rate
-   - MRR
-   - citation correctness
-
-7. answer quality
-   - LLM generation
-   - citation verification
-   - grounded answer evaluation
-
-8. LangGraph workflow
-   - retrieve
-   - grade evidence
-   - generate
-   - verify citations
-   - return answer
-```
+Functional verification should use fake or temporary persistence and must not
+mutate local user Chroma/SQLite data. Live external checks require explicit
+approval and should report the source used, safety plan, and whether any local
+state was touched.

@@ -4,13 +4,23 @@
 
 accepted
 
+Status note: ADR 0006 supersedes the historical dynamic fallback and broader
+crawler wording in this ADR for current work. The layered boundary remains
+accepted; `search/` currently owns ContextWiki retrieval, ranking, optional
+default-disabled query rewrite, citation answer support, and SQLite-gated
+evidence hydration.
+
 ## Date
 
 2026-05-20
 
 ## Context
 
-`MCPContentSearch` exposes MCP tools over FastMCP and combines local vector search, live Notion/Tistory search, and background indexing. The existing repository already has clear module directories: `api`, `search`, `indexing`, `fetching`, `core`, `environments`, and `main.py`.
+`MCPContentSearch` exposes MCP tools over FastMCP. The current slim MCP core
+retains configured GitHub, Notion, and Tistory source fetching plus local vector
+retrieval, citation answers, and background source sync/indexing. The existing
+repository already has clear module directories: `api`, `search`, `indexing`,
+`fetching`, `core`, `environments`, and `main.py`.
 
 Without a documented boundary, future changes can easily put external API logic in tool handlers, mutate Chroma from search formatting code, or make configuration and secret handling harder to review.
 
@@ -20,9 +30,11 @@ Keep a layered MCP content search architecture:
 
 - `main.py` composes dependencies and starts FastMCP.
 - `api/tools.py` owns MCP tool registration, parameters, caller-visible formatting, and delegation.
-- `search/` owns local search and dynamic fallback orchestration.
+- `search/` owns local ContextWiki retrieval, ranking, optional
+  default-disabled query rewrite, and citation answer support.
 - `indexing/` owns document conversion, dedup/update checks, status, and Chroma/LlamaIndex writes.
-- `fetching/` owns Notion/Tistory API and crawler behavior.
+- `fetching/` owns retained Notion, Tistory, and GitHub source fetching plus
+  connector-specific parsing and error handling.
 - `core/` owns shared models, exceptions, and utilities.
 - `environments/` owns configuration and environment-token access.
 

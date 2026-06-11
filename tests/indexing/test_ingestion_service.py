@@ -10,7 +10,6 @@ from environments.config import AppConfig
 from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
 from fetching.connectors import GitHubSourceConnector, SourceConnector, SourceRegistry
-from search.service import SearchService
 from storage.metadata_store import MetadataStore
 
 
@@ -264,7 +263,8 @@ def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
             "x-amz-credential: aws-privatevalue, ghp_secretcredential, "
             "AKIAIOSFODNN7EXAMPLE, "
             "xoxb-1234567890-secret, AIzaSyDExampleExampleExampleExample1234, "
-            "eyJheader.payloadvalue.signaturevalue"
+            "eyJheader.payloadvalue.signaturevalue, "
+            "path /Users/eunhwa/private/vault.md, token supersecretvalue123456"
         )
     )
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
@@ -281,12 +281,15 @@ def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
     assert job.status == SyncJobStatus.FAILED
     assert "token=<redacted>" in job.error_message
     assert "api-key=<redacted>" in job.error_message
-    assert "password=<redacted>" in job.error_message
+    assert "password: <redacted>" in job.error_message
     assert "credential=<redacted>" in job.error_message
-    assert "x-amz-credential=<redacted>" in job.error_message
+    assert "x-amz-credential: <redacted>" in job.error_message
+    assert "token <redacted>" in job.error_message
     assert "secret-value" not in job.error_message
     assert "privatevalue" not in job.error_message
     assert "aws-privatevalue" not in job.error_message
+    assert "/Users/eunhwa/private/vault.md" not in job.error_message
+    assert "supersecretvalue123456" not in job.error_message
     assert "ghp_secretcredential" not in job.error_message
     assert "AKIAIOSFODNN7EXAMPLE" not in job.error_message
     assert "xoxb-1234567890-secret" not in job.error_message
@@ -295,6 +298,8 @@ def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
     assert "secret-value" not in caplog.text
     assert "privatevalue" not in caplog.text
     assert "aws-privatevalue" not in caplog.text
+    assert "/Users/eunhwa/private/vault.md" not in caplog.text
+    assert "supersecretvalue123456" not in caplog.text
     assert "ghp_secretcredential" not in caplog.text
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
     assert "xoxb-1234567890-secret" not in caplog.text
@@ -1130,25 +1135,11 @@ def test_reappearing_document_preserves_old_chunk_id_for_raw_suppression(tmp_pat
     connector.documents = [second]
     asyncio.run(service.sync_source("source_fake"))
     active_chunks = store.list_chunks_for_document("reappears")
-    raw_node = type(
-        "FakeNode",
-        (),
-        {
-            "metadata": {
-                "doc_id": old_chunk_id,
-                "title": "Old markerless raw",
-            },
-            "text": "old stale vector text",
-            "score": 0.9,
-        },
-    )()
-    search = SearchService(AppConfig(preview_length=80), indexer=None, metadata_store=store)
 
     assert store.get_document("reappears").deleted_at == ""
     assert active_chunks[0].chunk_id != old_chunk_id
     assert store.get_chunk(old_chunk_id) is None
     assert store.has_chunk_record(old_chunk_id) is True
-    assert search._format_results("old", [raw_node], 10) == "No results found for 'old'"
 
 
 def test_partial_snapshot_connector_does_not_tombstone_missing_documents(tmp_path):
@@ -1363,7 +1354,10 @@ def test_vector_delete_failure_logs_redacted_error(tmp_path, caplog):
     )
     connector = FakeConnector([removed])
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
-    indexer = FailingDeleteIndexer("delete failed credential=privatevalue token=secret-value")
+    indexer = FailingDeleteIndexer(
+        "delete failed at /Users/eunhwa/private/vector.db "
+        "credential=privatevalue token=secret-value token supersecretvalue123456"
+    )
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -1381,6 +1375,8 @@ def test_vector_delete_failure_logs_redacted_error(tmp_path, caplog):
     assert "token=<redacted>" in caplog.text
     assert "privatevalue" not in caplog.text
     assert "secret-value" not in caplog.text
+    assert "/Users/eunhwa/private/vector.db" not in caplog.text
+    assert "supersecretvalue123456" not in caplog.text
 
 
 def test_success_finalization_failure_rolls_back_stale_cleanup(tmp_path):
