@@ -107,13 +107,21 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
             store,
             indexer=FakeIndexer(),
             query_rewriter=rewriter,
-        ).search_context("aws virtual machine startup", top_k=1)
+        ).search_context("aws virtual machine startup", top_k=1, include_debug=True)
     )
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "ec2-chunk"
     assert rewriter.calls
     assert "aws ec2 setup" in result["debug"]["rewritten_queries"]
+    assert result["debug"]["query_rewrite"] == {
+        "attempted": True,
+        "applied": True,
+        "reason": "no_initial_candidates",
+        "original_query": "aws virtual machine startup",
+        "rewritten_queries": ["aws ec2 setup"],
+    }
+    assert result["debug"]["selected_results"][0]["chunk_id"] == "ec2-chunk"
     assert any("ec2" in query.lower() for query in retrieval_queries)
 
 
@@ -149,13 +157,71 @@ def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_
             store,
             indexer=FakeIndexer(),
             query_rewriter=rewriter,
-        ).search_context("ImageGallery docs", top_k=1)
+        ).search_context("ImageGallery docs", top_k=1, include_debug=True)
     )
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "imagegallery-doc-chunk"
     assert rewriter.calls == []
     assert result["debug"]["rewritten_queries"] == []
+    assert result["debug"]["query_rewrite"] == {
+        "attempted": False,
+        "applied": False,
+        "reason": "",
+        "original_query": "ImageGallery docs",
+        "rewritten_queries": [],
+    }
+
+
+def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-debug",
+        "debug-chunk",
+        "source_target",
+        "ContextWiki debug guide",
+        "ContextWiki debug guide content.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "contextwiki debug",
+            filters={"source_ids": ["source_target"]},
+            top_k=1,
+            include_debug=True,
+        )
+    )
+
+    assert result["debug"]["filters"] == {"source_ids": ["source_target"]}
+    assert result["debug"]["selected_results"][0]["chunk_id"] == "debug-chunk"
+    assert result["debug"]["selected_results"][0]["source_id"] == "source_target"
+    assert result["debug"]["selected_results"][0]["matched_terms"]
+
+
+def test_search_context_defaults_to_non_debug_payload(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-debug",
+        "debug-chunk",
+        "source_target",
+        "ContextWiki debug guide",
+        "ContextWiki debug guide content.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "contextwiki debug",
+            top_k=1,
+        )
+    )
+
+    assert result["results"][0].chunk_id == "debug-chunk"
+    assert "debug" not in result
+    assert "_grounding" not in result
 
 
 def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
@@ -548,6 +614,7 @@ def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp
         ContextSearchService(store, indexer=FakeIndexer()).search_context(
             "https://user:pass@example.com/path /Users/eunhwa/private/doc.md",
             top_k=1,
+            include_debug=True,
         )
     )
 
@@ -574,6 +641,7 @@ def test_search_context_debug_retains_raw_term_groups_but_redacts_display_copy(t
         ContextSearchService(store, retriever=list_search_documents(store)).search_context(
             "context-wiki-debug guide",
             top_k=1,
+            include_debug=True,
         )
     )
 
@@ -641,6 +709,7 @@ def test_search_context_debug_redacts_http_paths_not_only_query_strings(monkeypa
         ContextSearchService(store, indexer=FakeIndexer()).search_context(
             "https://example.com/private/token/opaque-value?signature=secret-value",
             top_k=1,
+            include_debug=True,
         )
     )
 
@@ -677,6 +746,7 @@ def test_search_context_debug_redacts_secret_like_tokens(monkeypatch, tmp_path):
         ContextSearchService(store, indexer=FakeIndexer()).search_context(
             "token=ghp_example123 sk-proj-abcdefghijklmnopqrstuvwxyz",
             top_k=1,
+            include_debug=True,
         )
     )
 

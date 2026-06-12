@@ -41,11 +41,23 @@ class ContextSearchService:
         self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
         self.ranker = ContextCandidateRanker(self.metadata_store, self.config)
 
-    async def search_context(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
+    async def search_context(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        include_debug: bool = False,
+        include_internal_metadata: bool = False,
+    ) -> dict:
         filters = filters or {}
         source_ids = self._effective_source_ids(filters)
         if source_ids == []:
-            return self._empty_search_result(query)
+            return self._empty_search_result(
+                query,
+                source_ids=[],
+                include_debug=include_debug,
+                include_internal_metadata=include_internal_metadata,
+            )
         retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
         candidates = retrieval_debug["candidates"]
         effective_term_groups = retrieval_debug["effective_term_groups"]
@@ -84,44 +96,69 @@ class ContextSearchService:
             if len(results) >= top_k:
                 break
 
-        return {
+        payload = {
             "query": query,
             "results": results,
-            "_grounding": {
+        }
+        if include_debug or include_internal_metadata:
+            payload["_grounding"] = {
                 "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
                 "effective_term_groups": [sorted(group) for group in effective_term_groups],
-            },
-            "debug": {
-                "retrieval_queries": [
-                    self._redact_debug_query_text(value)
-                    for value in retrieval_debug["retrieval_queries"]
-                ],
-                "rewritten_queries": [
-                    self._redact_debug_query_text(value)
-                    for value in retrieval_debug["rewritten_queries"]
-                ],
-                "effective_term_groups": [
-                    [self._redact_debug_term(term) for term in sorted(group)]
-                    for group in effective_term_groups
-                ],
-            },
-        }
+            }
+        if include_internal_metadata:
+            payload["_debug"] = self._build_debug_payload(
+                query=query,
+                source_ids=source_ids,
+                retrieval_debug=retrieval_debug,
+                effective_term_groups=effective_term_groups,
+                results=results,
+            )
+        if include_debug:
+            payload["debug"] = self._build_debug_payload(
+                query=query,
+                source_ids=source_ids,
+                retrieval_debug=retrieval_debug,
+                effective_term_groups=effective_term_groups,
+                results=results,
+            )
+        return payload
 
-    @staticmethod
-    def _empty_search_result(query: str) -> dict:
-        return {
+    def _empty_search_result(
+        self,
+        query: str,
+        source_ids: list[str] | None = None,
+        include_debug: bool = False,
+        include_internal_metadata: bool = False,
+    ) -> dict:
+        payload = {
             "query": query,
             "results": [],
-            "_grounding": {
-                "original_term_groups": [],
-                "effective_term_groups": [],
-            },
-            "debug": {
+        }
+        debug_payload = self._build_debug_payload(
+            query=query,
+            source_ids=source_ids,
+            retrieval_debug={
                 "retrieval_queries": [],
                 "rewritten_queries": [],
+                "original_term_groups": [],
                 "effective_term_groups": [],
+                "query_rewrite_reason": "",
+                "query_rewrite_attempted": False,
+                "query_rewrite_applied": False,
             },
-        }
+            effective_term_groups=[],
+            results=[],
+        )
+        if include_debug or include_internal_metadata:
+            payload["_grounding"] = {
+                "original_term_groups": [],
+                "effective_term_groups": [],
+            }
+        if include_internal_metadata:
+            payload["_debug"] = debug_payload
+        if include_debug:
+            payload["debug"] = debug_payload
+        return payload
 
     def _effective_source_ids(self, filters: dict) -> list[str] | None:
         requested_source_ids = self._normalize_source_ids(filters)
@@ -546,3 +583,94 @@ class ContextSearchService:
 
     def _max_retrieval_limit(self, base_limit: int) -> int:
         return self._pipeline().max_retrieval_limit(base_limit)
+
+    def _build_debug_payload(
+        self,
+        *,
+        query: str,
+        source_ids: list[str] | None,
+        retrieval_debug: dict[str, Any],
+        effective_term_groups: list[set[str]],
+        results: list[ContextSearchResult],
+    ) -> dict[str, Any]:
+        retrieval_queries = [
+            self._redact_debug_query_text(value)
+            for value in retrieval_debug.get("retrieval_queries", [])
+        ]
+        rewritten_queries = [
+            self._redact_debug_query_text(value)
+            for value in retrieval_debug.get("rewritten_queries", [])
+        ]
+        return {
+            "retrieval_queries": retrieval_queries,
+            "rewritten_queries": rewritten_queries,
+            "effective_term_groups": [
+                [self._redact_debug_term(term) for term in sorted(group)]
+                for group in effective_term_groups
+            ],
+            "original_term_groups": [
+                [self._redact_debug_term(term) for term in sorted(group)]
+                for group in retrieval_debug.get("original_term_groups", [])
+            ],
+            "filters": {"source_ids": list(source_ids or [])},
+            "query_rewrite": {
+                "attempted": bool(retrieval_debug.get("query_rewrite_attempted", False)),
+                "applied": bool(retrieval_debug.get("query_rewrite_applied", False)),
+                "reason": retrieval_debug.get("query_rewrite_reason", ""),
+                "original_query": self._redact_debug_query_text(query),
+                "rewritten_queries": rewritten_queries,
+            },
+            "selected_results": [
+                self._debug_result_payload(item, effective_term_groups)
+                for item in results
+            ],
+            "result_summary": {
+                "returned_chunks": len(results),
+                "retrieval_queries": len(retrieval_queries),
+                "rewritten_queries": len(rewritten_queries),
+            },
+        }
+
+    def _debug_result_payload(
+        self,
+        item: ContextSearchResult,
+        effective_term_groups: list[set[str]],
+    ) -> dict[str, Any]:
+        return {
+            "chunk_id": item.chunk_id,
+            "document_id": item.document_id,
+            "source_id": item.source_id,
+            "source_type": item.source_type,
+            "title": self._redact_debug_query_text(item.title),
+            "score": round(float(item.score or 0.0), 4),
+            "vector_score": round(float(item.vector_score or 0.0), 4),
+            "matched_terms": [
+                self._redact_debug_term(term)
+                for term in self._matched_terms(item, effective_term_groups)
+            ],
+            "path": self._safe_debug_location(item.path),
+            "url": self._safe_debug_location(item.url),
+        }
+
+    @staticmethod
+    def _matched_terms(
+        item: ContextSearchResult,
+        term_groups: list[set[str]],
+    ) -> list[str]:
+        haystack = " ".join(
+            [
+                item.title or "",
+                item.document_id or "",
+                item.url or "",
+                item.path or "",
+                item.preview or "",
+                item.text or "",
+            ]
+        ).lower()
+        matched = []
+        for group in term_groups:
+            for term in sorted(group):
+                if term and term in haystack:
+                    matched.append(term)
+                    break
+        return matched

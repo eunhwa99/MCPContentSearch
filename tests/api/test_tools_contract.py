@@ -332,7 +332,7 @@ class RecoveringStatusMetadataStore(FakeMetadataStore):
 
 
 class FakeContextSearch:
-    async def search_context(self, query, filters=None, top_k=10):
+    async def search_context(self, query, filters=None, top_k=10, include_debug=False):
         return {
             "query": query,
             "results": [
@@ -347,11 +347,20 @@ class FakeContextSearch:
                     text="ContextWiki evidence",
                 )
             ],
+            "debug": {
+                "query_rewrite": {
+                    "attempted": include_debug,
+                    "applied": include_debug,
+                    "reason": "low_initial_score" if include_debug else "",
+                    "original_query": query,
+                    "rewritten_queries": ["ContextWiki evidence"],
+                }
+            },
         }
 
 
 class FakeDictContextSearch:
-    async def search_context(self, query, filters=None, top_k=10):
+    async def search_context(self, query, filters=None, top_k=10, include_debug=False):
         return {
             "query": query,
             "results": [
@@ -372,13 +381,22 @@ class FakeDictContextSearch:
 
 class FakeAnswerService:
     async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
-        return {
+        payload = {
             "question": question,
             "answer": "ContextWiki evidence",
             "evidence_status": "grounded",
             "citations": [{"chunk_id": "chunk-1"}],
             "used_chunks": ["chunk-1"],
         }
+        if include_debug:
+            payload.update(
+                {
+                    "answer_mode": "contextwiki_debug",
+                    "debug": {"question": question},
+                    "debug_markdown": "## Query",
+                }
+            )
+        return payload
 
 
 class CapturingAnswerService(FakeAnswerService):
@@ -391,24 +409,36 @@ class CapturingAnswerService(FakeAnswerService):
                 "question": question,
                 "filters": filters,
                 "top_k": top_k,
+                "include_debug": include_debug,
             }
         )
-        return await super().answer_with_citations(question, filters=filters, top_k=top_k)
+        return await super().answer_with_citations(
+            question,
+            filters=filters,
+            top_k=top_k,
+            include_debug=include_debug,
+        )
 
 
 class CapturingContextSearch(FakeContextSearch):
     def __init__(self):
         self.calls = []
 
-    async def search_context(self, query, filters=None, top_k=10):
+    async def search_context(self, query, filters=None, top_k=10, include_debug=False):
         self.calls.append(
             {
                 "query": query,
                 "filters": filters,
                 "top_k": top_k,
+                "include_debug": include_debug,
             }
         )
-        return await super().search_context(query, filters=filters, top_k=top_k)
+        return await super().search_context(
+            query,
+            filters=filters,
+            top_k=top_k,
+            include_debug=include_debug,
+        )
 
 
 def test_sync_source_returns_structured_error_for_unknown_source():
@@ -833,6 +863,41 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "answer_mode" not in answer
 
 
+def test_search_context_can_include_structured_debug_payload():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=FakeContextSearch(),
+    )
+
+    search = asyncio.run(mcp.tools["search_context"]("ContextWiki", include_debug=True))
+
+    assert search["results"][0]["chunk_id"] == "chunk-1"
+    assert search["debug"]["query_rewrite"]["attempted"] is True
+    assert search["debug"]["query_rewrite"]["applied"] is True
+    assert search["debug"]["query_rewrite"]["reason"] == "low_initial_score"
+
+
+def test_answer_with_citations_can_include_debug_payload():
+    answer_service = CapturingAnswerService()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        answer_service=answer_service,
+    )
+
+    answer = asyncio.run(
+        mcp.tools["answer_with_citations"](
+            "What is ContextWiki?",
+            include_debug=True,
+        )
+    )
+
+    assert answer["answer_mode"] == "contextwiki_debug"
+    assert answer["debug"]["question"] == "What is ContextWiki?"
+    assert answer_service.calls[0]["include_debug"] is True
+
+
 def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_available(tmp_path):
     store = MetadataStore(
         tmp_path / "contextwiki.sqlite3",
@@ -980,6 +1045,7 @@ def test_search_context_injects_retained_source_filter_when_unfiltered():
             "source_tistory",
         ],
     }
+    assert context_search.calls[0]["include_debug"] is False
 
 
 def test_search_context_contract_strips_vector_score_from_dict_results():

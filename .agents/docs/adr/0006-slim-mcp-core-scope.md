@@ -42,6 +42,7 @@ Retain:
 - MCP tools:
   - `list_sources`
   - `sync_source`
+  - `sync_all`
   - `get_sync_status`
   - `search_context`
   - `fetch_context`

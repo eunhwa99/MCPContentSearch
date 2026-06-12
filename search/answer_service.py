@@ -100,9 +100,15 @@ class CitationAnswerService:
         *,
         include_debug: bool = False,
     ) -> dict:
-        search_result = await self.context_search.search_context(question, filters=filters, top_k=top_k)
+        search_result = await self.context_search.search_context(
+            question,
+            filters=filters,
+            top_k=top_k,
+            include_debug=include_debug,
+            include_internal_metadata=True,
+        )
         results = [self._as_result(item) for item in search_result.get("results", [])]
-        search_debug = search_result.get("debug", {})
+        search_debug = search_result.get("_debug") or search_result.get("debug", {})
         grounding_state = search_result.get("_grounding", {})
         query_term_groups = self._effective_query_term_groups(question, grounding_state, search_debug)
         required_term_groups = self._required_query_term_groups(question, grounding_state, search_debug)
@@ -147,6 +153,7 @@ class CitationAnswerService:
                 results,
                 evidence,
                 display_term_groups,
+                search_debug=search_debug,
                 retrieval_queries=search_debug.get("retrieval_queries"),
                 rewritten_queries=search_debug.get("rewritten_queries"),
             )
@@ -173,6 +180,7 @@ class CitationAnswerService:
                             results,
                             evidence,
                             "insufficient",
+                            search_debug=search_debug,
                             retrieval_queries=search_debug.get("retrieval_queries"),
                             rewritten_queries=search_debug.get("rewritten_queries"),
                         ),
@@ -200,6 +208,7 @@ class CitationAnswerService:
                         results,
                         evidence,
                         "grounded",
+                        search_debug=search_debug,
                         retrieval_queries=search_debug.get("retrieval_queries"),
                         rewritten_queries=search_debug.get("rewritten_queries"),
                     ),
@@ -480,6 +489,7 @@ class CitationAnswerService:
         evidence: list[ContextSearchResult],
         query_term_groups: list[set[str]],
         *,
+        search_debug: dict | None = None,
         retrieval_queries: list[str] | None = None,
         rewritten_queries: list[str] | None = None,
     ) -> dict:
@@ -495,8 +505,11 @@ class CitationAnswerService:
                 [cls._redact_debug_text(term) for term in sorted(group)]
                 for group in query_term_groups
             ],
+            "query_rewrite": dict((search_debug or {}).get("query_rewrite", {})),
+            "filters": dict((search_debug or {}).get("filters", {})),
             "retrieved_count": len(results),
             "grounded_count": len(evidence),
+            "retrieval_selected_results": list((search_debug or {}).get("selected_results", [])),
             "selected_chunks": [
                 cls._debug_chunk_payload(index, item, query_term_groups)
                 for index, item in enumerate(evidence, 1)
@@ -561,6 +574,7 @@ class CitationAnswerService:
         evidence: list[ContextSearchResult],
         evidence_status: str,
         *,
+        search_debug: dict | None = None,
         retrieval_queries: list[str] | None = None,
         rewritten_queries: list[str] | None = None,
     ) -> str:
@@ -580,6 +594,9 @@ class CitationAnswerService:
             )
             for variant in rewritten_queries[1:]:
                 lines.append(f"  - rewrite: `{cls._redact_debug_query_text(variant)}`")
+        rewrite_reason = str((search_debug or {}).get("query_rewrite", {}).get("reason", "")).strip()
+        if rewrite_reason:
+            lines.append(f"- rewrite reason: `{cls._redact_debug_text(rewrite_reason)}`")
         lines.extend(
             [
                 f"- evidence status: `{evidence_status}`",
