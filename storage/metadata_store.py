@@ -67,6 +67,7 @@ class MetadataStore:
                     sync_status TEXT NOT NULL,
                     last_synced_at TEXT NOT NULL,
                     last_error TEXT NOT NULL,
+                    stale_cleanup_disabled_reason TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -145,6 +146,13 @@ class MetadataStore:
             )
             self._ensure_columns(
                 conn,
+                "sources",
+                {
+                    "stale_cleanup_disabled_reason": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            self._ensure_columns(
+                conn,
                 "documents",
                 {
                     "external_id": "TEXT NOT NULL DEFAULT ''",
@@ -183,8 +191,8 @@ class MetadataStore:
                 """
                 INSERT INTO sources (
                     source_id, source_type, name, enabled, auth_ref, sync_status,
-                    last_synced_at, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_synced_at, last_error, stale_cleanup_disabled_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     source_type = excluded.source_type,
                     name = excluded.name,
@@ -193,6 +201,7 @@ class MetadataStore:
                     sync_status = excluded.sync_status,
                     last_synced_at = excluded.last_synced_at,
                     last_error = excluded.last_error,
+                    stale_cleanup_disabled_reason = excluded.stale_cleanup_disabled_reason,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -204,6 +213,7 @@ class MetadataStore:
                     normalized.sync_status.value,
                     normalized.last_synced_at,
                     normalized.last_error,
+                    normalized.stale_cleanup_disabled_reason,
                     normalized.created_at,
                     normalized.updated_at,
                 ),
@@ -220,8 +230,8 @@ class MetadataStore:
                 """
                 INSERT INTO sources (
                     source_id, source_type, name, enabled, auth_ref, sync_status,
-                    last_synced_at, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_synced_at, last_error, stale_cleanup_disabled_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     source_type = excluded.source_type,
                     name = excluded.name,
@@ -241,6 +251,13 @@ class MetadataStore:
                         THEN excluded.last_error
                         ELSE sources.last_error
                     END,
+                    stale_cleanup_disabled_reason = CASE
+                        WHEN excluded.enabled = 0 AND excluded.stale_cleanup_disabled_reason != ''
+                        THEN excluded.stale_cleanup_disabled_reason
+                        WHEN excluded.enabled = 1 AND sources.enabled = 0
+                        THEN excluded.stale_cleanup_disabled_reason
+                        ELSE sources.stale_cleanup_disabled_reason
+                    END,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -252,6 +269,7 @@ class MetadataStore:
                     source.sync_status.value,
                     source.last_synced_at,
                     source.last_error,
+                    source.stale_cleanup_disabled_reason,
                     created_at,
                     updated_at,
                     SyncStatus.FAILED.value,
@@ -600,6 +618,7 @@ class MetadataStore:
         job_id: str,
         source_id: str,
         error_message: str,
+        stale_cleanup_disabled_reason: str = "",
     ) -> SyncJobModel:
         """Fail a queued/running sync without clobbering another active job."""
         self.ensure_schema()
@@ -632,10 +651,17 @@ class MetadataStore:
                     UPDATE sources SET
                         sync_status = ?,
                         last_error = ?,
+                        stale_cleanup_disabled_reason = ?,
                         updated_at = ?
                     WHERE source_id = ?
                     """,
-                    (SyncStatus.FAILED.value, error_message, finished_at, source_id),
+                    (
+                        SyncStatus.FAILED.value,
+                        error_message,
+                        stale_cleanup_disabled_reason,
+                        finished_at,
+                        source_id,
+                    ),
                 )
             row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._job_from_row(row)
@@ -763,6 +789,55 @@ class MetadataStore:
                 (source_id,),
             ).fetchone()
         return self._job_from_row(row) if row else None
+
+    def get_source_status_snapshot(self, source_id: str) -> dict[str, object]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            latest_success = conn.execute(
+                """
+                SELECT finished_at
+                FROM sync_jobs
+                WHERE source_id = ? AND status = ? AND finished_at != ''
+                ORDER BY finished_at DESC, started_at DESC, job_id DESC
+                LIMIT 1
+                """,
+                (source_id, SyncJobStatus.SUCCEEDED.value),
+            ).fetchone()
+            latest_failure = conn.execute(
+                """
+                SELECT finished_at, error_message
+                FROM sync_jobs
+                WHERE source_id = ? AND status = ? AND finished_at != ''
+                ORDER BY finished_at DESC, started_at DESC, job_id DESC
+                LIMIT 1
+                """,
+                (source_id, SyncJobStatus.FAILED.value),
+            ).fetchone()
+            document_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM documents
+                WHERE source_id = ? AND COALESCE(deleted_at, '') = ''
+                """,
+                (source_id,),
+            ).fetchone()
+            chunk_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                    AND d.source_id = c.source_id
+                WHERE c.source_id = ? AND COALESCE(d.deleted_at, '') = ''
+                """,
+                (source_id,),
+            ).fetchone()
+        return {
+            "latest_success_at": latest_success["finished_at"] if latest_success else "",
+            "latest_failure_at": latest_failure["finished_at"] if latest_failure else "",
+            "latest_failure_reason": latest_failure["error_message"] if latest_failure else "",
+            "document_count": int(document_row["count"]) if document_row else 0,
+            "chunk_count": int(chunk_row["count"]) if chunk_row else 0,
+        }
 
     def upsert_document(self, document: DocumentModel) -> DocumentModel:
         self.ensure_schema()
@@ -1074,6 +1149,7 @@ class MetadataStore:
         deleted_at: str,
         last_seen_sync_id: str = "",
         cleanup_document_id_prefixes: Iterable[str] | None = None,
+        stale_cleanup_disabled_reason: str = "",
     ) -> tuple[SyncJobModel, list[str]]:
         """Atomically finalize a successful sync and optional stale cleanup."""
         self.ensure_schema()
@@ -1151,12 +1227,14 @@ class MetadataStore:
                     sync_status = ?,
                     last_synced_at = ?,
                     last_error = '',
+                    stale_cleanup_disabled_reason = ?,
                     updated_at = ?
                 WHERE source_id = ?
                 """,
                 (
                     SyncStatus.SUCCEEDED.value,
                     finished_at,
+                    stale_cleanup_disabled_reason,
                     source_updated_at,
                     source_id,
                 ),
@@ -1650,6 +1728,7 @@ class MetadataStore:
             sync_status=sync_status,
             last_synced_at=row["last_synced_at"],
             last_error=row["last_error"],
+            stale_cleanup_disabled_reason=row["stale_cleanup_disabled_reason"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

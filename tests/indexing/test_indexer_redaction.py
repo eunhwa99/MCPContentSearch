@@ -62,3 +62,49 @@ def test_content_indexer_redacts_failure_status_logs_and_exception(caplog):
     assert "super-secret-value" not in caplog.text
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
     assert "Basic dXNlcjpwYXNzd29yZA==" not in caplog.text
+
+
+def test_content_indexer_serializes_concurrent_index_documents_calls():
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+    active_calls = 0
+    max_active_calls = 0
+    release_first = asyncio.Event()
+    entered_first = asyncio.Event()
+
+    async def fake_filter(documents):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        if not entered_first.is_set():
+            entered_first.set()
+            await release_first.wait()
+        await asyncio.sleep(0)
+        active_calls -= 1
+        return {"documents": [], "new": 0, "updated": 0}
+
+    indexer._filter_documents = fake_filter
+    documents = [
+        DocumentModel(
+            id="doc-1",
+            title="Doc",
+            content="content",
+            url="https://example.com",
+            platform="web",
+        )
+    ]
+
+    async def run_two_calls():
+        first = asyncio.create_task(indexer.index_documents(documents))
+        await entered_first.wait()
+        second = asyncio.create_task(indexer.index_documents(documents))
+        await asyncio.sleep(0)
+        release_first.set()
+        await asyncio.gather(first, second)
+
+    asyncio.run(run_two_calls())
+
+    assert max_active_calls == 1

@@ -45,6 +45,7 @@ class SourceModel(BaseModel):
     sync_status: SyncStatus = SyncStatus.IDLE
     last_synced_at: str = ""
     last_error: str = ""
+    stale_cleanup_disabled_reason: str = ""
     created_at: str = ""
     updated_at: str = ""
 

@@ -79,6 +79,17 @@ fetches supported text/code/Markdown files from configured repositories,
 converts each file into a `DocumentModel`, chunks it with line-range citation
 metadata, indexes the chunks, and stores lifecycle metadata in SQLite.
 
+Bulk retained-source sync is also available:
+
+```text
+sync_all()
+```
+
+This fans out one concurrent `sync_source()` run per retained source. Each
+source still keeps its own SQLite running-job guard, so a source that is
+already syncing is reported as blocked in the aggregate result instead of
+starting a second overlapping fetch.
+
 Obsidian example:
 
 ```bash
@@ -151,6 +162,7 @@ Current tools:
 | --- | --- |
 | `list_sources()` | see configured sources |
 | `sync_source(source_id)` | refresh one source |
+| `sync_all()` | refresh all retained sources concurrently and return aggregate results |
 | `get_sync_status(source_id?)` | inspect source/job state |
 | `search_context(query, filters, top_k)` | find SQLite-validated evidence |
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
@@ -158,6 +170,22 @@ Current tools:
 
 Tool handlers call service boundaries and return JSON-safe values through
 Pydantic `model_dump(mode="json")` where needed.
+
+`list_sources()` and `get_sync_status()` expose additive reviewer-readable
+operational fields per source:
+
+```text
+latest_success_at
+latest_failure_at
+document_count
+chunk_count
+latest_failure_reason
+stale_cleanup_disabled_reason
+```
+
+Those fields come from SQLite lifecycle metadata plus runtime connector state.
+Public error text still passes through the same redaction path used by other
+sync/job payloads.
 
 ---
 
@@ -243,7 +271,8 @@ indexing/indexer.py
 storage/metadata_store.py
 ```
 
-`IngestionService.sync_source()` is the core business flow.
+`IngestionService.sync_source()` is the core per-source business flow, and
+`IngestionService.sync_all()` is the retained-source aggregate fan-out entrypoint.
 
 ```text
 sync_source(source_id)
@@ -259,6 +288,14 @@ sync_source(source_id)
 -> finalize successful sync
 -> tombstone stale documents when cleanup is safe
 -> best-effort vector cleanup
+```
+
+```text
+sync_all()
+-> SourceRegistry retained source enumeration
+-> concurrent per-source sync_source() fan-out
+-> one aggregate summary with succeeded / failed / blocked counts
+-> per-source result payloads that preserve the latest job outcome
 ```
 
 Reindexing still happens when:

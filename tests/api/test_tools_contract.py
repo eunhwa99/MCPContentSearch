@@ -73,11 +73,49 @@ class FakeLeakyJobIngestion:
             }
         )
 
+    async def sync_all(self):
+        return {
+            "status": "completed",
+            "summary": {
+                "total_sources": 1,
+                "succeeded": 0,
+                "failed": 1,
+                "blocked": 0,
+                "skipped": 0,
+                "started_at": "2026-06-12T00:00:00+00:00",
+                "finished_at": "2026-06-12T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": "source_github",
+                    "sync_outcome": "failed",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-leaky",
+                            "source_id": "source_github",
+                            "status": "failed",
+                            "error_message": (
+                                "Sync failed with token=super-secret-value "
+                                "and ghp_secretcredential"
+                            ),
+                        }
+                    ),
+                    "message": "",
+                }
+            ],
+        }
+
 
 class FakePathFailingIngestion:
     async def sync_source(self, source_id):
         raise ValueError(
             "Sync failed at /Users/eunhwa/private/vault.md "
+            "with token supersecretvalue123456"
+        )
+
+    async def sync_all(self):
+        raise ValueError(
+            "Bulk sync failed at /Users/eunhwa/private/vault.md "
             "with token supersecretvalue123456"
         )
 
@@ -98,28 +136,44 @@ class FakeSourceRegistry:
             Dumpable({"source_id": source_id}, source_id=source_id)
             for source_id in source_ids
         ]
+        self.connectors = {
+            source.source_id: Dumpable({}, source=source, supports_stale_cleanup=True, disabled_reason="")
+            for source in self.sources
+        }
 
     def list_sources(self):
         return self.sources
+
+    def get_connector(self, source_id):
+        return self.connectors[source_id]
 
 
 class RefreshingObsidianRegistry:
     def __init__(self):
         self.calls = 0
+        self.connector = Dumpable(
+            {},
+            supports_stale_cleanup=False,
+            disabled_reason=OBSIDIAN_DISABLED_ERROR,
+        )
 
     def list_sources(self):
         self.calls += 1
-        return [
-            SourceModel(
-                source_id="source_obsidian",
-                source_type=SourceType.OBSIDIAN,
-                name="Obsidian",
-                enabled=False,
-                auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
-                sync_status=SyncStatus.IDLE,
-                last_error=OBSIDIAN_DISABLED_ERROR,
-            )
-        ]
+        source = SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.IDLE,
+            last_error=OBSIDIAN_DISABLED_ERROR,
+        )
+        self.connector.source = source
+        return [source]
+
+    def get_connector(self, source_id):
+        assert source_id == "source_obsidian"
+        return self.connector
 
 
 def _enabled_obsidian_source() -> SourceModel:
@@ -160,6 +214,15 @@ class FakeMetadataStore:
 
     def get_source(self, source_id):
         return self.source
+
+    def get_source_status_snapshot(self, source_id):
+        return {
+            "latest_success_at": "",
+            "latest_failure_at": "",
+            "latest_failure_reason": "",
+            "document_count": 0,
+            "chunk_count": 0,
+        }
 
     def get_chunk(self, chunk_id):
         return self.chunk
@@ -408,6 +471,52 @@ def test_sync_source_redacts_public_error_paths_and_whitespace_secrets():
     assert "token <redacted>" in result["message"]
 
 
+def test_sync_all_redacts_public_error_paths_and_whitespace_secrets():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakePathFailingIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+    payload = _payload_text(result)
+
+    assert result["status"] == "error"
+    assert "/Users/eunhwa/private/vault.md" not in payload
+    assert "supersecretvalue123456" not in payload
+    assert "token <redacted>" in result["message"]
+
+
+def test_sync_all_redacts_returned_job_error_payload(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="",
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeLeakyJobIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+    payload = _payload_text(result)
+
+    assert result["results"][0]["job"]["error_message"] == "Sync failed with token=<redacted>"
+    assert result["results"][0]["sync_outcome"] == "failed"
+    assert "super-secret-value" not in payload
+    assert "ghp_secretcredential" not in payload
+
+
 def test_status_payloads_redact_persisted_secret_fields(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -636,20 +745,14 @@ def test_list_sources_and_status_refresh_dynamic_registry_state_without_sync(tmp
     listed = asyncio.run(list_mcp.tools["list_sources"]())
 
     assert list_registry.calls > list_calls_after_registration
-    assert listed["sources"] == [
-        {
-            "source_id": "source_obsidian",
-            "source_type": "obsidian",
-            "name": "Obsidian",
-            "enabled": False,
-            "auth_ref": "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
-            "sync_status": "failed",
-            "last_synced_at": "2026-06-11T00:00:00+00:00",
-            "last_error": OBSIDIAN_DISABLED_ERROR,
-            "created_at": listed["sources"][0]["created_at"],
-            "updated_at": listed["sources"][0]["updated_at"],
-        }
-    ]
+    assert listed["sources"][0]["source_id"] == "source_obsidian"
+    assert listed["sources"][0]["enabled"] is False
+    assert listed["sources"][0]["sync_status"] == "failed"
+    assert listed["sources"][0]["last_synced_at"] == "2026-06-11T00:00:00+00:00"
+    assert listed["sources"][0]["latest_success_at"] == "2026-06-11T00:00:00+00:00"
+    assert listed["sources"][0]["last_error"] == OBSIDIAN_DISABLED_ERROR
+    assert listed["sources"][0]["latest_failure_reason"] == OBSIDIAN_DISABLED_ERROR
+    assert listed["sources"][0]["stale_cleanup_disabled_reason"] == OBSIDIAN_DISABLED_ERROR
 
     status_store = MetadataStore(tmp_path / "status.sqlite3")
     status_store.upsert_source(_succeeded_obsidian_source())
@@ -696,6 +799,7 @@ def test_contextwiki_mcp_tools_are_registered():
     assert {
         "list_sources",
         "sync_source",
+        "sync_all",
         "get_sync_status",
         "search_context",
         "fetch_context",
@@ -718,6 +822,8 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     answer = asyncio.run(mcp.tools["answer_with_citations"]("What is ContextWiki?"))
 
     assert status["sources"][0]["source"]["source_id"] == "source_fake"
+    assert "document_count" in status["sources"][0]["source"]
+    assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
     assert "vector_score" not in search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
@@ -902,3 +1008,167 @@ def test_get_sync_status_returns_source_after_status_recovery():
     assert single["latest_job"]["status"] == "failed"
     assert all_sources["sources"][0]["source"]["sync_status"] == "failed"
     assert all_sources["sources"][0]["latest_job"]["status"] == "failed"
+
+
+def test_status_payloads_include_richer_source_fields(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_tistory",
+            source_type=SourceType.TISTORY,
+            name="Tistory",
+            enabled=True,
+            auth_ref="env:TISTORY_BLOG_NAME",
+            sync_status=SyncStatus.SUCCEEDED,
+            last_synced_at="2026-06-11T00:00:00+00:00",
+        )
+    )
+    succeeded = store.create_sync_job("source_tistory")
+    failed = store.create_sync_job("source_tistory")
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            (
+                "succeeded",
+                "2026-06-11T00:00:00+00:00",
+                "",
+                succeeded.job_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            (
+                "failed",
+                "2026-06-12T00:00:00+00:00",
+                "partial failure with token=secret-value",
+                failed.job_id,
+            ),
+        )
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="tistory-doc",
+            document_id="tistory-doc",
+            source_id="source_tistory",
+            title="Tistory Doc",
+            content="hello",
+            url="https://example.com/post",
+            platform="Tistory",
+            path="post",
+        ),
+        [
+            ChunkModel(
+                chunk_id="tistory-doc:chunk:0:hash",
+                document_id="tistory-doc",
+                source_id="source_tistory",
+                title="Tistory Doc",
+                text="hello",
+                url="https://example.com/post",
+                path="post",
+                chunk_index=0,
+                content_hash="hash",
+            )
+        ],
+    )
+    registry = FakeSourceRegistry(RETAINED_SOURCE_IDS)
+    registry.connectors["source_tistory"] = Dumpable(
+        {},
+        source=Dumpable({"source_id": "source_tistory"}, source_id="source_tistory"),
+        supports_stale_cleanup=False,
+        disabled_reason="",
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    listed = asyncio.run(mcp.tools["list_sources"]())
+    source = listed["sources"][0]
+
+    assert source["latest_success_at"] == "2026-06-11T00:00:00+00:00"
+    assert source["latest_failure_at"] == "2026-06-12T00:00:00+00:00"
+    assert source["latest_failure_reason"] == "partial failure with token=<redacted>"
+    assert source["document_count"] == 1
+    assert source["chunk_count"] == 1
+    assert source["stale_cleanup_disabled_reason"] == (
+        "Stale cleanup is disabled because this source connector does not guarantee complete snapshots."
+    )
+
+
+def test_status_payload_prefers_persisted_stale_cleanup_reason_for_disabled_github(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=False,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES.",
+            stale_cleanup_disabled_reason="Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES.",
+        )
+    )
+    registry = FakeSourceRegistry(RETAINED_SOURCE_IDS)
+    registry.connectors["source_github"] = Dumpable(
+        {},
+        source=Dumpable({"source_id": "source_github"}, source_id="source_github"),
+        supports_stale_cleanup=True,
+        disabled_reason="",
+        stale_cleanup_disabled_reason="",
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+
+    assert status["source"]["stale_cleanup_disabled_reason"] == (
+        "Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+    )
+
+
+def test_status_payload_prefers_persisted_stale_cleanup_reason_after_incomplete_snapshot(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=True,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.FAILED,
+            last_error="Obsidian vault snapshot was incomplete because one or more notes could not be read.",
+            stale_cleanup_disabled_reason="Obsidian vault snapshot was incomplete because one or more notes could not be read.",
+        )
+    )
+    registry = FakeSourceRegistry(RETAINED_SOURCE_IDS)
+    registry.connectors["source_obsidian"] = Dumpable(
+        {},
+        source=Dumpable({"source_id": "source_obsidian"}, source_id="source_obsidian"),
+        supports_stale_cleanup=True,
+        disabled_reason="",
+        stale_cleanup_disabled_reason="",
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    listed = asyncio.run(mcp.tools["list_sources"]())
+
+    assert listed["sources"][0]["stale_cleanup_disabled_reason"] == (
+        "Obsidian vault snapshot was incomplete because one or more notes could not be read."
+    )

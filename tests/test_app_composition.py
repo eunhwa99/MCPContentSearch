@@ -58,6 +58,15 @@ class FakeMetadataStore:
     def get_latest_sync_job(self, source_id):
         return None
 
+    def get_source_status_snapshot(self, source_id):
+        return {
+            "latest_success_at": "",
+            "latest_failure_at": "",
+            "latest_failure_reason": "",
+            "document_count": 0,
+            "chunk_count": 0,
+        }
+
     def get_chunk(self, chunk_id):
         return None
 
@@ -127,6 +136,7 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
     expected_tools = {
         "list_sources",
         "sync_source",
+        "sync_all",
         "get_sync_status",
         "search_context",
         "fetch_context",
