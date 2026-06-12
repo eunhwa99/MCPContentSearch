@@ -11,8 +11,9 @@ The current scope is intentionally small:
 
 - Source connectors: Notion, Tistory, GitHub repositories, and local Obsidian
   vaults.
-- Retrieval tools: source listing/status, source sync, context search, context
-  fetch, and citation-backed answers.
+- Retrieval tools: source listing/status, source sync, chunk-level context
+  search, grouped document browsing, context fetch, and citation-backed
+  answers.
 - Local persistence: Chroma for semantic candidate retrieval, SQLite for source,
   job, document, chunk, and tombstone metadata.
 
@@ -31,7 +32,7 @@ ContextWiki only returns citeable evidence after Chroma candidates are hydrated
 and validated through SQLite. Successful full syncs refresh `last_seen` metadata
 and tombstone missing documents for cleanup-capable sources. If a stale vector
 entry remains in Chroma, the SQLite active chunk/document gate filters it before
-`search_context` or `answer_with_citations` can expose it.
+`search_context`, `search_documents`, or `answer_with_citations` can expose it.
 
 This split keeps retrieval fast while making citation safety explicit.
 
@@ -46,11 +47,18 @@ The retained MCP tools are:
 | `sync_all()` | Sync all retained sources concurrently and return aggregate per-source results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10)` | Return structured, SQLite-validated evidence chunks. |
+| `search_documents(query, filters=None, top_k=10)` | Return grouped document rows for browsing, using the best representative chunk per document. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
 | `answer_with_citations(question, filters=None, top_k=5)` | Build an evidence-gated answer with citations and used chunks. |
 
 Tool handlers live in `api/tools.py`; business behavior stays in `indexing/`,
 `search/`, `fetching/`, and `storage/`.
+
+`search_context` remains the chunk-level evidence surface for citation and
+grounding workflows. `search_documents` is additive: it reuses retained-source
+retrieval but collapses repeated chunks into one row per document and exposes
+the representative `chunk_id` for follow-up browsing through
+`fetch_context(document_id=...)` or `fetch_context(chunk_id=...)`.
 
 `list_sources()` and `get_sync_status()` now include additive operational fields
 for reviewer-readable retained-source state:
@@ -148,10 +156,10 @@ The functional E2E gate is:
 ```
 
 It uses non-live tests and temporary test storage for retained MCP flows:
-source registry, source sync, context search, context fetch, citation answers,
-metadata lifecycle, and Chroma/SQLite citation-safety behavior. It does not run
-browser checks, Playwright, Web Console tests, wiki generation smoke, live
-external APIs, or LLM calls.
+source registry, source sync, context search, grouped document browsing,
+context fetch, citation answers, metadata lifecycle, and Chroma/SQLite
+citation-safety behavior. It does not run browser checks, Playwright, Web
+Console tests, wiki generation smoke, live external APIs, or LLM calls.
 Obsidian verification must use a temporary vault unless the user explicitly
 approves a real vault path.
 

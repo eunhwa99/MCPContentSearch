@@ -4,7 +4,7 @@ from typing import Any
 
 from llama_index.core.retrievers import VectorIndexRetriever
 
-from core.models import ChunkModel, ContextSearchResult, DocumentModel
+from core.models import ChunkModel, ContextSearchResult, DocumentModel, DocumentSearchResult
 from environments.config import AppConfig
 from search import debug_redaction, ranking
 from search.query_rewrite import build_query_rewriter
@@ -52,60 +52,53 @@ class ContextSearchService:
         results = []
 
         for candidate in candidates:
-            chunk_id = candidate["chunk_id"]
-            chunk = self.metadata_store.get_chunk(chunk_id)
+            chunk = self._candidate_chunk(candidate, source_ids)
             if not chunk:
                 continue
-            if source_ids and chunk.source_id not in source_ids:
-                continue
-
-            source = self.metadata_store.get_source(chunk.source_id)
-            source_type = source.source_type.value if source else ""
-            results.append(
-                ContextSearchResult(
-                    chunk_id=chunk.chunk_id,
-                    document_id=chunk.document_id,
-                    source_id=chunk.source_id,
-                    source_type=source_type,
-                    title=chunk.title,
-                    url=chunk.url,
-                    path=chunk.path,
-                    score=candidate["score"],
-                    vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
-                    metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
-                    preview=self._preview(chunk.text),
-                    text=chunk.text,
-                    line_start=chunk.line_start,
-                    line_end=chunk.line_end,
-                    version_id=chunk.version_id,
-                    updated_at=chunk.updated_at,
-                )
-            )
+            results.append(self._context_search_result(chunk, candidate))
             if len(results) >= top_k:
                 break
 
-        return {
-            "query": query,
-            "results": results,
-            "_grounding": {
-                "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
-                "effective_term_groups": [sorted(group) for group in effective_term_groups],
-            },
-            "debug": {
-                "retrieval_queries": [
-                    self._redact_debug_query_text(value)
-                    for value in retrieval_debug["retrieval_queries"]
-                ],
-                "rewritten_queries": [
-                    self._redact_debug_query_text(value)
-                    for value in retrieval_debug["rewritten_queries"]
-                ],
-                "effective_term_groups": [
-                    [self._redact_debug_term(term) for term in sorted(group)]
-                    for group in effective_term_groups
-                ],
-            },
-        }
+        return self._search_response(query, results, retrieval_debug, effective_term_groups)
+
+    async def search_documents(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
+        filters = filters or {}
+        source_ids = self._effective_source_ids(filters)
+        if source_ids == []:
+            return self._empty_search_result(query)
+        retrieval_limit = self._document_search_candidate_limit(top_k)
+        max_limit = self._max_retrieval_limit(retrieval_limit)
+        retrieval_debug = await self._retrieve_candidates(
+            query,
+            retrieval_limit,
+            source_ids,
+            allow_query_rewrite=False,
+        )
+        best_by_document = self._group_document_results(
+            retrieval_debug["candidates"],
+            source_ids,
+        )
+
+        while (
+            len(best_by_document) < top_k
+            and len(retrieval_debug["candidates"]) >= retrieval_limit
+            and retrieval_limit < max_limit
+        ):
+            retrieval_limit = min(retrieval_limit * 2, max_limit)
+            retrieval_debug = await self._retrieve_candidates(
+                query,
+                retrieval_limit,
+                source_ids,
+                allow_query_rewrite=False,
+            )
+            best_by_document = self._group_document_results(
+                retrieval_debug["candidates"],
+                source_ids,
+            )
+
+        results = list(best_by_document.values())[:top_k]
+        effective_term_groups = retrieval_debug["effective_term_groups"]
+        return self._search_response(query, results, retrieval_debug, effective_term_groups)
 
     @staticmethod
     def _empty_search_result(query: str) -> dict:
@@ -186,8 +179,15 @@ class ContextSearchService:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
+        *,
+        allow_query_rewrite: bool = True,
     ) -> dict[str, Any]:
-        return await self._pipeline().retrieve_candidates(query, top_k, source_ids)
+        return await self._pipeline().retrieve_candidates(
+            query,
+            top_k,
+            source_ids,
+            allow_query_rewrite=allow_query_rewrite,
+        )
 
     def _retrieve_candidates_for_variants(
         self,
@@ -546,3 +546,114 @@ class ContextSearchService:
 
     def _max_retrieval_limit(self, base_limit: int) -> int:
         return self._pipeline().max_retrieval_limit(base_limit)
+
+    def _candidate_chunk(
+        self,
+        candidate: dict[str, Any],
+        source_ids: list[str] | None,
+    ) -> ChunkModel | None:
+        chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
+        if not chunk:
+            return None
+        if source_ids and chunk.source_id not in source_ids:
+            return None
+        return chunk
+
+    def _context_search_result(
+        self,
+        chunk: ChunkModel,
+        candidate: dict[str, Any],
+    ) -> ContextSearchResult:
+        return ContextSearchResult(
+            chunk_id=chunk.chunk_id,
+            document_id=chunk.document_id,
+            source_id=chunk.source_id,
+            source_type=self._source_type_for_chunk(chunk),
+            title=chunk.title,
+            url=chunk.url,
+            path=chunk.path,
+            score=float(candidate.get("score", 0.0)),
+            vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
+            metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
+            preview=self._preview(chunk.text),
+            text=chunk.text,
+            line_start=chunk.line_start,
+            line_end=chunk.line_end,
+            version_id=chunk.version_id,
+            updated_at=chunk.updated_at,
+        )
+
+    def _document_search_result(
+        self,
+        chunk: ChunkModel,
+        candidate: dict[str, Any],
+    ) -> DocumentSearchResult:
+        return DocumentSearchResult(
+            document_id=chunk.document_id,
+            chunk_id=chunk.chunk_id,
+            source_id=chunk.source_id,
+            source_type=self._source_type_for_chunk(chunk),
+            title=chunk.title,
+            url=chunk.url,
+            path=chunk.path,
+            score=float(candidate.get("score", 0.0)),
+            vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
+            metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
+            preview=self._preview(chunk.text),
+        )
+
+    def _source_type_for_chunk(self, chunk: ChunkModel) -> str:
+        source = self.metadata_store.get_source(chunk.source_id)
+        return source.source_type.value if source else ""
+
+    def _group_document_results(
+        self,
+        candidates: list[dict[str, Any]],
+        source_ids: list[str] | None,
+    ) -> dict[str, DocumentSearchResult]:
+        best_by_document: dict[str, DocumentSearchResult] = {}
+        for candidate in candidates:
+            chunk = self._candidate_chunk(candidate, source_ids)
+            if not chunk:
+                continue
+            if chunk.document_id in best_by_document:
+                continue
+            best_by_document[chunk.document_id] = self._document_search_result(chunk, candidate)
+        return best_by_document
+
+    def _document_search_candidate_limit(self, top_k: int) -> int:
+        return max(
+            top_k,
+            top_k * self.config.search_multiplier,
+            top_k * 4,
+        )
+
+    def _search_response(
+        self,
+        query: str,
+        results: list[ContextSearchResult] | list[DocumentSearchResult],
+        retrieval_debug: dict[str, Any],
+        effective_term_groups: list[set[str]],
+    ) -> dict:
+        return {
+            "query": query,
+            "results": results,
+            "_grounding": {
+                "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
+                "effective_term_groups": [sorted(group) for group in effective_term_groups],
+            },
+            "debug": {
+                "retrieval_queries": [
+                    self._redact_debug_query_text(value)
+                    for value in retrieval_debug["retrieval_queries"]
+                ],
+                "rewritten_queries": [
+                    self._redact_debug_query_text(value)
+                    for value in retrieval_debug["rewritten_queries"]
+                ],
+                "effective_term_groups": [
+                    [self._redact_debug_term(term) for term in sorted(group)]
+                    for group in effective_term_groups
+                ],
+            },
+        }

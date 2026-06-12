@@ -213,6 +213,40 @@ def register_tools(
         }
 
     @mcp.tool()
+    async def search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict:
+        """문서 단위로 그룹화된 structured context 검색"""
+        if context_search_service is None:
+            return {"query": query, "results": []}
+        public_filters, has_no_public_source = _public_filters(
+            filters,
+            metadata_store,
+            allowed_source_ids,
+        )
+        if has_no_public_source:
+            return {"query": query, "results": []}
+        public_filters = _with_default_public_source_filter(
+            public_filters,
+            allowed_source_ids,
+        )
+        result = await context_search_service.search_documents(
+            query,
+            filters=public_filters,
+            top_k=top_k,
+        )
+        results = [
+            payload
+            for payload in (
+                _search_documents_result_payload(item)
+                for item in result["results"]
+            )
+            if _payload_source_is_public(payload, metadata_store, allowed_source_ids)
+        ]
+        return {
+            "query": result["query"],
+            "results": results,
+        }
+
+    @mcp.tool()
     async def fetch_context(document_id: str = "", chunk_id: str = "") -> dict:
         """문서 또는 chunk context 원문 조회"""
         if metadata_store is None:
@@ -509,5 +543,31 @@ def _search_context_result_payload(item):
             key: value
             for key, value in item.items()
             if key not in {"vector_score", "metadata_priority"}
+        }
+    return item
+
+
+def _search_documents_result_payload(item):
+    allowed_keys = {
+        "document_id",
+        "chunk_id",
+        "source_id",
+        "source_type",
+        "title",
+        "url",
+        "path",
+        "score",
+        "preview",
+    }
+    if hasattr(item, "model_dump"):
+        return item.model_dump(
+            mode="json",
+            include=allowed_keys,
+        )
+    if isinstance(item, dict):
+        return {
+            key: value
+            for key, value in item.items()
+            if key in allowed_keys
         }
     return item

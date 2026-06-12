@@ -40,6 +40,8 @@ class ContextRetrievalPipeline:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
+        *,
+        allow_query_rewrite: bool = True,
     ) -> dict[str, Any]:
         if self.retriever is not None:
             if callable(self.retriever):
@@ -98,7 +100,7 @@ class ContextRetrievalPipeline:
         effective_term_groups = term_groups
         rewritten_queries: list[str] = []
 
-        if self.should_try_query_rewrite(candidates, term_groups, top_k):
+        if allow_query_rewrite and self.should_try_query_rewrite(candidates, term_groups, top_k):
             rewritten_queries = await self.rewrite_queries(query, term_groups)
             if rewritten_queries:
                 effective_term_groups = self.merged_term_groups(
