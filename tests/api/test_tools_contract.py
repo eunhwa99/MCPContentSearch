@@ -347,6 +347,12 @@ class FakeContextSearch:
                     text="ContextWiki evidence",
                 )
             ],
+            "debug": {
+                "rewrite_enabled": True,
+                "rewrite_attempted": True,
+                "rewrite_applied": False,
+                "rewrite_skipped_reason": "empty_result",
+            },
         }
 
 
@@ -825,6 +831,7 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "document_count" in status["sources"][0]["source"]
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
+    assert search["debug"]["rewrite_enabled"] is True
     assert "vector_score" not in search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
     assert answer["evidence_status"] == "grounded"
@@ -912,6 +919,7 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     assert fetched_chunk["chunk"] is None
     assert fetched_document == {"document": None, "chunks": []}
     assert filtered_search["results"] == []
+    assert filtered_search["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
     assert filtered_answer["evidence_status"] == "insufficient"
     assert filtered_answer["citations"] == []
 

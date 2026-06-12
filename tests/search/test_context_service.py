@@ -33,6 +33,11 @@ class FakeQueryRewriter:
         return list(self.rewrites)
 
 
+class FailingQueryRewriter:
+    async def rewrite_query(self, query, term_groups):
+        raise RuntimeError("rewrite provider timeout")
+
+
 def test_vector_search_tries_alias_expanded_query_variants(monkeypatch, tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
@@ -114,6 +119,10 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
     assert result["results"][0].chunk_id == "ec2-chunk"
     assert rewriter.calls
     assert "aws ec2 setup" in result["debug"]["rewritten_queries"]
+    assert result["debug"]["rewrite_enabled"] is True
+    assert result["debug"]["rewrite_attempted"] is True
+    assert result["debug"]["rewrite_applied"] is True
+    assert result["debug"]["rewrite_skipped_reason"] == ""
     assert any("ec2" in query.lower() for query in retrieval_queries)
 
 
@@ -156,6 +165,100 @@ def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_
     assert result["results"][0].chunk_id == "imagegallery-doc-chunk"
     assert rewriter.calls == []
     assert result["debug"]["rewritten_queries"] == []
+    assert result["debug"]["rewrite_enabled"] is True
+    assert result["debug"]["rewrite_attempted"] is False
+    assert result["debug"]["rewrite_applied"] is False
+    assert result["debug"]["rewrite_skipped_reason"] == "not_needed"
+
+
+def test_vector_search_marks_rewrite_disabled_in_debug_when_no_rewriter_is_configured(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-plain",
+        "plain-chunk",
+        "source_target",
+        "Plain guide",
+        "Plain guide content.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+    monkeypatch.setattr("search.context_service.build_query_rewriter", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+        ).search_context("aws virtual machine startup", top_k=1)
+    )
+
+    assert result["debug"]["rewritten_queries"] == []
+    assert result["debug"]["rewrite_enabled"] is False
+    assert result["debug"]["rewrite_attempted"] is False
+    assert result["debug"]["rewrite_applied"] is False
+    assert result["debug"]["rewrite_skipped_reason"] == "disabled"
+
+
+def test_vector_search_marks_rewrite_failed_when_rewriter_raises(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=FailingQueryRewriter(),
+        ).search_context("aws virtual machine startup", top_k=1)
+    )
+
+    assert result["debug"]["rewrite_enabled"] is True
+    assert result["debug"]["rewrite_attempted"] is True
+    assert result["debug"]["rewrite_applied"] is False
+    assert result["debug"]["rewrite_skipped_reason"] == "rewrite_failed"
+
+
+def test_search_context_empty_filter_result_preserves_rewrite_state(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    monkeypatch.setattr("search.context_service.build_query_rewriter", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            default_source_ids=("source_target",),
+        ).search_context(
+            "aws virtual machine startup",
+            filters={"source_id": "source_other"},
+            top_k=1,
+        )
+    )
+
+    assert result["results"] == []
+    assert result["debug"]["rewrite_enabled"] is False
+    assert result["debug"]["rewrite_attempted"] is False
+    assert result["debug"]["rewrite_applied"] is False
+    assert result["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
 
 
 def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
@@ -558,7 +661,7 @@ def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp
     assert "C:/Users" not in str(result["debug"])
 
 
-def test_search_context_debug_retains_raw_term_groups_but_redacts_display_copy(tmp_path):
+def test_search_context_redacts_public_grounding_but_keeps_internal_groups(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
@@ -577,8 +680,29 @@ def test_search_context_debug_retains_raw_term_groups_but_redacts_display_copy(t
         )
     )
 
-    assert ["context-wiki-debug"] in result["_grounding"]["effective_term_groups"]
+    assert ["[REDACTED]"] in result["_grounding"]["effective_term_groups"]
     assert ["[REDACTED]"] in result["debug"]["effective_term_groups"]
+
+
+def test_search_context_public_payload_omits_internal_grounding(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-debug",
+        "debug-chunk",
+        "source_target",
+        "ContextWiki debug guide",
+        "ContextWiki debug guide content.",
+    )
+
+    public_result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "context-wiki-debug guide",
+            top_k=1,
+        )
+    )
+    assert "_internal_grounding" not in public_result
 
 
 def test_keyword_search_treats_custom_github_source_ids_as_github_documents(tmp_path):

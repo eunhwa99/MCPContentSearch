@@ -100,10 +100,21 @@ class CitationAnswerService:
         *,
         include_debug: bool = False,
     ) -> dict:
-        search_result = await self.context_search.search_context(question, filters=filters, top_k=top_k)
+        if hasattr(self.context_search, "search_context_for_answer"):
+            search_result, grounding_state = await self.context_search.search_context_for_answer(
+                question,
+                filters=filters,
+                top_k=top_k,
+            )
+        else:
+            search_result = await self.context_search.search_context(
+                question,
+                filters=filters,
+                top_k=top_k,
+            )
+            grounding_state = search_result.get("_grounding", {})
         results = [self._as_result(item) for item in search_result.get("results", [])]
         search_debug = search_result.get("debug", {})
-        grounding_state = search_result.get("_grounding", {})
         query_term_groups = self._effective_query_term_groups(question, grounding_state, search_debug)
         required_term_groups = self._required_query_term_groups(question, grounding_state, search_debug)
         preserve_original_constraints = self._should_preserve_original_constraints(
@@ -156,7 +167,7 @@ class CitationAnswerService:
 
         if len(evidence) < self.min_results:
             payload = {
-                "question": question,
+                "question": self._redact_public_answer_text(question),
                 "answer": "Insufficient evidence in indexed context to answer this question.",
                 "evidence_status": "insufficient",
                 "citations": [],
@@ -183,7 +194,7 @@ class CitationAnswerService:
         answer = self._render_structured_answer(question, evidence)
 
         payload = {
-            "question": question,
+            "question": self._redact_public_answer_text(question),
             "answer": answer,
             "evidence_status": "grounded",
             "citations": citations,

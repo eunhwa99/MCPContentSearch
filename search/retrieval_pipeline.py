@@ -41,6 +41,13 @@ class ContextRetrievalPipeline:
         top_k: int,
         source_ids: list[str] | None,
     ) -> dict[str, Any]:
+        rewrite_debug = self._rewrite_debug_state(
+            term_groups=[],
+            rewrite_enabled=self.query_rewriter is not None,
+            rewrite_attempted=False,
+            rewrite_applied=False,
+            rewrite_skipped_reason="disabled" if self.query_rewriter is None else "",
+        )
         if self.retriever is not None:
             if callable(self.retriever):
                 candidates = list(self.retriever(query, top_k, source_ids))
@@ -59,9 +66,23 @@ class ContextRetrievalPipeline:
                 "rewritten_queries": [],
                 "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
+                "rewrite_debug": self._rewrite_debug_state(
+                    term_groups=term_groups,
+                    rewrite_enabled=self.query_rewriter is not None,
+                    rewrite_attempted=False,
+                    rewrite_applied=False,
+                    rewrite_skipped_reason="disabled" if self.query_rewriter is None else "not_supported",
+                ),
             }
 
         term_groups = query_term_groups(query)
+        rewrite_debug = self._rewrite_debug_state(
+            term_groups=term_groups,
+            rewrite_enabled=self.query_rewriter is not None,
+            rewrite_attempted=False,
+            rewrite_applied=False,
+            rewrite_skipped_reason="disabled" if self.query_rewriter is None else "",
+        )
         if self.indexer is None:
             if not term_groups:
                 return {
@@ -70,6 +91,15 @@ class ContextRetrievalPipeline:
                     "rewritten_queries": [],
                     "original_term_groups": [],
                     "effective_term_groups": [],
+                    "rewrite_debug": self._rewrite_debug_state(
+                        term_groups=[],
+                        rewrite_enabled=self.query_rewriter is not None,
+                        rewrite_attempted=False,
+                        rewrite_applied=False,
+                        rewrite_skipped_reason=(
+                            "disabled" if self.query_rewriter is None else "no_term_groups"
+                        ),
+                    ),
                 }
             candidates = self.ranker.metadata_fallback_candidates(
                 query,
@@ -85,6 +115,13 @@ class ContextRetrievalPipeline:
                 "rewritten_queries": [],
                 "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
+                "rewrite_debug": self._rewrite_debug_state(
+                    term_groups=term_groups,
+                    rewrite_enabled=self.query_rewriter is not None,
+                    rewrite_attempted=False,
+                    rewrite_applied=False,
+                    rewrite_skipped_reason="disabled" if self.query_rewriter is None else "not_supported",
+                ),
             }
 
         retrieval_queries = retrieval_query_variants(query, term_groups)
@@ -98,9 +135,31 @@ class ContextRetrievalPipeline:
         effective_term_groups = term_groups
         rewritten_queries: list[str] = []
 
-        if self.should_try_query_rewrite(candidates, term_groups, top_k):
-            rewritten_queries = await self.rewrite_queries(query, term_groups)
+        if not term_groups:
+            rewrite_debug = self._rewrite_debug_state(
+                term_groups=term_groups,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_attempted=False,
+                rewrite_applied=False,
+                rewrite_skipped_reason="no_term_groups",
+            )
+        elif self.should_try_query_rewrite(candidates, term_groups, top_k):
+            rewrite_debug = self._rewrite_debug_state(
+                term_groups=term_groups,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_attempted=True,
+                rewrite_applied=False,
+                rewrite_skipped_reason="",
+            )
+            rewritten_queries, rewrite_failed = await self.try_rewrite_queries(query, term_groups)
             if rewritten_queries:
+                rewrite_debug = self._rewrite_debug_state(
+                    term_groups=term_groups,
+                    rewrite_enabled=self.query_rewriter is not None,
+                    rewrite_attempted=True,
+                    rewrite_applied=True,
+                    rewrite_skipped_reason="",
+                )
                 effective_term_groups = self.merged_term_groups(
                     term_groups,
                     *[query_term_groups(rewrite) for rewrite in rewritten_queries],
@@ -126,6 +185,32 @@ class ContextRetrievalPipeline:
                     effective_term_groups,
                     retrieval_queries,
                 )
+            elif rewrite_failed:
+                rewrite_debug = self._rewrite_debug_state(
+                    term_groups=term_groups,
+                    rewrite_enabled=self.query_rewriter is not None,
+                    rewrite_attempted=True,
+                    rewrite_applied=False,
+                    rewrite_skipped_reason="rewrite_failed",
+                )
+            else:
+                rewrite_debug = self._rewrite_debug_state(
+                    term_groups=term_groups,
+                    rewrite_enabled=self.query_rewriter is not None,
+                    rewrite_attempted=True,
+                    rewrite_applied=False,
+                    rewrite_skipped_reason="empty_result",
+                )
+        else:
+            rewrite_debug = self._rewrite_debug_state(
+                term_groups=term_groups,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_attempted=False,
+                rewrite_applied=False,
+                rewrite_skipped_reason=(
+                    "disabled" if self.query_rewriter is None else "not_needed"
+                ),
+            )
 
         reranked = self.ranker.rerank_candidates(query, candidates, effective_term_groups, top_k)
         return {
@@ -134,6 +219,7 @@ class ContextRetrievalPipeline:
             "rewritten_queries": rewritten_queries,
             "original_term_groups": term_groups,
             "effective_term_groups": effective_term_groups,
+            "rewrite_debug": rewrite_debug,
         }
 
     def retrieve_candidates_for_variants(
@@ -230,12 +316,20 @@ class ContextRetrievalPipeline:
         )
 
     async def rewrite_queries(self, query: str, term_groups: list[set[str]]) -> list[str]:
+        queries, _ = await self.try_rewrite_queries(query, term_groups)
+        return queries
+
+    async def try_rewrite_queries(
+        self,
+        query: str,
+        term_groups: list[set[str]],
+    ) -> tuple[list[str], bool]:
         if self.query_rewriter is None:
-            return []
+            return [], False
         try:
-            return await self.query_rewriter.rewrite_query(query, term_groups)
+            return await self.query_rewriter.rewrite_query(query, term_groups), False
         except Exception:
-            return []
+            return [], True
 
     def should_try_query_rewrite(
         self,
@@ -253,6 +347,26 @@ class ContextRetrievalPipeline:
             return True
         top_score = max(float(candidate.get("score", 0.0)) for candidate in candidates)
         return top_score < 0.75
+
+    @staticmethod
+    def _rewrite_debug_state(
+        *,
+        term_groups: list[set[str]],
+        rewrite_enabled: bool,
+        rewrite_attempted: bool,
+        rewrite_applied: bool,
+        rewrite_skipped_reason: str,
+    ) -> dict[str, Any]:
+        if not rewrite_enabled and not rewrite_skipped_reason:
+            rewrite_skipped_reason = "disabled"
+        if rewrite_enabled and not term_groups and not rewrite_attempted and not rewrite_applied:
+            rewrite_skipped_reason = rewrite_skipped_reason or "no_term_groups"
+        return {
+            "rewrite_enabled": rewrite_enabled,
+            "rewrite_attempted": rewrite_attempted,
+            "rewrite_applied": rewrite_applied,
+            "rewrite_skipped_reason": rewrite_skipped_reason,
+        }
 
     @staticmethod
     def dedupe_queries(queries: list[str]) -> list[str]:

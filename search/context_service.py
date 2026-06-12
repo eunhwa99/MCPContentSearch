@@ -41,11 +41,33 @@ class ContextSearchService:
         self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
         self.ranker = ContextCandidateRanker(self.metadata_store, self.config)
 
-    async def search_context(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
+    async def search_context(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+    ) -> dict:
+        payload, _ = await self.search_context_for_answer(
+            query,
+            filters=filters,
+            top_k=top_k,
+        )
+        return payload
+
+    async def search_context_for_answer(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+    ) -> tuple[dict, dict]:
         filters = filters or {}
         source_ids = self._effective_source_ids(filters)
         if source_ids == []:
-            return self._empty_search_result(query)
+            return self._empty_search_result(
+                query,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_skipped_reason="no_matching_sources",
+            )
         retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
         candidates = retrieval_debug["candidates"]
         effective_term_groups = retrieval_debug["effective_term_groups"]
@@ -84,12 +106,22 @@ class ContextSearchService:
             if len(results) >= top_k:
                 break
 
-        return {
+        raw_grounding = {
+            "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
+            "effective_term_groups": [sorted(group) for group in effective_term_groups],
+        }
+        payload = {
             "query": query,
             "results": results,
             "_grounding": {
-                "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
-                "effective_term_groups": [sorted(group) for group in effective_term_groups],
+                "original_term_groups": [
+                    [self._redact_debug_term(term) for term in sorted(group)]
+                    for group in retrieval_debug.get("original_term_groups", [])
+                ],
+                "effective_term_groups": [
+                    [self._redact_debug_term(term) for term in sorted(group)]
+                    for group in effective_term_groups
+                ],
             },
             "debug": {
                 "retrieval_queries": [
@@ -104,12 +136,30 @@ class ContextSearchService:
                     [self._redact_debug_term(term) for term in sorted(group)]
                     for group in effective_term_groups
                 ],
+                "rewrite_enabled": bool(
+                    retrieval_debug.get("rewrite_debug", {}).get("rewrite_enabled", False)
+                ),
+                "rewrite_attempted": bool(
+                    retrieval_debug.get("rewrite_debug", {}).get("rewrite_attempted", False)
+                ),
+                "rewrite_applied": bool(
+                    retrieval_debug.get("rewrite_debug", {}).get("rewrite_applied", False)
+                ),
+                "rewrite_skipped_reason": str(
+                    retrieval_debug.get("rewrite_debug", {}).get("rewrite_skipped_reason", "")
+                ),
             },
         }
+        return payload, raw_grounding
 
     @staticmethod
-    def _empty_search_result(query: str) -> dict:
-        return {
+    def _empty_search_result(
+        query: str,
+        *,
+        rewrite_enabled: bool = False,
+        rewrite_skipped_reason: str = "disabled",
+    ) -> tuple[dict, dict]:
+        payload = {
             "query": query,
             "results": [],
             "_grounding": {
@@ -120,7 +170,15 @@ class ContextSearchService:
                 "retrieval_queries": [],
                 "rewritten_queries": [],
                 "effective_term_groups": [],
+                "rewrite_enabled": rewrite_enabled,
+                "rewrite_attempted": False,
+                "rewrite_applied": False,
+                "rewrite_skipped_reason": rewrite_skipped_reason,
             },
+        }
+        return payload, {
+            "original_term_groups": [],
+            "effective_term_groups": [],
         }
 
     def _effective_source_ids(self, filters: dict) -> list[str] | None:

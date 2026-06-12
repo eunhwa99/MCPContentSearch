@@ -288,17 +288,22 @@ def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
     )
 
     class RedactedDisplayContextSearch(FakeContextSearch):
-        async def search_context(self, query, filters=None, top_k=5):
-            return {
-                "query": query,
-                "results": [result],
-                "_grounding": {
+        async def search_context_for_answer(self, query, filters=None, top_k=5):
+            return (
+                {
+                    "query": query,
+                    "results": [result],
+                    "_grounding": {
+                        "effective_term_groups": [["[REDACTED]"], ["guide"]],
+                    },
+                    "debug": {
+                        "effective_term_groups": [["[REDACTED]"], ["guide"]],
+                    },
+                },
+                {
                     "effective_term_groups": [["context-wiki-debug"], ["guide"]],
                 },
-                "debug": {
-                    "effective_term_groups": [["[REDACTED]"], ["guide"]],
-                },
-            }
+            )
 
     service = CitationAnswerService(
         context_search=RedactedDisplayContextSearch([result]),
@@ -690,7 +695,7 @@ def test_answer_service_preserves_public_question_raw_for_mcp_contract():
         )
     )
 
-    assert answer["question"] == "https://user:pass@example.com/private?token=super-secret-value /Users/eunhwa/private/doc.md"
+    assert answer["question"] == "redacted redacted"
     assert "super-secret-value" not in str(answer["citations"])
     assert answer["citations"][0]["url"] == "redacted"
     assert answer["citations"][0]["path"] == "redacted"

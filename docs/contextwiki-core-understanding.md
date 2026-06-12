@@ -35,6 +35,8 @@ source registration
 -> cleanup-capable sources tombstone stale documents after complete snapshots
 -> search_context may optionally rewrite weak queries through a configured LLM
    when CONTEXTWIKI_SEARCH_LLM_ENABLED=true
+-> search debug output reports whether rewrite was disabled, skipped, attempted,
+   or applied
 -> retrieval candidates are hydrated through SQLite before citation use
 -> search_context asks Chroma for candidates and validates them through SQLite
 -> answer_with_citations returns evidence-gated answers
@@ -168,6 +170,32 @@ Current tools:
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
 | `answer_with_citations(question, filters, top_k)` | answer from validated evidence |
 
+The retained `search_context` response also exposes an additive `debug` block
+with
+rewrite decision fields:
+
+```text
+rewrite_enabled
+rewrite_attempted
+rewrite_applied
+rewrite_skipped_reason
+```
+
+These fields explain whether query rewrite was disabled, not needed, or tried
+without producing an applied rewrite.
+
+Observed `rewrite_skipped_reason` values include:
+
+```text
+disabled
+not_needed
+empty_result
+rewrite_failed
+no_matching_sources
+no_term_groups
+not_supported
+```
+
 Tool handlers call service boundaries and return JSON-safe values through
 Pydantic `model_dump(mode="json")` where needed.
 
@@ -186,6 +214,18 @@ stale_cleanup_disabled_reason
 Those fields come from SQLite lifecycle metadata plus runtime connector state.
 Public error text still passes through the same redaction path used by other
 sync/job payloads.
+
+For reviewer-driven live local verification, the repo also includes:
+
+```text
+scripts/live_query_smoke.py
+```
+
+This script runs `search_context` and `answer_with_citations` against the local
+configured environment through the retained tool handlers and prints a compact
+safe summary of rewrite state, hits, answer status, and citations. It is a
+manual live check surface, not a
+replacement for deterministic non-live tests.
 
 ---
 
