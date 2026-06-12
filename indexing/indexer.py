@@ -26,40 +26,42 @@ class ContentIndexer:
         self.storage_context = storage_context
         self.index: Optional[VectorStoreIndex] = None
         self.status = IndexStatusModel()
+        self._mutation_lock = asyncio.Lock()
     
     async def index_documents(self, documents: List[DocumentModel]):
         """Index the provided documents."""
-        self._update_status(
-            state=IndexState.RUNNING,
-            message="Starting indexing...",
-            total_docs=len(documents)
-        )
-        
-        try:
-            if not documents:
-                self._complete_indexing("No documents to index")
-                return
-            
-            filtered = await self._filter_documents(documents)
-            
-            if not filtered["documents"]:
-                self._complete_indexing("No new or updated documents")
-                return
-            
-            await self._batch_index(filtered["documents"])
-            
-            self._complete_indexing(
-                f"Complete: {filtered['new']} new, {filtered['updated']} updated"
-            )
-        
-        except Exception as e:
-            error_message = safe_error_message(e)
-            logger.error("Indexing error: %s", error_message)
+        async with self._mutation_lock:
             self._update_status(
-                state=IndexState.ERROR,
-                message=f"Error: {error_message}",
+                state=IndexState.RUNNING,
+                message="Starting indexing...",
+                total_docs=len(documents)
             )
-            raise IndexingError(f"Indexing failed: {error_message}") from None
+
+            try:
+                if not documents:
+                    self._complete_indexing("No documents to index")
+                    return
+
+                filtered = await self._filter_documents(documents)
+
+                if not filtered["documents"]:
+                    self._complete_indexing("No new or updated documents")
+                    return
+
+                await self._batch_index(filtered["documents"])
+
+                self._complete_indexing(
+                    f"Complete: {filtered['new']} new, {filtered['updated']} updated"
+                )
+
+            except Exception as e:
+                error_message = safe_error_message(e)
+                logger.error("Indexing error: %s", error_message)
+                self._update_status(
+                    state=IndexState.ERROR,
+                    message=f"Error: {error_message}",
+                )
+                raise IndexingError(f"Indexing failed: {error_message}") from None
     
     async def _filter_documents(self, documents: List[DocumentModel]) -> dict:
         manager = IndexManager(self.collection)
@@ -118,29 +120,30 @@ class ContentIndexer:
             )
         return self.index
 
-    def delete_documents_by_ids(self, document_ids: List[str], source_id: str = ""):
+    async def delete_documents_by_ids(self, document_ids: List[str], source_id: str = ""):
         """Delete indexed chunks/documents by stored Chroma doc_id metadata."""
-        for document_id in document_ids:
-            if source_id:
+        async with self._mutation_lock:
+            for document_id in document_ids:
+                if source_id:
+                    self.collection.delete(
+                        where={
+                            "$and": [
+                                {"doc_id": document_id},
+                                {"source_id": source_id},
+                                {"contextwiki_managed": "true"},
+                            ]
+                        }
+                    )
+                    logger.info(
+                        "Deleted managed indexed document: %s from %s",
+                        document_id,
+                        source_id,
+                    )
+                    continue
                 self.collection.delete(
-                    where={
-                        "$and": [
-                            {"doc_id": document_id},
-                            {"source_id": source_id},
-                            {"contextwiki_managed": "true"},
-                        ]
-                    }
+                    where={"$and": [{"doc_id": document_id}, {"contextwiki_managed": {"$ne": "true"}}]}
                 )
-                logger.info(
-                    "Deleted managed indexed document: %s from %s",
-                    document_id,
-                    source_id,
-                )
-                continue
-            self.collection.delete(
-                where={"$and": [{"doc_id": document_id}, {"contextwiki_managed": {"$ne": "true"}}]}
-            )
-            logger.info(f"Deleted indexed document: {document_id}")
+                logger.info(f"Deleted indexed document: {document_id}")
     
     def _update_status(self, **kwargs):
         for key, value in kwargs.items():

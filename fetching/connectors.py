@@ -81,6 +81,9 @@ class NotionSourceConnector(SourceConnector):
 
 class TistorySourceConnector(SourceConnector):
     supports_stale_cleanup = False
+    stale_cleanup_disabled_reason = (
+        "Stale cleanup is disabled because this source connector does not guarantee complete snapshots."
+    )
 
     def __init__(self, blog_name: str, config: AppConfig):
         self.blog_name = blog_name
@@ -92,6 +95,7 @@ class TistorySourceConnector(SourceConnector):
             enabled=bool(blog_name),
             auth_ref="env:TISTORY_BLOG_NAME",
             sync_status=SyncStatus.IDLE,
+            stale_cleanup_disabled_reason=self.stale_cleanup_disabled_reason,
         )
 
     async def fetch_documents(self) -> list[DocumentModel]:
@@ -156,6 +160,10 @@ class GitHubSourceConnector(SourceConnector):
             if not self.source.enabled
             else ""
         )
+        self.stale_cleanup_disabled_reason = self.disabled_reason
+        self.source = self.source.model_copy(
+            update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
+        )
 
     async def fetch_documents(self) -> list[DocumentModel]:
         if not self.source.enabled:
@@ -168,6 +176,14 @@ class GitHubSourceConnector(SourceConnector):
         else:
             self.supports_stale_cleanup = (
                 self.allow_stale_cleanup and self.fetcher.snapshot_complete
+            )
+            self.stale_cleanup_disabled_reason = (
+                ""
+                if self.supports_stale_cleanup
+                else "Stale cleanup is disabled because the latest GitHub snapshot was incomplete."
+            )
+            self.source = self.source.model_copy(
+                update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
             )
             return documents
 
@@ -186,6 +202,7 @@ class ObsidianSourceConnector(SourceConnector):
             enabled=False,
             auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
+            stale_cleanup_disabled_reason=_OBSIDIAN_DISABLED_REASON,
         )
         self.disabled_reason = _OBSIDIAN_DISABLED_REASON
         self.refresh_source_state()
@@ -198,6 +215,7 @@ class ObsidianSourceConnector(SourceConnector):
             update={
                 "enabled": enabled,
                 "last_error": "" if enabled else self.disabled_reason,
+                "stale_cleanup_disabled_reason": "" if enabled else self.disabled_reason,
             }
         )
 
@@ -217,8 +235,12 @@ class ObsidianSourceConnector(SourceConnector):
             raise
         if not snapshot.snapshot_complete:
             self.supports_stale_cleanup = False
+            self.source = self.source.model_copy(
+                update={"stale_cleanup_disabled_reason": _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON}
+            )
             raise RuntimeError(_OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON)
         self.supports_stale_cleanup = snapshot.snapshot_complete
+        self.source = self.source.model_copy(update={"stale_cleanup_disabled_reason": ""})
         return snapshot.documents
 
 

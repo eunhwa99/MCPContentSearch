@@ -600,6 +600,97 @@ def test_ingestion_rejects_cross_source_document_identity_collision(tmp_path):
     assert store.get_source("source_b").sync_status == SyncStatus.FAILED
 
 
+def test_sync_all_runs_multiple_sources_and_returns_aggregate_summary(tmp_path):
+    first = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+    second = DocumentModel(
+        id="doc-b",
+        source_id="source_b",
+        title="Source B",
+        content="source b content",
+        url="https://example.com/b",
+        platform="GitHub",
+        path="b.md",
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([
+            SourceAConnector([first]),
+            SourceBConnector([second]),
+        ]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    result = asyncio.run(service.sync_all())
+
+    assert result["status"] == "completed"
+    assert result["summary"]["total_sources"] == 2
+    assert result["summary"]["succeeded"] == 2
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["blocked"] == 0
+    assert {item["source_id"] for item in result["results"]} == {"source_a", "source_b"}
+    assert all(item["job"].status == SyncJobStatus.SUCCEEDED for item in result["results"])
+
+
+def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+
+    async def run_sync_all_while_one_source_is_running():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([
+                SourceAConnector([document]),
+                SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
+            ]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        blocking_a = BlockingConnector([document], started, release)
+        blocking_a.source = SourceAConnector.source
+        service.source_registry = SourceRegistry([
+            blocking_a,
+            SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
+        ])
+
+        first_task = asyncio.create_task(service.sync_source("source_a"))
+        await started.wait()
+        bulk_task = asyncio.create_task(service.sync_all())
+        await asyncio.sleep(0)
+        release.set()
+        await first_task
+        return await bulk_task
+
+    result = asyncio.run(run_sync_all_while_one_source_is_running())
+
+    blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
+    succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
+    assert blocked["sync_outcome"] == "blocked"
+    assert blocked["job"].status == SyncJobStatus.RUNNING
+    assert succeeded["sync_outcome"] == "succeeded"
+    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["succeeded"] == 1
+
+
 def test_concurrent_cross_source_collision_is_rejected_before_vector_write(tmp_path):
     first = DocumentModel(
         id="raw-a",

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -19,6 +20,17 @@ def _redact_sensitive_error(message: str) -> str:
     if not message:
         return "Sync failed. See server logs for details."
     return safe_error_message(RuntimeError(message))
+
+
+def _stale_cleanup_reason_for_connector(connector, fallback_message: str = "") -> str:
+    reason = getattr(connector, "stale_cleanup_disabled_reason", "") or getattr(
+        connector,
+        "disabled_reason",
+        "",
+    )
+    if reason:
+        return _redact_sensitive_error(reason)
+    return _redact_sensitive_error(fallback_message) if fallback_message else ""
 
 
 class IngestionService:
@@ -46,6 +58,58 @@ class IngestionService:
         for source in self.source_registry.list_sources():
             self.metadata_store.register_source(source)
 
+    async def sync_all(self, source_ids: list[str] | None = None) -> dict:
+        sources = self.source_registry.list_sources()
+        if self.register_source_config:
+            self.refresh_registered_sources()
+
+        selected_source_ids = source_ids or [source.source_id for source in sources]
+        selected_source_ids = list(dict.fromkeys(selected_source_ids))
+        started_at = _now()
+
+        async def _sync_one(selected_source_id: str) -> dict:
+            try:
+                job = await self.sync_source(selected_source_id)
+            except Exception as exc:
+                message = _redact_sensitive_error(str(exc))
+                logger.error("Bulk sync failed for source %s: %s", selected_source_id, message)
+                return {
+                    "source_id": selected_source_id,
+                    "sync_outcome": "failed",
+                    "job": None,
+                    "message": message,
+                }
+
+            if job.status == SyncJobStatus.SUCCEEDED:
+                outcome = "succeeded"
+            elif job.status == SyncJobStatus.RUNNING:
+                outcome = "blocked"
+            else:
+                outcome = "failed"
+            return {
+                "source_id": selected_source_id,
+                "sync_outcome": outcome,
+                "job": job,
+                "message": "",
+            }
+
+        results = await asyncio.gather(*(_sync_one(source_id) for source_id in selected_source_ids))
+        finished_at = _now()
+        summary = {
+            "total_sources": len(results),
+            "succeeded": sum(1 for result in results if result["sync_outcome"] == "succeeded"),
+            "failed": sum(1 for result in results if result["sync_outcome"] == "failed"),
+            "blocked": sum(1 for result in results if result["sync_outcome"] == "blocked"),
+            "skipped": 0,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }
+        return {
+            "status": "completed",
+            "summary": summary,
+            "results": results,
+        }
+
     async def sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)
         if self.register_source_config:
@@ -64,6 +128,10 @@ class IngestionService:
                 job_id=job.job_id,
                 source_id=source_id,
                 error_message=message,
+                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(
+                    connector,
+                    message,
+                ),
             )
 
         try:
@@ -155,11 +223,11 @@ class IngestionService:
                         chunks,
                     )
                     if inactive_job:
-                        self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+                        await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
                         uncommitted_vector_ids = []
                         return inactive_job
                     uncommitted_vector_ids = []
-                    self._delete_vectors_best_effort(stale_chunk_ids, source_id)
+                    await self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                     processed += 1
                     indexed_chunks += len(chunks)
                     self._record_sync_progress(
@@ -183,11 +251,11 @@ class IngestionService:
 
                 inactive_job = self._commit_chunks_or_current(job.job_id, normalized, chunks)
                 if inactive_job:
-                    self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+                    await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
                     uncommitted_vector_ids = []
                     return inactive_job
                 uncommitted_vector_ids = []
-                self._delete_vectors_best_effort(stale_chunk_ids, source_id)
+                await self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                 processed += 1
                 indexed_chunks += len(chunks)
                 self._record_sync_progress(
@@ -214,19 +282,26 @@ class IngestionService:
                     (),
                 ),
                 deleted_at=_now(),
+                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(connector),
             )
-            self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
+            await self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
             return finished
 
         except Exception as exc:
             error_message = _redact_sensitive_error(str(exc))
             logger.error("Sync failed for source %s: %s", source_id, error_message)
             if "uncommitted_vector_ids" in locals():
-                self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
             return self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
                 error_message=error_message,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, error_message)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
             )
 
     def _refresh_running_job_or_current(self, job_id: str):
@@ -281,7 +356,7 @@ class IngestionService:
             return current_job
         return None
 
-    def _delete_vectors_best_effort(self, chunk_ids: list[str], source_id: str):
+    async def _delete_vectors_best_effort(self, chunk_ids: list[str], source_id: str):
         if not chunk_ids or not hasattr(self.indexer, "delete_documents_by_ids"):
             return
         deletable_chunk_ids = [
@@ -292,7 +367,12 @@ class IngestionService:
         if not deletable_chunk_ids:
             return
         try:
-            self.indexer.delete_documents_by_ids(deletable_chunk_ids, source_id=source_id)
+            delete_result = self.indexer.delete_documents_by_ids(
+                deletable_chunk_ids,
+                source_id=source_id,
+            )
+            if asyncio.iscoroutine(delete_result):
+                await delete_result
         except Exception as exc:
             logger.error(
                 "Vector cleanup failed for source %s: %s",

@@ -43,6 +43,7 @@ The retained MCP tools are:
 | --- | --- |
 | `list_sources()` | List configured Notion, Tistory, GitHub, and Obsidian sources. |
 | `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
+| `sync_all()` | Sync all retained sources concurrently and return aggregate per-source results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10)` | Return structured, SQLite-validated evidence chunks. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
@@ -50,6 +51,19 @@ The retained MCP tools are:
 
 Tool handlers live in `api/tools.py`; business behavior stays in `indexing/`,
 `search/`, `fetching/`, and `storage/`.
+
+`list_sources()` and `get_sync_status()` now include additive operational fields
+for reviewer-readable retained-source state:
+
+- `latest_success_at`
+- `latest_failure_at`
+- `document_count`
+- `chunk_count`
+- `latest_failure_reason`
+- `stale_cleanup_disabled_reason`
+
+`sync_all()` returns a top-level `summary` with total/succeeded/failed/blocked
+counts plus per-source `results` that preserve each source's latest job payload.
 
 ## Optional Search Query Rewrite
 

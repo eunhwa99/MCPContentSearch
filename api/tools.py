@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+from core.models import SourceType, SyncJobStatus, SyncStatus
 from indexing.background_tasks import safe_error_message
 
 if TYPE_CHECKING:
@@ -63,7 +64,11 @@ def register_tools(
         ]
         return {
             "sources": [
-                _safe_source_payload(source)
+                _safe_source_payload(
+                    source,
+                    metadata_store=metadata_store,
+                    source_registry=source_registry,
+                )
                 for source in sources
             ]
         }
@@ -80,6 +85,45 @@ def register_tools(
             message = safe_error_message(exc)
             logger.error("Sync source error: %s", message)
             return {"status": "error", "message": message}
+
+    @mcp.tool()
+    async def sync_all() -> dict:
+        """retained source 전체 sync 실행"""
+        if ingestion_service is None:
+            return {"status": "error", "message": "ingestion service is not configured"}
+        try:
+            result = await ingestion_service.sync_all()
+        except Exception as exc:
+            message = safe_error_message(exc)
+            logger.error("Sync all error: %s", message)
+            return {"status": "error", "message": message}
+
+        sync_results = []
+        for item in result.get("results", []):
+            source_id = str(item.get("source_id", ""))
+            source = metadata_store.get_source(source_id) if metadata_store is not None else None
+            sync_results.append(
+                {
+                    "source_id": source_id,
+                    "sync_outcome": item.get("sync_outcome", ""),
+                    "message": _redact_public_error_text(item.get("message", "")),
+                    "source": (
+                        _safe_source_payload(
+                            source,
+                            metadata_store=metadata_store,
+                            source_registry=source_registry,
+                        )
+                        if source
+                        else None
+                    ),
+                    "job": _safe_sync_job_payload(item.get("job")) if item.get("job") else None,
+                }
+            )
+        return {
+            "status": result.get("status", "completed"),
+            "summary": result.get("summary", {}),
+            "results": sync_results,
+        }
 
     @mcp.tool()
     async def get_sync_status(source_id: str = "") -> dict:
@@ -102,7 +146,13 @@ def register_tools(
             latest_job = metadata_store.get_latest_sync_job(source_id)
             source = metadata_store.get_source(source_id) or source
             return {
-                "source": _safe_source_payload(source) if source else None,
+                "source": _safe_source_payload(
+                    source,
+                    metadata_store=metadata_store,
+                    source_registry=source_registry,
+                )
+                if source
+                else None,
                 "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
             }
 
@@ -118,7 +168,11 @@ def register_tools(
             source = metadata_store.get_source(source.source_id) or source
             statuses.append(
                 {
-                    "source": _safe_source_payload(source),
+                    "source": _safe_source_payload(
+                        source,
+                        metadata_store=metadata_store,
+                        source_registry=source_registry,
+                    ),
                     "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
                 }
             )
@@ -268,12 +322,13 @@ def _safe_auth_ref(value):
     return "<redacted>"
 
 
-def _safe_source_payload(source) -> dict:
+def _safe_source_payload(source, *, metadata_store=None, source_registry=None) -> dict:
     payload = _model_payload(source)
     if "auth_ref" in payload:
         payload["auth_ref"] = _safe_auth_ref(payload["auth_ref"])
     if "last_error" in payload:
         payload["last_error"] = _redact_public_error_text(payload["last_error"])
+    payload.update(_safe_source_status_surface(source, metadata_store, source_registry))
     return payload
 
 
@@ -282,6 +337,73 @@ def _safe_sync_job_payload(job) -> dict:
     if "error_message" in payload:
         payload["error_message"] = _redact_public_error_text(payload["error_message"])
     return payload
+
+
+def _safe_source_status_surface(source, metadata_store, source_registry) -> dict:
+    source_id = getattr(source, "source_id", "")
+    snapshot = {}
+    if metadata_store is not None:
+        get_snapshot = getattr(metadata_store, "get_source_status_snapshot", None)
+        if callable(get_snapshot):
+            snapshot = dict(get_snapshot(source_id))
+    latest_success_at = snapshot.get("latest_success_at", "") or getattr(source, "last_synced_at", "")
+    latest_failure_reason = _redact_public_error_text(
+        snapshot.get("latest_failure_reason", "") or getattr(source, "last_error", "")
+    )
+    persisted_stale_cleanup_disabled_reason = _redact_public_error_text(
+        getattr(source, "stale_cleanup_disabled_reason", "")
+    )
+    return {
+        "latest_success_at": latest_success_at,
+        "latest_failure_at": snapshot.get("latest_failure_at", ""),
+        "document_count": snapshot.get("document_count", 0),
+        "chunk_count": snapshot.get("chunk_count", 0),
+        "latest_failure_reason": latest_failure_reason,
+        "stale_cleanup_disabled_reason": _stale_cleanup_disabled_reason(
+            source,
+            source_registry=source_registry,
+            latest_failure_reason=latest_failure_reason,
+            persisted_reason=persisted_stale_cleanup_disabled_reason,
+        ),
+    }
+
+
+def _stale_cleanup_disabled_reason(
+    source,
+    *,
+    source_registry,
+    latest_failure_reason: str,
+    persisted_reason: str,
+) -> str:
+    if persisted_reason:
+        return persisted_reason
+    disabled_reason = ""
+    connector_supports_cleanup = None
+    if source_registry is not None:
+        try:
+            connector = source_registry.get_connector(getattr(source, "source_id", ""))
+        except Exception:
+            connector = None
+        if connector is not None:
+            connector_supports_cleanup = getattr(connector, "supports_stale_cleanup", False)
+            disabled_reason = _redact_public_error_text(
+                getattr(connector, "stale_cleanup_disabled_reason", "")
+                or getattr(connector, "disabled_reason", "")
+            )
+    if not getattr(source, "enabled", True):
+        return disabled_reason or latest_failure_reason
+    if latest_failure_reason and "incomplete" in latest_failure_reason.lower():
+        return latest_failure_reason
+    if disabled_reason:
+        return disabled_reason
+    source_type = getattr(source, "source_type", "")
+    if source_type == SourceType.TISTORY:
+        return "Stale cleanup is disabled because this source connector does not guarantee complete snapshots."
+    if connector_supports_cleanup is True:
+        return ""
+    if getattr(source, "sync_status", None) == SyncStatus.FAILED:
+        return latest_failure_reason
+    return "Stale cleanup is disabled for this source."
 
 
 def _model_source_is_public(model, metadata_store, allowed_source_ids: frozenset[str] | None) -> bool:
