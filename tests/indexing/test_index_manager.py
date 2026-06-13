@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from core.models import DocumentModel
@@ -134,7 +136,7 @@ def test_content_indexer_source_scopes_managed_vector_cleanup():
     collection = FakeCollection([])
     indexer = ContentIndexer(config=None, chroma_collection=collection, storage_context=None)
 
-    indexer.delete_documents_by_ids(["shared-chunk"], source_id="source_b")
+    asyncio.run(indexer.delete_documents_by_ids(["shared-chunk"], source_id="source_b"))
 
     assert collection.deleted_where == [
         {
@@ -151,7 +153,7 @@ def test_content_indexer_raw_cleanup_does_not_match_managed_vectors_without_sour
     collection = FakeCollection([])
     indexer = ContentIndexer(config=None, chroma_collection=collection, storage_context=None)
 
-    indexer.delete_documents_by_ids(["shared-chunk"])
+    asyncio.run(indexer.delete_documents_by_ids(["shared-chunk"]))
 
     assert collection.deleted_where == [
         {
