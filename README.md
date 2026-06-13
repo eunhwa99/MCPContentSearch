@@ -95,6 +95,8 @@ When `include_debug=True`, rewrite becomes a visible retrieval feature:
 - `query_rewrite.reason`, for example `no_initial_candidates`,
   `insufficient_candidate_count`, `missing_textual_match`, or
   `low_initial_score`
+- top-level compatibility flags: `rewrite_enabled`, `rewrite_attempted`,
+  `rewrite_applied`, `rewrite_skipped_reason`
 - original query, rewritten queries, effective retrieval queries
 - source filters and structured selected-result summaries
 
@@ -123,7 +125,15 @@ Example:
   }
 }
 ```
+Common `rewrite_skipped_reason` values now include:
 
+- `disabled`
+- `not_needed`
+- `empty_result`
+- `rewrite_failed`
+- `no_matching_sources`
+- `no_term_groups`
+- `not_supported`
 ## Source Connectors
 
 | Source | Source id | Configuration | Notes |
@@ -204,6 +214,7 @@ uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
 uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
 uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
 uv run --locked pytest -q tests/scripts/test_demo_public_flow.py
+uv run --locked pytest -q tests/scripts/test_live_query_smoke.py
 ```
 
 Do not treat these commands as evidence unless they were run in the current
@@ -265,22 +276,44 @@ Optional flags:
 ./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
 ```
 
-Expected transcript highlights:
+## Live Query Smoke
+
+Run a real local retrieval check against your configured ContextWiki
+environment:
+
+```bash
+uv run --locked python scripts/live_query_smoke.py --query "aws startup"
+```
+
+Useful options:
+
+```bash
+uv run --locked python scripts/live_query_smoke.py --query "aws startup" --question "How do I start EC2?"
+uv run --locked python scripts/live_query_smoke.py --query "github sync" --source-id source_github --top-k 3
+uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --rewrite off
+uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --json
+```
+
+The script is intentionally reviewer-facing and compact:
+
+- it exercises the retained `search_context` and `answer_with_citations` tool
+  handlers against the local configured runtime
+- it prints rewrite decision state, hit summary, answer evidence status, and
+  citation summary
+- it redacts secret-like query/question text and does not print raw environment
+  variable values
+- `--json` prints a sanitized JSON payload, not raw chunk bodies
+- `--rewrite on` requires a configured rewriter and fails fast otherwise
+
+Expected live smoke highlights:
 
 ```text
-ContextWiki Public Demo
-1. Sync retained source
-...
-"source_id": "source_obsidian"
-"status": "succeeded"
-...
-3. Search query: stale citations
-...
-"title": "Citation Safety"
-...
-4. Grounded question: How does ContextWiki prevent stale citations?
-...
-"evidence_status": "grounded"
+ContextWiki Live Query Smoke
+search query: aws startup
+answer question: How do I start EC2?
+rewrite: enabled=yes attempted=yes applied=no reason=empty_result
+hits: 1
+answer: grounded
 ```
 
 ## Additional Docs
