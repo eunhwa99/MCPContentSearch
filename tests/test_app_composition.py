@@ -87,6 +87,9 @@ class FakeContextSearchService:
     async def search_context(self, query, filters=None, top_k=10):
         return {"query": query, "results": []}
 
+    async def search_documents(self, query, filters=None, top_k=10):
+        return {"query": query, "results": []}
+
 
 class FakeCitationAnswerService:
     def __init__(self, context_search):
@@ -139,6 +142,7 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "sync_all",
         "get_sync_status",
         "search_context",
+        "search_documents",
         "fetch_context",
         "answer_with_citations",
     }

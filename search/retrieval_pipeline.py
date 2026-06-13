@@ -40,6 +40,8 @@ class ContextRetrievalPipeline:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
+        *,
+        allow_query_rewrite: bool = True,
     ) -> dict[str, Any]:
         rewrite_debug = self._rewrite_debug_state(
             term_groups=[],
@@ -136,7 +138,16 @@ class ContextRetrievalPipeline:
         rewritten_queries: list[str] = []
         rewrite_reason = ""
 
-        if not term_groups:
+        rewrite_reason = ""
+        if not allow_query_rewrite:
+            rewrite_debug = self._rewrite_debug_state(
+                term_groups=term_groups,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_attempted=False,
+                rewrite_applied=False,
+                rewrite_skipped_reason="not_supported",
+            )
+        elif not term_groups:
             rewrite_debug = self._rewrite_debug_state(
                 term_groups=term_groups,
                 rewrite_enabled=self.query_rewriter is not None,
