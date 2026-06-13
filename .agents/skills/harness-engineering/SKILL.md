@@ -39,6 +39,18 @@ delivery.
 11. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 Implementation and test lanes may run in parallel when ownership is disjoint and the active tool policy allows delegation. Code-changing work must run relevant tests or verification plus the functional smoke gate before any review gate.
+When a work item adds a feature, require the change to add or update focused
+tests for that behavior before review. If the feature changes a user-visible or
+MCP-visible workflow, also require adding or updating retained functional E2E
+coverage and executing that added or updated retained E2E coverage before
+review, normally by extending the retained suite exercised by
+`./scripts/verify_functional_e2e.sh`. If the feature changes retrieval quality,
+ranking, grounding, citation selection, answer quality, or another
+quality-sensitive output already modeled by retained local evaluations, also
+require adding or updating eval coverage and running the matching eval command
+before review. If the feature falls within retained local eval coverage but no
+exact retained eval surface exists yet, also require extending an existing
+retained eval surface and running the matching eval command before review.
 
 ## Loop Rules
 
@@ -46,8 +58,22 @@ Treat implementation, testing, review, refactor, integration, and final review a
 
 Minimize human intervention by routing routine work through subagents when delegation is available. The main agent should inspect or update the plan, define worker personas, delegate bounded implementation/test/docs/integration tasks, collect outputs, inspect the resulting diff, and synthesize the integrated result. Ask the user only for unsafe ambiguity, credentials, destructive operations, local data mutation, unavailable delegation/review tools, or external approval.
 
-If the main-agent synthesis or `$subagent-review-loop` produces actionable findings, update the plan, assign each issue back to the responsible worker persona or a fresh replacement with the same ownership boundary, rerun affected verification and affected functional smoke entries, and continue the loop. Review gates must use `$subagent-review-loop`: run relevant verification and functional smoke first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification plus affected functional smoke entries before each new review pass after fixes. Worker subagents may edit only within delegated boundaries; reviewer subagents inspect only and must not edit files.
+If the main-agent synthesis or `$subagent-review-loop` produces actionable findings, update the plan, assign each issue back to the responsible worker persona or a fresh replacement with the same ownership boundary, rerun affected verification and affected functional smoke entries, and continue the loop. Review gates must use `$subagent-review-loop`: run relevant verification and functional smoke first, spawn exactly five fresh reviewer subagents per pass until all five reviewers in the newest pass report no actionable findings, and rerun affected verification plus affected functional smoke entries before each new review pass after fixes. That rerun must explicitly include any newly added or updated retained E2E coverage and any matching eval command required by the current feature scope before the next smoke/review pass. Worker subagents may edit only within delegated boundaries; reviewer subagents inspect only and must not edit files.
 
 Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, and docs-only.
 
 If `$subagent-review-loop` cannot run because subagent review is unavailable or unauthorized, stop and report the blocker instead of silently using self-review. Do not respond on GitHub, watch PRs, or push follow-up PR changes unless the user explicitly delegates that work. For file-changing harness work, the repository standing workflow is to commit, push, and create a PR after the final clean `$subagent-review-loop` pass unless the user explicitly asks for local-only work.
+
+Remember that `./scripts/verify_functional_e2e.sh` still runs for code-changing
+work as the repo-wide functional E2E regression gate. That broader gate is
+separate from the narrower rule about when a feature must add or update
+retained functional E2E coverage.
+
+Use the current local eval surfaces when they apply, including deterministic
+eval tests under `tests/evals` such as `uv run pytest -q tests/evals` and
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If a feature falls
+within the repo's retained local eval coverage but no matching retained eval
+surface exists yet, extend an existing retained eval surface such as
+`tests/evals` or the fixture runner and run the matching eval command before
+review. Features outside the current retained local eval coverage are not
+subject to this eval requirement until the retained eval scope changes.

@@ -25,7 +25,17 @@ the plan, worker persona design, delegation, result synthesis, integration,
 review routing, and final delivery. `harness-implement` and `harness-test` may
 run as parallel lanes when tool policy and file ownership allow it.
 Code-changing work must always pass through the test lane and functional smoke
-gate before any review gate.
+gate before any review gate. When a work item adds a feature, it must add or
+update focused test coverage for that behavior before review. If the feature
+changes a user-visible or MCP-visible workflow, it must also add or update
+retained functional E2E coverage and execute that added or updated retained E2E
+coverage before review. If the feature changes retrieval quality, ranking,
+grounding, citation selection, answer quality, or another quality-sensitive
+output already modeled by retained local evaluations, it must also add or
+update eval coverage and run the matching eval command before review. If the
+feature falls within retained local eval coverage but no exact retained eval
+surface exists yet, it must extend an existing retained eval surface and run
+the matching eval command before review.
 
 0. Branch preflight: follow `.agents/docs/github-workflow.md`.
 1. Plan document: create or update `docs/plan/YYYY-MM-DD-short-task-name.md`.
@@ -142,6 +152,9 @@ if needed, run multitask phase
 repeat:
   delegate implementation/test/docs/integration work to bounded worker personas where possible
   collect worker results, inspect the diff, and synthesize the main-agent result
+  rerun focused verification for the changed behavior, including any newly added
+  or updated retained E2E coverage and any matching eval command required by the
+  current feature scope
   run functional smoke gate using harness-functional-smoke
   run middle review gate using $subagent-review-loop
   if main-agent review or subagent review finds actionable issues:
@@ -229,16 +242,42 @@ uv run python -m compileall api core environments fetching indexing search stora
 uv run pytest
 ```
 
-Before final review for code-changing work, run the functional E2E harness gate
-that exercises retained end-to-end feature workflows (ContextWiki MCP flows,
-connector E2E flows, search, citation answer, indexing, and storage behavior):
+Feature additions must expand verification with the smallest useful focused
+tests for the new behavior. They must also add or update retained functional
+E2E coverage when the feature changes a user-visible or MCP-visible workflow.
+When the added feature changes retrieval quality, ranking, grounding, citation
+selection, answer quality, or another quality-sensitive output that is already
+modeled by retained local evaluations, they must add or update eval coverage
+and run the relevant eval command before review.
+
+Before review for code-changing work, run the repo-wide functional E2E
+regression gate that exercises retained end-to-end feature workflows
+(ContextWiki MCP flows, connector E2E flows, search, citation answer, indexing,
+and storage behavior):
 
 ```bash
 ./scripts/verify_functional_e2e.sh
 ```
 
+This unconditional gate run is a broader regression check for code-changing
+work. It is separate from the narrower rule above about when a work item must
+add or update retained functional E2E coverage for a newly added or changed
+workflow, and that added or updated retained E2E coverage must itself be
+executed before review, normally by extending the retained suite exercised by
+`./scripts/verify_functional_e2e.sh`.
+
 `./scripts/verify_all.sh` should include this functional E2E gate so the full
 verification path runs it automatically.
+
+Current local eval paths include deterministic eval tests under
+`tests/evals` such as `uv run pytest -q tests/evals` plus the fixture runner at
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If a feature falls
+within the repo's retained local eval coverage but no matching retained eval
+surface exists yet, treat that as missing required coverage: extend an existing
+retained eval surface such as `tests/evals` or the fixture runner and execute
+the matching eval command before review. Features outside the current retained
+local eval coverage are not subject to this eval requirement until the retained
+eval scope changes.
 
 MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
