@@ -57,6 +57,8 @@ class ContextSearchService:
                 source_ids=[],
                 include_debug=include_debug,
                 include_internal_metadata=include_internal_metadata,
+                rewrite_enabled=self.query_rewriter is not None,
+                rewrite_skipped_reason="no_matching_sources",
             )
         retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
         candidates = retrieval_debug["candidates"]
@@ -100,12 +102,24 @@ class ContextSearchService:
             "query": query,
             "results": results,
         }
+        raw_grounding = {
+            "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
+            "effective_term_groups": [sorted(group) for group in effective_term_groups],
+        }
+        grounding_payload = {
+            "original_term_groups": [
+                [self._redact_debug_term(term) for term in sorted(group)]
+                for group in retrieval_debug.get("original_term_groups", [])
+            ],
+            "effective_term_groups": [
+                [self._redact_debug_term(term) for term in sorted(group)]
+                for group in effective_term_groups
+            ],
+        }
         if include_debug or include_internal_metadata:
-            payload["_grounding"] = {
-                "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
-                "effective_term_groups": [sorted(group) for group in effective_term_groups],
-            }
+            payload["_grounding"] = grounding_payload
         if include_internal_metadata:
+            payload["_internal_grounding"] = raw_grounding
             payload["_debug"] = self._build_debug_payload(
                 query=query,
                 source_ids=source_ids,
@@ -123,13 +137,37 @@ class ContextSearchService:
             )
         return payload
 
+    async def search_context_for_answer(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        *,
+        include_debug: bool = False,
+    ) -> tuple[dict, dict]:
+        payload = await self.search_context(
+            query,
+            filters=filters,
+            top_k=top_k,
+            include_debug=include_debug,
+            include_internal_metadata=True,
+        )
+        return payload, payload.get("_internal_grounding", payload.get("_grounding", {}))
+
     def _empty_search_result(
         self,
         query: str,
         source_ids: list[str] | None = None,
         include_debug: bool = False,
         include_internal_metadata: bool = False,
+        *,
+        rewrite_enabled: bool | None = None,
+        rewrite_skipped_reason: str | None = None,
     ) -> dict:
+        rewrite_enabled = self.query_rewriter is not None if rewrite_enabled is None else rewrite_enabled
+        rewrite_skipped_reason = rewrite_skipped_reason or (
+            "disabled" if not rewrite_enabled else ""
+        )
         payload = {
             "query": query,
             "results": [],
@@ -145,6 +183,16 @@ class ContextSearchService:
                 "query_rewrite_reason": "",
                 "query_rewrite_attempted": False,
                 "query_rewrite_applied": False,
+                "rewrite_debug": {
+                    "rewrite_enabled": rewrite_enabled,
+                    "rewrite_attempted": False,
+                    "rewrite_applied": False,
+                    "rewrite_skipped_reason": rewrite_skipped_reason,
+                },
+                "rewrite_enabled": rewrite_enabled,
+                "rewrite_attempted": False,
+                "rewrite_applied": False,
+                "rewrite_skipped_reason": rewrite_skipped_reason,
             },
             effective_term_groups=[],
             results=[],
@@ -601,6 +649,7 @@ class ContextSearchService:
             self._redact_debug_query_text(value)
             for value in retrieval_debug.get("rewritten_queries", [])
         ]
+        rewrite_debug = retrieval_debug.get("rewrite_debug", {})
         return {
             "retrieval_queries": retrieval_queries,
             "rewritten_queries": rewritten_queries,
@@ -620,6 +669,10 @@ class ContextSearchService:
                 "original_query": self._redact_debug_query_text(query),
                 "rewritten_queries": rewritten_queries,
             },
+            "rewrite_enabled": bool(rewrite_debug.get("rewrite_enabled", False)),
+            "rewrite_attempted": bool(rewrite_debug.get("rewrite_attempted", False)),
+            "rewrite_applied": bool(rewrite_debug.get("rewrite_applied", False)),
+            "rewrite_skipped_reason": str(rewrite_debug.get("rewrite_skipped_reason", "")),
             "selected_results": [
                 self._debug_result_payload(item, effective_term_groups)
                 for item in results

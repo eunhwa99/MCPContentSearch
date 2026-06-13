@@ -841,7 +841,7 @@ def test_answer_service_preserves_public_question_raw_for_mcp_contract():
         )
     )
 
-    assert answer["question"] == "https://user:pass@example.com/private?token=super-secret-value /Users/eunhwa/private/doc.md"
+    assert answer["question"] == "redacted redacted"
     assert "super-secret-value" not in str(answer["citations"])
     assert answer["citations"][0]["url"] == "redacted"
     assert answer["citations"][0]["path"] == "redacted"

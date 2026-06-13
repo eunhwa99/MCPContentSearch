@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from core.models import SourceType, SyncJobStatus, SyncStatus
 from indexing.background_tasks import safe_error_message
+from search import debug_redaction
 
 if TYPE_CHECKING:
     from fetching.connectors import SourceRegistry
@@ -187,14 +188,29 @@ def register_tools(
     ) -> dict:
         """Citation 가능한 structured context 검색"""
         if context_search_service is None:
-            return {"query": query, "results": []}
+            return {"query": _redact_public_query_text(query), "results": []}
         public_filters, has_no_public_source = _public_filters(
             filters,
             metadata_store,
             allowed_source_ids,
         )
         if has_no_public_source:
-            return {"query": query, "results": []}
+            rewrite_enabled = bool(
+                getattr(context_search_service, "query_rewriter", None)
+            )
+            return {
+                "query": _redact_public_query_text(query),
+                "results": [],
+                "debug": {
+                    "retrieval_queries": [],
+                    "rewritten_queries": [],
+                    "effective_term_groups": [],
+                    "rewrite_enabled": rewrite_enabled,
+                    "rewrite_attempted": False,
+                    "rewrite_applied": False,
+                    "rewrite_skipped_reason": "no_matching_sources",
+                },
+            }
         public_filters = _with_default_public_source_filter(
             public_filters,
             allowed_source_ids,
@@ -214,8 +230,9 @@ def register_tools(
             if _payload_source_is_public(payload, metadata_store, allowed_source_ids)
         ]
         payload = {
-            "query": result["query"],
+            "query": _redact_public_query_text(result["query"]),
             "results": results,
+            "debug": result.get("debug", {}),
         }
         if include_debug and "debug" in result:
             payload["debug"] = result["debug"]
@@ -279,7 +296,7 @@ def register_tools(
         )
         if answer_service is None:
             return {
-                "question": question,
+                "question": _redact_public_query_text(question),
                 "answer": "Citation answer service is not configured.",
                 "evidence_status": "insufficient",
                 "citations": [],
@@ -326,6 +343,10 @@ def _redact_public_error_text(value):
     if not value:
         return value
     return safe_error_message(ValueError(str(value)))
+
+
+def _redact_public_query_text(value: str):
+    return debug_redaction.redact_debug_query_text(value)
 
 
 def _safe_auth_ref(value):
@@ -508,7 +529,7 @@ def _source_id_is_public(
 
 def _insufficient_answer_for_filtered_sources(question: str) -> dict:
     return {
-        "question": question,
+        "question": _redact_public_query_text(question),
         "answer": "No retained source matched the requested filters.",
         "evidence_status": "insufficient",
         "citations": [],
