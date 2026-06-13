@@ -12,6 +12,19 @@ Read the current plan document, `.agents/docs/harness-engineering.md`, `.agents/
 ## Work
 
 Add or update the smallest useful verification for the changed behavior. This phase is mandatory for code-changing work before any `$subagent-review-loop` review gate.
+When a work item adds a feature, the test lane must require focused tests for
+the changed behavior before review. It must also require adding or updating
+retained functional E2E coverage when the feature changes a user-visible or
+MCP-visible workflow and executing that added or updated retained E2E coverage
+before review, normally by extending the retained suite exercised by
+`./scripts/verify_functional_e2e.sh`. It must also require adding or updating
+eval coverage when the feature changes retrieval quality, ranking, grounding,
+citation selection, answer quality, or another quality-sensitive output already
+modeled by retained local evaluations, and running the matching eval command
+before review. If the feature falls within retained local eval coverage but no
+exact retained eval surface exists yet, it must also require extending an
+existing retained eval surface and running the matching eval command before
+review.
 
 Preferred checks by change type:
 
@@ -21,7 +34,15 @@ Preferred checks by change type:
 - MCP tool contracts: focused tests or smoke around `register_tools` and tool handlers.
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mocked collection. Avoid user Chroma data and SQLite metadata.
 - Fetching/network: mocked HTTP/API responses. Live Notion/Tistory/GitHub checks require user approval.
-- End-to-end feature verification: run `./scripts/verify_functional_e2e.sh` before review for code-changing work (covers retained source sync, MCP contracts, search, citation answer, indexing, and storage paths with deterministic tests).
+- End-to-end feature verification: run `./scripts/verify_functional_e2e.sh` before review for code-changing work (covers retained source sync, MCP contracts, search, citation answer, indexing, and storage paths with deterministic tests). This repo-wide regression gate is separate from the narrower requirement to add or update retained functional E2E coverage only when the feature changes a user-visible or MCP-visible workflow.
+- Eval verification: use deterministic local eval checks such as
+  `uv run pytest -q tests/evals` or `PYTHONPATH=. python scripts/run_contextwiki_eval.py`,
+  whichever matches the already-modeled retained eval surface for the changed
+  retrieval, ranking, grounding, citation-selection, or answer-quality
+  behavior. If no matching retained local eval surface exists yet, extend an
+  existing retained eval surface and run the matching eval command before
+  review. Features outside the current retained local eval coverage are not
+  subject to this eval requirement until the retained eval scope changes.
 
 Use uv when it is available and healthy. If uv fails because local setup is broken, record the blocker and run a dependency-free fallback when useful.
 
