@@ -98,7 +98,8 @@ class ContextRetrievalPipeline:
         effective_term_groups = term_groups
         rewritten_queries: list[str] = []
 
-        if self.should_try_query_rewrite(candidates, term_groups, top_k):
+        rewrite_reason = self.query_rewrite_reason(candidates, term_groups, top_k)
+        if rewrite_reason:
             rewritten_queries = await self.rewrite_queries(query, term_groups)
             if rewritten_queries:
                 effective_term_groups = self.merged_term_groups(
@@ -134,6 +135,9 @@ class ContextRetrievalPipeline:
             "rewritten_queries": rewritten_queries,
             "original_term_groups": term_groups,
             "effective_term_groups": effective_term_groups,
+            "query_rewrite_reason": rewrite_reason or "",
+            "query_rewrite_attempted": bool(rewrite_reason),
+            "query_rewrite_applied": bool(rewritten_queries),
         }
 
     def retrieve_candidates_for_variants(
@@ -243,16 +247,26 @@ class ContextRetrievalPipeline:
         term_groups: list[set[str]],
         top_k: int,
     ) -> bool:
+        return bool(self.query_rewrite_reason(candidates, term_groups, top_k))
+
+    def query_rewrite_reason(
+        self,
+        candidates: list[dict[str, Any]],
+        term_groups: list[set[str]],
+        top_k: int,
+    ) -> str:
         if self.query_rewriter is None or not term_groups:
-            return False
+            return ""
         if not candidates:
-            return True
+            return "no_initial_candidates"
         if len(candidates) < top_k:
-            return True
+            return "insufficient_candidate_count"
         if not self.ranker.candidates_have_textual_matches(candidates, term_groups):
-            return True
+            return "missing_textual_match"
         top_score = max(float(candidate.get("score", 0.0)) for candidate in candidates)
-        return top_score < 0.75
+        if top_score < 0.75:
+            return "low_initial_score"
+        return ""
 
     @staticmethod
     def dedupe_queries(queries: list[str]) -> list[str]:

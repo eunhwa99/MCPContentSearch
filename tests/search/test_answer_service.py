@@ -22,8 +22,46 @@ class FakeContextSearch:
     def __init__(self, results):
         self.results = results
 
-    async def search_context(self, query, filters=None, top_k=5):
+    async def search_context(
+        self,
+        query,
+        filters=None,
+        top_k=5,
+        include_debug=False,
+        include_internal_metadata=False,
+    ):
         return {"query": query, "results": self.results[:top_k]}
+
+
+class RecordingContextSearch(FakeContextSearch):
+    def __init__(self, results):
+        super().__init__(results)
+        self.calls = []
+
+    async def search_context(
+        self,
+        query,
+        filters=None,
+        top_k=5,
+        include_debug=False,
+        include_internal_metadata=False,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "filters": filters,
+                "top_k": top_k,
+                "include_debug": include_debug,
+                "include_internal_metadata": include_internal_metadata,
+            }
+        )
+        return await super().search_context(
+            query,
+            filters=filters,
+            top_k=top_k,
+            include_debug=include_debug,
+            include_internal_metadata=include_internal_metadata,
+        )
 
 
 def test_answer_service_returns_insufficient_evidence_without_grounding():
@@ -81,6 +119,33 @@ def test_answer_service_uses_only_returned_context_as_citations():
     assert "[C1]" in answer["answer"]
     assert "## Query" in answer["debug_markdown"]
     assert answer["debug"]["selected_chunks"][0]["matched_terms"]
+
+
+def test_answer_service_always_requests_search_debug_for_internal_grounding():
+    result = ContextSearchResult(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        source_id="source_fake",
+        source_type="notion",
+        title="ContextWiki",
+        score=0.92,
+        preview="ContextWiki is an MCP knowledge backend.",
+        text="ContextWiki is an MCP knowledge backend.",
+    )
+    context_search = RecordingContextSearch([result])
+    service = CitationAnswerService(
+        context_search=context_search,
+        min_score=0.5,
+        min_results=1,
+    )
+
+    asyncio.run(service.answer_with_citations("What is ContextWiki?"))
+    asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
+
+    assert context_search.calls[0]["include_debug"] is False
+    assert context_search.calls[0]["include_internal_metadata"] is True
+    assert context_search.calls[1]["include_debug"] is True
+    assert context_search.calls[1]["include_internal_metadata"] is True
 
 
 def test_answer_service_rejects_high_score_context_without_query_terms():
@@ -246,7 +311,14 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
     )
 
     class RewriteDebugContextSearch(FakeContextSearch):
-        async def search_context(self, query, filters=None, top_k=5):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
             return {
                 "query": query,
                 "results": [result],
@@ -270,6 +342,64 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
     assert answer["debug"]["rewritten_queries"] == ["aws ec2 setup"]
 
 
+def test_answer_service_carries_query_rewrite_explainability_from_search_debug():
+    result = ContextSearchResult(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        source_id="source_fake",
+        source_type="notion",
+        title="EC2 setup",
+        score=0.9,
+        preview="EC2 setup notes",
+        text="EC2 setup notes",
+    )
+
+    class ExplainedContextSearch(FakeContextSearch):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
+            return {
+                "query": query,
+                "results": [result],
+                "_grounding": {
+                    "original_term_groups": [["aws"], ["virtual"], ["machine"]],
+                    "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
+                },
+                "debug": {
+                    "retrieval_queries": ["aws virtual machine startup", "aws ec2 setup"],
+                    "rewritten_queries": ["aws ec2 setup"],
+                    "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
+                    "query_rewrite": {
+                        "attempted": True,
+                        "applied": True,
+                        "reason": "low_initial_score",
+                        "original_query": "aws virtual machine startup",
+                        "rewritten_queries": ["aws ec2 setup"],
+                    },
+                    "filters": {"source_ids": ["source_fake"]},
+                    "selected_results": [{"chunk_id": "chunk-1", "source_id": "source_fake"}],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=ExplainedContextSearch([result]),
+        min_score=0.1,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
+
+    assert answer["debug"]["query_rewrite"]["reason"] == "low_initial_score"
+    assert answer["debug"]["filters"] == {"source_ids": ["source_fake"]}
+    assert answer["debug"]["retrieval_selected_results"][0]["chunk_id"] == "chunk-1"
+    assert "rewrite reason: `low_initial_score`" in answer["debug_markdown"]
+
+
 def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
     result = ContextSearchResult(
         chunk_id="chunk-debug-guide",
@@ -288,7 +418,14 @@ def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
     )
 
     class RedactedDisplayContextSearch(FakeContextSearch):
-        async def search_context(self, query, filters=None, top_k=5):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
             return {
                 "query": query,
                 "results": [result],
@@ -359,7 +496,14 @@ def test_answer_service_keeps_original_topical_constraint_when_rewrite_relaxes_q
     )
 
     class RewriteDebugContextSearch(FakeContextSearch):
-        async def search_context(self, query, filters=None, top_k=5):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
             return {
                 "query": query,
                 "results": [result],
@@ -552,7 +696,14 @@ def test_answer_service_redacts_query_fields_when_they_include_paths_or_credenti
     )
 
     class QueryDebugContextSearch(FakeContextSearch):
-        async def search_context(self, query, filters=None, top_k=5):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
             return {
                 "query": query,
                 "results": [result],

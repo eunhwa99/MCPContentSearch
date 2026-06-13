@@ -179,7 +179,12 @@ def register_tools(
         return {"sources": statuses}
 
     @mcp.tool()
-    async def search_context(query: str, filters: dict = None, top_k: int = 10) -> dict:
+    async def search_context(
+        query: str,
+        filters: dict = None,
+        top_k: int = 10,
+        include_debug: bool = False,
+    ) -> dict:
         """Citation 가능한 structured context 검색"""
         if context_search_service is None:
             return {"query": query, "results": []}
@@ -198,6 +203,7 @@ def register_tools(
             query,
             filters=public_filters,
             top_k=top_k,
+            include_debug=include_debug,
         )
         results = [
             payload
@@ -207,10 +213,13 @@ def register_tools(
             )
             if _payload_source_is_public(payload, metadata_store, allowed_source_ids)
         ]
-        return {
+        payload = {
             "query": result["query"],
             "results": results,
         }
+        if include_debug and "debug" in result:
+            payload["debug"] = result["debug"]
+        return payload
 
     @mcp.tool()
     async def fetch_context(document_id: str = "", chunk_id: str = "") -> dict:
@@ -250,7 +259,12 @@ def register_tools(
         }
 
     @mcp.tool()
-    async def answer_with_citations(question: str, filters: dict = None, top_k: int = 5) -> dict:
+    async def answer_with_citations(
+        question: str,
+        filters: dict = None,
+        top_k: int = 5,
+        include_debug: bool = False,
+    ) -> dict:
         """검색된 chunk 근거만 사용해 citation 포함 답변 생성"""
         public_filters, has_no_public_source = _public_filters(
             filters,
@@ -275,6 +289,7 @@ def register_tools(
             question,
             filters=public_filters,
             top_k=top_k,
+            include_debug=include_debug,
         )
 
 

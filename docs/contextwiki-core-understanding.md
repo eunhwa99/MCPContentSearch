@@ -164,12 +164,17 @@ Current tools:
 | `sync_source(source_id)` | refresh one source |
 | `sync_all()` | refresh all retained sources concurrently and return aggregate results |
 | `get_sync_status(source_id?)` | inspect source/job state |
-| `search_context(query, filters, top_k)` | find SQLite-validated evidence |
+| `search_context(query, filters, top_k, include_debug)` | find SQLite-validated evidence |
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
-| `answer_with_citations(question, filters, top_k)` | answer from validated evidence |
+| `answer_with_citations(question, filters, top_k, include_debug)` | answer from validated evidence |
 
 Tool handlers call service boundaries and return JSON-safe values through
 Pydantic `model_dump(mode="json")` where needed.
+
+`include_debug=True` is the retained explainability switch for retrieval and
+grounded answers. It is additive and opt-in: default payloads stay small, while
+debug payloads expose structured retrieval reasoning without dumping raw local
+DB contents.
 
 `list_sources()` and `get_sync_status()` expose additive reviewer-readable
 operational fields per source:
@@ -257,6 +262,26 @@ flowchart TD
 
 Search results are not trusted directly from Chroma. They are hydrated and
 validated through SQLite before they become evidence or citations.
+
+When `search_context(..., include_debug=True)` is used, the response now makes
+that decision path visible with reviewer-readable fields such as:
+
+```text
+query_rewrite.attempted / applied / reason
+retrieval_queries
+rewritten_queries
+filters.source_ids
+selected_results[]
+```
+
+`query_rewrite.reason` is intentionally coarse and stable. Current values are:
+
+```text
+no_initial_candidates
+insufficient_candidate_count
+missing_textual_match
+low_initial_score
+```
 
 ---
 

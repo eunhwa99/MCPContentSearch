@@ -17,7 +17,7 @@ portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
 - MCP tools: `api/tools.py` registers only retained ContextWiki retrieval tools:
-  `list_sources`, `sync_source`, `get_sync_status`, `search_context`,
+  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`, `search_context`,
   `fetch_context`, and `answer_with_citations`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
@@ -120,10 +120,11 @@ Current tools:
 
 - `list_sources() -> dict`
 - `sync_source(source_id: str) -> dict`
+- `sync_all() -> dict`
 - `get_sync_status(source_id: str = "") -> dict`
-- `search_context(query: str, filters: dict = None, top_k: int = 10) -> dict`
+- `search_context(query: str, filters: dict = None, top_k: int = 10, include_debug: bool = False) -> dict`
 - `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
-- `answer_with_citations(question: str, filters: dict = None, top_k: int = 5) -> dict`
+- `answer_with_citations(question: str, filters: dict = None, top_k: int = 5, include_debug: bool = False) -> dict`
 
 When changing a tool:
 

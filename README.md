@@ -45,9 +45,9 @@ The retained MCP tools are:
 | `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
 | `sync_all()` | Sync all retained sources concurrently and return aggregate per-source results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
-| `search_context(query, filters=None, top_k=10)` | Return structured, SQLite-validated evidence chunks. |
+| `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured, SQLite-validated evidence chunks. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
-| `answer_with_citations(question, filters=None, top_k=5)` | Build an evidence-gated answer with citations and used chunks. |
+| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks. |
 
 Tool handlers live in `api/tools.py`; business behavior stays in `indexing/`,
 `search/`, `fetching/`, and `storage/`.
@@ -64,6 +64,11 @@ for reviewer-readable retained-source state:
 
 `sync_all()` returns a top-level `summary` with total/succeeded/failed/blocked
 counts plus per-source `results` that preserve each source's latest job payload.
+
+`search_context(..., include_debug=True)` and
+`answer_with_citations(..., include_debug=True)` expose additive explainability
+payloads. They stay off by default so the retained MCP surface remains lean for
+normal callers.
 
 ## Optional Search Query Rewrite
 
@@ -83,6 +88,41 @@ The rewrite path is not a dynamic web fallback, does not fetch external source
 content, and does not mutate SQLite or Chroma. Keep it disabled to avoid
 query-rewrite egress. Fully local operation also depends on using a local or
 otherwise non-egress embedding configuration for LlamaIndex/Chroma.
+
+When `include_debug=True`, rewrite becomes a visible retrieval feature:
+
+- `query_rewrite.attempted` / `applied`
+- `query_rewrite.reason`, for example `no_initial_candidates`,
+  `insufficient_candidate_count`, `missing_textual_match`, or
+  `low_initial_score`
+- original query, rewritten queries, effective retrieval queries
+- source filters and structured selected-result summaries
+
+Example:
+
+```json
+{
+  "debug": {
+    "query_rewrite": {
+      "attempted": true,
+      "applied": true,
+      "reason": "low_initial_score",
+      "original_query": "aws virtual machine startup",
+      "rewritten_queries": ["aws ec2 setup"]
+    },
+    "filters": {
+      "source_ids": ["source_github"]
+    },
+    "selected_results": [
+      {
+        "chunk_id": "chunk-ec2-guide",
+        "source_id": "source_github",
+        "matched_terms": ["aws", "ec2"]
+      }
+    ]
+  }
+}
+```
 
 ## Source Connectors
 
