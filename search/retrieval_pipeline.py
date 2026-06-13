@@ -40,6 +40,8 @@ class ContextRetrievalPipeline:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
+        *,
+        allow_query_rewrite: bool = True,
     ) -> dict[str, Any]:
         if self.retriever is not None:
             if callable(self.retriever):
@@ -98,7 +100,9 @@ class ContextRetrievalPipeline:
         effective_term_groups = term_groups
         rewritten_queries: list[str] = []
 
-        rewrite_reason = self.query_rewrite_reason(candidates, term_groups, top_k)
+        rewrite_reason = ""
+        if allow_query_rewrite:
+            rewrite_reason = self.query_rewrite_reason(candidates, term_groups, top_k)
         if rewrite_reason:
             rewritten_queries = await self.rewrite_queries(query, term_groups)
             if rewritten_queries:

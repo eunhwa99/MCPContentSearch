@@ -339,7 +339,7 @@ class FakeContextSearch:
                 ContextSearchResult(
                     chunk_id="chunk-1",
                     document_id="doc-1",
-                    source_id="source_fake",
+                    source_id="source_github",
                     source_type="notion",
                     title="ContextWiki",
                     score=0.9,
@@ -358,6 +358,26 @@ class FakeContextSearch:
             },
         }
 
+    async def search_documents(self, query, filters=None, top_k=10):
+        return {
+            "query": query,
+            "results": [
+                {
+                    "document_id": "doc-1",
+                    "chunk_id": "chunk-1",
+                    "source_id": "source_github",
+                    "source_type": "notion",
+                    "title": "ContextWiki",
+                    "score": 0.9,
+                    "vector_score": 0.2,
+                    "metadata_priority": 1,
+                    "preview": "ContextWiki evidence",
+                    "url": "https://example.com/contextwiki",
+                    "path": "ContextWiki",
+                }
+            ],
+        }
+
 
 class FakeDictContextSearch:
     async def search_context(self, query, filters=None, top_k=10, include_debug=False):
@@ -367,13 +387,38 @@ class FakeDictContextSearch:
                 {
                     "chunk_id": "chunk-1",
                     "document_id": "doc-1",
-                    "source_id": "source_fake",
+                    "source_id": "source_github",
                     "source_type": "notion",
                     "title": "ContextWiki",
                     "score": 0.9,
                     "vector_score": 0.2,
                     "preview": "ContextWiki evidence",
                     "text": "ContextWiki evidence",
+                }
+            ],
+        }
+
+    async def search_documents(self, query, filters=None, top_k=10):
+        return {
+            "query": query,
+            "results": [
+                {
+                    "document_id": "doc-1",
+                    "chunk_id": "chunk-1",
+                    "source_id": "source_github",
+                    "source_type": "notion",
+                    "title": "ContextWiki",
+                    "score": 0.9,
+                    "vector_score": 0.2,
+                    "metadata_priority": 1,
+                    "preview": "ContextWiki evidence",
+                    "text": "Chunk-level text should not leak",
+                    "line_start": 10,
+                    "line_end": 20,
+                    "version_id": "v1",
+                    "updated_at": "2026-06-12T00:00:00+00:00",
+                    "url": "https://example.com/contextwiki",
+                    "path": "ContextWiki",
                 }
             ],
         }
@@ -439,6 +484,17 @@ class CapturingContextSearch(FakeContextSearch):
             top_k=top_k,
             include_debug=include_debug,
         )
+
+    async def search_documents(self, query, filters=None, top_k=10):
+        self.calls.append(
+            {
+                "query": query,
+                "filters": filters,
+                "top_k": top_k,
+                "tool": "search_documents",
+            }
+        )
+        return await super().search_documents(query, filters=filters, top_k=top_k)
 
 
 def test_sync_source_returns_structured_error_for_unknown_source():
@@ -832,6 +888,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "sync_all",
         "get_sync_status",
         "search_context",
+        "search_documents",
         "fetch_context",
         "answer_with_citations",
     } == set(mcp.tools)
@@ -848,6 +905,7 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
 
     status = asyncio.run(mcp.tools["get_sync_status"]())
     search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
+    document_search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id="chunk-1"))
     answer = asyncio.run(mcp.tools["answer_with_citations"]("What is ContextWiki?"))
 
@@ -856,6 +914,10 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
     assert "vector_score" not in search["results"][0]
+    assert document_search["results"][0]["document_id"] == "doc-1"
+    assert document_search["results"][0]["chunk_id"] == "chunk-1"
+    assert "vector_score" not in document_search["results"][0]
+    assert "metadata_priority" not in document_search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
     assert answer["evidence_status"] == "grounded"
     assert "debug" not in answer
@@ -957,6 +1019,9 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     filtered_search = asyncio.run(
         mcp.tools["search_context"]("legacy web", filters={"source_id": "source_web"})
     )
+    filtered_document_search = asyncio.run(
+        mcp.tools["search_documents"]("legacy web", filters={"source_id": "source_web"})
+    )
     filtered_answer = asyncio.run(
         mcp.tools["answer_with_citations"](
             "What did legacy web say?",
@@ -977,6 +1042,7 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     assert fetched_chunk["chunk"] is None
     assert fetched_document == {"document": None, "chunks": []}
     assert filtered_search["results"] == []
+    assert filtered_document_search["results"] == []
     assert filtered_answer["evidence_status"] == "insufficient"
     assert filtered_answer["citations"] == []
 
@@ -1048,6 +1114,52 @@ def test_search_context_injects_retained_source_filter_when_unfiltered():
     assert context_search.calls[0]["include_debug"] is False
 
 
+def test_search_documents_sanitizes_mixed_source_filters():
+    context_search = CapturingContextSearch()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=context_search,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    search = asyncio.run(
+        mcp.tools["search_documents"](
+            "What does GitHub say?",
+            filters={"source_ids": ["source_github", "source_web"], "tag": "docs"},
+        )
+    )
+
+    assert search["results"][0]["document_id"] == "doc-1"
+    assert context_search.calls[0]["filters"] == {
+        "source_ids": ["source_github"],
+        "tag": "docs",
+    }
+    assert context_search.calls[0]["tool"] == "search_documents"
+
+
+def test_search_documents_injects_retained_source_filter_when_unfiltered():
+    context_search = CapturingContextSearch()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=context_search,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    asyncio.run(mcp.tools["search_documents"]("What is retained?"))
+
+    assert context_search.calls[0]["filters"] == {
+        "source_ids": [
+            "source_github",
+            "source_notion",
+            "source_obsidian",
+            "source_tistory",
+        ],
+    }
+    assert context_search.calls[0]["tool"] == "search_documents"
+
+
 def test_search_context_contract_strips_vector_score_from_dict_results():
     mcp = FakeMCP()
     register_tools(
@@ -1058,6 +1170,24 @@ def test_search_context_contract_strips_vector_score_from_dict_results():
     search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
 
     assert "vector_score" not in search["results"][0]
+
+
+def test_search_documents_contract_strips_chunk_only_fields_from_dict_results():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=FakeDictContextSearch(),
+    )
+
+    search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+
+    assert "vector_score" not in search["results"][0]
+    assert "metadata_priority" not in search["results"][0]
+    assert "text" not in search["results"][0]
+    assert "line_start" not in search["results"][0]
+    assert "line_end" not in search["results"][0]
+    assert "version_id" not in search["results"][0]
+    assert "updated_at" not in search["results"][0]
 
 
 def test_get_sync_status_returns_source_after_status_recovery():

@@ -17,8 +17,9 @@ portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
 - MCP tools: `api/tools.py` registers only retained ContextWiki retrieval tools:
-  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`, `search_context`,
-  `fetch_context`, and `answer_with_citations`.
+  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
+  `search_context`, `search_documents`, `fetch_context`, and
+  `answer_with_citations`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
 - Secrets/environment loading: `environments/token.py` and runtime environment
@@ -28,8 +29,9 @@ portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
   fetching and connector registration.
 - Indexing: `indexing/` chunks documents, detects unchanged/reindexed content,
   writes vectors to Chroma/LlamaIndex, and coordinates lifecycle metadata.
-- Search: `search/` provides SQLite-gated context search, ranking, direct
-  context fetch, and citation answer scaffolding.
+- Search: `search/` provides SQLite-gated chunk retrieval, grouped
+  document-browsing retrieval, ranking, direct context fetch, and citation
+  answer scaffolding.
 - Persistence: SQLite metadata via `storage/metadata_store.py` plus ChromaDB via
   `chromadb.PersistentClient`, defaulting to local user storage unless tests
   provide temporary paths.
@@ -75,7 +77,15 @@ search_context
   -> ContextSearchService
   -> Chroma/LlamaIndex candidate retrieval
   -> MetadataStore active chunk/document validation
-  -> structured search result payload
+  -> chunk-level structured search result payload
+
+search_documents
+  -> ContextSearchService
+  -> Chroma/LlamaIndex candidate retrieval
+  -> MetadataStore active chunk/document validation
+  -> group by document_id
+  -> choose highest-ranked representative chunk per document
+  -> grouped document-browsing payload
 
 fetch_context
   -> MetadataStore direct document/chunk hydration
@@ -123,8 +133,16 @@ Current tools:
 - `sync_all() -> dict`
 - `get_sync_status(source_id: str = "") -> dict`
 - `search_context(query: str, filters: dict = None, top_k: int = 10, include_debug: bool = False) -> dict`
+- `search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict`
 - `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
 - `answer_with_citations(question: str, filters: dict = None, top_k: int = 5, include_debug: bool = False) -> dict`
+
+Contract intent:
+
+- `search_context` remains the chunk-level evidence and citation surface.
+- `search_documents` is additive and document-oriented: it uses the same
+  retained-source retrieval path but returns one representative chunk-backed row
+  per document for browsing.
 
 When changing a tool:
 
@@ -217,8 +235,8 @@ Use the smallest useful check first.
 - Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
   live API or real-vault checks only with explicit approval.
 - Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
-  retained MCP sync/search/fetch/answer paths without browser, wiki, live API,
-  or LLM dependencies.
+  retained MCP sync/search/fetch/answer paths, including grouped document
+  browsing, without browser, wiki, live API, or LLM dependencies.
 
 ## Harness Usage
 
