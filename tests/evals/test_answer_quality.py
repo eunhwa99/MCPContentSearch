@@ -137,27 +137,48 @@ def test_secret_like_output_fails_local_eval():
 
 
 def test_fixture_cases_load_and_suite_summarizes_results():
-    cases = load_cases(Path("evals/answer_quality_cases.json"))
+    cases = load_cases(Path("evals/contextwiki_answer_quality_cases.json"))
     payloads = {
-        "contextwiki-grounded-answer": {
-            "answer": "ContextWiki is an MCP backend that answers with citations.",
+        "github-sync-docs-answer": {
+            "answer": "GitHub sync guide explains how ContextWiki answers with citations.",
             "evidence_status": "grounded",
-            "citations": [{"chunk_id": "chunk-contextwiki-overview"}],
-            "used_chunks": ["chunk-contextwiki-overview"],
+            "citations": [{"chunk_id": "github-sync-doc-chunk"}],
+            "used_chunks": ["github-sync-doc-chunk"],
         },
-        "unknown-deployment-region": {
+        "neetcode-problems-answer": {
+            "answer": "NeetCode problem list captures canonical problem categories.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "neetcode-problems-chunk"}],
+            "used_chunks": ["neetcode-problems-chunk"],
+        },
+        "unknown-deployment-region-answer": {
             "answer": "Insufficient evidence in indexed context to answer this question.",
             "evidence_status": "insufficient",
             "citations": [],
             "used_chunks": [],
+        },
+        "aws-collection-answer": {
+            "answer": "## Grounded List\n\n- Indexed evidence matched this collection request for `AWS 관련 문서 모아줘`.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "aws-guide-chunk"}],
+            "used_chunks": ["aws-guide-chunk"],
+        },
+        "dynamodb-cassandra-comparison-answer": {
+            "answer": "## Grounded Comparison\n\n- DynamoDB notes\n- Cassandra notes",
+            "evidence_status": "grounded",
+            "citations": [
+                {"chunk_id": "dynamodb-notes-chunk"},
+                {"chunk_id": "cassandra-notes-chunk"},
+            ],
+            "used_chunks": ["dynamodb-notes-chunk", "cassandra-notes-chunk"],
         },
     }
 
     summary = evaluate_answer_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 2
-    assert summary["passed_count"] == 2
+    assert summary["total"] == 5
+    assert summary["passed_count"] == 5
 
 
 def test_answer_suite_fails_when_case_list_is_empty():

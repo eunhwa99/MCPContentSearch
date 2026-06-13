@@ -794,6 +794,175 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
     ]
 
 
+def test_search_context_debug_exposes_intent_for_collection_query(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_document_chunks(
+        store,
+        "doc-aws-guide",
+        "aws-guide-chunk",
+        "source_notion",
+        "AWS deployment guide",
+        "Amazon Web Services deployment checklist and setup notes.",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "AWS 관련 문서 모아줘",
+            top_k=1,
+            include_debug=True,
+        )
+    )
+
+    assert result["debug"]["intent"]["name"] == "list"
+    assert "list_hint" in result["debug"]["intent"]["reasons"]
+
+
+def test_search_context_debug_exposes_strict_lookup_intent_name(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:example/repo:docs/usage.md",
+        "usage-doc-chunk",
+        "source_github",
+        "Usage guide",
+        "Usage guide content.",
+        path="docs/usage.md",
+        url="https://github.com/example/repo/blob/main/docs/usage.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "repo docs",
+            top_k=1,
+            include_debug=True,
+        )
+    )
+
+    assert result["debug"]["intent"]["name"] == "strict_lookup"
+
+
+def test_broad_topic_list_query_prefers_document_like_docs_before_code(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:example/repo:docs/aws-overview.md",
+        "aws-doc-chunk",
+        "source_github",
+        "AWS Overview",
+        "AWS overview, architecture, and deployment checklist.",
+        path="docs/aws-overview.md",
+        url="https://github.com/example/repo/blob/main/docs/aws-overview.md",
+    )
+    seed_document_chunks(
+        store,
+        "github:example/repo:src/aws_client.py",
+        "aws-code-chunk",
+        "source_github",
+        "aws_client.py",
+        "class AwsClient: pass",
+        path="src/aws_client.py",
+        url="https://github.com/example/repo/blob/main/src/aws_client.py",
+    )
+
+    class AwsMixedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            doc_node = FakeNode("aws-doc-chunk", 0.82)
+            doc_node.metadata["document_id"] = "github:example/repo:docs/aws-overview.md"
+            doc_node.metadata["source_id"] = "source_github"
+            code_node = FakeNode("aws-code-chunk", 0.91)
+            code_node.metadata["document_id"] = "github:example/repo:src/aws_client.py"
+            code_node.metadata["source_id"] = "source_github"
+            return [code_node, doc_node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", AwsMixedVectorRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "AWS 관련 문서 모아줘",
+            top_k=2,
+        )
+    )
+
+    assert result["results"][0].chunk_id == "aws-doc-chunk"
+
+
+def test_broad_topic_duplicate_document_penalty_prefers_best_sibling_not_first_seen(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    shared_document_id = "github:example/repo:docs/aws-guide.md"
+    seed_document_chunks(
+        store,
+        shared_document_id,
+        "aws-guide-weak",
+        "source_github",
+        "AWS guide weak",
+        "AWS notes",
+        path="docs/aws-guide.md",
+        url="https://github.com/example/repo/blob/main/docs/aws-guide.md",
+    )
+    chunk = store.get_chunk("aws-guide-weak")
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id=shared_document_id,
+            document_id=shared_document_id,
+            external_id=shared_document_id,
+            source_id="source_github",
+            title="AWS guide",
+            content="AWS overview and deployment checklist.",
+            url="https://github.com/example/repo/blob/main/docs/aws-guide.md",
+            canonical_url="https://github.com/example/repo/blob/main/docs/aws-guide.md",
+            platform="GitHub",
+            path="docs/aws-guide.md",
+        ),
+        [
+                chunk.model_copy(update={"chunk_id": "aws-guide-weak", "text": "AWS notes"}),
+                chunk.model_copy(
+                    update={
+                        "chunk_id": "aws-guide-strong",
+                        "text": "AWS architecture deployment checklist and overview notes",
+                        "content_hash": "aws-guide-strong",
+                    }
+                ),
+        ],
+    )
+
+    class DuplicateDocRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            weak = FakeNode("aws-guide-weak", 0.9)
+            weak.metadata["document_id"] = shared_document_id
+            weak.metadata["source_id"] = "source_github"
+            strong = FakeNode("aws-guide-strong", 0.8)
+            strong.metadata["document_id"] = shared_document_id
+            strong.metadata["source_id"] = "source_github"
+            return [weak, strong]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", DuplicateDocRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context(
+            "AWS architecture deployment checklist 모아줘",
+            top_k=2,
+        )
+    )
+
+    assert result["results"][0].chunk_id == "aws-guide-strong"
+
+
 def test_search_context_uses_korean_obsidian_source_intent_for_metadata_fallback(
     monkeypatch,
     tmp_path,

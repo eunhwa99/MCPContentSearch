@@ -6,6 +6,7 @@ from llama_index.core.retrievers import VectorIndexRetriever
 
 from core.models import ChunkModel, ContextSearchResult, DocumentModel, DocumentSearchResult
 from environments.config import AppConfig
+from search.intent import classify_intent
 from search import debug_redaction, ranking
 from search.query_rewrite import build_query_rewriter
 from search.ranking import ContextCandidateRanker
@@ -639,6 +640,7 @@ class ContextSearchService:
         effective_term_groups: list[set[str]],
         results: list[ContextSearchResult] | list[DocumentSearchResult],
     ) -> dict[str, Any]:
+        intent_decision = classify_intent(query, effective_term_groups)
         retrieval_queries = [
             self._redact_debug_query_text(value)
             for value in retrieval_debug.get("retrieval_queries", [])
@@ -649,6 +651,7 @@ class ContextSearchService:
         ]
         rewrite_debug = retrieval_debug.get("rewrite_debug", {})
         return {
+            "intent": intent_decision.as_debug_payload(),
             "retrieval_queries": retrieval_queries,
             "rewritten_queries": rewritten_queries,
             "effective_term_groups": [

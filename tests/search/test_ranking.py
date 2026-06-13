@@ -1,6 +1,7 @@
 import pytest
 
 from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
+from search.intent import RetrievalIntent, classify_intent
 from search import ranking
 
 
@@ -56,3 +57,33 @@ def test_document_matches_source_type_terms_recognizes_obsidian_source_ids():
         canonical_document,
         {"obsidian"},
     )
+
+
+def test_classify_intent_prefers_strict_lookup_for_document_anchored_query():
+    decision = classify_intent(
+        "ImageGallery docs",
+        ranking.query_term_groups("ImageGallery docs"),
+    )
+
+    assert decision.intent is RetrievalIntent.STRICT_LOOKUP
+    assert "document_hint" in decision.reasons or "strong_anchor" in decision.reasons
+
+
+def test_classify_intent_prefers_list_for_collection_request():
+    decision = classify_intent(
+        "AWS 관련 문서 모아줘",
+        ranking.query_term_groups("AWS 관련 문서 모아줘"),
+    )
+
+    assert decision.intent is RetrievalIntent.LIST
+    assert "list_hint" in decision.reasons
+
+
+def test_classify_intent_prefers_comparison_for_vs_query():
+    decision = classify_intent(
+        "DynamoDB vs Cassandra 차이 비교",
+        ranking.query_term_groups("DynamoDB vs Cassandra 차이 비교"),
+    )
+
+    assert decision.intent is RetrievalIntent.COMPARISON
+    assert "comparison_hint" in decision.reasons

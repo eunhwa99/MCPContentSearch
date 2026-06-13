@@ -4,6 +4,7 @@ from typing import Any, cast
 
 from core.models import ChunkModel, DocumentModel
 from environments.config import AppConfig
+from search.intent import RetrievalIntent, classify_intent
 from search.query_terms import (
     BROAD_TOPIC_TERMS,
     DOCUMENT_INTENT_TERMS,
@@ -859,10 +860,11 @@ class ContextCandidateRanker:
     ) -> list[dict[str, Any]]:
         if not candidates:
             return []
+        intent = classify_intent(query, term_groups).intent
         scoring_groups = scoring_term_groups(term_groups)
         preferred_phrases = preferred_query_phrases(query, term_groups)
         source_type_terms = query_source_type_terms(term_groups)
-        reranked = []
+        prelim: list[dict[str, Any]] = []
         for order, candidate in enumerate(candidates):
             chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
             if not chunk:
@@ -906,15 +908,34 @@ class ContextCandidateRanker:
                 for term in group
             ):
                 rerank_score += 0.1
-            reranked.append(
+            if intent in {RetrievalIntent.BROAD_TOPIC, RetrievalIntent.LIST}:
+                if is_document_like_match:
+                    rerank_score += 0.18
+                if self.is_github_document(document) and not is_document_like_match:
+                    rerank_score -= 0.12
+            elif intent is RetrievalIntent.COMPARISON:
+                if is_document_like_match:
+                    rerank_score += 0.08
+                if source_type_terms and self.document_matches_source_type_terms(document, source_type_terms):
+                    rerank_score += 0.05
+            elif intent is RetrievalIntent.STRICT_LOOKUP:
+                if is_document_like_match and any(
+                    group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups
+                ):
+                    rerank_score += 0.08
+            prelim.append(
                 {
                     **candidate,
+                    "document_id": chunk.document_id,
                     "vector_score": float(candidate.get("vector_score", candidate.get("score", 0.0))),
                     "score": rerank_score,
                     "rerank_score": rerank_score,
+                    "intent": intent.value,
                     "_order": order,
                 }
             )
+
+        reranked = self._apply_duplicate_document_penalty(prelim, intent)
         reranked.sort(
             key=lambda item: (
                 -float(item.get("rerank_score", item.get("score", 0.0))),
@@ -926,6 +947,35 @@ class ContextCandidateRanker:
             {key: value for key, value in item.items() if key != "_order"}
             for item in reranked[:top_k]
         ]
+
+    @staticmethod
+    def _apply_duplicate_document_penalty(
+        candidates: list[dict[str, Any]],
+        intent: RetrievalIntent,
+    ) -> list[dict[str, Any]]:
+        if intent not in {RetrievalIntent.BROAD_TOPIC, RetrievalIntent.LIST}:
+            return candidates
+
+        by_document: dict[str, list[dict[str, Any]]] = {}
+        for candidate in candidates:
+            by_document.setdefault(str(candidate.get("document_id") or ""), []).append(candidate)
+
+        adjusted: list[dict[str, Any]] = []
+        for siblings in by_document.values():
+            siblings.sort(
+                key=lambda item: (
+                    -float(item.get("rerank_score", item.get("score", 0.0))),
+                    item.get("_order", 0),
+                )
+            )
+            for sibling_index, sibling in enumerate(siblings):
+                updated = dict(sibling)
+                if sibling_index > 0:
+                    penalty = 0.08 * sibling_index
+                    updated["rerank_score"] = float(updated.get("rerank_score", updated.get("score", 0.0))) - penalty
+                    updated["score"] = float(updated.get("score", 0.0)) - penalty
+                adjusted.append(updated)
+        return adjusted
 
     def metadata_fallback_source_ids(
         self,

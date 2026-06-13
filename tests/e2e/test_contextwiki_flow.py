@@ -152,17 +152,35 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
             top_k=5,
         )
     )
+    collection_search = asyncio.run(
+        mcp.tools["search_context"](
+            "ContextWiki 관련 문서 모아줘",
+            filters={"source_ids": ["source_fake_docs"]},
+            top_k=5,
+            include_debug=True,
+        )
+    )
     chunk_id = search_result["results"][0]["chunk_id"]
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id=chunk_id))
     answer = asyncio.run(mcp.tools["answer_with_citations"]("How does ContextWiki answer?"))
+    collection_answer = asyncio.run(
+        mcp.tools["answer_with_citations"](
+            "ContextWiki 관련 문서 모아줘",
+            filters={"source_ids": ["source_fake_docs"]},
+            top_k=5,
+        )
+    )
     unsupported = asyncio.run(mcp.tools["answer_with_citations"]("What is the deployment region?"))
 
     assert sync_job["status"] == "succeeded"
     assert status["source"]["sync_status"] == "succeeded"
     assert search_result["results"][0]["title"] == "ContextWiki MVP"
+    assert collection_search["debug"]["intent"]["name"] == "list"
     assert fetched["chunk"]["text"] == "ContextWiki syncs documents and answers with citations."
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == chunk_id
+    assert collection_answer["evidence_status"] == "grounded"
+    assert "## Grounded List" in collection_answer["answer"]
     assert unsupported["evidence_status"] == "insufficient"
 
 

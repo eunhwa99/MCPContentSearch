@@ -96,13 +96,14 @@ def test_retrieval_fixture_cases_load_and_suite_summarizes_results():
         "notion-source-preferred": {"results": [{"chunk_id": "notion-sync-chunk", "source_id": "source_notion"}]},
         "architecture-guide-phrase": {"results": [{"chunk_id": "architecture-guide-chunk", "source_id": "source_notion"}]},
         "aws-doc-alias": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_notion"}]},
+        "aws-collection-intent": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_notion"}]},
     }
 
     summary = evaluate_search_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 5
-    assert summary["passed_count"] == 5
+    assert summary["total"] == 6
+    assert summary["passed_count"] == 6
 
 
 def test_retrieval_suite_fails_when_case_list_is_empty():

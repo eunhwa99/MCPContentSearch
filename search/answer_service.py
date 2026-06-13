@@ -3,6 +3,12 @@ import re
 from urllib.parse import urlparse
 
 from core.models import ContextSearchResult
+from search.intent import (
+    COMPARISON_HINT_TERMS,
+    LIST_HINT_TERMS,
+    RetrievalIntent,
+    classify_intent,
+)
 from search.query_terms import (
     BROAD_TOPIC_TERMS,
     DOCUMENT_INTENT_TERMS,
@@ -100,18 +106,23 @@ class CitationAnswerService:
         *,
         include_debug: bool = False,
     ) -> dict:
+        initial_term_groups = self._query_term_groups(question)
+        initial_intent = self._answer_intent(question, initial_term_groups)
+        retrieval_top_k = top_k
+        if initial_intent is RetrievalIntent.COMPARISON:
+            retrieval_top_k = max(top_k * 2, top_k + 3)
         if hasattr(self.context_search, "search_context_for_answer"):
             search_result, grounding_state = await self.context_search.search_context_for_answer(
                 question,
                 filters=filters,
-                top_k=top_k,
+                top_k=retrieval_top_k,
                 include_debug=include_debug,
             )
         else:
             search_result = await self.context_search.search_context(
                 question,
                 filters=filters,
-                top_k=top_k,
+                top_k=retrieval_top_k,
                 include_debug=include_debug,
                 include_internal_metadata=True,
             )
@@ -128,6 +139,7 @@ class CitationAnswerService:
             query_term_groups,
             search_debug=search_debug,
         )
+        answer_intent = self._answer_intent(question, query_term_groups, search_debug=search_debug)
         query_terms = {term for group in query_term_groups for term in group}
         relaxed_match = bool(search_debug.get("rewritten_queries"))
         evidence = [
@@ -141,8 +153,14 @@ class CitationAnswerService:
                 required_term_groups=required_term_groups,
                 preserve_original_constraints=preserve_original_constraints,
                 relaxed_match=relaxed_match,
+                answer_intent=answer_intent,
             )
         ]
+        if answer_intent is RetrievalIntent.LIST:
+            evidence = self._dedupe_evidence_by_document(evidence)
+        elif answer_intent is RetrievalIntent.COMPARISON:
+            if not self._has_grounded_comparison_support(evidence, query_term_groups):
+                evidence = []
         citations = [
             {
                 "chunk_id": item.chunk_id,
@@ -196,7 +214,7 @@ class CitationAnswerService:
                 )
             return payload
 
-        answer = self._render_structured_answer(question, evidence)
+        answer = self._render_structured_answer(question, evidence, answer_intent)
 
         payload = {
             "question": self._redact_public_answer_text(question),
@@ -330,6 +348,7 @@ class CitationAnswerService:
         required_term_groups: list[set[str]] | None = None,
         preserve_original_constraints: bool = False,
         relaxed_match: bool = False,
+        answer_intent: RetrievalIntent = RetrievalIntent.BROAD_TOPIC,
     ) -> bool:
         if not query_terms:
             return True
@@ -422,13 +441,33 @@ class CitationAnswerService:
         matched_required_groups = [
             term_group for term_group in required_groups if term_group in matched_groups
         ]
+        specific_groups = [
+            term_group
+            for term_group in required_groups
+            if not term_group.intersection(DOCUMENT_INTENT_TERMS)
+            and not term_group.intersection(LIST_HINT_TERMS)
+            and not term_group.intersection(COMPARISON_HINT_TERMS)
+        ]
+        matched_specific_groups = [
+            term_group for term_group in specific_groups if term_group in matched_groups
+        ]
         required_matches = (
             len(required_groups)
             if len(required_groups) <= 3
             else math.ceil(len(required_groups) / 2)
         )
+        if answer_intent in {RetrievalIntent.LIST, RetrievalIntent.COMPARISON}:
+            required_matches = 1 if required_groups else 0
+        elif answer_intent is RetrievalIntent.BROAD_TOPIC:
+            required_matches = max(1, math.ceil(len(required_groups) / 2)) if required_groups else 0
         if relaxed_match and required_groups:
             required_matches = max(1, math.ceil(len(required_groups) / 2))
+        if answer_intent is RetrievalIntent.LIST and not matched_specific_groups:
+            return False
+        if answer_intent is RetrievalIntent.LIST and specific_groups:
+            return len(matched_specific_groups) >= len(specific_groups)
+        if answer_intent is RetrievalIntent.COMPARISON and not matched_specific_groups:
+            return False
         return len(matched_required_groups) >= required_matches
 
     @staticmethod
@@ -450,10 +489,33 @@ class CitationAnswerService:
         )
 
     @staticmethod
-    def _render_structured_answer(question: str, evidence: list[ContextSearchResult]) -> str:
+    def _answer_intent(
+        question: str,
+        query_term_groups: list[set[str]],
+        *,
+        search_debug: dict | None = None,
+    ) -> RetrievalIntent:
+        debug_intent_name = str(((search_debug or {}).get("intent") or {}).get("raw_name", "")).strip()
+        if debug_intent_name:
+            try:
+                return RetrievalIntent(debug_intent_name)
+            except ValueError:
+                pass
+        return classify_intent(question, query_term_groups).intent
+
+    @staticmethod
+    def _render_structured_answer(
+        question: str,
+        evidence: list[ContextSearchResult],
+        intent: RetrievalIntent,
+    ) -> str:
         if not evidence:
             return "Insufficient evidence in indexed context to answer this question."
 
+        if intent is RetrievalIntent.LIST:
+            return CitationAnswerService._render_grounded_list(question, evidence)
+        if intent is RetrievalIntent.COMPARISON:
+            return CitationAnswerService._render_grounded_comparison(question, evidence)
         lines = [
             "## Summary",
             "",
@@ -481,6 +543,94 @@ class CitationAnswerService:
                 ]
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_grounded_list(question: str, evidence: list[ContextSearchResult]) -> str:
+        lines = [
+            "## Grounded List",
+            "",
+            f"- Indexed evidence matched this collection request for `{CitationAnswerService._redact_public_answer_text(question)}`.",
+            "",
+            "## Items",
+            "",
+        ]
+        for index, item in enumerate(evidence[:5], 1):
+            location = CitationAnswerService._safe_debug_location(
+                item.path or item.url or item.document_id or "unknown location"
+            )
+            lines.append(
+                f"- [C{index}] **{CitationAnswerService._redact_public_answer_text(item.title or item.document_id or item.chunk_id)}** "
+                f"(`{location}`): {CitationAnswerService._redact_public_answer_text(CitationAnswerService._snippet(item))}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_grounded_comparison(question: str, evidence: list[ContextSearchResult]) -> str:
+        lines = [
+            "## Grounded Comparison",
+            "",
+            f"- Indexed evidence matched this comparison request for `{CitationAnswerService._redact_public_answer_text(question)}`.",
+            "",
+            "## Comparison Points",
+            "",
+        ]
+        for index, item in enumerate(evidence[:4], 1):
+            location = CitationAnswerService._safe_debug_location(
+                item.path or item.url or item.document_id or "unknown location"
+            )
+            lines.append(
+                f"- [C{index}] **{CitationAnswerService._redact_public_answer_text(item.title or item.document_id or item.chunk_id)}** "
+                f"(`{location}`): {CitationAnswerService._redact_public_answer_text(CitationAnswerService._snippet(item))}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _dedupe_evidence_by_document(
+        evidence: list[ContextSearchResult],
+    ) -> list[ContextSearchResult]:
+        deduped: list[ContextSearchResult] = []
+        seen_document_ids: set[str] = set()
+        for item in evidence:
+            document_id = str(item.document_id or item.chunk_id)
+            if document_id in seen_document_ids:
+                continue
+            seen_document_ids.add(document_id)
+            deduped.append(item)
+        return deduped
+
+    @classmethod
+    def _has_grounded_comparison_support(
+        cls,
+        evidence: list[ContextSearchResult],
+        query_term_groups: list[set[str]],
+    ) -> bool:
+        topical_groups = [
+            group
+            for group in query_term_groups
+            if not group.intersection(DOCUMENT_INTENT_TERMS)
+            and not group.intersection(BROAD_TOPIC_TERMS)
+            and not group.intersection(COMPARISON_HINT_TERMS)
+            and not group.intersection(LIST_HINT_TERMS)
+        ]
+        if len(topical_groups) < 2:
+            return False
+
+        matched_groups = set()
+        for item in evidence:
+            haystack = " ".join(
+                [
+                    item.title or "",
+                    item.document_id or "",
+                    item.url or "",
+                    item.path or "",
+                    item.preview or "",
+                    item.text or "",
+                ]
+            ).lower()
+            for index, group in enumerate(topical_groups):
+                if any(term in haystack for term in group) or cls._matches_source_type_term_group(item, group):
+                    matched_groups.add(index)
+        return len(matched_groups) >= len(topical_groups)
 
     @staticmethod
     def _snippet(item: ContextSearchResult, limit: int = 180) -> str:
@@ -662,7 +812,18 @@ class CitationAnswerService:
                     ]
                 )
 
-        lines.extend(["", "## Structured Answer", "", cls._render_structured_answer(question, evidence)])
+        lines.extend(
+            [
+                "",
+                "## Structured Answer",
+                "",
+                cls._render_structured_answer(
+                    question,
+                    evidence,
+                    cls._answer_intent(question, query_term_groups, search_debug=search_debug),
+                ),
+            ]
+        )
         return "\n".join(lines)
 
     @staticmethod
