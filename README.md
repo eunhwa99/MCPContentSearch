@@ -4,145 +4,64 @@
 
 ContextWiki is a focused MCP retrieval server for private or project-specific
 knowledge. It syncs a small set of configured sources into local Chroma vectors,
-keeps citation and lifecycle metadata in SQLite, and exposes MCP tools that let
-an LLM client retrieve grounded context without reading local databases directly.
+stores lifecycle and citation metadata in SQLite, and exposes MCP tools that let
+an LLM client retrieve grounded context without reading local databases
+directly.
 
-The current scope is intentionally small:
+## 🚀 Key Features
 
-- Source connectors: Notion, Tistory, GitHub repositories, and local Obsidian
-  vaults.
-- Retrieval tools: source listing/status, source sync, chunk-level context
-  search, grouped document browsing, context fetch, and citation-backed
-  answers.
-- Local persistence: Chroma for semantic candidate retrieval, SQLite for source,
-  job, document, chunk, and tombstone metadata.
+- 🔌 **Multi-source connectors**: Notion, Tistory, GitHub, and local Obsidian
+- ⚖️ **Hybrid retrieval architecture**: Chroma for semantic search, SQLite for
+  lifecycle and citation validation
+- 🛠️ **Practical MCP tools**: source listing, sync, status, search, fetch, and
+  citation-backed answers
+- 🛡️ **Citation safety**: only SQLite-validated chunks are returned as evidence
+- 🔒 **Local-first by default**: optional query rewrite stays off unless you
+  enable it explicitly
 
-The current slim MCP server does not include the former Web Console, Auto Wiki,
-generic website/docs crawler, dynamic web fallback, or legacy live search/index
-tools. Those features are historical and superseded for the current project
-scope by [ADR 0006](.agents/docs/adr/0006-slim-mcp-core-scope.md).
+## 🏗️ Architecture Overview
 
-## Why SQLite Plus Chroma
+```text
+[ Sources ]
+ Notion / Tistory / GitHub / Obsidian
+                |
+                v
+         [ Ingestion Service ]
+             /            \
+            v              v
+      [ Chroma ]      [ SQLite ]
+    semantic hits    metadata gate
+            \              /
+             \            /
+              v          v
+         [ Verified Context ]
+```
 
-Chroma answers "which chunks are semantically close to this query?" SQLite
-answers "is this chunk still active, citation-ready, and attached to the right
-source?"
+## 🛠️ MCP Tools
 
-ContextWiki only returns citeable evidence after Chroma candidates are hydrated
-and validated through SQLite. Successful full syncs refresh `last_seen` metadata
-and tombstone missing documents for cleanup-capable sources. If a stale vector
-entry remains in Chroma, the SQLite active chunk/document gate filters it before
-`search_context`, `search_documents`, or `answer_with_citations` can expose it.
-
-This split keeps retrieval fast while making citation safety explicit.
-
-## MCP Tool Surface
-
-The retained MCP tools are:
+Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
+`indexing/`, `search/`, and `storage/`.
 
 | Tool | Purpose |
 | --- | --- |
 | `list_sources()` | List configured Notion, Tistory, GitHub, and Obsidian sources. |
 | `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
-| `sync_all()` | Sync all retained sources concurrently and return aggregate per-source results. |
+| `sync_all()` | Sync all retained sources concurrently and return aggregate results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured, SQLite-validated evidence chunks. |
-| `search_documents(query, filters=None, top_k=10)` | Return grouped document rows for browsing, using the best representative chunk per document. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
 | `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks. |
 
-Tool handlers live in `api/tools.py`; business behavior stays in `indexing/`,
-`search/`, `fetching/`, and `storage/`.
+핵심만 보면:
 
-`search_context` remains the chunk-level evidence surface for citation and
-grounding workflows. `search_documents` is additive: it reuses retained-source
-retrieval but collapses repeated chunks into one row per document and exposes
-the representative `chunk_id` for follow-up browsing through
-`fetch_context(document_id=...)` or `fetch_context(chunk_id=...)`.
+- `sync_all()`은 전체 소스를 한 번에 동기화합니다.
+- `search_context(..., include_debug=True)`와
+  `answer_with_citations(..., include_debug=True)`는 디버그 정보를 추가로
+  보여줄 수 있습니다.
 
-`list_sources()` and `get_sync_status()` now include additive operational fields
-for reviewer-readable retained-source state:
+## ⚙️ Configuration
 
-- `latest_success_at`
-- `latest_failure_at`
-- `document_count`
-- `chunk_count`
-- `latest_failure_reason`
-- `stale_cleanup_disabled_reason`
-
-`sync_all()` returns a top-level `summary` with total/succeeded/failed/blocked
-counts plus per-source `results` that preserve each source's latest job payload.
-
-`search_context(..., include_debug=True)` and
-`answer_with_citations(..., include_debug=True)` expose additive explainability
-payloads. They stay off by default so the retained MCP surface remains lean for
-normal callers.
-
-## Optional Search Query Rewrite
-
-`search_context` can optionally ask an external LLM to produce short query
-rewrites when initial local vector results look weak. This is disabled by
-default. Enabling it may send the user's search query and normalized query terms
-to the configured provider before local Chroma retrieval.
-
-```bash
-CONTEXTWIKI_SEARCH_LLM_ENABLED=true
-CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
-CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
-OPENAI_API_KEY=...
-```
-
-The rewrite path is not a dynamic web fallback, does not fetch external source
-content, and does not mutate SQLite or Chroma. Keep it disabled to avoid
-query-rewrite egress. Fully local operation also depends on using a local or
-otherwise non-egress embedding configuration for LlamaIndex/Chroma.
-
-When `include_debug=True`, rewrite becomes a visible retrieval feature:
-
-- `query_rewrite.attempted` / `applied`
-- `query_rewrite.reason`, for example `no_initial_candidates`,
-  `insufficient_candidate_count`, `missing_textual_match`, or
-  `low_initial_score`
-- top-level compatibility flags: `rewrite_enabled`, `rewrite_attempted`,
-  `rewrite_applied`, `rewrite_skipped_reason`
-- original query, rewritten queries, effective retrieval queries
-- source filters and structured selected-result summaries
-
-Example:
-
-```json
-{
-  "debug": {
-    "query_rewrite": {
-      "attempted": true,
-      "applied": true,
-      "reason": "low_initial_score",
-      "original_query": "aws virtual machine startup",
-      "rewritten_queries": ["aws ec2 setup"]
-    },
-    "filters": {
-      "source_ids": ["source_github"]
-    },
-    "selected_results": [
-      {
-        "chunk_id": "chunk-ec2-guide",
-        "source_id": "source_github",
-        "matched_terms": ["aws", "ec2"]
-      }
-    ]
-  }
-}
-```
-Common `rewrite_skipped_reason` values now include:
-
-- `disabled`
-- `not_needed`
-- `empty_result`
-- `rewrite_failed`
-- `no_matching_sources`
-- `no_term_groups`
-- `not_supported`
-## Source Connectors
+### 1. Source connectors
 
 | Source | Source id | Configuration | Notes |
 | --- | --- | --- | --- |
@@ -152,18 +71,11 @@ Common `rewrite_skipped_reason` values now include:
 | Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` | Syncs bounded Markdown notes from a configured local vault. |
 
 GitHub repositories are configured as comma-separated `owner/repo` entries with
-an optional `@ref`, for example:
+an optional `@ref`:
 
 ```bash
 CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
 ```
-
-Obsidian is a local-vault configured source. It reads Markdown files from the
-configured vault path, skips hidden/Obsidian metadata directories, and uses
-`obsidian://open` canonical URLs for citations. It does not require a live
-Obsidian app, plugin, or API server. The max file count and max file byte
-bounds are positive integers; if a configured vault exceeds either bound, the
-sync fails as an incomplete snapshot and stale cleanup stays disabled.
 
 ```bash
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH="/path/to/temp-or-real-vault"
@@ -174,46 +86,55 @@ CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
 Raw secrets are read at runtime from environment variables. They are not stored
 in SQLite, committed to docs/tests, or printed by verification commands.
 
-## Minimal Setup
+### 2. Optional search query rewrite
+
+`search_context` can optionally ask an external LLM for short query rewrites
+when initial local vector results look weak. This is disabled by default.
+
+```bash
+CONTEXTWIKI_SEARCH_LLM_ENABLED=true
+CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
+CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+```
+
+기본값은 `off`이고, 켜면 검색 질의가 외부 LLM으로 나갈 수 있습니다.
+
+## ⚡ Quick Start
+
+Install dependencies and run the MCP server:
 
 ```bash
 uv sync --locked --python 3.13 --dev
 uv run --locked python main.py
 ```
 
-For a plain Python syntax check without contacting external services:
+For a plain syntax check without contacting external services:
 
 ```bash
 python -m compileall api core environments fetching indexing search storage main.py
 ```
 
-## Verification
+## 🚦 Verification
 
-The full local gate is:
+### 1. Full gate
 
 ```bash
 ./scripts/verify_all.sh
 ```
 
-It performs retained-runtime syntax checks, Ruff, scoped mypy, scoped Bandit,
-non-live pytest with coverage over retained packages, and the slim functional
-E2E gate.
+Includes syntax checks, Ruff, mypy, Bandit, pytest, and the functional E2E
+gate.
 
-The functional E2E gate is:
+### 2. Functional E2E gate
 
 ```bash
 ./scripts/verify_functional_e2e.sh
 ```
 
-It uses non-live tests and temporary test storage for retained MCP flows:
-source registry, source sync, context search, grouped document browsing,
-context fetch, citation answers, metadata lifecycle, and Chroma/SQLite
-citation-safety behavior. It does not run browser checks, Playwright, Web
-Console tests, wiki generation smoke, live external APIs, or LLM calls.
-Obsidian verification must use a temporary vault unless the user explicitly
-approves a real vault path.
+This covers retained MCP flows with non-live tests and temporary storage.
 
-Useful focused checks:
+### 3. Focused checks
 
 ```bash
 uv run --locked pytest -q tests/fetching/test_connectors.py
@@ -225,23 +146,7 @@ uv run --locked pytest -q tests/scripts/test_demo_public_flow.py
 uv run --locked pytest -q tests/scripts/test_live_query_smoke.py
 ```
 
-Do not treat these commands as evidence unless they were run in the current
-branch. This README lists the intended verification surface; PR descriptions and
-handoffs should report the actual commands and results from the run.
-
-## Project Map
-
-- `main.py`: FastMCP server composition.
-- `api/`: MCP-facing tool contracts and response formatting.
-- `core/`: shared models, exceptions, and utilities.
-- `environments/`: runtime configuration and secret/environment access.
-- `fetching/`: Notion, Tistory, GitHub, and Obsidian source connectors/fetchers.
-- `indexing/`: chunking, deduplication, lifecycle coordination, and Chroma writes.
-- `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers.
-- `storage/`: SQLite source/job/document/chunk lifecycle metadata.
-- `tests/`, `scripts/`: non-live verification harnesses.
-
-## One-command Public Demo
+## 🎬 One-command Demo
 
 Run the retained slim tool-handler and service flow against the bundled public
 sample vault:
@@ -259,23 +164,19 @@ uv sync --locked --python 3.13 --dev
 
 What it does:
 
-1. uses `sample_vault/` as a bounded public Obsidian source
-2. syncs it through the retained `source_obsidian` connector
-3. runs `search_context`
-4. runs `answer_with_citations`
-5. prints the sync, search, and citation-backed answer payloads
+1. Uses `sample_vault/` as a bounded public Obsidian source.
+2. Syncs it through the retained `source_obsidian` connector.
+3. Runs `search_context`.
+4. Runs `answer_with_citations`.
+5. Prints sync, search, and citation-backed answer payloads.
 
-This is a reviewer-facing local transcript runner. It exercises the retained
-tool-handler and service path directly without requiring a separate MCP client
-setup.
-
-This demo is fixture-backed, normalized, and non-live:
+This demo is non-live and:
 
 - it uses temporary SQLite and Chroma storage
 - it uses `MockEmbedding` instead of a live embedding provider
 - it does not require Notion, Tistory, GitHub, or Obsidian credentials
 - it forces `CONTEXTWIKI_SEARCH_LLM_ENABLED=false` even if your shell sets it
-- it normalizes generated ids and timestamps in the printed payload so the transcript stays stable
+- it normalizes generated ids and timestamps so the transcript stays stable
 
 Optional flags:
 
@@ -284,10 +185,9 @@ Optional flags:
 ./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
 ```
 
-## Live Query Smoke
+## 🔎 Live Query Smoke
 
-Run a real local retrieval check against your configured ContextWiki
-environment:
+Run a real local retrieval check against your configured ContextWiki runtime:
 
 ```bash
 uv run --locked python scripts/live_query_smoke.py --query "aws startup"
@@ -302,33 +202,23 @@ uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" -
 uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --json
 ```
 
-The script is intentionally reviewer-facing and compact:
+## 🗺️ Project Map
 
-- it exercises the retained `search_context` and `answer_with_citations` tool
-  handlers against the local configured runtime
-- it prints rewrite decision state, hit summary, answer evidence status, and
-  citation summary
-- it redacts secret-like query/question text and does not print raw environment
-  variable values
-- `--json` prints a sanitized JSON payload, not raw chunk bodies
-- `--rewrite on` requires a configured rewriter and fails fast otherwise
+- `main.py`: FastMCP server composition
+- `api/`: MCP-facing tool contracts and response formatting
+- `core/`: shared models, exceptions, and utilities
+- `environments/`: runtime configuration and secret/environment access
+- `fetching/`: Notion, Tistory, GitHub, and Obsidian connectors/fetchers
+- `indexing/`: chunking, deduplication, lifecycle coordination, and Chroma writes
+- `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers
+- `storage/`: SQLite source/job/document/chunk lifecycle metadata
+- `tests/`, `scripts/`: non-live verification harnesses and reviewer utilities
 
-Expected live smoke highlights:
-
-```text
-ContextWiki Live Query Smoke
-search query: aws startup
-answer question: How do I start EC2?
-rewrite: enabled=yes attempted=yes applied=no reason=empty_result
-hits: 1
-answer: grounded
-```
-
-## Additional Docs
+## 📖 Additional Docs
 
 - [ContextWiki Core Understanding](docs/contextwiki-core-understanding.md)
 - [Architecture](.agents/docs/architecture.md)
 - [ADRs](.agents/docs/adr/)
-- [Harness and workflow](.agents/docs/harness-engineering.md)
+- [Harness engineering](.agents/docs/harness-engineering.md)
 - [GitHub workflow policy](.agents/docs/github-workflow.md)
 - [Plan log](docs/plan/)
