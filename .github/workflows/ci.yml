@@ -56,6 +56,8 @@ jobs:
             --confidence-level low
 
       - name: Run non-live tests with coverage
+        env:
+          IS_TESTING: "1"
         run: |
           uv run --locked pytest -m "not live" \
             --cov=api \
@@ -68,4 +70,6 @@ jobs:
             --cov-report=term-missing
 
       - name: Run functional E2E gate
+        env:
+          IS_TESTING: "1"
         run: ./scripts/verify_functional_e2e.sh
