@@ -157,6 +157,23 @@ class ContextSearchResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+class DocumentSearchResult(BaseModel):
+    """문서 단위로 그룹화된 MCP search 결과"""
+    document_id: str
+    chunk_id: str
+    source_id: str
+    source_type: str
+    title: str
+    url: str = ""
+    path: str = ""
+    score: float = 0.0
+    vector_score: float = 0.0
+    metadata_priority: int = 0
+    preview: str = ""
+
+    model_config = ConfigDict(frozen=True)
+
+
 class IndexStatusModel(BaseModel):
     """인덱싱 상태 모델"""
     state: IndexState = IndexState.IDLE

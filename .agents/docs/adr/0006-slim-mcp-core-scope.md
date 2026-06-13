@@ -45,6 +45,7 @@ Retain:
   - `sync_all`
   - `get_sync_status`
   - `search_context`
+  - `search_documents`
   - `fetch_context`
   - `answer_with_citations`
 - Internal connector helper functions may still parse or fetch explicit
@@ -85,9 +86,10 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
 - README, architecture docs, CI, and verification scripts must describe and run
   only retained MCP retrieval paths.
 - Tests should focus on retained source registry behavior, source sync,
-  metadata lifecycle, Chroma/SQLite active-result gating, context fetch, and
-  citation answers. Obsidian tests must use temporary vault directories by
-  default and cover bounded-vault failure without stale cleanup.
+  metadata lifecycle, Chroma/SQLite active-result gating, chunk search,
+  grouped document browsing, context fetch, and citation answers. Obsidian
+  tests must use temporary vault directories by default and cover bounded-vault
+  failure without stale cleanup.
 - Stale vectors from previously indexed removed sources may remain in a user's
   local Chroma store, but retained retrieval must continue to gate managed hits
   through SQLite metadata before returning citations.

@@ -369,6 +369,307 @@ def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
     assert result["results"][0].score >= 0.91
 
 
+def test_search_documents_collapses_same_document_chunks_to_highest_ranked_representative(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="doc-alpha",
+            document_id="doc-alpha",
+            source_id="source_target",
+            title="Alpha guide",
+            content="Alpha first chunk\nAlpha second chunk",
+            url="https://example.com/doc-alpha",
+            platform="Test",
+            path="guides/alpha.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="alpha-chunk-1",
+                document_id="doc-alpha",
+                source_id="source_target",
+                title="Alpha guide",
+                text="Alpha first chunk",
+                url="https://example.com/doc-alpha",
+                path="guides/alpha.md",
+                chunk_index=0,
+                content_hash="alpha-chunk-1",
+            ),
+            ChunkModel(
+                chunk_id="alpha-chunk-2",
+                document_id="doc-alpha",
+                source_id="source_target",
+                title="Alpha guide",
+                text="Alpha second chunk",
+                url="https://example.com/doc-alpha",
+                path="guides/alpha.md",
+                chunk_index=1,
+                content_hash="alpha-chunk-2",
+            ),
+        ],
+    )
+    seed_document_chunks(
+        store,
+        "doc-beta",
+        "beta-chunk-1",
+        "source_target",
+        "Beta guide",
+        "Beta guide content",
+        path="guides/beta.md",
+        url="https://example.com/doc-beta",
+    )
+    service = ContextSearchService(store)
+
+    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+        return {
+            "candidates": [
+                {"chunk_id": "alpha-chunk-2", "score": 0.97, "vector_score": 0.97, "metadata_priority": 1},
+                {"chunk_id": "beta-chunk-1", "score": 0.91, "vector_score": 0.91, "metadata_priority": 0},
+                {"chunk_id": "alpha-chunk-1", "score": 0.82, "vector_score": 0.82, "metadata_priority": 0},
+            ],
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+            "rewritten_queries": [],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+
+    result = asyncio.run(service.search_documents("alpha beta", top_k=10))
+
+    assert [item.document_id for item in result["results"]] == ["doc-alpha", "doc-beta"]
+    assert [item.chunk_id for item in result["results"]] == ["alpha-chunk-2", "beta-chunk-1"]
+    assert [item.score for item in result["results"]] == [0.97, 0.91]
+
+
+def test_search_documents_preserves_document_metadata_and_representative_chunk_id(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="doc-readme",
+            document_id="doc-readme",
+            source_id="source_github",
+            title="README",
+            content="Repository overview chunk",
+            url="https://github.com/example/repo/blob/main/README.md",
+            platform="Test",
+            path="README.md",
+            version_id="v1",
+        ),
+        [
+            ChunkModel(
+                chunk_id="readme-chunk-1",
+                document_id="doc-readme",
+                source_id="source_github",
+                title="README",
+                text="Repository overview chunk",
+                url="https://github.com/example/repo/blob/main/README.md",
+                path="README.md",
+                chunk_index=0,
+                line_start=10,
+                line_end=18,
+                version_id="v1",
+                content_hash="readme-chunk-1",
+                updated_at="2026-06-12T09:00:00+00:00",
+            ),
+        ],
+    )
+    service = ContextSearchService(store)
+
+    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+        return {
+            "candidates": [
+                {"chunk_id": "readme-chunk-1", "score": 0.88, "vector_score": 0.77, "metadata_priority": 2},
+            ],
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+            "rewritten_queries": [],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+
+    result = asyncio.run(service.search_documents("repo overview", top_k=5))
+
+    assert len(result["results"]) == 1
+    item = result["results"][0]
+    assert item.document_id == "doc-readme"
+    assert item.chunk_id == "readme-chunk-1"
+    assert item.source_id == "source_github"
+    assert item.source_type == "github"
+    assert item.title == "README"
+    assert item.url == "https://github.com/example/repo/blob/main/README.md"
+    assert item.path == "README.md"
+    assert item.preview == "Repository overview chunk"
+    assert item.vector_score == 0.77
+    assert item.metadata_priority == 2
+
+
+def test_search_documents_expands_candidate_window_until_unique_document_target_is_met(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.GITHUB, "Target")
+    seed_document_chunks(
+        store,
+        "doc-alpha",
+        "alpha-chunk-1",
+        "source_target",
+        "Alpha",
+        "Alpha top chunk",
+        path="alpha.md",
+        url="https://example.com/alpha",
+    )
+    seed_document_chunks(
+        store,
+        "doc-alpha",
+        "alpha-chunk-2",
+        "source_target",
+        "Alpha",
+        "Alpha second chunk",
+        path="alpha.md",
+        url="https://example.com/alpha",
+    )
+    seed_document_chunks(
+        store,
+        "doc-beta",
+        "beta-chunk-1",
+        "source_target",
+        "Beta",
+        "Beta chunk",
+        path="beta.md",
+        url="https://example.com/beta",
+    )
+    service = ContextSearchService(store)
+    requested_limits = []
+
+    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+        requested_limits.append(top_k)
+        duplicate_heavy = [
+            {"chunk_id": "alpha-chunk-1", "score": 0.99, "vector_score": 0.99, "metadata_priority": 0},
+            {"chunk_id": "alpha-chunk-2", "score": 0.98, "vector_score": 0.98, "metadata_priority": 0},
+            {"chunk_id": "beta-chunk-1", "score": 0.70, "vector_score": 0.70, "metadata_priority": 0},
+        ]
+        candidates = duplicate_heavy[: min(top_k, len(duplicate_heavy))]
+        return {
+            "candidates": candidates,
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+            "rewritten_queries": [],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+    service._document_search_candidate_limit = lambda top_k: 2
+    service._max_retrieval_limit = lambda base_limit: 4
+
+    result = asyncio.run(service.search_documents("alpha beta", top_k=2))
+
+    assert requested_limits == [2, 4]
+    assert [item.document_id for item in result["results"]] == ["doc-alpha", "doc-beta"]
+
+
+def test_search_documents_keeps_first_reranked_chunk_as_document_representative(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.GITHUB, "Target")
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="doc-alpha",
+            document_id="doc-alpha",
+            source_id="source_target",
+            title="Alpha",
+            content="Earlier reranked chunk\nLater chunk with same score",
+            url="https://example.com/alpha",
+            platform="Test",
+            path="alpha.md",
+        ),
+        [
+            ChunkModel(
+                chunk_id="alpha-chunk-1",
+                document_id="doc-alpha",
+                source_id="source_target",
+                title="Alpha",
+                text="Earlier reranked chunk",
+                url="https://example.com/alpha",
+                path="alpha.md",
+                chunk_index=0,
+                content_hash="alpha-1",
+            ),
+            ChunkModel(
+                chunk_id="alpha-chunk-2",
+                document_id="doc-alpha",
+                source_id="source_target",
+                title="Alpha",
+                text="Later chunk with same score",
+                url="https://example.com/alpha",
+                path="alpha.md",
+                chunk_index=1,
+                content_hash="alpha-2",
+            ),
+        ],
+    )
+    service = ContextSearchService(store)
+
+    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+        return {
+            "candidates": [
+                {"chunk_id": "alpha-chunk-1", "score": 0.9, "vector_score": 0.6, "metadata_priority": 0},
+                {"chunk_id": "alpha-chunk-2", "score": 0.9, "vector_score": 0.95, "metadata_priority": 1},
+            ],
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+            "rewritten_queries": [],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+
+    result = asyncio.run(service.search_documents("alpha", top_k=1))
+
+    assert result["results"][0].chunk_id == "alpha-chunk-1"
+
+
+def test_search_documents_disables_query_rewrite_even_when_rewriter_is_configured(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-alpha",
+        "alpha-chunk-1",
+        "source_target",
+        "Alpha",
+        "Alpha chunk",
+    )
+
+    class FailingRewriter:
+        async def rewrite_query(self, query, term_groups):
+            raise AssertionError("search_documents should not invoke query rewrite")
+
+    service = ContextSearchService(
+        store,
+        query_rewriter=FailingRewriter(),
+    )
+    observed_flags = []
+
+    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+        observed_flags.append(allow_query_rewrite)
+        return {
+            "candidates": [
+                {"chunk_id": "alpha-chunk-1", "score": 0.9, "vector_score": 0.9, "metadata_priority": 0},
+            ],
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+            "rewritten_queries": [],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+
+    result = asyncio.run(service.search_documents("alpha", top_k=1))
+
+    assert observed_flags == [False]
+    assert [item.document_id for item in result["results"]] == ["doc-alpha"]
+
+
 def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")

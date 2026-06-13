@@ -68,6 +68,45 @@ class OtherSourceConnector(SourceConnector):
         ]
 
 
+class GroupedDocsConnector(SourceConnector):
+    source = SourceModel(
+        source_id="source_grouped_docs",
+        source_type=SourceType.NOTION,
+        name="Grouped Docs",
+        enabled=True,
+        auth_ref="env:FAKE",
+        sync_status=SyncStatus.IDLE,
+    )
+
+    async def fetch_documents(self):
+        return [
+            DocumentModel(
+                id="doc_grouped_primary",
+                source_id="source_grouped_docs",
+                title="Grouped Primary",
+                content=(
+                    "Grouped retrieval keeps one row per document. "
+                    "Grouped retrieval keeps one row per document. "
+                    "Grouped retrieval keeps one row per document."
+                ),
+                url="https://example.com/grouped/primary",
+                platform="Notion",
+                path="Grouped Primary",
+                updated_at="2026-05-20T00:00:00Z",
+            ),
+            DocumentModel(
+                id="doc_grouped_secondary",
+                source_id="source_grouped_docs",
+                title="Grouped Secondary",
+                content="Secondary grouped document still mentions grouped retrieval once.",
+                url="https://example.com/grouped/secondary",
+                platform="Notion",
+                path="Grouped Secondary",
+                updated_at="2026-05-20T00:00:00Z",
+            ),
+        ]
+
+
 class RecordingIndexer:
     def __init__(self):
         self.documents = []
@@ -138,6 +177,52 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == chunk_id
     assert unsupported["evidence_status"] == "insufficient"
+
+
+def test_contextwiki_fake_e2e_search_documents_groups_results(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    registry = SourceRegistry([GroupedDocsConnector()])
+    ingestion = IngestionService(
+        metadata_store=store,
+        source_registry=registry,
+        chunker=DocumentChunker(max_chars=40, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    context_search = ContextSearchService(metadata_store=store, retriever=indexer.documents)
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=ingestion,
+        context_search_service=context_search,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    sync_job = asyncio.run(mcp.tools["sync_source"]("source_grouped_docs"))
+    grouped = asyncio.run(
+        mcp.tools["search_documents"](
+            "grouped retrieval",
+            filters={"source_id": "source_grouped_docs"},
+            top_k=10,
+        )
+    )
+    document_ids = [item["document_id"] for item in grouped["results"]]
+    fetched = asyncio.run(mcp.tools["fetch_context"](document_id=document_ids[0]))
+
+    assert sync_job["status"] == "succeeded"
+    assert document_ids.count("doc_grouped_primary") == 1
+    assert set(document_ids) == {
+        "doc_grouped_primary",
+        "doc_grouped_secondary",
+    }
+    assert all(item["chunk_id"] for item in grouped["results"])
+    assert fetched["document"]["document_id"] in {
+        "doc_grouped_primary",
+        "doc_grouped_secondary",
+    }
+    assert fetched["chunks"]
 
 
 def test_context_search_applies_source_filter_before_result_limit(tmp_path):

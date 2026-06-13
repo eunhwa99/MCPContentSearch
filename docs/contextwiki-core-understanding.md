@@ -39,6 +39,8 @@ source registration
    or applied
 -> retrieval candidates are hydrated through SQLite before citation use
 -> search_context asks Chroma for candidates and validates them through SQLite
+-> search_documents groups those validated candidates by document and keeps one
+   representative chunk per document for browsing
 -> answer_with_citations returns evidence-gated answers
 ```
 
@@ -46,7 +48,8 @@ Interview or README version:
 
 ```text
 ContextWiki exposes MCP tools for source sync, incremental indexing,
-citation-ready search, context fetch, and evidence-gated answers.
+citation-ready chunk search, grouped document browsing, context fetch, and
+evidence-gated answers.
 
 SQLite is the source of truth for lifecycle and citation metadata, while
 ChromaDB is the semantic retrieval index.
@@ -167,6 +170,7 @@ Current tools:
 | `sync_all()` | refresh all retained sources concurrently and return aggregate results |
 | `get_sync_status(source_id?)` | inspect source/job state |
 | `search_context(query, filters, top_k, include_debug)` | find SQLite-validated evidence |
+| `search_documents(query, filters, top_k)` | browse unique matching documents through one representative chunk per document |
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
 | `answer_with_citations(question, filters, top_k, include_debug)` | answer from validated evidence |
 
@@ -203,7 +207,17 @@ Pydantic `model_dump(mode="json")` where needed.
 grounded answers. It is additive and opt-in: default payloads stay small, while
 debug payloads expose structured retrieval reasoning without dumping raw local
 DB contents.
+Retrieval split:
 
+```text
+search_context
+= chunk-level retrieval for evidence, grounding, and citations
+
+search_documents
+= grouped document-browsing retrieval that reuses the same retained-source
+  candidates but collapses repeated chunks into one representative row per
+  document
+```
 `list_sources()` and `get_sync_status()` expose additive reviewer-readable
 operational fields per source:
 
@@ -252,6 +266,7 @@ The most important models are:
 | `DocumentModel` | one original document | identity, content hash, lifecycle, source metadata |
 | `ChunkModel` | searchable/citeable document segment | vector search and citations |
 | `ContextSearchResult` | search response DTO | chunk + score + preview + citation metadata |
+| `DocumentSearchResult` | grouped document search response DTO | one representative chunk-backed row per document |
 
 Key distinction:
 
@@ -291,6 +306,9 @@ flowchart TD
     H["Chroma candidate chunks"]
     I["SQLite active chunk validation"]
     J["ContextSearchResult[]"]
+    K["search_documents(query)"]
+    L["group by document_id<br/>pick representative chunk"]
+    M["DocumentSearchResult[]"]
 
     A --> B --> C
     B --> D
@@ -298,10 +316,14 @@ flowchart TD
     C --> F
     E --> T
     G --> H --> I --> J
+    K --> H
+    H --> I
+    I --> L --> M
 ```
 
 Search results are not trusted directly from Chroma. They are hydrated and
-validated through SQLite before they become evidence or citations.
+validated through SQLite before they become evidence, citations, or grouped
+document rows.
 
 When `search_context(..., include_debug=True)` is used, the response now makes
 that decision path visible with reviewer-readable fields such as:
@@ -506,6 +528,12 @@ grounded / insufficient / error
 The service must not invent citations from unmanaged or tombstoned chunks. If
 retrieval cannot find enough active evidence, the response should say that the
 available evidence is insufficient instead of fabricating an answer.
+
+`search_documents` does not replace this evidence path. It is a browsing surface
+for "which documents matched?" and keeps the highest-ranked chunk as the
+representative row so callers can pivot into `fetch_context` or run a later
+chunk-level citation workflow through `search_context` or
+`answer_with_citations`.
 
 ---
 
