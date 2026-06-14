@@ -194,6 +194,8 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
         "ContextWiki Public Demo",
         "=======================",
         f"Sample vault: {result['sample_vault']}",
+        "Downstream LLMs usually turn this evidence into the final answer.",
+        "The answer step below is a grounded helper preview for debug/eval.",
         "",
         "1. Sync retained source",
         json.dumps(result["sync"], ensure_ascii=False, indent=2),
@@ -204,7 +206,7 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
         f"3. Search query: {query}",
         json.dumps(result["search"], ensure_ascii=False, indent=2),
         "",
-        f"4. Grounded question: {question}",
+        f"4. Helper answer preview question: {question}",
         json.dumps(result["answer"], ensure_ascii=False, indent=2),
     ]
     return "\n".join(lines)
@@ -212,7 +214,7 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the public ContextWiki demo against the bundled sample vault."
+        description="Run the public ContextWiki helper-preview demo against the bundled sample vault."
     )
     parser.add_argument(
         "--query",
@@ -222,7 +224,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--question",
         default="How does ContextWiki prevent stale citations?",
-        help="Grounded question for the demo answer_with_citations step.",
+        help="Question for the demo helper answer preview step.",
     )
     parser.add_argument(
         "--json",

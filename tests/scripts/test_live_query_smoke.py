@@ -22,7 +22,7 @@ def test_live_query_smoke_help_runs_from_repo_root_script_path():
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Run a live local retrieval smoke" in result.stdout
+    assert "Run a live local retrieval and helper-answer smoke" in result.stdout
 
 
 def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
@@ -64,8 +64,10 @@ def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
     assert "rewrite: enabled=yes attempted=yes applied=yes reason=-" in summary
     assert "rewrites: aws ec2 setup" in summary
     assert "hit 1: source_github | EC2 setup guide | chunk-1 | score=0.910" in summary
-    assert "answer: grounded" in summary
+    assert "helper answer preview: grounded" in summary
     assert "citation 1: EC2 setup guide | chunk-1" in summary
+    assert "inspect helper output: citations, used_chunks, debug, debug_markdown" in summary
+    assert "tip: use --json to inspect used_chunks, debug, and debug_markdown safely" in summary
 
 
 def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections():
@@ -95,6 +97,7 @@ def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections
     assert "rewrites: -" in summary
     assert "hits: 0" in summary
     assert "citations: 0" in summary
+    assert "helper answer preview: insufficient" in summary
 
 
 def test_format_smoke_summary_redacts_secret_like_query_text():
@@ -112,7 +115,7 @@ def test_format_smoke_summary_redacts_secret_like_query_text():
     assert "[REDACTED]" in summary
 
 
-def test_live_query_smoke_requests_search_debug_payload(monkeypatch):
+def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch):
     captured: dict[str, object] = {}
 
     class StubMCP:
@@ -125,13 +128,29 @@ def test_live_query_smoke_requests_search_debug_payload(monkeypatch):
         async def search_context(self, query, *, filters=None, top_k=10, include_debug=False):
             captured["query"] = query
             captured["filters"] = filters
-            captured["top_k"] = top_k
-            captured["include_debug"] = include_debug
+            captured["search_top_k"] = top_k
+            captured["search_include_debug"] = include_debug
             return {"results": [], "debug": {"rewrite_enabled": True}}
 
-        async def answer_with_citations(self, question, *, filters=None, top_k=5):
+        async def answer_with_citations(
+            self,
+            question,
+            *,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+        ):
             captured["question"] = question
-            return {"evidence_status": "insufficient", "citations": []}
+            captured["answer_filters"] = filters
+            captured["answer_top_k"] = top_k
+            captured["answer_include_debug"] = include_debug
+            return {
+                "evidence_status": "insufficient",
+                "citations": [],
+                "used_chunks": [],
+                "debug": {},
+                "debug_markdown": "## Debug",
+            }
 
     monkeypatch.setattr("scripts.live_query_smoke.build_runtime_mcp", lambda rewrite_mode: StubMCP())
 
@@ -146,9 +165,12 @@ def test_live_query_smoke_requests_search_debug_payload(monkeypatch):
     )
 
     assert result["search"]["debug"]["rewrite_enabled"] is True
-    assert captured["include_debug"] is True
+    assert captured["search_include_debug"] is True
     assert captured["filters"] == {"source_id": "source_obsidian"}
-    assert captured["top_k"] == 4
+    assert captured["search_top_k"] == 4
+    assert captured["answer_filters"] == {"source_id": "source_obsidian"}
+    assert captured["answer_top_k"] == 4
+    assert captured["answer_include_debug"] is True
 
 
 def test_redact_live_query_result_omits_content_preview_and_path_fields():
@@ -200,6 +222,16 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
                     }
                 ],
                 "used_chunks": [{"chunk_id": "chunk-1", "text": "used chunk raw text"}],
+                "debug": {
+                    "selected_chunks": [
+                        {
+                            "chunk_id": "chunk-1",
+                            "path": "docs/ec2.md",
+                            "preview": "debug preview should not leak",
+                        }
+                    ]
+                },
+                "debug_markdown": "## Debug\n- preview: debug preview should not leak\n- chunk-1",
             },
         }
     )
@@ -213,6 +245,9 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
     assert "path" not in payload["answer"]["citations"][0]
     assert "url" not in payload["answer"]["citations"][0]
     assert payload["answer"]["citations"][0]["chunk_id"] == "chunk-1"
+    assert payload["answer"]["used_chunks"] == [{"chunk_id": "chunk-1"}]
+    assert "path" not in payload["answer"]["debug"]["selected_chunks"][0]
+    assert "preview" not in payload["answer"]["debug"]["selected_chunks"][0]
+    assert payload["answer"]["debug_markdown"] == "## Debug\n- preview: [REDACTED]\n- chunk-1"
     assert "path" not in payload["search"]["debug"]["selected_results"][0]
     assert "url" not in payload["search"]["debug"]["selected_results"][0]
-    assert "used_chunks" not in payload["answer"]

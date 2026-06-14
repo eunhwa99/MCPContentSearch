@@ -97,7 +97,11 @@ def test_render_demo_text_includes_sync_search_and_answer_sections():
 
     assert "1. Sync retained source" in text
     assert "3. Search query: stale citations" in text
-    assert "4. Grounded question: How does ContextWiki prevent stale citations?" in text
+    assert (
+        "4. Helper answer preview question: How does ContextWiki prevent stale citations?"
+        in text
+    )
+    assert "Downstream LLMs usually turn this evidence into the final answer." in text
 
 
 def test_demo_script_json_mode_runs_successfully():

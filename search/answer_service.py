@@ -89,7 +89,7 @@ DOCUMENT_LIKE_PATH_RE = re.compile(
 
 
 class CitationAnswerService:
-    """Ground answers in returned context and emit explicit citations."""
+    """Build a grounded helper answer preview from returned context and citations."""
 
     _METADATA_GROUNDING_VECTOR_FLOOR = 0.1
 

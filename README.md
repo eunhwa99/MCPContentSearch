@@ -14,7 +14,7 @@ directly.
 - ⚖️ **Hybrid retrieval architecture**: Chroma for semantic search, SQLite for
   lifecycle and citation validation
 - 🛠️ **Practical MCP tools**: source listing, sync, status, search, fetch, and
-  citation-backed answers
+  a helper citation-backed answer preview surface
 - 🛡️ **Citation safety**: only SQLite-validated chunks are returned as evidence
 - 🔒 **Local-first by default**: optional query rewrite stays off unless you
   enable it explicitly, but fully non-egress operation still depends on your
@@ -52,7 +52,7 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured evidence chunks after Chroma retrieval, metadata fallback when needed, and SQLite validation. |
 | `search_documents(query, filters=None, top_k=10)` | Return one representative, retrieval-ranked row per matching document. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
-| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks by reusing the `search_context` retrieval path. |
+| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build a helper evidence-gated answer preview with citations and used chunks by reusing the `search_context` retrieval path. |
 
 At a glance:
 
@@ -65,8 +65,8 @@ At a glance:
 - `search_context(...)` always returns a `debug` key. On the default normal
   path, `include_debug=False` returns `debug={}`, while `include_debug=True`
   returns populated structured debug details.
-- `answer_with_citations(..., include_debug=True)` exposes debug details through
-  the same retrieval path.
+- `answer_with_citations(..., include_debug=True)` exposes helper-surface debug
+  details through the same retrieval path.
 - Today `search_context` also returns a small populated `debug` object when
   `include_debug=False` if the public source filter leaves no matching sources,
   including `debug.rewrite_skipped_reason=no_matching_sources`. In other words,
@@ -74,6 +74,19 @@ At a glance:
   returns populated debug data without `include_debug=True`.
   `answer_with_citations` does not have that exception and exposes debug only
   when `include_debug=True`.
+
+Production MCP clients usually use `search_context` or `search_documents` to
+collect grounded evidence, then let a downstream LLM generate the final
+natural-language answer. In this repo, `answer_with_citations` is intentionally
+positioned as an optional helper surface for preview, debug, evaluation, and
+developer inspection rather than the main production answer API.
+
+When validating `answer_with_citations`, inspect:
+
+- `citations` to confirm every visible claim points to expected evidence
+- `used_chunks` to confirm the helper output stayed grounded in retrieved chunks
+- `debug` to inspect retrieval/grounding state when `include_debug=True`
+- `debug_markdown` to review the human-readable retrieval-to-answer trace
 
 ## ⚙️ Configuration
 
@@ -294,7 +307,7 @@ What it does:
 2. Syncs it through the retained `source_obsidian` connector.
 3. Runs `search_context`.
 4. Runs `answer_with_citations`.
-5. Prints sync, search, and citation-backed answer payloads.
+5. Prints sync, search, and helper answer preview payloads.
 
 This demo is non-live and:
 
@@ -303,6 +316,9 @@ This demo is non-live and:
 - it does not require Notion, Tistory, GitHub, or Obsidian credentials
 - it forces `CONTEXTWIKI_SEARCH_LLM_ENABLED=false` even if your shell sets it
 - it normalizes generated ids and timestamps so the transcript stays stable
+
+Use the answer step here as a grounded helper preview. In production MCP usage,
+downstream LLMs usually turn the retrieved evidence into the final answer.
 
 Optional flags:
 
@@ -334,8 +350,12 @@ path here that is intentionally keyless.
 
 `--json` prints partially redacted payloads for local debugging. It removes raw
 chunk text, previews, and direct `path`/`url` fields, but titles, identifiers,
-and synthesized answer text may still reflect local source content. Treat the
-output as local diagnostic data rather than public sample content.
+and synthesized helper answer text may still reflect local source content.
+Treat the output as local diagnostic data rather than public sample content.
+
+This smoke is for retrieval and helper-surface validation. Check
+`citations`, `used_chunks`, and, when using direct MCP calls with
+`include_debug=True`, `debug` plus `debug_markdown`.
 
 ## 🗺️ Project Map
 
