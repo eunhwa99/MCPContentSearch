@@ -33,6 +33,25 @@ def _stale_cleanup_reason_for_connector(connector, fallback_message: str = "") -
     return _redact_sensitive_error(fallback_message) if fallback_message else ""
 
 
+def _bulk_sync_outcome_for_job(job, *, source_enabled: bool) -> str:
+    if job.status == SyncJobStatus.SUCCEEDED:
+        return "succeeded"
+    if job.status == SyncJobStatus.RUNNING:
+        return "blocked"
+    if not source_enabled and job.status == SyncJobStatus.FAILED:
+        return "skipped"
+    return "failed"
+
+
+def _bulk_sync_status_from_results(results: list[dict]) -> str:
+    outcomes = {result["sync_outcome"] for result in results}
+    if outcomes.issubset({"succeeded", "skipped"}):
+        return "completed"
+    if outcomes.intersection({"succeeded", "skipped"}):
+        return "partial"
+    return "failed"
+
+
 class IngestionService:
     """Per-source incremental sync orchestration."""
 
@@ -63,12 +82,16 @@ class IngestionService:
         if self.register_source_config:
             self.refresh_registered_sources()
 
-        selected_source_ids = source_ids or [source.source_id for source in sources]
+        if source_ids is None:
+            selected_source_ids = [source.source_id for source in sources]
+        else:
+            selected_source_ids = source_ids
         selected_source_ids = list(dict.fromkeys(selected_source_ids))
         started_at = _now()
 
         async def _sync_one(selected_source_id: str) -> dict:
             try:
+                connector = self.source_registry.get_connector(selected_source_id)
                 job = await self.sync_source(selected_source_id)
             except Exception as exc:
                 message = _redact_sensitive_error(str(exc))
@@ -80,12 +103,7 @@ class IngestionService:
                     "message": message,
                 }
 
-            if job.status == SyncJobStatus.SUCCEEDED:
-                outcome = "succeeded"
-            elif job.status == SyncJobStatus.RUNNING:
-                outcome = "blocked"
-            else:
-                outcome = "failed"
+            outcome = _bulk_sync_outcome_for_job(job, source_enabled=connector.source.enabled)
             return {
                 "source_id": selected_source_id,
                 "sync_outcome": outcome,
@@ -100,12 +118,12 @@ class IngestionService:
             "succeeded": sum(1 for result in results if result["sync_outcome"] == "succeeded"),
             "failed": sum(1 for result in results if result["sync_outcome"] == "failed"),
             "blocked": sum(1 for result in results if result["sync_outcome"] == "blocked"),
-            "skipped": 0,
+            "skipped": sum(1 for result in results if result["sync_outcome"] == "skipped"),
             "started_at": started_at,
             "finished_at": finished_at,
         }
         return {
-            "status": "completed",
+            "status": _bulk_sync_status_from_results(results),
             "summary": summary,
             "results": results,
         }
