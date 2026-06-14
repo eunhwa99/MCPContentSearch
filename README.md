@@ -54,20 +54,21 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
 | `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks by reusing the `search_context` retrieval path. |
 
-핵심만 보면:
+At a glance:
 
-- `sync_all()`은 전체 소스를 한 번에 동기화합니다.
-- `search_context(...)` 응답은 항상 `debug` 키를 포함합니다. 기본
-  정상 경로에서 `include_debug=False`면 `debug={}`이고,
-  `include_debug=True`면 구조화된 디버그 정보가 채워집니다.
-- `answer_with_citations(..., include_debug=True)`도 같은 retrieval path를
-  통해 디버그를 노출합니다.
-- 현재 `search_context`는 `include_debug=False`여도 공개 source 필터가
-  하나도 남지 않으면 `debug.rewrite_skipped_reason=no_matching_sources`
-  를 포함한 작은 `debug` 객체를 반환합니다. 즉, 기본 정상 경로의
-  `debug`는 빈 객체이고, 이 fast path만 `include_debug=False`에서도
-  채워진 `debug`를 반환합니다. `answer_with_citations`는 이런 예외 없이
-  `include_debug=True`일 때만 디버그를 노출합니다.
+- `sync_all()` syncs all retained sources in one pass.
+- `search_context(...)` always returns a `debug` key. On the default normal
+  path, `include_debug=False` returns `debug={}`, while `include_debug=True`
+  returns populated structured debug details.
+- `answer_with_citations(..., include_debug=True)` exposes debug details through
+  the same retrieval path.
+- Today `search_context` also returns a small populated `debug` object when
+  `include_debug=False` if the public source filter leaves no matching sources,
+  including `debug.rewrite_skipped_reason=no_matching_sources`. In other words,
+  the normal default-path `debug` payload is empty, and only that fast path
+  returns populated debug data without `include_debug=True`.
+  `answer_with_citations` does not have that exception and exposes debug only
+  when `include_debug=True`.
 
 ## ⚙️ Configuration
 
@@ -127,9 +128,9 @@ CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=...
 ```
 
-기본값은 `off`이고, 켜면 검색 질의와 정규화된 query term group이 외부 LLM으로
-나갈 수 있습니다. 이 설정은 source 내용을 가져오거나 SQLite/Chroma를
-변경하지는 않습니다.
+The default is `off`. When enabled, the search query and normalized query term
+groups may be sent to an external LLM. This setting does not fetch source
+content or mutate SQLite/Chroma.
 
 ## ⚡ Reproducible Launch Paths
 
