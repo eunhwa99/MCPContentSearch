@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import sys
 
 from llama_index.core import Settings
 
@@ -55,6 +56,32 @@ def test_run_demo_uses_temp_cache_dir_and_restores_it(monkeypatch):
         assert Settings.cache_dir == previous_cache_dir
 
 
+def test_run_demo_does_not_require_preinitialized_embed_model():
+    missing = object()
+    had_embed_model_attr = hasattr(Settings, "_embed_model")
+    previous_embed_model = getattr(Settings, "_embed_model", missing)
+    try:
+        Settings._embed_model = None
+
+        result = asyncio.run(
+            run_demo(
+                query="stale citations",
+                question="How does ContextWiki prevent stale citations?",
+            )
+        )
+
+        assert result["answer"]["evidence_status"] == "grounded"
+        assert Settings._embed_model is None
+    finally:
+        if had_embed_model_attr:
+            Settings._embed_model = previous_embed_model
+        else:
+            try:
+                delattr(Settings, "_embed_model")
+            except AttributeError:
+                pass
+
+
 def test_render_demo_text_includes_sync_search_and_answer_sections():
     text = render_demo_text(
         {
@@ -96,3 +123,24 @@ def test_demo_script_json_mode_runs_successfully():
     assert payload["status"]["source"]["last_synced_at"] == "<generated>"
     assert payload["search"]["results"][0]["updated_at"] == "<generated>"
     assert payload["answer"]["evidence_status"] == "grounded"
+    assert completed.stdout.lstrip().startswith("{")
+
+
+def test_demo_public_flow_script_runs_from_repo_root_without_pythonpath():
+    repo_root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/demo_public_flow.py", "--json"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["sync"]["status"] == "succeeded"
+    assert payload["answer"]["evidence_status"] == "grounded"
+    assert completed.stdout.lstrip().startswith("{")

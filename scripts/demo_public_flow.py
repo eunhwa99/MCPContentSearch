@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import tempfile
 from pathlib import Path
+import sys
+
+
+def _ensure_repo_root_on_sys_path() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+
+
+_ensure_repo_root_on_sys_path()
 
 from llama_index.core import Document, Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import MockEmbedding
@@ -105,8 +117,9 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
 
 
 async def run_demo(query: str, question: str) -> dict:
+    had_embed_model_attr = hasattr(Settings, "_embed_model")
+    previous_embed_model = getattr(Settings, "_embed_model", None)
     missing = object()
-    previous_embed_model = Settings.embed_model
     previous_cache_dir = getattr(Settings, "cache_dir", missing)
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
@@ -137,7 +150,13 @@ async def run_demo(query: str, question: str) -> dict:
                 }
             )
     finally:
-        Settings.embed_model = previous_embed_model
+        if had_embed_model_attr:
+            Settings._embed_model = previous_embed_model
+        else:
+            try:
+                delattr(Settings, "_embed_model")
+            except AttributeError:
+                pass
         if previous_cache_dir is missing:
             try:
                 delattr(Settings, "cache_dir")
@@ -215,10 +234,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = asyncio.run(run_demo(args.query, args.question))
     if args.json:
+        with contextlib.redirect_stdout(sys.stderr):
+            result = asyncio.run(run_demo(args.query, args.question))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
+    result = asyncio.run(run_demo(args.query, args.question))
     print(render_demo_text(result, args.query, args.question))
 
 
