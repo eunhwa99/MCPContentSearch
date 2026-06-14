@@ -24,12 +24,34 @@
   {
     "case_id": "unknown-deployment-region-answer",
     "group": "generic-behavior",
-    "question": "What is the deployment region?",
+    "question": "What is the disaster recovery region?",
     "top_k": 3,
     "expected_status": "insufficient",
     "expected_answer_terms": ["Insufficient evidence"],
     "forbidden_answer_terms": ["us-east-1", "ap-northeast-2"],
     "required_citation_chunk_ids": [],
     "min_citation_count": 0
+  },
+  {
+    "case_id": "aws-collection-answer",
+    "group": "generic-behavior",
+    "question": "AWS 관련 문서 모아줘",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["Grounded List", "AWS"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["aws-guide-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "dynamodb-cassandra-comparison-answer",
+    "group": "generic-behavior",
+    "question": "DynamoDB Cassandra comparison",
+    "top_k": 4,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["Grounded Comparison", "DynamoDB", "Cassandra"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["dynamodb-notes-chunk", "cassandra-notes-chunk"],
+    "min_citation_count": 2
   }
 ]

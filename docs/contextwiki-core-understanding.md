@@ -329,6 +329,7 @@ When `search_context(..., include_debug=True)` is used, the response now makes
 that decision path visible with reviewer-readable fields such as:
 
 ```text
+intent.name / raw_name / confidence / reasons
 query_rewrite.attempted / applied / reason
 retrieval_queries
 rewritten_queries
@@ -344,6 +345,20 @@ insufficient_candidate_count
 missing_textual_match
 low_initial_score
 ```
+
+The retrieval path now also makes a coarse intent-policy decision before final
+reranking. The current retained intent classes are:
+
+```text
+strict_lookup
+broad_topic
+list
+comparison
+```
+
+This intent is deterministic and local-first. It is derived from normalized
+query terms and anchors, then reused by ranking and grounded answer rendering.
+It is not a separate MCP tool and does not require a live LLM call.
 
 ---
 
@@ -528,6 +543,19 @@ grounded / insufficient / error
 The service must not invent citations from unmanaged or tombstoned chunks. If
 retrieval cannot find enough active evidence, the response should say that the
 available evidence is insufficient instead of fabricating an answer.
+
+When evidence is sufficient, the final rendered answer can now vary by request
+shape while staying citation-grounded:
+
+```text
+summary-style answer for ordinary grounded QA
+Grounded List for collection requests
+Grounded Comparison for comparison requests
+```
+
+This is still bounded synthesis, not open-ended chat. The answer service only
+repackages retrieved evidence chunks and keeps the same insufficient-evidence
+escape hatch when retrieval is weak.
 
 `search_documents` does not replace this evidence path. It is a browsing surface
 for "which documents matched?" and keeps the highest-ranked chunk as the

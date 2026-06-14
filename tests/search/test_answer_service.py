@@ -400,6 +400,500 @@ def test_answer_service_carries_query_rewrite_explainability_from_search_debug()
     assert "rewrite reason: `low_initial_score`" in answer["debug_markdown"]
 
 
+def test_answer_service_renders_grounded_list_for_collection_request():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-aws-1",
+            document_id="doc-aws-1",
+            source_id="source_notion",
+            source_type="notion",
+            title="AWS deployment guide",
+            url="https://www.notion.so/aws-deployment-guide",
+            path="AWS deployment guide",
+            line_start=1,
+            line_end=20,
+            version_id="v1",
+            score=0.92,
+            preview="Deployment checklist for AWS environment setup.",
+            text="Deployment checklist for AWS environment setup.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-aws-2",
+            document_id="doc-aws-2",
+            source_id="source_github",
+            source_type="github",
+            title="AWS runtime notes",
+            url="https://github.com/example/repo/blob/main/docs/aws-runtime.md",
+            path="docs/aws-runtime.md",
+            line_start=1,
+            line_end=20,
+            version_id="v2",
+            score=0.88,
+            preview="Runtime notes for AWS service usage.",
+            text="Runtime notes for AWS service usage.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS 관련 문서 모아줘"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert "## Grounded List" in answer["answer"]
+    assert "- [C1]" in answer["answer"]
+    assert "- [C2]" in answer["answer"]
+
+
+def test_answer_service_dedupes_grounded_list_by_document():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-aws-1",
+            document_id="doc-aws-1",
+            source_id="source_notion",
+            source_type="notion",
+            title="AWS deployment guide",
+            url="https://www.notion.so/aws-deployment-guide",
+            path="AWS deployment guide",
+            score=0.92,
+            preview="Deployment checklist for AWS environment setup.",
+            text="Deployment checklist for AWS environment setup.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-aws-1b",
+            document_id="doc-aws-1",
+            source_id="source_notion",
+            source_type="notion",
+            title="AWS deployment guide",
+            url="https://www.notion.so/aws-deployment-guide",
+            path="AWS deployment guide",
+            score=0.9,
+            preview="More deployment notes for the same AWS document.",
+            text="More deployment notes for the same AWS document.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS 관련 문서 모아줘"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["chunk-aws-1"]
+    assert "- [C2]" not in answer["answer"]
+
+
+def test_answer_service_list_requires_specific_topic_match_not_only_docs_intent():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-k8s",
+            document_id="doc-k8s",
+            source_id="source_github",
+            source_type="github",
+            title="Kubernetes deployment guide",
+            url="https://github.com/example/repo/blob/main/docs/k8s-guide.md",
+            path="docs/k8s-guide.md",
+            score=0.92,
+            preview="Kubernetes deployment guide and rollout notes.",
+            text="Kubernetes deployment guide and rollout notes.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-frontend",
+            document_id="doc-frontend",
+            source_id="source_notion",
+            source_type="notion",
+            title="Frontend notes",
+            url="https://www.notion.so/frontend-notes",
+            path="Frontend notes",
+            score=0.9,
+            preview="Frontend implementation notes.",
+            text="Frontend implementation notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS 관련 문서 모아줘"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_list_requires_all_specific_constraints():
+    results = [
+        ContextSearchResult(
+            chunk_id="notion-k8s",
+            document_id="doc-notion-k8s",
+            source_id="source_notion",
+            source_type="notion",
+            title="Kubernetes deployment notes",
+            url="https://www.notion.so/kubernetes-deployment-notes",
+            path="Kubernetes deployment notes",
+            score=0.92,
+            preview="Kubernetes deployment notes in Notion.",
+            text="Kubernetes deployment notes in Notion.",
+        )
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("AWS Notion 문서 모아줘"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_renders_grounded_comparison_for_comparison_request():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb",
+            document_id="doc-ddb",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB notes",
+            url="https://www.notion.so/dynamodb-notes",
+            path="DynamoDB notes",
+            line_start=1,
+            line_end=20,
+            version_id="v1",
+            score=0.92,
+            preview="DynamoDB strengths and scaling notes.",
+            text="DynamoDB strengths and scaling notes.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-cassandra",
+            document_id="doc-cassandra",
+            source_id="source_tistory",
+            source_type="tistory",
+            title="Cassandra notes",
+            url="https://devlog.tistory.com/cassandra-notes",
+            path="Cassandra notes",
+            line_start=1,
+            line_end=20,
+            version_id="v2",
+            score=0.9,
+            preview="Cassandra consistency and partitioning notes.",
+            text="Cassandra consistency and partitioning notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra 차이 비교"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert "## Grounded Comparison" in answer["answer"]
+    assert "DynamoDB notes" in answer["answer"]
+    assert "Cassandra notes" in answer["answer"]
+
+
+def test_answer_service_requires_two_sides_for_grounded_comparison():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb",
+            document_id="doc-ddb",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB notes",
+            url="https://www.notion.so/dynamodb-notes",
+            path="DynamoDB notes",
+            score=0.92,
+            preview="DynamoDB comparison notes and scaling characteristics.",
+            text="DynamoDB comparison notes and scaling characteristics.",
+        )
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra 차이 비교"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_comparison_rejects_repeated_comparison_words_without_second_side():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb-1",
+            document_id="doc-ddb-1",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB comparison notes",
+            url="https://www.notion.so/dynamodb-comparison-notes",
+            path="DynamoDB comparison notes",
+            score=0.92,
+            preview="DynamoDB comparison notes and scaling characteristics.",
+            text="DynamoDB comparison notes and scaling characteristics.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-ddb-2",
+            document_id="doc-ddb-2",
+            source_id="source_tistory",
+            source_type="tistory",
+            title="DynamoDB vs partitioning notes",
+            url="https://devlog.tistory.com/dynamodb-vs-partitioning",
+            path="DynamoDB vs partitioning notes",
+            score=0.9,
+            preview="DynamoDB vs partitioning operational notes.",
+            text="DynamoDB vs partitioning operational notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra comparison"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_comparison_accepts_single_document_covering_both_sides():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb-cassandra",
+            document_id="doc-ddb-cassandra",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB vs Cassandra notes",
+            url="https://www.notion.so/dynamodb-vs-cassandra-notes",
+            path="DynamoDB vs Cassandra notes",
+            score=0.92,
+            preview="DynamoDB and Cassandra tradeoffs, consistency, and scaling notes.",
+            text="DynamoDB and Cassandra tradeoffs, consistency, and scaling notes.",
+        )
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra comparison"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["chunk-ddb-cassandra"]
+
+
+def test_answer_service_comparison_accepts_two_chunks_from_same_document():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb",
+            document_id="doc-ddb-cassandra",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB vs Cassandra notes",
+            url="https://www.notion.so/dynamodb-vs-cassandra-notes",
+            path="DynamoDB vs Cassandra notes",
+            score=0.92,
+            preview="DynamoDB tradeoffs and scaling notes.",
+            text="DynamoDB tradeoffs and scaling notes.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-cassandra",
+            document_id="doc-ddb-cassandra",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB vs Cassandra notes",
+            url="https://www.notion.so/dynamodb-vs-cassandra-notes",
+            path="DynamoDB vs Cassandra notes",
+            score=0.9,
+            preview="Cassandra consistency and partitioning notes.",
+            text="Cassandra consistency and partitioning notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra comparison"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["chunk-ddb", "chunk-cassandra"]
+
+
+def test_answer_service_comparison_oversamples_retrieval_to_recover_second_side():
+    results = [
+        ContextSearchResult(
+            chunk_id=f"ddb-{index}",
+            document_id=f"doc-ddb-{index}",
+            source_id="source_notion",
+            source_type="notion",
+            title=f"DynamoDB notes {index}",
+            url=f"https://www.notion.so/dynamodb-notes-{index}",
+            path=f"DynamoDB notes {index}",
+            score=0.95 - (index * 0.01),
+            preview="DynamoDB scaling notes.",
+            text="DynamoDB scaling notes.",
+        )
+        for index in range(5)
+    ] + [
+        ContextSearchResult(
+            chunk_id="cass-0",
+            document_id="doc-cass-0",
+            source_id="source_tistory",
+            source_type="tistory",
+            title="Cassandra notes 0",
+            url="https://devlog.tistory.com/cassandra-notes-0",
+            path="Cassandra notes 0",
+            score=0.7,
+            preview="Cassandra consistency notes.",
+            text="Cassandra consistency notes.",
+        )
+    ]
+    context_search = RecordingContextSearch(results)
+    service = CitationAnswerService(
+        context_search=context_search,
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra comparison", top_k=5))
+
+    assert context_search.calls[0]["top_k"] > 5
+    assert answer["evidence_status"] == "grounded"
+    assert "cass-0" in answer["used_chunks"]
+
+
+def test_answer_service_comparison_rejects_generic_compare_docs_request():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-docs-1",
+            document_id="doc-docs-1",
+            source_id="source_github",
+            source_type="github",
+            title="Architecture docs",
+            url="https://github.com/example/repo/blob/main/docs/architecture.md",
+            path="docs/architecture.md",
+            score=0.92,
+            preview="Architecture docs and design notes.",
+            text="Architecture docs and design notes.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-docs-2",
+            document_id="doc-docs-2",
+            source_id="source_notion",
+            source_type="notion",
+            title="Runtime docs",
+            url="https://www.notion.so/runtime-docs",
+            path="Runtime docs",
+            score=0.9,
+            preview="Runtime docs and operational notes.",
+            text="Runtime docs and operational notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("compare docs"))
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
+def test_answer_service_comparison_rejects_hint_only_extra_document():
+    results = [
+        ContextSearchResult(
+            chunk_id="chunk-ddb-cassandra",
+            document_id="doc-ddb-cassandra",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB and Cassandra overview",
+            url="https://www.notion.so/dynamodb-cassandra-overview",
+            path="DynamoDB and Cassandra overview",
+            score=0.92,
+            preview="DynamoDB and Cassandra overview and tradeoffs.",
+            text="DynamoDB and Cassandra overview and tradeoffs.",
+        ),
+        ContextSearchResult(
+            chunk_id="chunk-compare-checklist",
+            document_id="doc-compare-checklist",
+            source_id="source_tistory",
+            source_type="tistory",
+            title="General comparison checklist",
+            url="https://devlog.tistory.com/comparison-checklist",
+            path="General comparison checklist",
+            score=0.9,
+            preview="Comparison checklist and evaluation prompts.",
+            text="Comparison checklist and evaluation prompts.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("DynamoDB vs Cassandra comparison"))
+
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == ["chunk-ddb-cassandra"]
+
+
+def test_answer_service_comparison_requires_all_named_sides():
+    results = [
+        ContextSearchResult(
+            chunk_id="ddb",
+            document_id="doc-ddb",
+            source_id="source_notion",
+            source_type="notion",
+            title="DynamoDB notes",
+            url="https://www.notion.so/dynamodb-notes",
+            path="DynamoDB notes",
+            score=0.92,
+            preview="DynamoDB scaling notes.",
+            text="DynamoDB scaling notes.",
+        ),
+        ContextSearchResult(
+            chunk_id="cass",
+            document_id="doc-cass",
+            source_id="source_tistory",
+            source_type="tistory",
+            title="Cassandra notes",
+            url="https://devlog.tistory.com/cassandra-notes",
+            path="Cassandra notes",
+            score=0.9,
+            preview="Cassandra consistency notes.",
+            text="Cassandra consistency notes.",
+        ),
+    ]
+    service = CitationAnswerService(
+        context_search=FakeContextSearch(results),
+        min_score=0.5,
+        min_results=1,
+    )
+
+    answer = asyncio.run(
+        service.answer_with_citations("DynamoDB vs Cassandra vs MongoDB comparison")
+    )
+
+    assert answer["evidence_status"] == "insufficient"
+    assert answer["citations"] == []
+
+
 def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
     result = ContextSearchResult(
         chunk_id="chunk-debug-guide",

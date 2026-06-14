@@ -68,5 +68,35 @@
     "text": "class GraphSolution { void dfs() {} }",
     "url": "https://github.com/eunhwa99/neetcode-submissions/blob/main/Graph.java",
     "path": "Graph.java"
+  },
+  {
+    "chunk_id": "aws-runtime-chunk",
+    "document_id": "tistory:aws-runtime-notes",
+    "source_id": "source_tistory",
+    "source_type": "tistory",
+    "title": "AWS runtime notes",
+    "text": "AWS runtime notes for service usage, deployment checks, and troubleshooting.",
+    "url": "https://devlog.tistory.com/aws-runtime-notes",
+    "path": "AWS runtime notes"
+  },
+  {
+    "chunk_id": "dynamodb-notes-chunk",
+    "document_id": "notion:dynamodb-notes",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "DynamoDB notes",
+    "text": "DynamoDB comparison notes with strengths, scaling characteristics, and operational tradeoffs.",
+    "url": "https://www.notion.so/dynamodb-notes",
+    "path": "DynamoDB notes"
+  },
+  {
+    "chunk_id": "cassandra-notes-chunk",
+    "document_id": "tistory:cassandra-notes",
+    "source_id": "source_tistory",
+    "source_type": "tistory",
+    "title": "Cassandra notes",
+    "text": "Cassandra comparison notes with consistency, partitioning, and operational tradeoffs.",
+    "url": "https://devlog.tistory.com/cassandra-notes",
+    "path": "Cassandra notes"
   }
 ]
