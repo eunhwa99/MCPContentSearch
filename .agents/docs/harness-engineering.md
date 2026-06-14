@@ -54,7 +54,7 @@ the matching eval command before review.
 8. Refactor phase: `.agents/skills/harness-refactor/SKILL.md`
 9. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
 10. Final review gate: `.agents/skills/harness-review/SKILL.md`, which must invoke `$subagent-review-loop`
-11. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+11. PR delivery: after the final clean `$subagent-review-loop` pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59`. If no real issue exists, omit closing keywords instead of inventing one.
 
 `.agents/skills/harness-engineering/SKILL.md` is the orchestrator for the full loop.
 
@@ -309,4 +309,4 @@ Final reports include:
 - Known blockers or skipped checks
 - Commit, push, and PR status, including the PR URL after successful delivery
 
-After the final clean `$subagent-review-loop` pass, do not stop at local completion. Use `.agents/docs/github-workflow.md` to stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR by default. If the user explicitly requested local-only work, or if auth, permissions, network, branch safety, or review availability blocks PR delivery, report that blocker instead of silently skipping the PR.
+After the final clean `$subagent-review-loop` pass, do not stop at local completion. Use `.agents/docs/github-workflow.md` to stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR by default. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59` so the issue closes on merge. If no real issue exists, omit closing keywords instead of inventing one. If the user explicitly requested local-only work, or if auth, permissions, network, branch safety, or review availability blocks PR delivery, report that blocker instead of silently skipping the PR.
