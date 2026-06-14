@@ -1,7 +1,7 @@
 # ContextWiki Local Evaluations
 
 This directory contains deterministic evaluation scaffolding for ContextWiki.
-Phase D1 now covers two local-first layers:
+Phase D now covers two local-first layers:
 
 - payload-level answer grounding checks
 - fixture-based retrieval and answer evaluation over temporary local SQLite
@@ -33,20 +33,46 @@ The first evaluator, `evals.answer_quality`, checks local answer payloads for:
 - required chunk presence
 - forbidden chunk absence
 
+The fixture suites now also report:
+
+- group-level breakdowns for repo-specific, generic-behavior, code-format,
+  markdown-format, obsidian-format, and mixed-language queries
+- deterministic reviewer-visible JSON artifacts when the runner is given an
+  output directory
+- optional non-deterministic runtime latency summaries for retrieval and answer
+  passes
+
 Run the D1 fixture runner with:
 
 ```bash
 PYTHONPATH=. python scripts/run_contextwiki_eval.py
 ```
 
+Write reviewer-visible artifacts with:
+
+```bash
+PYTHONPATH=. python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
+PYTHONPATH=. python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
+```
+
 This seeds temporary fixture documents into temp SQLite, swaps in a local
-fixture `VectorIndexRetriever`, executes the normal `search_context` indexer
-path plus `answer_with_citations`, and returns a JSON summary without live LLM
-rewrite.
+fixture `VectorIndexRetriever`, executes the retained `search_context`
+retrieval and `answer_with_citations` service paths without the normal live
+indexing/vector setup, and returns a JSON summary without live LLM rewrite.
+When `--output-dir` is supplied, the runner writes:
+
+- `summary.json`
+- `retrieval_suite.json`
+- `answer_suite.json`
+- optional `runtime_metrics.json` when `--include-latency` is supplied
+
+The first three files are deterministic CI reviewer evidence for Issue `#32`.
+`runtime_metrics.json` is informational and may vary across runs because it
+captures wall-clock timing.
 
 Phase split used by the roadmap:
 
 - `D1`: local retrieval/answer eval foundation
-- `D2`: observability expansion
+- `D2`: mixed-query metrics, latency summaries, and reviewer-visible artifacts
 - `J1`: deterministic non-LLM retrieval quality
 - `J2`: LLM-assisted answer quality

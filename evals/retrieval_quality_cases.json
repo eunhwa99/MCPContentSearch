@@ -58,5 +58,45 @@
     "min_result_count": 1,
     "expected_top_chunk_id": "aws-guide-chunk",
     "required_chunk_ids": ["aws-guide-chunk"]
+  },
+  {
+    "case_id": "graph-search-code",
+    "group": "code-format",
+    "query": "graph_search.py bfs",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "graph-search-code-chunk",
+    "expected_source_id": "source_github",
+    "required_chunk_ids": ["graph-search-code-chunk"]
+  },
+  {
+    "case_id": "adr-markdown-scope",
+    "group": "markdown-format",
+    "query": "ADR 0006 slim MCP core markdown",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "adr-markdown-chunk",
+    "expected_source_id": "source_github",
+    "required_chunk_ids": ["adr-markdown-chunk"]
+  },
+  {
+    "case_id": "obsidian-daily-planning",
+    "group": "obsidian-format",
+    "query": "옵시디언 daily planning note",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "obsidian-daily-planning-chunk",
+    "expected_source_id": "source_obsidian",
+    "required_chunk_ids": ["obsidian-daily-planning-chunk"]
+  },
+  {
+    "case_id": "mixed-language-daily-note",
+    "group": "mixed-language",
+    "query": "daily planning 회고 note",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "obsidian-daily-planning-chunk",
+    "expected_source_id": "source_obsidian",
+    "required_chunk_ids": ["obsidian-daily-planning-chunk"]
   }
 ]

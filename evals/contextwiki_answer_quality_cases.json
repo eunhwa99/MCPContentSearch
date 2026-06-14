@@ -53,5 +53,49 @@
     "forbidden_answer_terms": ["Insufficient evidence"],
     "required_citation_chunk_ids": ["dynamodb-notes-chunk", "cassandra-notes-chunk"],
     "min_citation_count": 2
+  },
+  {
+    "case_id": "obsidian-daily-planning-answer",
+    "group": "obsidian-format",
+    "question": "옵시디언 daily planning note",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["Daily planning"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["obsidian-daily-planning-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "mixed-language-daily-note-answer",
+    "group": "mixed-language",
+    "question": "AWS docs 모아줘",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["Grounded List", "AWS docs 모아줘"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["aws-guide-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "adr-markdown-answer",
+    "group": "markdown-format",
+    "question": "ADR 0006 slim MCP core markdown",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["ADR 0006"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["adr-markdown-chunk"],
+    "min_citation_count": 1
+  },
+  {
+    "case_id": "graph-search-code-answer",
+    "group": "code-format",
+    "question": "graph_search.py bfs",
+    "top_k": 3,
+    "expected_status": "grounded",
+    "expected_answer_terms": ["bfs"],
+    "forbidden_answer_terms": ["Insufficient evidence"],
+    "required_citation_chunk_ids": ["graph-search-code-chunk"],
+    "min_citation_count": 1
   }
 ]

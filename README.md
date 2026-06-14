@@ -144,7 +144,22 @@ uv run --locked pytest -q tests/search/test_context_service.py tests/search/test
 uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
 uv run --locked pytest -q tests/scripts/test_demo_public_flow.py
 uv run --locked pytest -q tests/scripts/test_live_query_smoke.py
+uv run --locked pytest -q tests/evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
 ```
+
+`scripts/run_contextwiki_eval.py` is the deterministic reviewer-evidence runner.
+It seeds temporary SQLite fixture data, exercises normal retrieval and
+grounded-answer flows, and writes deterministic JSON artifacts with:
+
+- group-level mixed-query metrics
+- suite pass/fail summaries
+
+When `--include-latency` is supplied, it also writes an informational
+`runtime_metrics.json` file with retrieval/answer latency summaries. CI uploads
+the deterministic JSON files plus that optional timing file as the
+`contextwiki-evals` artifact.
 
 ## 🎬 One-command Demo
 

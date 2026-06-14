@@ -1,3 +1,5 @@
+import json
+
 from evals.contextwiki_eval import run_contextwiki_eval
 from evals.retrieval_quality import (
     RetrievalQualityCase,
@@ -97,13 +99,30 @@ def test_retrieval_fixture_cases_load_and_suite_summarizes_results():
         "architecture-guide-phrase": {"results": [{"chunk_id": "architecture-guide-chunk", "source_id": "source_notion"}]},
         "aws-doc-alias": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_notion"}]},
         "aws-collection-intent": {"results": [{"chunk_id": "aws-guide-chunk", "source_id": "source_notion"}]},
+        "graph-search-code": {"results": [{"chunk_id": "graph-search-code-chunk", "source_id": "source_github"}]},
+        "adr-markdown-scope": {"results": [{"chunk_id": "adr-markdown-chunk", "source_id": "source_github"}]},
+        "obsidian-daily-planning": {"results": [{"chunk_id": "obsidian-daily-planning-chunk", "source_id": "source_obsidian"}]},
+        "mixed-language-daily-note": {"results": [{"chunk_id": "obsidian-daily-planning-chunk", "source_id": "source_obsidian"}]},
     }
 
     summary = evaluate_search_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 6
-    assert summary["passed_count"] == 6
+    assert summary["total"] == 10
+    assert summary["passed_count"] == 10
+
+
+def test_retrieval_fixture_cases_cover_mixed_query_groups():
+    cases = load_cases("evals/retrieval_quality_cases.json")
+
+    groups = {case.group for case in cases}
+
+    assert "repo-specific" in groups
+    assert "generic-behavior" in groups
+    assert "code-format" in groups
+    assert "markdown-format" in groups
+    assert "obsidian-format" in groups
+    assert "mixed-language" in groups
 
 
 def test_retrieval_suite_fails_when_case_list_is_empty():
@@ -119,6 +138,77 @@ def test_contextwiki_eval_runner_passes_fixture_suites():
     assert summary["passed"]
     assert summary["retrieval_suite"]["passed"]
     assert summary["answer_suite"]["passed"]
+    assert "group_breakdown" in summary["retrieval_suite"]
+    assert "group_breakdown" in summary["answer_suite"]
+    assert "runtime_metrics" not in summary
+
+
+def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
+    output_dir = tmp_path / "eval-artifacts"
+    second_output_dir = tmp_path / "eval-artifacts-second"
+
+    summary = run_contextwiki_eval(output_dir=output_dir, include_latency=True)
+
+    assert summary["passed"]
+    assert summary["artifact_dir"] == str(output_dir)
+
+    retrieval_groups = summary["retrieval_suite"]["group_breakdown"]
+    answer_groups = summary["answer_suite"]["group_breakdown"]
+
+    assert retrieval_groups["code-format"]["total"] >= 1
+    assert retrieval_groups["markdown-format"]["total"] >= 1
+    assert retrieval_groups["obsidian-format"]["total"] >= 1
+    assert retrieval_groups["mixed-language"]["total"] >= 1
+    assert answer_groups["obsidian-format"]["total"] >= 1
+    assert answer_groups["mixed-language"]["total"] >= 1
+
+    for suite_name in ("retrieval_suite", "answer_suite"):
+        latency = summary["runtime_metrics"][suite_name]["latency_ms"]
+        assert latency["total"] > 0
+        assert latency["max"] >= latency["min"] >= 0
+        assert latency["average"] >= 0
+
+    assert (output_dir / "summary.json").is_file()
+    assert (output_dir / "retrieval_suite.json").is_file()
+    assert (output_dir / "answer_suite.json").is_file()
+    assert (output_dir / "runtime_metrics.json").is_file()
+
+    written_summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    written_retrieval_suite = json.loads(
+        (output_dir / "retrieval_suite.json").read_text(encoding="utf-8")
+    )
+    written_answer_suite = json.loads(
+        (output_dir / "answer_suite.json").read_text(encoding="utf-8")
+    )
+
+    assert "group_breakdown" in written_summary["retrieval_suite"]
+    assert "group_breakdown" in written_summary["answer_suite"]
+    assert written_retrieval_suite["group_breakdown"]["code-format"]["total"] >= 1
+    assert written_retrieval_suite["group_breakdown"]["markdown-format"]["total"] >= 1
+    assert written_answer_suite["group_breakdown"]["code-format"]["total"] >= 1
+    assert written_answer_suite["group_breakdown"]["markdown-format"]["total"] >= 1
+
+    second_summary = run_contextwiki_eval(
+        output_dir=second_output_dir,
+        include_latency=True,
+    )
+
+    assert second_summary["passed"]
+    assert (output_dir / "summary.json").read_text(encoding="utf-8") == (
+        second_output_dir / "summary.json"
+    ).read_text(encoding="utf-8")
+    assert (output_dir / "retrieval_suite.json").read_text(encoding="utf-8") == (
+        second_output_dir / "retrieval_suite.json"
+    ).read_text(encoding="utf-8")
+    assert (output_dir / "answer_suite.json").read_text(encoding="utf-8") == (
+        second_output_dir / "answer_suite.json"
+    ).read_text(encoding="utf-8")
+
+    deterministic_rerun = run_contextwiki_eval(output_dir=output_dir)
+
+    assert deterministic_rerun["passed"]
+    assert "runtime_metrics" not in deterministic_rerun
+    assert not (output_dir / "runtime_metrics.json").exists()
 
 
 def test_contextwiki_eval_runner_disables_query_rewriter(monkeypatch):

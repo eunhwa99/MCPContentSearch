@@ -98,5 +98,35 @@
     "text": "Cassandra comparison notes with consistency, partitioning, and operational tradeoffs.",
     "url": "https://devlog.tistory.com/cassandra-notes",
     "path": "Cassandra notes"
+  },
+  {
+    "chunk_id": "graph-search-code-chunk",
+    "document_id": "github:example/repo:src/graph_search.py",
+    "source_id": "source_github",
+    "source_type": "github",
+    "title": "graph_search.py",
+    "text": "def bfs(graph, start):\n    queue = [start]\n    return queue\n",
+    "url": "https://github.com/example/repo/blob/main/src/graph_search.py",
+    "path": "src/graph_search.py"
+  },
+  {
+    "chunk_id": "adr-markdown-chunk",
+    "document_id": "github:example/repo:docs/adr/0006-slim-core.md",
+    "source_id": "source_github",
+    "source_type": "github",
+    "title": "ADR 0006 slim MCP core scope",
+    "text": "# ADR 0006\nSlim MCP core scope for retained retrieval and markdown decision records.",
+    "url": "https://github.com/example/repo/blob/main/docs/adr/0006-slim-core.md",
+    "path": "docs/adr/0006-slim-core.md"
+  },
+  {
+    "chunk_id": "obsidian-daily-planning-chunk",
+    "document_id": "obsidian:team-vault:daily/planning.md",
+    "source_id": "source_obsidian",
+    "source_type": "obsidian",
+    "title": "Daily planning note",
+    "text": "옵시디언 daily planning note with 회고 bullets, next actions, and project follow-ups.",
+    "url": "obsidian://open?vault=team-vault&file=daily%2Fplanning.md",
+    "path": "daily/planning.md"
   }
 ]
