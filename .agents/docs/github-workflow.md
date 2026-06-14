@@ -85,6 +85,10 @@ If `uv run ...` is not available because dependencies or workspace metadata are 
 - PR base is `main` unless a stacked PR requires another feature branch as base.
 - For multi-task work, independent PRs use `base=main`.
 - Ordered or contract-dependent tasks use stacked PRs.
+- When the work is tied to a real GitHub issue, include a dedicated PR-body
+  closing-keyword line such as `closes #59` so merge closes the issue
+  automatically.
+  If no real issue exists, do not invent one and omit closing keywords instead.
 - Include verification results and functional smoke matrix results in PR text,
   including `blocked/gated` checks, approval blockers, and local substitutes; a
   link to the plan matrix is acceptable when the summary is clear.
@@ -97,6 +101,9 @@ Example:
 git push -u origin feature/short-description
 gh pr create --base main --head feature/short-description
 ```
+
+When `gh pr create` opens an editor or prompt for the PR description, include
+the required closing keyword there if the work is tied to a real GitHub issue.
 
 ## PR Monitoring Policy
 
