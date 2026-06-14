@@ -305,8 +305,8 @@ What it does:
 
 1. Uses `sample_vault/` as a bounded public Obsidian source.
 2. Syncs it through the retained `source_obsidian` connector.
-3. Runs `search_context`.
-4. Runs `answer_with_citations`.
+3. By default, runs `search_context` with the canonical question shown in the transcript.
+4. By default, runs `answer_with_citations` with that same canonical question.
 5. Prints sync, search, and helper answer preview payloads.
 
 This demo is non-live and:
@@ -319,11 +319,17 @@ This demo is non-live and:
 
 Use the answer step here as a grounded helper preview. In production MCP usage,
 downstream LLMs usually turn the retrieved evidence into the final answer.
+The default demo transcript is the canonical portfolio path: the same question
+is used for retrieval and helper answer preview.
+If you pass only `--query`, the demo reuses that same text for the answer step.
+If you override both `--query` and `--question` with different values, read the
+output as separate probes rather than one validated end-to-end chain.
 
 Optional flags:
 
 ```bash
 ./scripts/demo.sh --json
+./scripts/demo.sh --query "Why does ContextWiki validate citations through SQLite?"
 ./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
 ```
 
@@ -332,12 +338,18 @@ Optional flags:
 Run a real local retrieval check against your configured ContextWiki runtime:
 
 ```bash
-uv run --locked python scripts/live_query_smoke.py --query "aws startup"
+uv run --locked python scripts/live_query_smoke.py --query "How does github sync work?"
 ```
+
+This is the aligned same-input smoke path: when `--question` is omitted, the
+script reuses the same text for retrieval and helper answer preview. If you
+supply a different `--question`, the transcript explicitly labels the output as
+separate probes so reviewers do not mistake it for one validated chain.
 
 Useful options:
 
 ```bash
+uv run --locked python scripts/live_query_smoke.py --query "aws startup"
 uv run --locked python scripts/live_query_smoke.py --query "aws startup" --question "How do I start EC2?"
 uv run --locked python scripts/live_query_smoke.py --query "github sync" --source-id source_github --top-k 3
 uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --rewrite off
@@ -348,10 +360,12 @@ Use this only after you have configured real sources in `.env`. The public demo
 above is the safer first-run path for reviewers, and it is the only documented
 path here that is intentionally keyless.
 
-`--json` prints partially redacted payloads for local debugging. It removes raw
-chunk text, previews, and direct `path`/`url` fields, but titles, identifiers,
-and synthesized helper answer text may still reflect local source content.
-Treat the output as local diagnostic data rather than public sample content.
+All live-smoke output should be treated as local diagnostic data rather than
+public sample content. The default text summary can still reveal local
+source-derived titles, citation titles, and helper-answer text. `--json` removes
+raw chunk text, previews, and direct `path`/`url` fields, but titles,
+identifiers, and synthesized helper answer text may still reflect local source
+content.
 
 This smoke is for retrieval and helper-surface validation. Check
 `citations`, `used_chunks`, and, when using direct MCP calls with

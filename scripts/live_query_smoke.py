@@ -203,6 +203,7 @@ def redact_live_query_result(result: dict) -> dict:
     return {
         "query": debug_redaction.redact_debug_query_text(str(result.get("query", ""))),
         "question": debug_redaction.redact_debug_query_text(str(result.get("question", ""))),
+        "same_input": str(result.get("query", "")) == str(result.get("question", "")),
         "source_id": result.get("source_id"),
         "top_k": result.get("top_k"),
         "rewrite_mode": result.get("rewrite_mode"),
@@ -218,6 +219,7 @@ def format_smoke_summary(
     *,
     query: str,
     question: str,
+    same_input: bool,
     source_id: str | None,
     top_k: int,
     search_payload: dict,
@@ -271,10 +273,14 @@ def format_smoke_summary(
     result_lines.append(
         "tip: use --json to inspect used_chunks, debug, and debug_markdown safely"
     )
-    if redacted_query != redacted_question:
+    if same_input:
         result_lines.append(
-            "note: rewrite and hit summary describe the search query above; "
-            "helper answer status and citations describe the answer question."
+            "same-input smoke path: retrieval and helper answer preview use the same input text above."
+        )
+    else:
+        result_lines.append(
+            "separate probes: retrieval summary describes the search query above, "
+            "while helper answer status and citations describe the answer question."
         )
     return "\n".join(result_lines)
 
@@ -326,6 +332,7 @@ def main() -> None:
         format_smoke_summary(
             query=result["query"],
             question=result["question"],
+            same_input=args.query == question,
             source_id=result["source_id"],
             top_k=result["top_k"],
             search_payload=result["search"],

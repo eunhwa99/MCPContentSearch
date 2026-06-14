@@ -142,11 +142,14 @@ async def run_demo(query: str, question: str) -> dict:
             )
             return normalize_demo_result(
                 {
-                "sample_vault": str(sample_vault.relative_to(repo_root)),
-                "sync": sync_payload,
-                "status": status_payload,
-                "search": search_payload,
-                "answer": answer_payload,
+                    "sample_vault": str(sample_vault.relative_to(repo_root)),
+                    "query": query,
+                    "question": question,
+                    "same_input": query == question,
+                    "sync": sync_payload,
+                    "status": status_payload,
+                    "search": search_payload,
+                    "answer": answer_payload,
                 }
             )
     finally:
@@ -174,7 +177,7 @@ def normalize_demo_result(result: dict) -> dict:
             sync_payload[key] = "<generated>"
 
     source_payload = normalized.get("status", {}).get("source", {})
-    for key in ("last_synced_at", "created_at", "updated_at"):
+    for key in ("last_synced_at", "created_at", "updated_at", "latest_success_at", "latest_failure_at"):
         if key in source_payload:
             source_payload[key] = "<generated>"
 
@@ -196,19 +199,31 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
         f"Sample vault: {result['sample_vault']}",
         "Downstream LLMs usually turn this evidence into the final answer.",
         "The answer step below is a grounded helper preview for debug/eval.",
-        "",
-        "1. Sync retained source",
-        json.dumps(result["sync"], ensure_ascii=False, indent=2),
-        "",
-        "2. Source status",
-        json.dumps(result["status"], ensure_ascii=False, indent=2),
-        "",
-        f"3. Search query: {query}",
-        json.dumps(result["search"], ensure_ascii=False, indent=2),
-        "",
-        f"4. Helper answer preview question: {question}",
-        json.dumps(result["answer"], ensure_ascii=False, indent=2),
     ]
+    if query == question:
+        lines.append(
+            "Canonical portfolio path: the same question is used for retrieval and helper answer preview."
+        )
+    else:
+        lines.append(
+            "This transcript uses separate retrieval and answer probes, so do not read it as one validated end-to-end chain."
+        )
+    lines.extend(
+        [
+            "",
+            "1. Sync retained source",
+            json.dumps(result["sync"], ensure_ascii=False, indent=2),
+            "",
+            "2. Source status",
+            json.dumps(result["status"], ensure_ascii=False, indent=2),
+            "",
+            f"3. Search query: {query}",
+            json.dumps(result["search"], ensure_ascii=False, indent=2),
+            "",
+            f"4. Helper answer preview question: {question}",
+            json.dumps(result["answer"], ensure_ascii=False, indent=2),
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -218,13 +233,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--query",
-        default="stale citations",
+        default="How does ContextWiki prevent stale citations?",
         help="Search query for the demo search_context step.",
     )
     parser.add_argument(
         "--question",
-        default="How does ContextWiki prevent stale citations?",
-        help="Question for the demo helper answer preview step.",
+        help="Question for the demo helper answer preview step. Defaults to the same text as --query.",
     )
     parser.add_argument(
         "--json",
@@ -236,13 +250,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    question = args.question or args.query
     if args.json:
         with contextlib.redirect_stdout(sys.stderr):
-            result = asyncio.run(run_demo(args.query, args.question))
+            result = asyncio.run(run_demo(args.query, question))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    result = asyncio.run(run_demo(args.query, args.question))
-    print(render_demo_text(result, args.query, args.question))
+    result = asyncio.run(run_demo(args.query, question))
+    print(render_demo_text(result, args.query, question))
 
 
 if __name__ == "__main__":
