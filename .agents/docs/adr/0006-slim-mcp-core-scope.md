@@ -60,10 +60,12 @@ Retain:
   unless a user explicitly approves a real vault path.
 - Optional search LLM query rewrite behind `search_context`, disabled by
   default. If explicitly enabled through `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`
-  and a configured provider API key, the server may send the user's search query
-  and normalized query terms to that external provider before
-  Chroma/LlamaIndex retrieval. This is external egress, not dynamic web
-  fallback, and it must not fetch source content or mutate SQLite/Chroma.
+  and a configured provider API key, the server may send the user's search
+  query and normalized query terms to that external provider before
+  Chroma/LlamaIndex retrieval. `answer_with_citations` inherits that same
+  egress because it reuses `search_context_for_answer` / `search_context`.
+  This is external egress, not dynamic web fallback, and it must not fetch
+  source content or mutate SQLite/Chroma.
 
 Remove from the current production scope:
 
@@ -93,6 +95,9 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
 - Stale vectors from previously indexed removed sources may remain in a user's
   local Chroma store, but retained retrieval must continue to gate managed hits
   through SQLite metadata before returning citations.
+- A retained source disabled in configuration blocks future syncs but does not
+  automatically hide already indexed active documents from retrieval. Those
+  documents remain visible until cleanup or metadata changes mark them inactive.
 - The optional query rewrite path remains in scope only as a default-disabled
   LLM-assistant aid. Documentation and tests must make clear that enabling
   rewrite permits external egress of query text. Disabling rewrite only disables

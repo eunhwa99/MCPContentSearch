@@ -43,11 +43,12 @@ Historical superseded source id:
 - `source_web` (superseded by ADR 0006 and removed from current scope)
 
 Connector configuration is non-secret and environment-driven through `AppConfig`
-fields such as GitHub repository specs, file limits, user agent, and
+fields such as GitHub repository specs with optional `@ref`,
+`CONTEXTWIKI_GITHUB_DEFAULT_REF`, file limits, user agent, and
 `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`. GitHub authentication is optional and
 referenced in source metadata as `env:GITHUB_TOKEN`; the raw token is read only
-at runtime and must not be stored in SQLite, docs, tests, or logs. Obsidian does
-not require a token, live app, plugin, or API server.
+at runtime and must not be stored in SQLite, docs, tests, or logs. Obsidian
+does not require a token, live app, plugin, or API server.
 
 The GitHub connector produces `DocumentModel` records that satisfy the Phase B-0 lifecycle contract:
 
@@ -57,7 +58,10 @@ The GitHub connector produces `DocumentModel` records that satisfy the Phase B-0
 - `version_id` when available
 - source id/type metadata
 
-GitHub ingestion uses the GitHub tree/blob API or equivalent mocked client behavior, filters to bounded text/code/markdown files, stores blob SHA as `version_id`, and uses GitHub blob URLs as canonical citations.
+GitHub ingestion uses the GitHub tree/blob API or equivalent mocked client
+behavior, filters to bounded text/code/markdown files, stores blob SHA as
+`version_id`, uses GitHub blob URLs as canonical citations, and falls back to
+`CONTEXTWIKI_GITHUB_DEFAULT_REF` when a repository spec omits `@ref`.
 
 Obsidian ingestion reads bounded Markdown files from the configured local vault,
 skips hidden and Obsidian metadata directories, parses frontmatter titles when
@@ -79,7 +83,11 @@ Historical website/docs ingestion was designed to support bounded same-origin
 crawling and sitemap URLs. ADR 0006 removes that path from current scope,
 including `source_web` and website/docs configuration.
 
-Connector fetches must fail the sync on required API/page fetch errors so source-wide tombstoning only runs after a complete bounded snapshot. Live external validation remains optional and must be explicitly requested.
+Connector fetches must fail the sync on required API/page fetch errors so
+source-wide tombstoning only runs after a complete bounded snapshot. A disabled
+connector blocks future syncs but does not automatically hide already indexed
+active documents from retrieval until later cleanup or metadata changes.
+Live external validation remains optional and must be explicitly requested.
 For Obsidian, unreadable notes, traversal errors, or exceeded file count/byte
 bounds must fail the sync before stale cleanup can tombstone missing active
 documents.

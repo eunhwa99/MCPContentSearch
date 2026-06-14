@@ -35,10 +35,15 @@ source registration
 -> cleanup-capable sources tombstone stale documents after complete snapshots
 -> search_context may optionally rewrite weak queries through a configured LLM
    when CONTEXTWIKI_SEARCH_LLM_ENABLED=true
+-> answer_with_citations inherits that same query-rewrite egress because it
+   calls search_context through search_context_for_answer / search_context
 -> search debug output reports whether rewrite was disabled, skipped, attempted,
    or applied
+-> retrieval starts from Chroma candidates when available, then may add
+   metadata-fallback candidates before SQLite validation
 -> retrieval candidates are hydrated through SQLite before citation use
--> search_context asks Chroma for candidates and validates them through SQLite
+-> search_context asks Chroma for candidates, may add metadata fallback, and
+   validates managed hits through SQLite
 -> search_documents groups those validated candidates by document and keeps one
    representative chunk per document for browsing
 -> answer_with_citations returns evidence-gated answers
@@ -65,8 +70,8 @@ ContextWiki currently has source connectors for:
 | --- | --- | --- | --- |
 | Notion | `source_notion` | `NOTION_API_KEY` | page/document source |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | blog post source |
-| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | repository file source |
-| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` | local Markdown vault source |
+| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `@ref`, `CONTEXTWIKI_GITHUB_DEFAULT_REF`, file limits, optional `GITHUB_TOKEN` | repository file source |
+| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` | local Markdown vault source |
 
 Example:
 
@@ -83,6 +88,12 @@ sync_source("source_github")
 fetches supported text/code/Markdown files from configured repositories,
 converts each file into a `DocumentModel`, chunks it with line-range citation
 metadata, indexes the chunks, and stores lifecycle metadata in SQLite.
+
+If `@ref` is omitted from a repository spec, the GitHub connector uses
+`CONTEXTWIKI_GITHUB_DEFAULT_REF`, which defaults to `main`. Fetch completeness
+and stale-cleanup eligibility also depend on `CONTEXTWIKI_GITHUB_MAX_FILES` and
+`CONTEXTWIKI_GITHUB_MAX_FILE_BYTES`. `GITHUB_TOKEN` is optional, and
+`CONTEXTWIKI_GITHUB_USER_AGENT` controls the request header used by the fetcher.
 
 Bulk retained-source sync is also available:
 
@@ -115,6 +126,10 @@ available, uses `obsidian://open` canonical URLs, and stores lifecycle metadata
 in SQLite. If the configured vault exceeds the max file count or per-file byte
 bound, sync fails as an incomplete snapshot before stale cleanup. It does not
 require a live Obsidian app.
+
+If a retained connector is disabled for future syncs, already indexed active
+documents are not automatically hidden from retrieval. They remain retrievable
+until later cleanup or metadata changes mark them inactive.
 
 ---
 
@@ -174,9 +189,12 @@ Current tools:
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
 | `answer_with_citations(question, filters, top_k, include_debug)` | answer from validated evidence |
 
-The retained `search_context` response also exposes an additive `debug` block
-with
-rewrite decision fields:
+The retained `search_context` response always includes a public `debug` key.
+On the normal default path `api/tools.py` returns `debug={}` unless
+`include_debug=True`, and when caller filters leave no matching public sources
+it still returns a small populated `debug` object even if `include_debug=False`.
+
+The current debug payload includes rewrite decision fields:
 
 ```text
 rewrite_enabled
@@ -204,9 +222,13 @@ Tool handlers call service boundaries and return JSON-safe values through
 Pydantic `model_dump(mode="json")` where needed.
 
 `include_debug=True` is the retained explainability switch for retrieval and
-grounded answers. It is additive and opt-in: default payloads stay small, while
-debug payloads expose structured retrieval reasoning without dumping raw local
-DB contents.
+grounded answers. It is additive and opt-in for populated retrieval reasoning
+on the normal success path: default `search_context` payloads still carry
+`debug={}`, while debug payloads expose structured retrieval reasoning without
+dumping raw local DB contents. The current exception is the public
+`no_matching_sources` fast path in `search_context`, which still emits a small
+populated `debug` object even when `include_debug=False`.
+`answer_with_citations` does not mirror that exception path.
 Retrieval split:
 
 ```text
@@ -304,8 +326,10 @@ flowchart TD
     F["ChromaDB<br/>semantic vector retrieval"]
     G["search_context(query)"]
     H["Chroma candidate chunks"]
-    I["SQLite active chunk validation"]
-    J["ContextSearchResult[]"]
+    I["Ranking decides whether<br/>metadata fallback is needed"]
+    J["Combined candidates<br/>Chroma plus metadata fallback"]
+    N["SQLite active chunk validation"]
+    O["ContextSearchResult[]"]
     K["search_documents(query)"]
     L["group by document_id<br/>pick representative chunk"]
     M["DocumentSearchResult[]"]
@@ -315,15 +339,18 @@ flowchart TD
     C --> E
     C --> F
     E --> T
-    G --> H --> I --> J
+    G --> H --> I --> J --> N --> O
     K --> H
     H --> I
-    I --> L --> M
+    I --> J
+    N --> L --> M
 ```
 
-Search results are not trusted directly from Chroma. They are hydrated and
-validated through SQLite before they become evidence, citations, or grouped
-document rows.
+Search results are not trusted directly from Chroma. Retrieval starts with
+vector candidates when available, may add metadata-fallback candidates when the
+ranker decides lexical or source-aware recovery is needed, and then hydrates
+and validates managed hits through SQLite before they become evidence,
+citations, or grouped document rows.
 
 When `search_context(..., include_debug=True)` is used, the response now makes
 that decision path visible with reviewer-readable fields such as:

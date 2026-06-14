@@ -76,12 +76,14 @@ search_context
   -> optional default-disabled LLM query rewrite
   -> ContextSearchService
   -> Chroma/LlamaIndex candidate retrieval
+  -> metadata fallback candidates when ranking decides they are needed
   -> MetadataStore active chunk/document validation
   -> chunk-level structured search result payload
 
 search_documents
   -> ContextSearchService
   -> Chroma/LlamaIndex candidate retrieval
+  -> metadata fallback candidates when ranking decides they are needed
   -> MetadataStore active chunk/document validation
   -> group by document_id
   -> choose highest-ranked representative chunk per document
@@ -93,7 +95,7 @@ fetch_context
 
 answer_with_citations
   -> CitationAnswerService
-  -> ContextSearchService
+  -> search_context_for_answer / search_context
   -> MetadataStore-validated evidence chunks
   -> citation-gated answer payload
 ```
@@ -111,8 +113,8 @@ answer_with_citations
   or plugin integration.
 - `indexing`: document indexing lifecycle, deterministic chunking, content
   hash/chunk-id comparison, Chroma mutation, and index status updates.
-- `search`: query orchestration, ranking, SQLite-backed active-result
-  validation, direct context fetch, and citation answer support.
+- `search`: query orchestration, ranking, metadata fallback, SQLite-backed
+  active-result validation, direct context fetch, and citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones,
   sync-job ownership, and active retrieval checks.
 - `core`: stable shared data models, exception classes, and utility functions.
@@ -143,6 +145,17 @@ Contract intent:
 - `search_documents` is additive and document-oriented: it uses the same
   retained-source retrieval path but returns one representative chunk-backed row
   per document for browsing.
+- `answer_with_citations` reuses `search_context_for_answer` /
+  `search_context`, so query-rewrite egress and retrieval semantics stay aligned
+  across search and answer flows.
+- `search_context` always returns a `debug` key. On the normal path,
+  `include_debug=False` leaves that key as `{}`, while `include_debug=True`
+  populates it with structured retrieval detail.
+- The current public exception is `search_context`'s `no_matching_sources`
+  fast path, which still returns a small populated `debug` object even when
+  `include_debug=False`.
+- `answer_with_citations` keeps `include_debug` as a true opt-in debug surface
+  and does not mirror the `no_matching_sources` exception path.
 
 When changing a tool:
 
@@ -189,8 +202,13 @@ Current integrations and local configured sources:
 - Optional search LLM query rewrite, disabled by default. When
   `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`, `search_context` may send the user's
   search query and normalized query terms to the configured provider before
-  local retrieval. This path is external egress, is not dynamic web fallback,
-  does not fetch source content, and must not mutate SQLite or Chroma.
+  local retrieval. `answer_with_citations` inherits that same egress because it
+  reuses `search_context_for_answer` / `search_context`. This path is external
+  egress, is not dynamic web fallback, does not fetch source content, and must
+  not mutate SQLite or Chroma.
+- A disabled retained source blocks future sync attempts but does not
+  automatically hide already indexed active documents. Those documents remain
+  retrievable until later cleanup or metadata changes mark them inactive.
 - Embedding provider behavior comes from the configured LlamaIndex embedding
   setup. Disabling search query rewrite only disables query-rewrite egress;
   fully local operation also requires local or otherwise non-egress embeddings.

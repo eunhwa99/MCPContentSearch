@@ -17,7 +17,8 @@ directly.
   citation-backed answers
 - 🛡️ **Citation safety**: only SQLite-validated chunks are returned as evidence
 - 🔒 **Local-first by default**: optional query rewrite stays off unless you
-  enable it explicitly
+  enable it explicitly, but fully non-egress operation still depends on your
+  embedding provider choice
 
 ## 🏗️ Architecture Overview
 
@@ -48,17 +49,25 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
 | `sync_all()` | Sync all retained sources concurrently and return aggregate results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
-| `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured, SQLite-validated evidence chunks. |
+| `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured evidence chunks after Chroma retrieval, metadata fallback when needed, and SQLite validation. |
 | `search_documents(query, filters=None, top_k=10)` | Return one representative, retrieval-ranked row per matching document. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
-| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks. |
+| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks by reusing the `search_context` retrieval path. |
 
 핵심만 보면:
 
 - `sync_all()`은 전체 소스를 한 번에 동기화합니다.
-- `search_context(..., include_debug=True)`와
-  `answer_with_citations(..., include_debug=True)`는 디버그 정보를 추가로
-  보여줄 수 있습니다.
+- `search_context(...)` 응답은 항상 `debug` 키를 포함합니다. 기본
+  정상 경로에서 `include_debug=False`면 `debug={}`이고,
+  `include_debug=True`면 구조화된 디버그 정보가 채워집니다.
+- `answer_with_citations(..., include_debug=True)`도 같은 retrieval path를
+  통해 디버그를 노출합니다.
+- 현재 `search_context`는 `include_debug=False`여도 공개 source 필터가
+  하나도 남지 않으면 `debug.rewrite_skipped_reason=no_matching_sources`
+  를 포함한 작은 `debug` 객체를 반환합니다. 즉, 기본 정상 경로의
+  `debug`는 빈 객체이고, 이 fast path만 `include_debug=False`에서도
+  채워진 `debug`를 반환합니다. `answer_with_citations`는 이런 예외 없이
+  `include_debug=True`일 때만 디버그를 노출합니다.
 
 ## ⚙️ Configuration
 
@@ -68,15 +77,32 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | --- | --- | --- | --- |
 | Notion | `source_notion` | `NOTION_API_KEY` | Syncs pages/documents through the Notion fetcher. |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | Syncs blog posts through the Tistory fetcher. |
-| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, optional `GITHUB_TOKEN` | Syncs bounded text/code/Markdown files from configured repositories. |
+| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, `CONTEXTWIKI_GITHUB_DEFAULT_REF`, `CONTEXTWIKI_GITHUB_MAX_FILES`, `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES`, optional `GITHUB_TOKEN`, optional `CONTEXTWIKI_GITHUB_USER_AGENT` | Syncs bounded text/code/Markdown files from configured repositories. |
 | Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` | Syncs bounded Markdown notes from a configured local vault. |
 
 GitHub repositories are configured as comma-separated `owner/repo` entries with
-an optional `@ref`:
+an optional `@ref`. If `@ref` is omitted, ContextWiki uses
+`CONTEXTWIKI_GITHUB_DEFAULT_REF` and defaults that env var to `main`.
 
 ```bash
 CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
+CONTEXTWIKI_GITHUB_DEFAULT_REF=main
+CONTEXTWIKI_GITHUB_MAX_FILES=200
+CONTEXTWIKI_GITHUB_MAX_FILE_BYTES=512000
+CONTEXTWIKI_GITHUB_USER_AGENT="ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)"
+GITHUB_TOKEN=...
 ```
+
+Notes:
+
+- `GITHUB_TOKEN` is optional. Unauthenticated GitHub API access depends on the
+  target repository being visible without auth and is subject to lower rate
+  limits.
+- `CONTEXTWIKI_GITHUB_MAX_FILES` and `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES`
+  control fetch completeness. Exceeding those bounds means the connector does
+  not claim a complete repository snapshot for stale cleanup.
+- `CONTEXTWIKI_GITHUB_USER_AGENT` is the HTTP `User-Agent` header knob used by
+  the GitHub fetcher.
 
 ```bash
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH="/path/to/temp-or-real-vault"
@@ -90,7 +116,9 @@ in SQLite, committed to docs/tests, or printed by verification commands.
 ### 2. Optional search query rewrite
 
 `search_context` can optionally ask an external LLM for short query rewrites
-when initial local vector results look weak. This is disabled by default.
+when initial local retrieval looks weak. `answer_with_citations` inherits the
+same rewrite egress because its answer flow calls the `search_context`
+retrieval path. This is disabled by default.
 
 ```bash
 CONTEXTWIKI_SEARCH_LLM_ENABLED=true
@@ -99,7 +127,9 @@ CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=...
 ```
 
-기본값은 `off`이고, 켜면 검색 질의가 외부 LLM으로 나갈 수 있습니다.
+기본값은 `off`이고, 켜면 검색 질의와 정규화된 query term group이 외부 LLM으로
+나갈 수 있습니다. 이 설정은 source 내용을 가져오거나 SQLite/Chroma를
+변경하지는 않습니다.
 
 ## ⚡ Reproducible Launch Paths
 
@@ -123,7 +153,10 @@ Notes:
 - `environments/token.py` loads `.env`, so `cp .env.example .env` is the
   intended local setup path.
 - Leaving optional source env vars blank is valid; those sources stay disabled
-  until configured.
+  for future syncs until configured.
+- A disabled source does not automatically hide already indexed content from
+  retrieval. Existing SQLite-active documents remain retrievable until a later
+  cleanup or metadata change removes them.
 - The packaged runtime is not keyless today. For non-demo sync/search runs, the
   default embedding path typically requires `OPENAI_API_KEY` even if query
   rewrite stays disabled.
