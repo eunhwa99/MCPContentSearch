@@ -106,7 +106,9 @@ class AppConfig:
     metadata_db_path: Path = None
 
     # LlamaIndex
-    cache_dir: str = ".llama_cache"
+    cache_dir: str = field(
+        default_factory=lambda: str(Path.home() / ".mcp_content_search" / "llama_cache")
+    )
 
     # 인덱싱
     batch_size: int = 50

@@ -49,6 +49,7 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | `sync_all()` | Sync all retained sources concurrently and return aggregate results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured, SQLite-validated evidence chunks. |
+| `search_documents(query, filters=None, top_k=10)` | Return one representative, retrieval-ranked row per matching document. |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
 | `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build an evidence-gated answer with citations and used chunks. |
 
@@ -100,20 +101,91 @@ OPENAI_API_KEY=...
 
 기본값은 `off`이고, 켜면 검색 질의가 외부 LLM으로 나갈 수 있습니다.
 
-## ⚡ Quick Start
+## ⚡ Reproducible Launch Paths
 
-Install dependencies and run the MCP server:
+### 1. Fresh-machine local launch
+
+Prerequisites:
+
+- Python `3.13`
+- [`uv`](https://docs.astral.sh/uv/)
+
+Install dependencies, create a local env file, and start the slim MCP core:
 
 ```bash
 uv sync --locked --python 3.13 --dev
+cp .env.example .env
 uv run --locked python main.py
 ```
+
+Notes:
+
+- `environments/token.py` loads `.env`, so `cp .env.example .env` is the
+  intended local setup path.
+- Leaving optional source env vars blank is valid; those sources stay disabled
+  until configured.
+- The packaged runtime is not keyless today. For non-demo sync/search runs, the
+  default embedding path typically requires `OPENAI_API_KEY` even if query
+  rewrite stays disabled.
+- If you want a public GitHub example after first launch, set
+  `CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main` manually in
+  `.env`.
+- Default local SQLite/Chroma state is created under
+  `~/.mcp_content_search/`.
 
 For a plain syntax check without contacting external services:
 
 ```bash
 python -m compileall api core environments fetching indexing search storage main.py
 ```
+
+### 2. Container launch
+
+Build the image:
+
+```bash
+docker build -t contextwiki .
+```
+
+Prepare the runtime env file before starting the container:
+
+```bash
+cp .env.example .env
+```
+
+For a real sync/search run, edit `.env` and set an embedding-provider key first.
+With the current default runtime, that usually means setting `OPENAI_API_KEY`.
+
+Start the MCP server in a container:
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  contextwiki
+```
+
+This named volume avoids first-run host-permission issues for reviewers.
+
+If you want to expose a real Obsidian vault to the container, mount it
+read-only and point `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` at the container path:
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  -v "/absolute/path/to/vault:/vault:ro" \
+  -e CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault \
+  contextwiki
+```
+
+Supported limitations:
+
+- This image runs the retained slim MCP core only.
+- It does not add deployment automation, multi-service orchestration, or secret
+  management beyond `--env-file`.
+- Persisted runtime data lives inside `/home/appuser/.mcp_content_search` unless you
+  mount that path.
 
 ## 🚦 Verification
 
@@ -216,6 +288,15 @@ uv run --locked python scripts/live_query_smoke.py --query "github sync" --sourc
 uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --rewrite off
 uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --json
 ```
+
+Use this only after you have configured real sources in `.env`. The public demo
+above is the safer first-run path for reviewers, and it is the only documented
+path here that is intentionally keyless.
+
+`--json` prints partially redacted payloads for local debugging. It removes raw
+chunk text, previews, and direct `path`/`url` fields, but titles, identifiers,
+and synthesized answer text may still reflect local source content. Treat the
+output as local diagnostic data rather than public sample content.
 
 ## 🗺️ Project Map
 

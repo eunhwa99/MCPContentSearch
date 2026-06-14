@@ -4,6 +4,18 @@ import argparse
 import asyncio
 import json
 from dataclasses import replace
+from pathlib import Path
+import sys
+
+
+def _ensure_repo_root_on_sys_path() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+
+
+_ensure_repo_root_on_sys_path()
 
 from api.tools import register_tools
 from llama_index.core import Settings, StorageContext
@@ -96,7 +108,12 @@ async def run_live_query_smoke(
 ) -> dict:
     mcp = build_runtime_mcp(rewrite_mode)
     filters = {"source_id": source_id} if source_id else None
-    search_payload = await mcp.tools["search_context"](query, filters=filters, top_k=top_k)
+    search_payload = await mcp.tools["search_context"](
+        query,
+        filters=filters,
+        top_k=top_k,
+        include_debug=True,
+    )
     answer_payload = await mcp.tools["answer_with_citations"](question, filters=filters, top_k=top_k)
     return {
         "query": query,
@@ -109,7 +126,19 @@ async def run_live_query_smoke(
     }
 
 
-def sanitize_live_query_result(result: dict) -> dict:
+def redact_live_query_result(result: dict) -> dict:
+    def _redact_debug_value(value):
+        if isinstance(value, list):
+            return [_redact_debug_value(item) for item in value]
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                if key in {"path", "url"}:
+                    continue
+                redacted[key] = _redact_debug_value(item)
+            return redacted
+        return value
+
     search_results = []
     for item in result.get("search", {}).get("results", []):
         if hasattr(item, "model_dump"):
@@ -119,17 +148,23 @@ def sanitize_live_query_result(result: dict) -> dict:
         else:
             item = {"value": str(item)}
         item.pop("text", None)
+        item.pop("preview", None)
+        item.pop("path", None)
+        item.pop("url", None)
         search_results.append(item)
 
     answer_payload = result.get("answer", {})
     sanitized_answer = {
         "evidence_status": answer_payload.get("evidence_status"),
         "answer": answer_payload.get("answer"),
-        "citations": [
-            dict(item)
-            for item in answer_payload.get("citations", [])
-        ],
+        "citations": [],
     }
+    for item in answer_payload.get("citations", []):
+        redacted_item = dict(item)
+        redacted_item.pop("title", None)
+        redacted_item.pop("path", None)
+        redacted_item.pop("url", None)
+        sanitized_answer["citations"].append(redacted_item)
 
     return {
         "query": debug_redaction.redact_debug_query_text(str(result.get("query", ""))),
@@ -139,7 +174,7 @@ def sanitize_live_query_result(result: dict) -> dict:
         "rewrite_mode": result.get("rewrite_mode"),
         "search": {
             "results": search_results,
-            "debug": dict(result.get("search", {}).get("debug", {})),
+            "debug": _redact_debug_value(dict(result.get("search", {}).get("debug", {}))),
         },
         "answer": sanitized_answer,
     }
@@ -222,7 +257,11 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Use current config, require rewrite to be configured, or force rewrite off.",
     )
-    parser.add_argument("--json", action="store_true", help="Print sanitized JSON payloads.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print partially redacted JSON payloads for local debugging.",
+    )
     return parser.parse_args()
 
 
@@ -239,7 +278,7 @@ def main() -> None:
         )
     )
     if args.json:
-        print(json.dumps(sanitize_live_query_result(result), ensure_ascii=False, indent=2))
+        print(json.dumps(redact_live_query_result(result), ensure_ascii=False, indent=2))
         return
     print(
         format_smoke_summary(
