@@ -114,7 +114,12 @@ async def run_live_query_smoke(
         top_k=top_k,
         include_debug=True,
     )
-    answer_payload = await mcp.tools["answer_with_citations"](question, filters=filters, top_k=top_k)
+    answer_payload = await mcp.tools["answer_with_citations"](
+        question,
+        filters=filters,
+        top_k=top_k,
+        include_debug=True,
+    )
     return {
         "query": query,
         "question": question,
@@ -133,9 +138,31 @@ def redact_live_query_result(result: dict) -> dict:
         if isinstance(value, dict):
             redacted = {}
             for key, item in value.items():
-                if key in {"path", "url"}:
+                if key in {"text", "preview", "path", "url"}:
                     continue
                 redacted[key] = _redact_debug_value(item)
+            return redacted
+        return value
+
+    def _redact_debug_markdown(value: str) -> str:
+        lines = []
+        for line in value.splitlines():
+            if "preview:" in line.lower():
+                prefix, _, _ = line.partition("preview:")
+                lines.append(f"{prefix}preview: [REDACTED]")
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _redact_used_chunks(value):
+        if isinstance(value, list):
+            return [_redact_used_chunks(item) for item in value]
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                if key in {"text", "preview", "path", "url"}:
+                    continue
+                redacted[key] = _redact_used_chunks(item)
             return redacted
         return value
 
@@ -157,6 +184,7 @@ def redact_live_query_result(result: dict) -> dict:
     sanitized_answer = {
         "evidence_status": answer_payload.get("evidence_status"),
         "answer": answer_payload.get("answer"),
+        "used_chunks": _redact_used_chunks(list(answer_payload.get("used_chunks", []))),
         "citations": [],
     }
     for item in answer_payload.get("citations", []):
@@ -165,6 +193,12 @@ def redact_live_query_result(result: dict) -> dict:
         redacted_item.pop("path", None)
         redacted_item.pop("url", None)
         sanitized_answer["citations"].append(redacted_item)
+    if "debug" in answer_payload:
+        sanitized_answer["debug"] = _redact_debug_value(dict(answer_payload.get("debug", {})))
+    if "debug_markdown" in answer_payload:
+        sanitized_answer["debug_markdown"] = _redact_debug_markdown(
+            str(answer_payload.get("debug_markdown", ""))
+        )
 
     return {
         "query": debug_redaction.redact_debug_query_text(str(result.get("query", ""))),
@@ -220,7 +254,9 @@ def format_smoke_summary(
             f"{item.get('chunk_id', '-')} | "
             f"score={float(item.get('score', 0.0)):.3f}"
         )
-    result_lines.append(f"answer: {answer_payload.get('evidence_status', '-')}")
+    result_lines.append(
+        f"helper answer preview: {answer_payload.get('evidence_status', '-')}"
+    )
     result_lines.append(f"citations: {len(answer_payload.get('citations', []))}")
     for index, item in enumerate(answer_payload.get("citations", []), start=1):
         result_lines.append(
@@ -229,22 +265,28 @@ def format_smoke_summary(
             f"{item.get('title', item.get('chunk_id', '-'))} | "
             f"{item.get('chunk_id', '-')}"
         )
+    result_lines.append(
+        "inspect helper output: citations, used_chunks, debug, debug_markdown"
+    )
+    result_lines.append(
+        "tip: use --json to inspect used_chunks, debug, and debug_markdown safely"
+    )
     if redacted_query != redacted_question:
         result_lines.append(
             "note: rewrite and hit summary describe the search query above; "
-            "answer status and citations describe the answer question."
+            "helper answer status and citations describe the answer question."
         )
     return "\n".join(result_lines)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a live local retrieval smoke against the configured ContextWiki environment."
+        description="Run a live local retrieval and helper-answer smoke against the configured ContextWiki environment."
     )
     parser.add_argument("--query", required=True, help="Search query for search_context.")
     parser.add_argument(
         "--question",
-        help="Question for answer_with_citations. Defaults to the same text as --query.",
+        help="Question for the helper answer preview. Defaults to the same text as --query.",
     )
     parser.add_argument(
         "--source-id",

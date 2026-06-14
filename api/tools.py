@@ -316,7 +316,7 @@ def register_tools(
         top_k: int = 5,
         include_debug: bool = False,
     ) -> dict:
-        """검색된 chunk 근거만 사용해 citation 포함 답변 생성"""
+        """검색 근거 기반 helper answer preview와 citation/debug 데이터를 반환"""
         public_filters, has_no_public_source = _public_filters(
             filters,
             metadata_store,

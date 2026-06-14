@@ -46,18 +46,22 @@ source registration
    validates managed hits through SQLite
 -> search_documents groups those validated candidates by document and keeps one
    representative chunk per document for browsing
--> answer_with_citations returns evidence-gated answers
+-> answer_with_citations returns a helper evidence-gated answer preview
 ```
 
 Interview or README version:
 
 ```text
 ContextWiki exposes MCP tools for source sync, incremental indexing,
-citation-ready chunk search, grouped document browsing, context fetch, and
-evidence-gated answers.
+citation-ready chunk search, grouped document browsing, context fetch, and a
+helper evidence-gated answer preview surface.
 
 SQLite is the source of truth for lifecycle and citation metadata, while
 ChromaDB is the semantic retrieval index.
+
+In normal production MCP usage, downstream LLMs usually turn retrieved evidence
+into the final natural-language answer. `answer_with_citations` is useful here
+as a preview/debug/eval helper, not as the repository's core answer contract.
 ```
 
 ---
@@ -187,7 +191,7 @@ Current tools:
 | `search_context(query, filters, top_k, include_debug)` | find SQLite-validated evidence |
 | `search_documents(query, filters, top_k)` | browse unique matching documents through one representative chunk per document |
 | `fetch_context(document_id, chunk_id)` | inspect one document or chunk |
-| `answer_with_citations(question, filters, top_k, include_debug)` | answer from validated evidence |
+| `answer_with_citations(question, filters, top_k, include_debug)` | helper answer preview from validated evidence |
 
 The retained `search_context` response always includes a public `debug` key.
 On the normal default path `api/tools.py` returns `debug={}` unless
@@ -222,7 +226,7 @@ Tool handlers call service boundaries and return JSON-safe values through
 Pydantic `model_dump(mode="json")` where needed.
 
 `include_debug=True` is the retained explainability switch for retrieval and
-grounded answers. It is additive and opt-in for populated retrieval reasoning
+the helper answer preview surface. It is additive and opt-in for populated retrieval reasoning
 on the normal success path: default `search_context` payloads still carry
 `debug={}`, while debug payloads expose structured retrieval reasoning without
 dumping raw local DB contents. The current exception is the public
@@ -240,6 +244,19 @@ search_documents
   candidates but collapses repeated chunks into one representative row per
   document
 ```
+
+Helper answer validation focuses on:
+
+```text
+citations
+used_chunks
+debug
+debug_markdown
+```
+
+Those fields help developers compare the response draft against the retrieved
+evidence and decide whether a downstream LLM would have enough grounded context
+to answer well.
 `list_sources()` and `get_sync_status()` expose additive reviewer-readable
 operational fields per source:
 
@@ -264,9 +281,9 @@ scripts/live_query_smoke.py
 
 This script runs `search_context` and `answer_with_citations` against the local
 configured environment through the retained tool handlers and prints a compact
-safe summary of rewrite state, hits, answer status, and citations. It is a
-manual live check surface, not a
-replacement for deterministic non-live tests.
+safe summary of rewrite state, hits, helper answer preview status, and
+citations. It is a manual live check surface, not a replacement for
+deterministic non-live tests.
 
 ---
 
