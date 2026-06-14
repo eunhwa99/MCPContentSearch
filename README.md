@@ -57,6 +57,11 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 At a glance:
 
 - `sync_all()` syncs all retained sources in one pass.
+- `sync_all()` reports aggregate `status` truthfully: `completed` for
+  succeed/skip-only runs, `partial` when success/skip is mixed with blocked or
+  failed sources, and `failed` when nothing completed successfully.
+- `sync_all()` summary counts include `succeeded`, `failed`, `blocked`, and
+  `skipped`. Disabled sources are counted as `skipped` during bulk sync.
 - `search_context(...)` always returns a `debug` key. On the default normal
   path, `include_debug=False` returns `debug={}`, while `include_debug=True`
   returns populated structured debug details.

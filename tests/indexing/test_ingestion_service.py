@@ -641,6 +641,71 @@ def test_sync_all_runs_multiple_sources_and_returns_aggregate_summary(tmp_path):
     assert all(item["job"].status == SyncJobStatus.SUCCEEDED for item in result["results"])
 
 
+def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([
+            SourceAConnector([document]),
+            DisabledConnector(),
+        ]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    result = asyncio.run(service.sync_all(["source_a", "source_disabled"]))
+
+    succeeded = next(item for item in result["results"] if item["source_id"] == "source_a")
+    skipped = next(item for item in result["results"] if item["source_id"] == "source_disabled")
+    assert result["status"] == "completed"
+    assert succeeded["sync_outcome"] == "succeeded"
+    assert skipped["sync_outcome"] == "skipped"
+    assert skipped["job"].status == SyncJobStatus.FAILED
+    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["skipped"] == 1
+
+
+def test_sync_all_empty_selection_is_a_no_op(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([SourceAConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    result = asyncio.run(service.sync_all([]))
+
+    assert result["status"] == "completed"
+    assert result["summary"]["total_sources"] == 0
+    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["skipped"] == 0
+    assert result["results"] == []
+    assert indexer.indexed_batches == []
+
+
 def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
     document = DocumentModel(
         id="doc-a",
@@ -684,11 +749,112 @@ def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
 
     blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
     succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
+    assert result["status"] == "partial"
     assert blocked["sync_outcome"] == "blocked"
     assert blocked["job"].status == SyncJobStatus.RUNNING
     assert succeeded["sync_outcome"] == "succeeded"
     assert result["summary"]["blocked"] == 1
     assert result["summary"]["succeeded"] == 1
+
+
+def test_sync_all_reports_failed_when_all_selected_sources_are_blocked(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+
+    async def run_sync_all_while_source_is_running():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([SourceAConnector([document])]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        blocking_a = BlockingConnector([document], started, release)
+        blocking_a.source = SourceAConnector.source
+        service.source_registry = SourceRegistry([blocking_a])
+
+        first_task = asyncio.create_task(service.sync_source("source_a"))
+        await started.wait()
+        bulk_task = asyncio.create_task(service.sync_all(["source_a"]))
+        await asyncio.sleep(0)
+        release.set()
+        await first_task
+        return await bulk_task
+
+    result = asyncio.run(run_sync_all_while_source_is_running())
+
+    assert result["status"] == "failed"
+    assert result["summary"]["total_sources"] == 1
+    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["skipped"] == 0
+    assert result["results"][0]["source_id"] == "source_a"
+    assert result["results"][0]["sync_outcome"] == "blocked"
+    assert result["results"][0]["job"].status == SyncJobStatus.RUNNING
+
+
+def test_sync_all_reports_partial_when_success_and_failure_are_mixed(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([
+            SourceAConnector([document]),
+            FakeConnector(error=RuntimeError("boom")),
+        ]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    result = asyncio.run(service.sync_all(["source_a", "source_fake"]))
+
+    assert result["status"] == "partial"
+    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["failed"] == 1
+    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["skipped"] == 0
+    assert {
+        (item["source_id"], item["sync_outcome"])
+        for item in result["results"]
+    } == {("source_a", "succeeded"), ("source_fake", "failed")}
+
+
+def test_sync_all_reports_failed_when_nothing_completed_successfully(tmp_path):
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([FakeConnector(error=RuntimeError("boom"))]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    result = asyncio.run(service.sync_all(["source_fake"]))
+
+    assert result["status"] == "failed"
+    assert result["summary"]["total_sources"] == 1
+    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["failed"] == 1
+    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["skipped"] == 0
+    assert result["results"][0]["source_id"] == "source_fake"
+    assert result["results"][0]["sync_outcome"] == "failed"
 
 
 def test_concurrent_cross_source_collision_is_rejected_before_vector_write(tmp_path):

@@ -106,6 +106,125 @@ class FakeLeakyJobIngestion:
         }
 
 
+class FakeCompletedSkippedSyncAllIngestion:
+    async def sync_all(self):
+        return {
+            "status": "completed",
+            "summary": {
+                "total_sources": 2,
+                "succeeded": 1,
+                "failed": 0,
+                "blocked": 0,
+                "skipped": 1,
+                "started_at": "2026-06-12T00:00:00+00:00",
+                "finished_at": "2026-06-12T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": "source_github",
+                    "sync_outcome": "succeeded",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-ok",
+                            "source_id": "source_github",
+                            "status": "succeeded",
+                            "error_message": "",
+                        }
+                    ),
+                    "message": "",
+                },
+                {
+                    "source_id": "source_obsidian",
+                    "sync_outcome": "skipped",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-disabled",
+                            "source_id": "source_obsidian",
+                            "status": "failed",
+                            "error_message": OBSIDIAN_DISABLED_ERROR,
+                        }
+                    ),
+                    "message": OBSIDIAN_DISABLED_ERROR,
+                },
+            ],
+        }
+
+
+class FakePartialSyncAllIngestion:
+    async def sync_all(self):
+        return {
+            "status": "partial",
+            "summary": {
+                "total_sources": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "blocked": 0,
+                "skipped": 0,
+                "started_at": "2026-06-12T00:00:00+00:00",
+                "finished_at": "2026-06-12T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": "source_github",
+                    "sync_outcome": "succeeded",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-ok",
+                            "source_id": "source_github",
+                            "status": "succeeded",
+                            "error_message": "",
+                        }
+                    ),
+                    "message": "",
+                },
+                {
+                    "source_id": "source_obsidian",
+                    "sync_outcome": "failed",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-failed",
+                            "source_id": "source_obsidian",
+                            "status": "failed",
+                            "error_message": OBSIDIAN_DISABLED_ERROR,
+                        }
+                    ),
+                    "message": OBSIDIAN_DISABLED_ERROR,
+                },
+            ],
+        }
+
+
+class FakeFailedSyncAllIngestion:
+    async def sync_all(self):
+        return {
+            "status": "failed",
+            "summary": {
+                "total_sources": 1,
+                "succeeded": 0,
+                "failed": 1,
+                "blocked": 0,
+                "skipped": 0,
+                "started_at": "2026-06-12T00:00:00+00:00",
+                "finished_at": "2026-06-12T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": "source_github",
+                    "sync_outcome": "failed",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-failed",
+                            "source_id": "source_github",
+                            "status": "failed",
+                            "error_message": "boom",
+                        }
+                    ),
+                    "message": "boom",
+                }
+            ],
+        }
+
+
 class FakePathFailingIngestion:
     async def sync_source(self, source_id):
         raise ValueError(
@@ -605,6 +724,99 @@ def test_sync_all_redacts_returned_job_error_payload(tmp_path):
     assert result["results"][0]["sync_outcome"] == "failed"
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
+
+
+def test_sync_all_passthrough_preserves_completed_and_skipped_outcomes(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(_succeeded_obsidian_source().model_copy(update={"source_id": "source_github"}))
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.FAILED,
+            last_error=OBSIDIAN_DISABLED_ERROR,
+            stale_cleanup_disabled_reason=OBSIDIAN_DISABLED_ERROR,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeCompletedSkippedSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "completed"
+    assert result["summary"]["skipped"] == 1
+    assert {
+        (item["source_id"], item["sync_outcome"])
+        for item in result["results"]
+    } == {("source_github", "succeeded"), ("source_obsidian", "skipped")}
+
+
+def test_sync_all_passthrough_preserves_partial_status(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(_succeeded_obsidian_source().model_copy(update={"source_id": "source_github"}))
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=True,
+            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            sync_status=SyncStatus.FAILED,
+            last_error=OBSIDIAN_DISABLED_ERROR,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakePartialSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "partial"
+    assert result["summary"]["failed"] == 1
+    assert {
+        (item["source_id"], item["sync_outcome"])
+        for item in result["results"]
+    } == {("source_github", "succeeded"), ("source_obsidian", "failed")}
+
+
+def test_sync_all_passthrough_preserves_failed_status(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="boom",
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeFailedSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "failed"
+    assert result["summary"]["failed"] == 1
+    assert result["results"][0]["sync_outcome"] == "failed"
 
 
 def test_status_payloads_redact_persisted_secret_fields(tmp_path):
