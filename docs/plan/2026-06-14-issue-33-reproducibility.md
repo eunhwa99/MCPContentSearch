@@ -15,6 +15,10 @@ support-track reproducibility work should proceed.
 - Created isolated worktree
   `/private/tmp/MCPContentSearch-issue33-reproducibility` on fresh branch
   `feature/issue-33-reproducibility` from `origin/main`.
+- After PR `#54` merged, created follow-up isolated worktree
+  `/private/tmp/MCPContentSearch-issue33-docker-followup` on fresh branch
+  `feature/issue-33-docker-followup` from `origin/main` at `a32a849` so the
+  post-merge Docker/runtime smoke fixes could ship as a separate PR.
 - Worker orchestration bypass: user explicitly approved direct main-agent
   implementation for this scoped reproducibility task, including the later
   runtime-script/test remediations needed to make the documented Docker and
@@ -182,3 +186,4 @@ support-track reproducibility work should proceed.
 | Review pass 18 | completed/actionable | Fresh follow-up review found that the demo embed-model restore path still used the property setter when the prior `_embed_model` state was `None`, and the plan wording lagged behind the broadened runtime-script scope plus the `docker --config /tmp/docker-nocreds...` verification fallback. | Reviewers: Schrodinger, Turing, James, Leibniz, Ampere |
 | Review remediation 18 | completed | Restored the prior embed-model state by writing `Settings._embed_model` directly, updated the regression test to model the real fresh-process `_embed_model is None` case, and refreshed the plan wording to describe the runtime-script remediation scope plus the Docker credential-helper fallback path. | `scripts/demo_public_flow.py`; `tests/scripts/test_demo_public_flow.py`; this file |
 | Reverification 18 | completed | Reran focused script tests, rebuilt the image, and reran the in-container demo JSON path successfully with the latest fixes. | `uv run --locked pytest -q tests/scripts/test_demo_public_flow.py tests/scripts/test_live_query_smoke.py`; `docker --config /tmp/docker-nocreds... build -t contextwiki-issue33 .`; `docker run --rm --env-file /tmp/contextwiki-issue33.env -v contextwiki_data_issue33:/home/appuser/.mcp_content_search contextwiki-issue33 /app/.venv/bin/python scripts/demo_public_flow.py --json` |
+| Review remediation 19 | completed | Refreshed the branch-preflight trace so this plan now records the actual follow-up worktree/branch/base used for the post-merge Docker smoke PR. The user then explicitly requested immediate PR delivery instead of waiting for another fresh clean five-reviewer pass after this plan-only fix. | this file |
