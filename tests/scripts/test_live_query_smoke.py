@@ -1,10 +1,13 @@
 import asyncio
+import json
 from pathlib import Path
 import subprocess
 import sys
 
 from scripts.live_query_smoke import (
     format_smoke_summary,
+    main,
+    parse_args,
     redact_live_query_result,
     run_live_query_smoke,
 )
@@ -28,7 +31,8 @@ def test_live_query_smoke_help_runs_from_repo_root_script_path():
 def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
     summary = format_smoke_summary(
         query="aws startup",
-        question="How do I start EC2?",
+        question="aws startup",
+        same_input=True,
         source_id="source_github",
         top_k=3,
         search_payload={
@@ -60,7 +64,7 @@ def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
     )
 
     assert "search query: aws startup" in summary
-    assert "answer question: How do I start EC2?" in summary
+    assert "answer question: aws startup" in summary
     assert "rewrite: enabled=yes attempted=yes applied=yes reason=-" in summary
     assert "rewrites: aws ec2 setup" in summary
     assert "hit 1: source_github | EC2 setup guide | chunk-1 | score=0.910" in summary
@@ -68,12 +72,18 @@ def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
     assert "citation 1: EC2 setup guide | chunk-1" in summary
     assert "inspect helper output: citations, used_chunks, debug, debug_markdown" in summary
     assert "tip: use --json to inspect used_chunks, debug, and debug_markdown safely" in summary
+    assert "canonical" not in summary.lower()
+    assert (
+        "same-input smoke path: retrieval and helper answer preview use the same input text above."
+        in summary
+    )
 
 
 def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections():
     summary = format_smoke_summary(
         query="plain query",
         question="plain question",
+        same_input=False,
         source_id=None,
         top_k=5,
         search_payload={
@@ -100,10 +110,55 @@ def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections
     assert "helper answer preview: insufficient" in summary
 
 
+def test_format_smoke_summary_warns_when_search_and_answer_are_separate_probes():
+    summary = format_smoke_summary(
+        query="aws startup",
+        question="How do I start EC2?",
+        same_input=False,
+        source_id="source_github",
+        top_k=3,
+        search_payload={
+            "results": [],
+            "debug": {
+                "rewrite_enabled": True,
+                "rewrite_attempted": True,
+                "rewrite_applied": False,
+                "rewrite_skipped_reason": "kept original",
+                "rewritten_queries": [],
+            },
+        },
+        answer_payload={
+            "evidence_status": "insufficient",
+            "citations": [],
+        },
+    )
+
+    assert (
+        "separate probes: retrieval summary describes the search query above, while helper answer status and citations describe the answer question."
+        in summary
+    )
+
+
+def test_format_smoke_summary_uses_raw_input_equality_not_redacted_text():
+    summary = format_smoke_summary(
+        query="token alpha-secret",
+        question="token beta-secret",
+        same_input=False,
+        source_id=None,
+        top_k=5,
+        search_payload={"results": [], "debug": {}},
+        answer_payload={"evidence_status": "insufficient", "citations": []},
+    )
+
+    assert "same-input smoke path" not in summary
+    assert "separate probes:" in summary
+
+
 def test_format_smoke_summary_redacts_secret_like_query_text():
     summary = format_smoke_summary(
         query="token super-secret-value docs",
         question="show /Users/eunhwa/private docs",
+        same_input=False,
         source_id=None,
         top_k=5,
         search_payload={"results": [], "debug": {}},
@@ -113,6 +168,141 @@ def test_format_smoke_summary_redacts_secret_like_query_text():
     assert "super-secret-value" not in summary
     assert "/Users/eunhwa/private" not in summary
     assert "[REDACTED]" in summary
+
+
+def test_parse_args_leaves_question_empty_until_main_derives_it(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["live_query_smoke.py", "--query", "github sync"])
+
+    args = parse_args()
+
+    assert args.query == "github sync"
+    assert args.question is None
+
+
+def test_main_reuses_query_when_question_is_omitted(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+        captured["query"] = query
+        captured["question"] = question
+        captured["source_id"] = source_id
+        captured["top_k"] = top_k
+        captured["rewrite_mode"] = rewrite_mode
+        return {
+            "query": query,
+            "question": question,
+            "source_id": source_id,
+            "top_k": top_k,
+            "rewrite_mode": rewrite_mode,
+            "search": {"results": [], "debug": {}},
+            "answer": {"evidence_status": "grounded", "citations": []},
+        }
+
+    monkeypatch.setattr(sys, "argv", ["live_query_smoke.py", "--query", "github sync"])
+    monkeypatch.setattr("scripts.live_query_smoke.run_live_query_smoke", stub_run_live_query_smoke)
+
+    main()
+
+    assert captured["query"] == "github sync"
+    assert captured["question"] == "github sync"
+    assert "same-input smoke path" in capsys.readouterr().out
+
+
+def test_main_marks_separate_probes_when_question_differs(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+        captured["query"] = query
+        captured["question"] = question
+        return {
+            "query": query,
+            "question": question,
+            "source_id": source_id,
+            "top_k": top_k,
+            "rewrite_mode": rewrite_mode,
+            "search": {"results": [], "debug": {}},
+            "answer": {"evidence_status": "grounded", "citations": []},
+        }
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "live_query_smoke.py",
+            "--query",
+            "aws startup",
+            "--question",
+            "How do I start EC2?",
+        ],
+    )
+    monkeypatch.setattr("scripts.live_query_smoke.run_live_query_smoke", stub_run_live_query_smoke)
+
+    main()
+
+    assert captured["query"] == "aws startup"
+    assert captured["question"] == "How do I start EC2?"
+    assert "separate probes:" in capsys.readouterr().out
+
+
+def test_main_json_reuses_query_when_question_is_omitted(monkeypatch, capsys):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+        return {
+            "query": query,
+            "question": question,
+            "source_id": source_id,
+            "top_k": top_k,
+            "rewrite_mode": rewrite_mode,
+            "search": {"results": [], "debug": {}},
+            "answer": {"evidence_status": "grounded", "citations": []},
+        }
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["live_query_smoke.py", "--query", "github sync", "--json"],
+    )
+    monkeypatch.setattr("scripts.live_query_smoke.run_live_query_smoke", stub_run_live_query_smoke)
+
+    main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["query"] == "github sync"
+    assert payload["question"] == "github sync"
+    assert payload["same_input"] is True
+
+
+def test_main_json_marks_separate_probes_when_question_differs(monkeypatch, capsys):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+        return {
+            "query": query,
+            "question": question,
+            "source_id": source_id,
+            "top_k": top_k,
+            "rewrite_mode": rewrite_mode,
+            "search": {"results": [], "debug": {}},
+            "answer": {"evidence_status": "grounded", "citations": []},
+        }
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "live_query_smoke.py",
+            "--query",
+            "token alpha-secret",
+            "--question",
+            "token beta-secret",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr("scripts.live_query_smoke.run_live_query_smoke", stub_run_live_query_smoke)
+
+    main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["query"] == "token [REDACTED]"
+    assert payload["question"] == "token [REDACTED]"
+    assert payload["same_input"] is False
 
 
 def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch):
@@ -237,6 +427,7 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
     )
 
     assert payload["search"]["results"][0]["chunk_id"] == "chunk-1"
+    assert payload["same_input"] is False
     assert "text" not in payload["search"]["results"][0]
     assert "preview" not in payload["search"]["results"][0]
     assert "path" not in payload["search"]["results"][0]
@@ -251,3 +442,21 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
     assert payload["answer"]["debug_markdown"] == "## Debug\n- preview: [REDACTED]\n- chunk-1"
     assert "path" not in payload["search"]["debug"]["selected_results"][0]
     assert "url" not in payload["search"]["debug"]["selected_results"][0]
+
+
+def test_redact_live_query_result_keeps_same_input_marker_for_redaction_collisions():
+    payload = redact_live_query_result(
+        {
+            "query": "token alpha-secret",
+            "question": "token beta-secret",
+            "source_id": None,
+            "top_k": 5,
+            "rewrite_mode": "auto",
+            "search": {"results": [], "debug": {}},
+            "answer": {"evidence_status": "insufficient", "citations": []},
+        }
+    )
+
+    assert payload["query"] == "token [REDACTED]"
+    assert payload["question"] == "token [REDACTED]"
+    assert payload["same_input"] is False
