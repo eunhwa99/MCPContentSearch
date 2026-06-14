@@ -1356,6 +1356,39 @@ def test_search_documents_sanitizes_mixed_source_filters():
     assert context_search.calls[0]["tool"] == "search_documents"
 
 
+def test_search_documents_redacts_query_text_when_service_is_missing():
+    mcp = FakeMCP()
+    register_tools(mcp)
+
+    search = asyncio.run(
+        mcp.tools["search_documents"]("find token=super-secret-value in docs")
+    )
+
+    assert search["results"] == []
+    assert "super-secret-value" not in search["query"]
+    assert "token=[REDACTED]" in search["query"]
+
+
+def test_search_documents_redacts_query_text_when_no_public_source_matches():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=CapturingContextSearch(),
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    search = asyncio.run(
+        mcp.tools["search_documents"](
+            "find token=super-secret-value in docs",
+            filters={"source_id": "source_web"},
+        )
+    )
+
+    assert search["results"] == []
+    assert "super-secret-value" not in search["query"]
+    assert "token=[REDACTED]" in search["query"]
+
+
 def test_search_documents_injects_retained_source_filter_when_unfiltered():
     context_search = CapturingContextSearch()
     mcp = FakeMCP()
@@ -1376,6 +1409,22 @@ def test_search_documents_injects_retained_source_filter_when_unfiltered():
         ],
     }
     assert context_search.calls[0]["tool"] == "search_documents"
+
+
+def test_search_documents_redacts_query_text_in_normal_public_payload():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=FakeContextSearch(),
+    )
+
+    search = asyncio.run(
+        mcp.tools["search_documents"]("find token=super-secret-value in docs")
+    )
+
+    assert search["results"][0]["document_id"] == "doc-1"
+    assert "super-secret-value" not in search["query"]
+    assert "token=[REDACTED]" in search["query"]
 
 
 def test_search_context_contract_strips_vector_score_from_dict_results():

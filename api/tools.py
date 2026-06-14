@@ -242,14 +242,14 @@ def register_tools(
     async def search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict:
         """문서 단위로 그룹화된 structured context 검색"""
         if context_search_service is None:
-            return {"query": query, "results": []}
+            return {"query": _redact_public_query_text(query), "results": []}
         public_filters, has_no_public_source = _public_filters(
             filters,
             metadata_store,
             allowed_source_ids,
         )
         if has_no_public_source:
-            return {"query": query, "results": []}
+            return {"query": _redact_public_query_text(query), "results": []}
         public_filters = _with_default_public_source_filter(
             public_filters,
             allowed_source_ids,
@@ -268,7 +268,7 @@ def register_tools(
             if _payload_source_is_public(payload, metadata_store, allowed_source_ids)
         ]
         return {
-            "query": result["query"],
+            "query": _redact_public_query_text(result["query"]),
             "results": results,
         }
 
