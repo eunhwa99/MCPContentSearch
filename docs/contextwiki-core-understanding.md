@@ -608,6 +608,8 @@ uv run --locked pytest -q tests/api/test_tools_contract.py
 uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
 uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
 uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
+uv run --locked pytest -q tests/evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
 ./scripts/verify_functional_e2e.sh
 ./scripts/verify_all.sh
 ```
@@ -618,3 +620,16 @@ approval and should report the source used, safety plan, and whether any local
 state was touched.
 Obsidian verification should use temporary vault directories unless the user
 explicitly approves a real vault path.
+
+The deterministic eval runner is the retained reviewer-evidence path for
+retrieval quality changes. It uses temp SQLite fixture data, never touches user
+Chroma/SQLite, and now emits deterministic JSON artifacts with:
+
+- mixed-query group breakdowns
+- retrieval and answer suite pass/fail summaries
+
+When latency visibility is needed, the runner can also emit a separate
+non-deterministic `runtime_metrics.json` file with wall-clock retrieval and
+answer timings. CI uploads the deterministic files plus that optional runtime
+file as the `contextwiki-evals` artifact so reviewers can inspect
+retrieval-quality evidence without running live checks.

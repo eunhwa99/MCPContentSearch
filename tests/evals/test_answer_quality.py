@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+import pytest
+
 from evals.answer_quality import (
     AnswerQualityCase,
     evaluate_answer_payload,
@@ -172,13 +174,37 @@ def test_fixture_cases_load_and_suite_summarizes_results():
             ],
             "used_chunks": ["dynamodb-notes-chunk", "cassandra-notes-chunk"],
         },
+        "obsidian-daily-planning-answer": {
+            "answer": "Daily planning note captured follow-ups and retrospective bullets.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "obsidian-daily-planning-chunk"}],
+            "used_chunks": ["obsidian-daily-planning-chunk"],
+        },
+        "mixed-language-daily-note-answer": {
+            "answer": "## Grounded List\n\n- Indexed evidence matched this collection request for `AWS docs 모아줘`.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "aws-guide-chunk"}],
+            "used_chunks": ["aws-guide-chunk"],
+        },
+        "adr-markdown-answer": {
+            "answer": "ADR 0006 describes the slim MCP core scope in markdown.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "adr-markdown-chunk"}],
+            "used_chunks": ["adr-markdown-chunk"],
+        },
+        "graph-search-code-answer": {
+            "answer": "The bfs helper in graph_search.py initializes the queue with the start node.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "graph-search-code-chunk"}],
+            "used_chunks": ["graph-search-code-chunk"],
+        },
     }
 
     summary = evaluate_answer_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 5
-    assert summary["passed_count"] == 5
+    assert summary["total"] == 9
+    assert summary["passed_count"] == 9
 
 
 def test_answer_suite_fails_when_case_list_is_empty():
@@ -186,3 +212,43 @@ def test_answer_suite_fails_when_case_list_is_empty():
 
     assert not summary["passed"]
     assert summary["total"] == 0
+
+
+def test_eval_runner_cli_exits_nonzero_when_summary_fails(monkeypatch, capsys):
+    from scripts import run_contextwiki_eval as runner
+
+    monkeypatch.setattr(
+        runner,
+        "run_contextwiki_eval",
+        lambda **kwargs: {"passed": False, "retrieval_suite": {}, "answer_suite": {}},
+    )
+    monkeypatch.setattr("sys.argv", ["run_contextwiki_eval.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert '"passed": false' in captured.out.lower()
+
+
+def test_mixed_language_case_fails_for_english_only_answer():
+    case = AnswerQualityCase(
+        case_id="mixed-language-check",
+        question="AWS docs 모아줘",
+        expected_status="grounded",
+        expected_answer_terms=("AWS docs 모아줘",),
+        required_citation_chunk_ids=("aws-guide-chunk",),
+        min_citation_count=1,
+    )
+    payload = {
+        "answer": "## Grounded List\n\n- Indexed evidence matched this AWS docs request.",
+        "evidence_status": "grounded",
+        "citations": [{"chunk_id": "aws-guide-chunk"}],
+        "used_chunks": ["aws-guide-chunk"],
+    }
+
+    result = evaluate_answer_payload(payload, case)
+
+    assert not result.passed
+    assert "expected_terms_present" in result.failures

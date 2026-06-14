@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import time
 from pathlib import Path
 
 from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
@@ -114,6 +115,8 @@ def run_contextwiki_eval(
     fixture_documents_path: str | Path = FIXTURE_DOCUMENTS_PATH,
     retrieval_cases_path: str | Path = RETRIEVAL_CASES_PATH,
     answer_cases_path: str | Path = ANSWER_CASES_PATH,
+    output_dir: str | Path | None = None,
+    include_latency: bool = False,
 ) -> dict:
     documents = json.loads(Path(fixture_documents_path).read_text(encoding="utf-8"))
     retrieval_cases = load_retrieval_cases(retrieval_cases_path)
@@ -131,26 +134,39 @@ def run_contextwiki_eval(
         )
         answer_service = CitationAnswerService(search_service)
 
-        retrieval_payloads = {
-            case.case_id: asyncio.run(
-                search_service.search_context(case.query, top_k=case.top_k)
-            )
-            for case in retrieval_cases
-        }
-        answer_payloads = {
-            case.case_id: asyncio.run(
-                answer_service.answer_with_citations(case.question, top_k=case.top_k)
-            )
-            for case in answer_cases
-        }
+        retrieval_payloads, retrieval_latency_ms = _run_retrieval_cases(
+            search_service, retrieval_cases
+        )
+        answer_payloads, answer_latency_ms = _run_answer_cases(
+            answer_service, answer_cases
+        )
 
-    retrieval_suite = evaluate_search_suite(retrieval_payloads, retrieval_cases)
-    answer_suite = evaluate_answer_suite(answer_payloads, answer_cases)
-    return {
+    retrieval_suite = evaluate_search_suite(
+        retrieval_payloads,
+        retrieval_cases,
+    )
+    answer_suite = evaluate_answer_suite(
+        answer_payloads,
+        answer_cases,
+    )
+    summary = {
         "passed": retrieval_suite["passed"] and answer_suite["passed"],
+        "artifact_dir": str(Path(output_dir)) if output_dir is not None else "",
         "retrieval_suite": retrieval_suite,
         "answer_suite": answer_suite,
     }
+    if include_latency:
+        summary["runtime_metrics"] = {
+            "retrieval_suite": {
+                "latency_ms": _latency_summary(list(retrieval_latency_ms.values()))
+            },
+            "answer_suite": {
+                "latency_ms": _latency_summary(list(answer_latency_ms.values()))
+            },
+        }
+    if output_dir is not None:
+        _write_artifacts(Path(output_dir), summary)
+    return summary
 
 
 def _seed_fixture_documents(store: MetadataStore, documents: list[dict]) -> None:
@@ -204,3 +220,76 @@ def _seed_fixture_documents(store: MetadataStore, documents: list[dict]) -> None
                 )
             ],
         )
+
+
+def _run_retrieval_cases(
+    search_service: ContextSearchService,
+    retrieval_cases,
+) -> tuple[dict[str, dict], dict[str, float]]:
+    payloads: dict[str, dict] = {}
+    latency_ms: dict[str, float] = {}
+    for case in retrieval_cases:
+        started = time.perf_counter()
+        payloads[case.case_id] = asyncio.run(
+            search_service.search_context(case.query, top_k=case.top_k)
+        )
+        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+    return payloads, latency_ms
+
+
+def _run_answer_cases(
+    answer_service: CitationAnswerService,
+    answer_cases,
+) -> tuple[dict[str, dict], dict[str, float]]:
+    payloads: dict[str, dict] = {}
+    latency_ms: dict[str, float] = {}
+    for case in answer_cases:
+        started = time.perf_counter()
+        payloads[case.case_id] = asyncio.run(
+            answer_service.answer_with_citations(case.question, top_k=case.top_k)
+        )
+        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+    return payloads, latency_ms
+
+
+def _write_artifacts(output_dir: Path, summary: dict) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runtime_metrics_path = output_dir / "runtime_metrics.json"
+    stable_summary = {
+        "passed": summary["passed"],
+        "retrieval_suite": summary["retrieval_suite"],
+        "answer_suite": summary["answer_suite"],
+    }
+    (output_dir / "summary.json").write_text(
+        json.dumps(stable_summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "retrieval_suite.json").write_text(
+        json.dumps(stable_summary["retrieval_suite"], ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "answer_suite.json").write_text(
+        json.dumps(stable_summary["answer_suite"], ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    if "runtime_metrics" in summary:
+        runtime_metrics_path.write_text(
+            json.dumps(summary["runtime_metrics"], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    elif runtime_metrics_path.exists():
+        runtime_metrics_path.unlink()
+
+
+def _latency_summary(latencies_ms: list[float]) -> dict[str, float]:
+    if not latencies_ms:
+        return {"total": 0.0, "average": 0.0, "min": 0.0, "max": 0.0}
+
+    return {
+        "total": float(sum(latencies_ms)),
+        "average": float(sum(latencies_ms) / len(latencies_ms)),
+        "min": float(min(latencies_ms)),
+        "max": float(max(latencies_ms)),
+    }

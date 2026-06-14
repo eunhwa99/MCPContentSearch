@@ -104,24 +104,26 @@ def evaluate_search_suite(
             "total": 0,
             "passed_count": 0,
             "average_score": 0.0,
+            "group_breakdown": {},
             "results": [],
         }
-    results = [
+    raw_results = [
         evaluate_search_payload(payloads_by_case_id.get(case.case_id, {}), case)
         for case in cases
     ]
-    passed = [result for result in results if result.passed]
+    passed = [result for result in raw_results if result.passed]
     average_score = (
-        sum(result.score for result in results) / len(results)
-        if results
+        sum(result.score for result in raw_results) / len(raw_results)
+        if raw_results
         else 0.0
     )
     return {
-        "passed": len(passed) == len(results),
-        "total": len(results),
+        "passed": len(passed) == len(raw_results),
+        "total": len(raw_results),
         "passed_count": len(passed),
         "average_score": average_score,
-        "results": [result.as_dict() for result in results],
+        "group_breakdown": _group_breakdown(cases, raw_results),
+        "results": [result.as_dict() for result in raw_results],
     }
 
 
@@ -133,3 +135,26 @@ def _item_value(item: Any, key: str) -> Any:
     if isinstance(item, dict):
         return item.get(key)
     return getattr(item, key, None)
+
+
+def _group_breakdown(
+    cases: list[RetrievalQualityCase],
+    results: list[RetrievalQualityResult],
+) -> dict[str, Any]:
+    grouped: dict[str, list[RetrievalQualityResult]] = {}
+    for case, result in zip(cases, results, strict=False):
+        grouped.setdefault(case.group, []).append(result)
+
+    breakdown: dict[str, Any] = {}
+    for group, group_results in grouped.items():
+        passed_count = sum(1 for result in group_results if result.passed)
+        breakdown[group] = {
+            "total": len(group_results),
+            "passed_count": passed_count,
+            "average_score": (
+                sum(result.score for result in group_results) / len(group_results)
+                if group_results
+                else 0.0
+            ),
+        }
+    return breakdown

@@ -69,6 +69,20 @@ jobs:
             --cov=storage \
             --cov-report=term-missing
 
+      - name: Run deterministic ContextWiki evals
+        run: |
+          uv run --locked python scripts/run_contextwiki_eval.py \
+            --include-latency \
+            --output-dir artifacts/contextwiki-evals
+
+      - name: Upload ContextWiki eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contextwiki-evals
+          path: artifacts/contextwiki-evals
+          if-no-files-found: error
+
       - name: Run functional E2E gate
         env:
           IS_TESTING: "1"
