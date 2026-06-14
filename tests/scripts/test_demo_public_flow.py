@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from llama_index.core import Settings
+
 from scripts.demo_public_flow import render_demo_text, run_demo
 
 
@@ -22,6 +24,35 @@ def test_run_demo_returns_grounded_public_flow():
     assert result["search"]["results"]
     assert result["answer"]["evidence_status"] == "grounded"
     assert result["answer"]["citations"]
+
+
+def test_run_demo_uses_temp_cache_dir_and_restores_it(monkeypatch):
+    observed: dict[str, str] = {}
+    import scripts.demo_public_flow as demo_public_flow
+
+    missing = object()
+    original_builder = demo_public_flow.build_demo_components
+
+    def wrapped_builder(sample_vault, temp_root):
+        observed["cache_dir"] = Settings.cache_dir
+        observed["temp_root"] = str(temp_root)
+        return original_builder(sample_vault, temp_root)
+
+    previous_cache_dir = getattr(Settings, "cache_dir", missing)
+    monkeypatch.setattr(demo_public_flow, "build_demo_components", wrapped_builder)
+
+    asyncio.run(
+        run_demo(
+            query="stale citations",
+            question="How does ContextWiki prevent stale citations?",
+        )
+    )
+
+    assert observed["cache_dir"] == str(Path(observed["temp_root"]) / "llama_cache")
+    if previous_cache_dir is missing:
+        assert not hasattr(Settings, "cache_dir")
+    else:
+        assert Settings.cache_dir == previous_cache_dir
 
 
 def test_render_demo_text_includes_sync_search_and_answer_sections():

@@ -1,4 +1,28 @@
-from scripts.live_query_smoke import format_smoke_summary, sanitize_live_query_result
+import asyncio
+from pathlib import Path
+import subprocess
+import sys
+
+from scripts.live_query_smoke import (
+    format_smoke_summary,
+    redact_live_query_result,
+    run_live_query_smoke,
+)
+
+
+def test_live_query_smoke_help_runs_from_repo_root_script_path():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    result = subprocess.run(
+        [sys.executable, "scripts/live_query_smoke.py", "--help"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Run a live local retrieval smoke" in result.stdout
 
 
 def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
@@ -88,8 +112,47 @@ def test_format_smoke_summary_redacts_secret_like_query_text():
     assert "[REDACTED]" in summary
 
 
-def test_sanitize_live_query_result_omits_raw_text_and_keeps_structured_json():
-    payload = sanitize_live_query_result(
+def test_live_query_smoke_requests_search_debug_payload(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class StubMCP:
+        def __init__(self):
+            self.tools = {
+                "search_context": self.search_context,
+                "answer_with_citations": self.answer_with_citations,
+            }
+
+        async def search_context(self, query, *, filters=None, top_k=10, include_debug=False):
+            captured["query"] = query
+            captured["filters"] = filters
+            captured["top_k"] = top_k
+            captured["include_debug"] = include_debug
+            return {"results": [], "debug": {"rewrite_enabled": True}}
+
+        async def answer_with_citations(self, question, *, filters=None, top_k=5):
+            captured["question"] = question
+            return {"evidence_status": "insufficient", "citations": []}
+
+    monkeypatch.setattr("scripts.live_query_smoke.build_runtime_mcp", lambda rewrite_mode: StubMCP())
+
+    result = asyncio.run(
+        run_live_query_smoke(
+            query="obsidian citation",
+            question="How do citations work?",
+            source_id="source_obsidian",
+            top_k=4,
+            rewrite_mode="auto",
+        )
+    )
+
+    assert result["search"]["debug"]["rewrite_enabled"] is True
+    assert captured["include_debug"] is True
+    assert captured["filters"] == {"source_id": "source_obsidian"}
+    assert captured["top_k"] == 4
+
+
+def test_redact_live_query_result_omits_content_preview_and_path_fields():
+    payload = redact_live_query_result(
         {
             "query": "aws startup",
             "question": "How do I start EC2?",
@@ -105,6 +168,8 @@ def test_sanitize_live_query_result_omits_raw_text_and_keeps_structured_json():
                         "title": "EC2 setup guide",
                         "score": 0.91,
                         "preview": "compact preview",
+                        "path": "docs/ec2.md",
+                        "url": "https://example.com/ec2",
                         "text": "full chunk text should not leak",
                     }
                 ],
@@ -114,12 +179,26 @@ def test_sanitize_live_query_result_omits_raw_text_and_keeps_structured_json():
                     "rewrite_applied": True,
                     "rewrite_skipped_reason": "",
                     "rewritten_queries": ["aws ec2 setup"],
+                    "selected_results": [
+                        {
+                            "chunk_id": "chunk-1",
+                            "path": "docs/ec2.md",
+                            "url": "https://example.com/ec2",
+                        }
+                    ],
                 },
             },
             "answer": {
                 "evidence_status": "grounded",
                 "answer": "Use EC2.",
-                "citations": [{"title": "EC2 setup guide", "chunk_id": "chunk-1"}],
+                "citations": [
+                    {
+                        "title": "EC2 setup guide",
+                        "chunk_id": "chunk-1",
+                        "path": "docs/ec2.md",
+                        "url": "https://example.com/ec2",
+                    }
+                ],
                 "used_chunks": [{"chunk_id": "chunk-1", "text": "used chunk raw text"}],
             },
         }
@@ -127,5 +206,13 @@ def test_sanitize_live_query_result_omits_raw_text_and_keeps_structured_json():
 
     assert payload["search"]["results"][0]["chunk_id"] == "chunk-1"
     assert "text" not in payload["search"]["results"][0]
+    assert "preview" not in payload["search"]["results"][0]
+    assert "path" not in payload["search"]["results"][0]
+    assert "url" not in payload["search"]["results"][0]
+    assert "title" not in payload["answer"]["citations"][0]
+    assert "path" not in payload["answer"]["citations"][0]
+    assert "url" not in payload["answer"]["citations"][0]
     assert payload["answer"]["citations"][0]["chunk_id"] == "chunk-1"
+    assert "path" not in payload["search"]["debug"]["selected_results"][0]
+    assert "url" not in payload["search"]["debug"]["selected_results"][0]
     assert "used_chunks" not in payload["answer"]

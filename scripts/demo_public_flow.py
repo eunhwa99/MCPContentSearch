@@ -105,10 +105,13 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
 
 
 async def run_demo(query: str, question: str) -> dict:
+    missing = object()
     previous_embed_model = Settings.embed_model
+    previous_cache_dir = getattr(Settings, "cache_dir", missing)
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
         with tempfile.TemporaryDirectory(prefix="contextwiki-demo-") as temp_dir:
+            Settings.cache_dir = str(Path(temp_dir) / "llama_cache")
             repo_root = _repo_root()
             sample_vault = repo_root / "sample_vault"
             mcp = build_demo_components(sample_vault, Path(temp_dir))
@@ -135,6 +138,13 @@ async def run_demo(query: str, question: str) -> dict:
             )
     finally:
         Settings.embed_model = previous_embed_model
+        if previous_cache_dir is missing:
+            try:
+                delattr(Settings, "cache_dir")
+            except AttributeError:
+                pass
+        else:
+            Settings.cache_dir = previous_cache_dir
 
 
 def normalize_demo_result(result: dict) -> dict:

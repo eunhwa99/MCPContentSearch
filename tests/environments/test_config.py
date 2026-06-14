@@ -136,3 +136,9 @@ def test_obsidian_vault_path_invalid_tilde_user_env_does_not_raise(monkeypatch):
     config = AppConfig()
 
     assert config.obsidian_vault_path == Path("~nonexistentuser/vault")
+
+
+def test_cache_dir_defaults_under_contextwiki_home():
+    config = AppConfig()
+
+    assert config.cache_dir == str(Path.home() / ".mcp_content_search" / "llama_cache")
