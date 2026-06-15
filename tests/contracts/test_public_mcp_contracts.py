@@ -481,15 +481,3 @@ def test_fetch_context_contract_uses_real_fastmcp_call_tool():
 
     assert payload["chunk"]["chunk_id"] == "chunk-1"
     assert "real call_tool paths" in payload["chunk"]["text"]
-
-
-def test_answer_with_citations_contract_uses_real_fastmcp_call_tool():
-    payload = call_tool_json(
-        build_contract_mcp(),
-        "answer_with_citations",
-        {"question": "How does ContextWiki validate contracts?", "top_k": 3, "include_debug": True},
-    )
-
-    assert payload["evidence_status"] == "grounded"
-    assert payload["citations"][0]["chunk_id"] == "chunk-1"
-    assert payload["debug_markdown"].startswith("## Debug")

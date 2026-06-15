@@ -37,6 +37,7 @@ from storage.metadata_store import MetadataStore
 class SmokeMCP:
     def __init__(self):
         self.tools: dict[str, object] = {}
+        self.answer_service: CitationAnswerService | None = None
 
     def tool(self):
         def decorator(func):
@@ -95,6 +96,7 @@ def build_runtime_mcp(rewrite_mode: str):
         metadata_store=metadata_store,
         source_registry=source_registry,
     )
+    mcp.answer_service = answer_service
     return mcp
 
 
@@ -114,7 +116,7 @@ async def run_live_query_smoke(
         top_k=top_k,
         include_debug=True,
     )
-    answer_payload = await mcp.tools["answer_with_citations"](
+    answer_payload = await mcp.answer_service.answer_with_citations(
         question,
         filters=filters,
         top_k=top_k,

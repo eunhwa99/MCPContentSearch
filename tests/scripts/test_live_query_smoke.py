@@ -312,8 +312,8 @@ def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch)
         def __init__(self):
             self.tools = {
                 "search_context": self.search_context,
-                "answer_with_citations": self.answer_with_citations,
             }
+            self.answer_service = self
 
         async def search_context(self, query, *, filters=None, top_k=10, include_debug=False):
             captured["query"] = query

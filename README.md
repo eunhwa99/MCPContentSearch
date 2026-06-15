@@ -37,7 +37,6 @@ Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and 
 | `search_context(query, ...)` | Semantic search with SQLite validation |
 | `search_documents(query, ...)` | Search results grouped by document |
 | `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly |
-| `answer_with_citations(question, ...)` | Citation-backed answer preview (debug/eval only) |
 
 > 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
 

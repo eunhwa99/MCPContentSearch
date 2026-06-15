@@ -62,9 +62,9 @@ uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/co
 ```
 
 This seeds temporary fixture documents into temp SQLite, swaps in a local
-fixture `VectorIndexRetriever`, executes the retained `search_context`
-retrieval and `answer_with_citations` service paths without the normal live
-indexing/vector setup, and returns a JSON summary without live LLM rewrite.
+fixture `VectorIndexRetriever`, executes retained retrieval plus answer-eval
+coverage without the normal live indexing/vector setup, and returns a JSON
+summary without live LLM rewrite.
 When `--output-dir` is supplied, the runner writes:
 
 - `summary.json`

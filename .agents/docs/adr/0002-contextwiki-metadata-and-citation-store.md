@@ -22,7 +22,7 @@ Add a SQLite metadata store beside Chroma:
 - SQLite stores source records, sync jobs, document hashes, and citation-ready chunks.
 - Source auth is stored as an environment-variable reference such as `env:NOTION_API_KEY`, never as a raw token.
 - Chunk ids are deterministic from document id, chunk index, and chunk content hash.
-- `answer_with_citations` may only cite chunks that exist in the metadata store.
+- Answer-generation paths may only cite chunks that exist in the metadata store.
 - Required verification uses fake sources and temporary persistence. Live external API smoke tests are opt-in only.
 
 ## Consequences

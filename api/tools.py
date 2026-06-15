@@ -315,41 +315,6 @@ def register_tools(
             "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
         }
 
-    @mcp.tool()
-    async def answer_with_citations(
-        question: str,
-        filters: dict = None,
-        top_k: int = 5,
-        include_debug: bool = False,
-    ) -> dict:
-        """검색 근거 기반 helper answer payload를 반환하고 answer service 경로에서만 include_debug를 전달"""
-        public_filters, has_no_public_source = _public_filters(
-            filters,
-            metadata_store,
-            allowed_source_ids,
-        )
-        if has_no_public_source:
-            return _insufficient_answer_for_filtered_sources(question)
-        public_filters = _with_default_public_source_filter(
-            public_filters,
-            allowed_source_ids,
-        )
-        if answer_service is None:
-            return {
-                "question": _redact_public_query_text(question),
-                "answer": "Citation answer service is not configured.",
-                "evidence_status": "insufficient",
-                "citations": [],
-                "used_chunks": [],
-            }
-        return await answer_service.answer_with_citations(
-            question,
-            filters=public_filters,
-            top_k=top_k,
-            include_debug=include_debug,
-        )
-
-
 def _source_registry_ids(source_registry) -> frozenset[str] | None:
     if source_registry is None:
         return None

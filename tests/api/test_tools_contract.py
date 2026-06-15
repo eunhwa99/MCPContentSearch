@@ -1146,7 +1146,6 @@ def test_contextwiki_mcp_tools_are_registered():
         "search_context",
         "search_documents",
         "fetch_context",
-        "answer_with_citations",
     } == set(mcp.tools)
 
 
@@ -1163,8 +1162,6 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
     document_search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id="chunk-1"))
-    answer = asyncio.run(mcp.tools["answer_with_citations"]("What is ContextWiki?"))
-
     assert status["sources"][0]["source"]["source_id"] == "source_fake"
     assert "document_count" in status["sources"][0]["source"]
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
@@ -1176,10 +1173,6 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "vector_score" not in document_search["results"][0]
     assert "metadata_priority" not in document_search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
-    assert answer["evidence_status"] == "grounded"
-    assert "debug" not in answer
-    assert "debug_markdown" not in answer
-    assert "answer_mode" not in answer
 
 
 def test_search_context_can_include_structured_debug_payload():
@@ -1293,13 +1286,6 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     filtered_document_search = asyncio.run(
         mcp.tools["search_documents"]("legacy web", filters={"source_id": "source_web"})
     )
-    filtered_answer = asyncio.run(
-        mcp.tools["answer_with_citations"](
-            "What did legacy web say?",
-            filters={"source_id": "source_web"},
-        )
-    )
-
     assert [source["source_id"] for source in sources["sources"]] == ["source_github"]
     assert [
         status["source"]["source_id"]
@@ -1316,53 +1302,6 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     assert "debug" not in filtered_search
     assert filtered_search_with_debug["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
     assert filtered_document_search["results"] == []
-    assert filtered_answer["evidence_status"] == "insufficient"
-    assert filtered_answer["citations"] == []
-
-
-def test_answer_with_citations_sanitizes_mixed_source_filters():
-    answer_service = CapturingAnswerService()
-    mcp = FakeMCP()
-    register_tools(
-        mcp,
-        answer_service=answer_service,
-        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
-    )
-
-    answer = asyncio.run(
-        mcp.tools["answer_with_citations"](
-            "What does GitHub say?",
-            filters={"source_ids": ["source_github", "source_web"], "tag": "docs"},
-        )
-    )
-
-    assert answer["evidence_status"] == "grounded"
-    assert answer_service.calls[0]["filters"] == {
-        "source_ids": ["source_github"],
-        "tag": "docs",
-    }
-
-
-def test_answer_with_citations_injects_retained_source_filter_when_unfiltered():
-    answer_service = CapturingAnswerService()
-    mcp = FakeMCP()
-    register_tools(
-        mcp,
-        answer_service=answer_service,
-        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
-    )
-
-    answer = asyncio.run(mcp.tools["answer_with_citations"]("What is retained?"))
-
-    assert answer["evidence_status"] == "grounded"
-    assert answer_service.calls[0]["filters"] == {
-        "source_ids": [
-            "source_github",
-            "source_notion",
-            "source_obsidian",
-            "source_tistory",
-        ],
-    }
 
 
 def test_search_context_injects_retained_source_filter_when_unfiltered():

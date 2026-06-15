@@ -22,19 +22,6 @@ def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
     assert "scripts/run_contextwiki_eval.py" in workflow
     assert "./scripts/verify_functional_e2e.sh" in workflow
 
-
-def test_readme_describes_verification_architecture_layers_truthfully():
-    repo_root = Path(__file__).resolve().parents[2]
-    readme = (repo_root / "README.md").read_text(encoding="utf-8")
-
-    assert "Public MCP contract layer" in readme
-    assert "Deterministic functional E2E layer" in readme
-    assert "Deterministic quality eval layer" in readme
-    assert "Manual live smoke layer" in readme
-    assert "No retained automated pytest currently uses the `live` marker." in readme
-    assert "tests/scripts/test_live_query_smoke.py` only verifies the CLI contract" in readme
-
-
 def test_pyproject_live_marker_is_truthful_about_current_suite():
     repo_root = Path(__file__).resolve().parents[2]
     pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")

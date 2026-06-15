@@ -36,6 +36,7 @@ from storage.metadata_store import MetadataStore
 class DemoMCP:
     def __init__(self):
         self.tools: dict[str, object] = {}
+        self.answer_service: CitationAnswerService | None = None
 
     def tool(self):
         def decorator(func):
@@ -113,6 +114,7 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
         metadata_store=metadata_store,
         source_registry=source_registry,
     )
+    mcp.answer_service = answer_service
     return mcp
 
 
@@ -151,7 +153,7 @@ async def run_demo(query: str, question: str) -> dict:
                 filters={"source_id": "source_obsidian"},
                 top_k=3,
             )
-            answer_payload = await mcp.tools["answer_with_citations"](
+            answer_payload = await mcp.answer_service.answer_with_citations(
                 question,
                 filters={"source_id": "source_obsidian"},
                 top_k=3,

@@ -15,8 +15,7 @@ maintained design reference beyond the README.
   `content-search-server`.
 - MCP tools: `api/tools.py` registers only retained ContextWiki retrieval tools:
   `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
-  `search_context`, `search_documents`, `fetch_context`, and
-  `answer_with_citations`.
+  `search_context`, `search_documents`, and `fetch_context`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
 - Secrets/environment loading: `environments/token.py` and runtime environment
@@ -60,8 +59,9 @@ Keep these design assumptions aligned with implementation:
 - `search_context` is the primary chunk-level evidence surface.
 - `search_documents` is the grouped browsing surface built from the same
   validated retrieval path.
-- `answer_with_citations` is a helper answer surface built on top of validated
-  evidence, not a separate retrieval stack.
+- `CitationAnswerService.answer_with_citations(...)` is an internal helper
+  answer surface built on top of validated evidence, not a separate retrieval
+  stack.
 - Search query rewrite is optional, disabled by default, and any egress it
   performs is limited to query rewriting rather than source fetching or data
   mutation.
@@ -168,7 +168,7 @@ fetch_context
   -> MetadataStore direct document/chunk hydration
   -> document or chunk payload
 
-answer_with_citations
+internal helper answer flows
   -> CitationAnswerService
   -> search_context_for_answer / search_context
   -> MetadataStore-validated evidence chunks
@@ -189,7 +189,8 @@ answer_with_citations
 - `indexing`: document indexing lifecycle, deterministic chunking, content
   hash/chunk-id comparison, Chroma mutation, and index status updates.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
-  active-result validation, direct context fetch, and citation answer support.
+  active-result validation, direct context fetch, and internal citation answer
+  support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones,
   sync-job ownership, and active retrieval checks.
 - `core`: stable shared data models, exception classes, and utility functions.
@@ -226,7 +227,7 @@ retrieval:
 - `DocumentModel` is the sync and lifecycle unit.
 - Chunks are the search and citation unit.
 - Chunk metadata carries the reviewer-visible citation context used by
-  `search_context`, `search_documents`, and `answer_with_citations`.
+  `search_context`, `search_documents`, and internal helper-answer flows.
 
 Stable identity and version expectations stay source-aware:
 
@@ -307,7 +308,6 @@ Current tools:
 - `search_context(query: str, filters: dict = None, top_k: int = 10, include_debug: bool = False) -> dict`
 - `search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict`
 - `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
-- `answer_with_citations(question: str, filters: dict = None, top_k: int = 5, include_debug: bool = False) -> dict`
 
 Contract intent:
 
@@ -322,16 +322,18 @@ Contract intent:
 - `search_documents` is additive and document-oriented: it uses the same
   retained-source retrieval path but returns one representative chunk-backed row
   per document for browsing.
-- `answer_with_citations` reuses `search_context_for_answer` /
-  `search_context`, so query-rewrite egress and retrieval semantics stay aligned
-  across search and answer flows.
-- `search_context` keeps `debug` as an opt-in public surface. On configured
-  paths and on the `no_matching_sources` fast path, the public `debug` key is
-  emitted only when `include_debug=True`; otherwise callers receive `query` and
-  `results` without a public `debug` object. Internal grounding/debug metadata
-  still follows the separate internal-metadata flags.
-- `answer_with_citations` keeps `include_debug` as a true opt-in debug surface,
-  does not mirror the `no_matching_sources` exception path, and does not
+- Internal `CitationAnswerService.answer_with_citations(...)` reuses
+  `search_context_for_answer` / `search_context`, so query-rewrite egress and
+  retrieval semantics stay aligned across search and helper-answer flows.
+- `search_context` returns a `debug` key on configured search-service paths.
+  On the normal path, `include_debug=False` leaves that key as `{}`, while
+  `include_debug=True` populates it with structured retrieval detail. The
+  current service-unconfigured fallback returns only `query` and `results`.
+- The current public exception is `search_context`'s `no_matching_sources`
+  fast path, which still returns a small populated `debug` object even when
+  `include_debug=False`.
+- Internal helper-answer flows keep `include_debug` as a true opt-in debug
+  surface, do not mirror the `no_matching_sources` exception path, and do not
   guarantee debug fields on default or service-unconfigured paths.
 - Retrieval policy keeps vector retrieval, metadata fallback, and rerank/debug
   reporting as distinct concerns. Query rewrite, fallback candidate addition,
@@ -369,9 +371,9 @@ stable enough for local evaluation and reviewer use:
   present. The current retained intent vocabulary includes `strict_lookup`,
   `broad_topic`, `list`, and `comparison`, and that intent is reused by
   ranking and grounded answer rendering.
-- `answer_with_citations` exposes helper-answer inspection surfaces such as
-  `citations`, `used_chunks`, `debug`, and `debug_markdown` when the current
-  implementation returns them.
+- `CitationAnswerService.answer_with_citations(...)` exposes helper-answer
+  inspection surfaces such as `citations`, `used_chunks`, `debug`, and
+  `debug_markdown` when the current implementation returns them.
 - Public debug payloads may also surface deterministic intent and retrieval
   inspection sections such as `intent.*`, `retrieval_queries`,
   `rewritten_queries`, and `selected_results[]` so reviewers can explain why a
@@ -432,10 +434,10 @@ Current integrations and local configured sources:
 - Optional search LLM query rewrite, disabled by default. When
   `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`, `search_context` may send the user's
   search query and normalized query terms to the configured provider before
-  local retrieval. `answer_with_citations` inherits that same egress because it
-  reuses `search_context_for_answer` / `search_context`. This path is external
-  egress, is not dynamic web fallback, does not fetch source content, and must
-  not mutate SQLite or Chroma.
+  local retrieval. Internal helper-answer flows inherit that same egress
+  because they reuse `search_context_for_answer` / `search_context`. This path
+  is external egress, is not dynamic web fallback, does not fetch source
+  content, and must not mutate SQLite or Chroma.
 - A disabled retained source blocks future sync attempts but does not
   automatically hide already indexed active documents. Those documents remain
   retrievable until later cleanup or metadata changes mark them inactive.
@@ -475,8 +477,9 @@ The maintained verification model is layered:
   changes
 - focused syntax, import, or targeted pytest checks for the directly changed
   modules
-- retained functional E2E coverage for MCP-visible sync/search/fetch/answer
-  workflows
+- retained functional E2E coverage for MCP-visible sync/search/fetch
+  workflows plus internal helper-answer coverage where retained tests depend on
+  `CitationAnswerService`
 - full-wrapper verification through `./scripts/verify_all.sh` when the work item
   needs the repo's broader default gate instead of only a narrow focused check
 - optional manual live smoke through `scripts/live_query_smoke.py` only when the
@@ -503,8 +506,9 @@ The maintained verification model is layered:
 - Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
   live API or real-vault checks only with explicit approval.
 - Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
-  retained MCP sync/search/fetch/answer paths, including grouped document
-  browsing, without browser, wiki, live API, or LLM dependencies.
+  retained MCP sync/search/fetch paths, grouped document browsing, and any
+  retained internal helper-answer flows without browser, wiki, live API, or
+  LLM dependencies.
 - Full wrapper: `./scripts/verify_all.sh`, which includes compile, lint, type,
   non-live pytest, and the functional E2E gate when that broader default repo
   verification is required.
