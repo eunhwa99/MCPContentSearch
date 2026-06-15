@@ -123,6 +123,8 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
         "attempted": True,
         "applied": True,
         "reason": "no_initial_candidates",
+        "initial_top_vector_score": 0.0,
+        "final_top_score": round(result["results"][0].score, 4),
         "original_query": "aws virtual machine startup",
         "rewritten_queries": ["aws ec2 setup"],
     }
@@ -171,19 +173,21 @@ def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "imagegallery-doc-chunk"
-    assert rewriter.calls == []
-    assert result["debug"]["rewritten_queries"] == []
+    assert rewriter.calls
+    assert result["debug"]["rewritten_queries"] == ["[REDACTED]"]
     assert result["debug"]["query_rewrite"] == {
-        "attempted": False,
+        "attempted": True,
         "applied": False,
-        "reason": "",
+        "reason": "low_initial_vector_score",
+        "initial_top_vector_score": 0.0,
+        "final_top_score": round(result["results"][0].score, 4),
         "original_query": "ImageGallery docs",
-        "rewritten_queries": [],
+        "rewritten_queries": ["[REDACTED]"],
     }
     assert result["debug"]["rewrite_enabled"] is True
-    assert result["debug"]["rewrite_attempted"] is False
+    assert result["debug"]["rewrite_attempted"] is True
     assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "not_needed"
+    assert result["debug"]["rewrite_skipped_reason"] == "not_better_than_original"
 
 
 def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
@@ -208,6 +212,8 @@ def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
     )
 
     assert result["debug"]["filters"] == {"source_ids": ["source_target"]}
+    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.0
+    assert result["debug"]["query_rewrite"]["final_top_score"] == round(result["results"][0].score, 4)
     assert result["debug"]["selected_results"][0]["chunk_id"] == "debug-chunk"
     assert result["debug"]["selected_results"][0]["source_id"] == "source_target"
     assert result["debug"]["selected_results"][0]["matched_terms"]
@@ -413,6 +419,8 @@ def test_vector_search_skips_query_rewrite_for_single_high_confidence_exact_matc
         "attempted": False,
         "applied": False,
         "reason": "",
+        "initial_top_vector_score": 0.98,
+        "final_top_score": round(result["results"][0].score, 4),
         "original_query": "ec2 setup guide",
         "rewritten_queries": [],
     }
@@ -444,6 +452,149 @@ def test_context_service_helper_should_try_query_rewrite_stays_in_sync_with_pipe
         )
         is False
     )
+
+
+def test_vector_search_renames_low_initial_vector_reason_and_keeps_original_when_rewrite_is_worse(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-original",
+        "chunk-original",
+        "source_target",
+        "Original guide",
+        "ContextWiki original setup guide.",
+    )
+    seed_document_chunks(
+        store,
+        "doc-rewritten",
+        "chunk-rewritten",
+        "source_target",
+        "Rewritten guide",
+        "ContextWiki rewritten setup guide.",
+    )
+
+    class RewriteComparisonRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            lowered = query.lower()
+            if "rewrite improved" in lowered:
+                node = FakeNode("chunk-rewritten", 0.41)
+                node.metadata["document_id"] = "doc-rewritten"
+                node.metadata["source_id"] = "source_target"
+                return [node]
+            node = FakeNode("chunk-original", 0.72)
+            node.metadata["document_id"] = "doc-original"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", RewriteComparisonRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=FakeQueryRewriter(["rewrite improved setup"]),
+        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+    )
+
+    assert result["results"][0].chunk_id == "chunk-original"
+    assert result["debug"]["query_rewrite"] == {
+        "attempted": True,
+        "applied": False,
+        "reason": "low_initial_vector_score",
+        "initial_top_vector_score": 0.72,
+        "final_top_score": round(result["results"][0].score, 4),
+        "original_query": "contextwiki setup",
+        "rewritten_queries": ["rewrite improved setup"],
+    }
+    assert result["debug"]["retrieval_queries"] == ["contextwiki setup"]
+    assert result["debug"]["rewrite_applied"] is False
+    assert result["debug"]["rewrite_skipped_reason"] == "not_better_than_original"
+
+
+def test_vector_search_prefers_rewritten_results_when_they_score_higher_than_original(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-original",
+        "chunk-original",
+        "source_target",
+        "Original guide",
+        "ContextWiki original setup guide.",
+    )
+    seed_document_chunks(
+        store,
+        "doc-rewritten",
+        "chunk-rewritten",
+        "source_target",
+        "Rewritten guide",
+        "ContextWiki rewritten setup guide.",
+    )
+
+    class RewriteComparisonRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            lowered = query.lower()
+            if "rewrite improved" in lowered:
+                node = FakeNode("chunk-rewritten", 0.87)
+                node.metadata["document_id"] = "doc-rewritten"
+                node.metadata["source_id"] = "source_target"
+                return [node]
+            node = FakeNode("chunk-original", 0.72)
+            node.metadata["document_id"] = "doc-original"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", RewriteComparisonRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=FakeQueryRewriter(["rewrite improved setup"]),
+        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+    )
+
+    assert result["results"][0].chunk_id == "chunk-rewritten"
+    assert result["debug"]["query_rewrite"] == {
+        "attempted": True,
+        "applied": True,
+        "reason": "low_initial_vector_score",
+        "initial_top_vector_score": 0.72,
+        "final_top_score": round(result["results"][0].score, 4),
+        "original_query": "contextwiki setup",
+        "rewritten_queries": ["rewrite improved setup"],
+    }
+    assert result["debug"]["rewrite_applied"] is True
+    assert result["debug"]["rewrite_skipped_reason"] == ""
+
+
+def test_rewrite_result_set_comparison_prefers_stronger_overall_original_set(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = ContextSearchService(store, indexer=FakeIndexer())
+
+    original_reranked = [
+        {"chunk_id": "chunk-original-1", "score": 0.72, "vector_score": 0.72},
+        {"chunk_id": "chunk-original-2", "score": 0.71, "vector_score": 0.71},
+    ]
+    rewritten_reranked = [
+        {"chunk_id": "chunk-rewritten-1", "score": 0.72, "vector_score": 0.72},
+        {"chunk_id": "chunk-rewritten-2", "score": 0.20, "vector_score": 0.20},
+    ]
+
+    assert service._pipeline().prefer_rewritten_results(original_reranked, rewritten_reranked) is False
 
 
 def test_vector_search_still_rewrites_when_single_candidate_is_metadata_promoted(
@@ -484,7 +635,167 @@ def test_vector_search_still_rewrites_when_single_candidate_is_metadata_promoted
     assert result["results"][0].chunk_id == "ec2-metadata-doc"
     assert rewriter.calls
     assert result["debug"]["query_rewrite"]["attempted"] is True
-    assert result["debug"]["query_rewrite"]["reason"] == "insufficient_candidate_count"
+    assert result["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
+
+
+def test_vector_search_skips_rewrite_when_raw_initial_vector_hits_are_strong_even_if_top_k_is_larger(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-strong-1",
+        "chunk-strong-1",
+        "source_target",
+        "Strong guide 1",
+        "ContextWiki setup guide one.",
+    )
+    seed_document_chunks(
+        store,
+        "doc-strong-2",
+        "chunk-strong-2",
+        "source_target",
+        "Strong guide 2",
+        "ContextWiki setup guide two.",
+    )
+
+    class StrongVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            first = FakeNode("chunk-strong-1", 0.93)
+            first.metadata["document_id"] = "doc-strong-1"
+            first.metadata["source_id"] = "source_target"
+            second = FakeNode("chunk-strong-2", 0.91)
+            second.metadata["document_id"] = "doc-strong-2"
+            second.metadata["source_id"] = "source_target"
+            return [first, second]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", StrongVectorRetriever)
+
+    rewriter = FakeQueryRewriter(["should-not-run"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("contextwiki setup", top_k=3, include_debug=True)
+    )
+
+    assert rewriter.calls == []
+    assert result["debug"]["query_rewrite"]["attempted"] is False
+    assert result["debug"]["query_rewrite"]["reason"] == ""
+    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.93
+
+
+def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion_for_debug_and_gating(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/contextwiki:docs/setup.md",
+        "contextwiki-doc-chunk",
+        "source_github",
+        "Setup guide",
+        "ContextWiki setup guide.",
+        path="docs/setup.md",
+        url="https://github.com/eunhwa99/contextwiki/blob/main/docs/setup.md",
+    )
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/contextwiki:docs/faq.md",
+        "contextwiki-faq-chunk",
+        "source_github",
+        "FAQ guide",
+        "ContextWiki FAQ guide.",
+        path="docs/faq.md",
+        url="https://github.com/eunhwa99/contextwiki/blob/main/docs/faq.md",
+    )
+
+    class MixedVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            node = FakeNode("contextwiki-doc-chunk", 0.91)
+            node.metadata["document_id"] = "github:eunhwa99/contextwiki:docs/setup.md"
+            node.metadata["source_id"] = "source_github"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", MixedVectorRetriever)
+
+    rewriter = FakeQueryRewriter(["should-not-run"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("contextwiki docs", top_k=3, include_debug=True)
+    )
+
+    assert rewriter.calls == []
+    assert result["debug"]["query_rewrite"]["attempted"] is False
+    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.91
+
+
+def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_filtered_out(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-valid",
+        "chunk-valid",
+        "source_target",
+        "Valid guide",
+        "ContextWiki setup guide.",
+    )
+    seed_document_chunks(
+        store,
+        "doc-filtered",
+        "chunk-filtered",
+        "source_target",
+        "Filtered guide",
+        "ContextWiki setup guide but unmanaged.",
+    )
+
+    class FilteredTopHitRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            filtered = FakeNode("chunk-filtered", 0.96)
+            filtered.metadata["document_id"] = "doc-filtered"
+            filtered.metadata["source_id"] = "source_target"
+            filtered.metadata["contextwiki_managed"] = "false"
+            valid = FakeNode("chunk-valid", 0.24)
+            valid.metadata["document_id"] = "doc-valid"
+            valid.metadata["source_id"] = "source_target"
+            return [filtered, valid]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FilteredTopHitRetriever)
+
+    rewriter = FakeQueryRewriter(["should-not-run"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+    )
+
+    assert rewriter.calls == []
+    assert result["results"][0].chunk_id == "chunk-valid"
+    assert result["debug"]["query_rewrite"]["attempted"] is False
+    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.96
 
 
 def test_search_documents_collapses_same_document_chunks_to_highest_ranked_representative(tmp_path):

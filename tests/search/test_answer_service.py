@@ -377,7 +377,9 @@ def test_answer_service_carries_query_rewrite_explainability_from_search_debug()
                     "query_rewrite": {
                         "attempted": True,
                         "applied": True,
-                        "reason": "low_initial_score",
+                        "reason": "low_initial_vector_score",
+                        "initial_top_vector_score": 0.42,
+                        "final_top_score": 0.91,
                         "original_query": "aws virtual machine startup",
                         "rewritten_queries": ["aws ec2 setup"],
                     },
@@ -394,10 +396,65 @@ def test_answer_service_carries_query_rewrite_explainability_from_search_debug()
 
     answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
 
-    assert answer["debug"]["query_rewrite"]["reason"] == "low_initial_score"
+    assert answer["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
+    assert answer["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.42
+    assert answer["debug"]["query_rewrite"]["final_top_score"] == 0.91
     assert answer["debug"]["filters"] == {"source_ids": ["source_fake"]}
     assert answer["debug"]["retrieval_selected_results"][0]["chunk_id"] == "chunk-1"
-    assert "rewrite reason: `low_initial_score`" in answer["debug_markdown"]
+    assert "rewrite reason: `low_initial_vector_score`" in answer["debug_markdown"]
+
+
+def test_answer_service_marks_rejected_rewrite_as_tried_not_used():
+    result = ContextSearchResult(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        source_id="source_fake",
+        source_type="notion",
+        title="EC2 setup",
+        score=0.9,
+        preview="EC2 setup notes",
+        text="EC2 setup notes",
+    )
+
+    class RejectedRewriteContextSearch(FakeContextSearch):
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=5,
+            include_debug=False,
+            include_internal_metadata=False,
+        ):
+            return {
+                "query": query,
+                "results": [result],
+                "debug": {
+                    "retrieval_queries": ["aws virtual machine startup"],
+                    "rewritten_queries": ["aws ec2 setup"],
+                    "query_rewrite": {
+                        "attempted": True,
+                        "applied": False,
+                        "reason": "low_initial_vector_score",
+                        "initial_top_vector_score": 0.42,
+                        "final_top_score": 0.9,
+                        "original_query": "aws virtual machine startup",
+                        "rewritten_queries": ["aws ec2 setup"],
+                    },
+                    "filters": {"source_ids": ["source_fake"]},
+                    "selected_results": [{"chunk_id": "chunk-1", "source_id": "source_fake"}],
+                },
+            }
+
+    service = CitationAnswerService(
+        context_search=RejectedRewriteContextSearch([result]),
+        min_score=0.1,
+        min_results=1,
+    )
+
+    answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
+
+    assert "- rewritten queries tried: `aws ec2 setup`" in answer["debug_markdown"]
+    assert "rewritten queries used" not in answer["debug_markdown"]
 
 
 def test_answer_service_renders_grounded_list_for_collection_request():

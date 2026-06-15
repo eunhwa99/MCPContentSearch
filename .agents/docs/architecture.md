@@ -325,13 +325,11 @@ Contract intent:
 - `answer_with_citations` reuses `search_context_for_answer` /
   `search_context`, so query-rewrite egress and retrieval semantics stay aligned
   across search and answer flows.
-- `search_context` returns a `debug` key on configured search-service paths.
-  On the normal path, `include_debug=False` leaves that key as `{}`, while
-  `include_debug=True` populates it with structured retrieval detail. The
-  current service-unconfigured fallback returns only `query` and `results`.
-- The current public exception is `search_context`'s `no_matching_sources`
-  fast path, which still returns a small populated `debug` object even when
-  `include_debug=False`.
+- `search_context` keeps `debug` as an opt-in public surface. On configured
+  paths and on the `no_matching_sources` fast path, the public `debug` key is
+  emitted only when `include_debug=True`; otherwise callers receive `query` and
+  `results` without a public `debug` object. Internal grounding/debug metadata
+  still follows the separate internal-metadata flags.
 - `answer_with_citations` keeps `include_debug` as a true opt-in debug surface,
   does not mirror the `no_matching_sources` exception path, and does not
   guarantee debug fields on default or service-unconfigured paths.
@@ -346,11 +344,16 @@ Contract intent:
   applied before retrieval.
 - The top-level `rewrite_skipped_reason` field should stay coarse and
   reviewer-readable. Current values explain state such as `disabled`,
-  `not_needed`, `rewrite_failed`, `no_matching_sources`, and `no_term_groups`.
+  `not_needed`, `rewrite_failed`, `no_matching_sources`, `no_term_groups`, and
+  `not_better_than_original`.
 - The nested `debug.query_rewrite.reason` field is the retrieval-pipeline
   explanation vocabulary. Current stable values include
-  `no_initial_candidates`, `missing_textual_match`,
-  `insufficient_candidate_count`, and `low_initial_score`.
+  `no_initial_candidates`, `missing_textual_match`, and
+  `low_initial_vector_score`.
+- `debug.query_rewrite.initial_top_vector_score` captures the prerank vector
+  score that triggered rewrite evaluation, while
+  `debug.query_rewrite.final_top_score` captures the selected final reranked top
+  score after the pipeline chooses between original and rewritten result sets.
 - A single strong exact-match candidate can also suppress rewrite even when the
   caller asked for a larger `top_k`; that guardrail keeps clearly correct
   direct hits from being rewritten unnecessarily.

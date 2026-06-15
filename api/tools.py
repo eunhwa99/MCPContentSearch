@@ -203,10 +203,12 @@ def register_tools(
             rewrite_enabled = bool(
                 getattr(context_search_service, "query_rewriter", None)
             )
-            return {
+            payload = {
                 "query": _redact_public_query_text(query),
                 "results": [],
-                "debug": {
+            }
+            if include_debug:
+                payload["debug"] = {
                     "retrieval_queries": [],
                     "rewritten_queries": [],
                     "effective_term_groups": [],
@@ -214,8 +216,8 @@ def register_tools(
                     "rewrite_attempted": False,
                     "rewrite_applied": False,
                     "rewrite_skipped_reason": "no_matching_sources",
-                },
-            }
+                }
+            return payload
         public_filters = _with_default_public_source_filter(
             public_filters,
             allowed_source_ids,
@@ -237,7 +239,6 @@ def register_tools(
         payload = {
             "query": _redact_public_query_text(result["query"]),
             "results": results,
-            "debug": result.get("debug", {}),
         }
         if include_debug and "debug" in result:
             payload["debug"] = result["debug"]

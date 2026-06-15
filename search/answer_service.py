@@ -147,7 +147,7 @@ class CitationAnswerService:
         )
         answer_intent = self._answer_intent(question, query_term_groups, search_debug=search_debug)
         query_terms = {term for group in query_term_groups for term in group}
-        relaxed_match = bool(search_debug.get("rewritten_queries"))
+        relaxed_match = bool((search_debug.get("query_rewrite") or {}).get("applied"))
         evidence = [
             item
             for item in results
@@ -752,10 +752,10 @@ class CitationAnswerService:
             lines.append(f"- retrieval queries: `{cls._redact_debug_query_text(retrieval_queries[0])}`")
             for variant in retrieval_queries[1:]:
                 lines.append(f"  - expanded: `{cls._redact_debug_query_text(variant)}`")
+        rewrite_applied = bool((search_debug or {}).get("query_rewrite", {}).get("applied"))
         if rewritten_queries:
-            lines.append(
-                f"- rewritten queries used: `{cls._redact_debug_query_text(rewritten_queries[0])}`"
-            )
+            label = "rewritten queries used" if rewrite_applied else "rewritten queries tried"
+            lines.append(f"- {label}: `{cls._redact_debug_query_text(rewritten_queries[0])}`")
             for variant in rewritten_queries[1:]:
                 lines.append(f"  - rewrite: `{cls._redact_debug_query_text(variant)}`")
         rewrite_reason = str((search_debug or {}).get("query_rewrite", {}).get("reason", "")).strip()
