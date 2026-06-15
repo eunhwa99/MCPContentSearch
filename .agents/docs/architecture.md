@@ -4,11 +4,8 @@
 
 This document maps the current slim `MCPContentSearch` architecture. Harness
 planning and review use it to keep changes inside the focused MCP retrieval
-scope and to catch contract or data-safety regressions.
-
-Decision history is indexed in `.agents/docs/adr/README.md`. ADR 0006 is the
-current scope decision for the slim MCP core and supersedes the website/docs
-portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
+scope and to catch contract or data-safety regressions. It is the single
+maintained design reference beyond the README.
 
 ## Runtime Structure
 
@@ -222,8 +219,8 @@ print credentials or local path details.
 - `environments/token.py`, `.env`, shell environment variables, and API keys are
   sensitive.
 - Do not add secret values to docs, tests, logs, screenshots, or examples.
-- If a configuration default changes long-term behavior, update architecture
-  docs or ADRs in the same work item.
+- If a configuration default changes long-term behavior, update this document in
+  the same work item.
 
 ## Error Handling
 
@@ -259,5 +256,4 @@ Use the smallest useful check first.
 ## Harness Usage
 
 `harness-plan` must read this document before choosing implementation
-boundaries. Review gates must check changed files against this architecture and
-directly relevant accepted ADRs.
+boundaries. Review gates must check changed files against this architecture.

@@ -14,8 +14,6 @@ Read:
 - `.agents/docs/harness-engineering.md`
 - Current `docs/plan/...` plan document
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/README.md`
-- Directly relevant accepted ADRs
 - Minimal code or docs context needed for the work
 
 Read `.agents/docs/github-workflow.md` when branch, commit, push, PR, or release work is involved.
@@ -42,7 +40,7 @@ The plan must include:
   Notion, Tistory, GitHub, optional search LLM query rewrite, or embedding
   providers, if any.
 - Risks, open questions, environment requirements, and rollback point.
-- Architecture/ADR constraints.
+- Architecture constraints.
 - PR split or stacked PR plan if PRs are requested.
 - Progress table with `Phase`, `Status`, `Summary`, and `Evidence`.
 

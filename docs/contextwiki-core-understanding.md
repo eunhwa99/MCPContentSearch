@@ -1,13 +1,17 @@
-# ContextWiki Core Understanding Note
+# Deprecated: ContextWiki Core Understanding Note
 
-Baseline:
+This document is kept only as a compatibility stub for older links in plan
+docs and historical references.
 
-- Original baseline: `eunhwa99/MCPContentSearch` PR #2
-- Current update: slim MCP core refactor with PR #25 Obsidian restoration,
-  retaining GitHub/Notion/Tistory/Obsidian source sync, SQLite lifecycle
-  metadata, Chroma retrieval, and citation-backed answers.
+The maintained design reference is now:
 
-Goal:
+- [Architecture](../.agents/docs/architecture.md)
+
+Do not update this file for ordinary documentation changes. Update
+`.agents/docs/architecture.md` instead.
+
+The historical reference content from the previous maintained version is
+preserved below for old links and archival reading only.
 
 This note is the maintained mental model for explaining ContextWiki's current
 design intent, data flow, and limitations. When source connectors, ingestion,
