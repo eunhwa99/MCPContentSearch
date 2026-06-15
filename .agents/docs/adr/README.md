@@ -1,12 +1,22 @@
 # Architecture Decision Records
 
-This directory records architecture decisions for `MCPContentSearch`.
+This directory records historical architecture decisions for
+`MCPContentSearch`.
 
-Harness planning reads this index first, then opens only accepted ADRs directly related to the requested change. Review gates treat accepted ADRs as contracts. If a diff conflicts with an accepted ADR, either change the diff or add a new ADR that supersedes the old decision.
+For current work, the maintained source of truth is
+`.agents/docs/architecture.md`. Harness planning and review do not require
+reading ADRs. Keep this directory as optional historical context for older plan
+docs, superseded decisions, or cases where a reader explicitly wants the
+original decision record.
+
+If an ADR and `.agents/docs/architecture.md` disagree, follow the architecture
+doc and update the historical ADR wording only when that extra archival cleanup
+is worth doing.
 
 ## ADR Format
 
-Use `template.md` for new records.
+Use `template.md` only when you explicitly want to preserve a standalone
+decision record in this archive.
 
 Required fields:
 
@@ -36,7 +46,10 @@ File names should be numbered and descriptive:
 
 ## When to Add or Update ADRs
 
-Add or update an ADR for:
+Add or update an ADR only when preserving the separate historical decision
+record is itself useful.
+
+Typical cases:
 
 - New cross-module architecture patterns.
 - MCP tool contract strategy changes.
@@ -44,6 +57,8 @@ Add or update an ADR for:
 - Chroma data migration or reindexing policy.
 - External integration strategy changes.
 - Configuration/secrets policy changes.
-- Intentional departures from `.agents/docs/architecture.md`.
+- Architecture changes worth preserving historically after updating
+  `.agents/docs/architecture.md`.
 
-Do not add ADRs for ordinary local refactors, one-off bug fixes, or implementation details that do not constrain future work.
+Do not add ADRs for ordinary local refactors, one-off bug fixes, or
+implementation details that do not constrain future work.
