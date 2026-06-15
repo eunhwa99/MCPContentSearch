@@ -1,11 +1,17 @@
 # ContextWiki Local Evaluations
 
 This directory contains deterministic evaluation scaffolding for ContextWiki.
-Phase D now covers two local-first layers:
+Inside this deterministic quality eval layer, Phase D currently covers two
+local-first check families:
 
 - payload-level answer grounding checks
 - fixture-based retrieval and answer evaluation over temporary local SQLite
   state
+
+Within the broader repository verification architecture, this directory is the
+deterministic quality eval layer. It is narrower than the full functional E2E
+gate: it does not exercise live APIs, user Chroma data, user SQLite data, or
+the manual live smoke path.
 
 These checks do not call live APIs, user Chroma data, user SQLite data, or
 LLMs.
@@ -45,14 +51,14 @@ The fixture suites now also report:
 Run the D1 fixture runner with:
 
 ```bash
-PYTHONPATH=. python scripts/run_contextwiki_eval.py
+uv run --locked python scripts/run_contextwiki_eval.py
 ```
 
 Write reviewer-visible artifacts with:
 
 ```bash
-PYTHONPATH=. python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-PYTHONPATH=. python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
 ```
 
 This seeds temporary fixture documents into temp SQLite, swaps in a local

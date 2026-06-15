@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
+export IS_TESTING="${IS_TESTING:-1}"
 DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
 export CONTEXTWIKI_SEARCH_LLM_ENABLED=false
@@ -27,16 +28,9 @@ fi
 ALLOW_SYSTEM_PYTHON="${VERIFY_E2E_ALLOW_SYSTEM_PYTHON:-0}"
 
 RETAINED_FUNCTIONAL_TESTS=(
-  tests/test_app_composition.py
-  tests/fetching/test_connectors.py
-  tests/api/test_tools_contract.py
   tests/e2e/test_contextwiki_flow.py
   tests/e2e/test_obsidian_connector_flow.py
   tests/e2e/test_phase_b_connectors_flow.py
-  tests/search/test_context_service.py
-  tests/search/test_answer_service.py
-  tests/storage/test_metadata_store.py
-  tests/indexing/test_ingestion_service.py
 )
 
 if [[ "$USE_UV" == "1" ]]; then

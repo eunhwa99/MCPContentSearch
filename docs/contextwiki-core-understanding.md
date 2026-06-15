@@ -233,6 +233,20 @@ dumping raw local DB contents. The current exception is the public
 `no_matching_sources` fast path in `search_context`, which still emits a small
 populated `debug` object even when `include_debug=False`.
 `answer_with_citations` does not mirror that exception path.
+
+Verification layer split:
+
+- Public MCP contract layer:
+  real `FastMCP.call_tool(...)` payload checks for each retained public tool
+- Deterministic functional E2E layer:
+  retained sync/search/fetch/answer flow modules over temp/local state via
+  `./scripts/verify_functional_e2e.sh`
+- Deterministic quality eval layer:
+  fixture retrieval and answer scoring via `tests/evals` and
+  `scripts/run_contextwiki_eval.py`
+- Manual live smoke layer:
+  `scripts/live_query_smoke.py` against a user's configured local runtime;
+  this is manual diagnostic evidence, not automated gate coverage
 Retrieval split:
 
 ```text
@@ -643,20 +657,22 @@ Historical note:
 
 ## 12. Verification Model
 
-Retained local checks:
+Retained verification layers:
 
-```bash
-python -m compileall api core environments fetching indexing search storage main.py
-uv run --locked pytest -q tests/fetching/test_connectors.py
-uv run --locked pytest -q tests/api/test_tools_contract.py
-uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
-uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
-uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
-uv run --locked pytest -q tests/evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-./scripts/verify_functional_e2e.sh
-./scripts/verify_all.sh
-```
+- Public MCP contract layer:
+  - `uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py`
+- Deterministic functional E2E layer:
+  - `./scripts/verify_functional_e2e.sh`
+- Deterministic quality eval layer:
+  - `uv run --locked pytest -q tests/evals`
+  - `uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals`
+  - optional latency artifacts:
+    `uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency`
+- Manual live smoke layer:
+  - `uv run --locked python scripts/live_query_smoke.py --query "your query here"`
+- Full local gate wrapper:
+  - `./scripts/verify_all.sh`
+  - wraps the automated layers above but does not replace the manual live smoke layer
 
 Functional verification should use fake or temporary persistence and must not
 mutate local user Chroma/SQLite data. Live external checks require explicit
@@ -674,6 +690,6 @@ Chroma/SQLite, and now emits deterministic JSON artifacts with:
 
 When latency visibility is needed, the runner can also emit a separate
 non-deterministic `runtime_metrics.json` file with wall-clock retrieval and
-answer timings. CI uploads the deterministic files plus that optional runtime
-file as the `contextwiki-evals` artifact so reviewers can inspect
-retrieval-quality evidence without running live checks.
+answer timings. That runtime file is an opt-in local artifact from the
+latency-enabled command above; the current CI `contextwiki-evals` artifact
+uploads only the deterministic retrieval-quality JSON files.

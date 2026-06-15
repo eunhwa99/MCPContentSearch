@@ -40,7 +40,7 @@ markers = [
     "unit: pure unit tests",
     "integration: service integration tests without live external APIs",
     "e2e: deterministic end-to-end tests using fake sources",
-    "live: opt-in live external API smoke tests",
+    "live: reserved for future opt-in live external API smoke tests; no retained automated tests currently use this marker",
 ]
 
 [tool.ruff]

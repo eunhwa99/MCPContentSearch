@@ -27,6 +27,24 @@ def test_run_demo_returns_grounded_public_flow():
     assert result["answer"]["citations"]
 
 
+def test_run_demo_returns_insufficient_for_unrelated_question():
+    result = asyncio.run(
+        run_demo(
+            query="How does ContextWiki prevent stale citations?",
+            question="What is the deployment region for production?",
+        )
+    )
+
+    assert result["sync"]["status"] == "succeeded"
+    assert result["search"]["results"]
+    assert result["answer"]["evidence_status"] == "insufficient"
+    assert (
+        result["answer"]["answer"]
+        == "Insufficient evidence in indexed context to answer this question."
+    )
+    assert result["answer"]["citations"] == []
+
+
 def test_run_demo_uses_temp_cache_dir_and_restores_it(monkeypatch):
     observed: dict[str, str] = {}
     import scripts.demo_public_flow as demo_public_flow

@@ -55,6 +55,14 @@ jobs:
             --severity-level medium \
             --confidence-level low
 
+      - name: Run public MCP contract tests
+        env:
+          IS_TESTING: "1"
+        run: |
+          uv run --locked pytest -q \
+            tests/contracts/test_public_mcp_contracts.py \
+            tests/test_app_composition.py
+
       - name: Run non-live tests with coverage
         env:
           IS_TESTING: "1"
@@ -72,7 +80,6 @@ jobs:
       - name: Run deterministic ContextWiki evals
         run: |
           uv run --locked python scripts/run_contextwiki_eval.py \
-            --include-latency \
             --output-dir artifacts/contextwiki-evals
 
       - name: Upload ContextWiki eval artifacts
