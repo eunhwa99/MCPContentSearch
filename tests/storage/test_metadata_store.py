@@ -47,6 +47,27 @@ def _mark_job_running(
     return store.get_sync_job(job_id)
 
 
+def _mark_owner_heartbeat(
+    store: MetadataStore,
+    owner_id: str,
+    *,
+    started_at: str | None = None,
+    heartbeat_at: str | None = None,
+):
+    started_at = started_at or datetime.now(timezone.utc).isoformat()
+    heartbeat_at = heartbeat_at or started_at
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners SET
+                started_at = ?,
+                heartbeat_at = ?
+            WHERE owner_id = ?
+            """,
+            (started_at, heartbeat_at, owner_id),
+        )
+
+
 def _insert_legacy_web_source_row(store: MetadataStore):
     now = datetime.now(timezone.utc).isoformat()
     store.ensure_schema()
@@ -603,6 +624,206 @@ def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, mo
     assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
     assert fresh_started is True
     assert fresh.job_id != previous_job.job_id
+
+
+def test_recover_orphaned_running_jobs_recovers_stale_previous_owner_even_if_pid_looks_alive(
+    tmp_path,
+    monkeypatch,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    stale_owner_heartbeat = "2026-06-01T00:00:00+00:00"
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at=stale_owner_heartbeat,
+        heartbeat_at=stale_owner_heartbeat,
+    )
+    _mark_owner_heartbeat(
+        store,
+        "previous-owner",
+        started_at=stale_owner_heartbeat,
+        heartbeat_at=stale_owner_heartbeat,
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 1
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
+    assert fresh_started is True
+    assert fresh.job_id != previous_job.job_id
+
+
+def test_recover_orphaned_running_jobs_preserves_same_pid_previous_owner_when_job_heartbeat_is_fresh(
+    tmp_path,
+    monkeypatch,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    fresh_job_heartbeat = datetime.now(timezone.utc).isoformat()
+    stale_owner_heartbeat = "2026-06-01T00:00:00+00:00"
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at=fresh_job_heartbeat,
+    )
+    _mark_owner_heartbeat(
+        store,
+        "previous-owner",
+        started_at=stale_owner_heartbeat,
+        heartbeat_at=stale_owner_heartbeat,
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+
+    recovered_count = store.recover_orphaned_running_jobs(
+        started_before="2026-06-02T00:00:00+00:00",
+        error_message="Previous running sync job was recovered after server restart; start sync again.",
+    )
+    returned, started = store.begin_sync_job("source_github")
+
+    assert recovered_count == 0
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.RUNNING
+    assert started is False
+    assert returned.job_id == previous_job.job_id
+
+
+def test_begin_sync_job_preserves_same_pid_previous_owner_when_job_heartbeat_is_fresh(
+    tmp_path,
+    monkeypatch,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    fresh_job_heartbeat = datetime.now(timezone.utc).isoformat()
+    stale_owner_heartbeat = "2026-06-01T00:00:00+00:00"
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at="2026-06-01T00:00:00+00:00",
+        heartbeat_at=fresh_job_heartbeat,
+    )
+    _mark_owner_heartbeat(
+        store,
+        "previous-owner",
+        started_at=stale_owner_heartbeat,
+        heartbeat_at=stale_owner_heartbeat,
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+
+    returned, started = store.begin_sync_job("source_github")
+
+    assert started is False
+    assert returned.job_id == previous_job.job_id
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.RUNNING
+
+
+def test_begin_sync_job_recovers_stale_same_pid_previous_owner_and_starts_fresh_job(
+    tmp_path,
+    monkeypatch,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="current-owner",
+    )
+    previous_store = MetadataStore(
+        store.db_path,
+        running_job_timeout_seconds=24 * 60 * 60,
+        sync_owner_id="previous-owner",
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    previous_job, started = previous_store.begin_sync_job("source_github")
+    assert started is True
+    stale_timestamp = "2026-06-01T00:00:00+00:00"
+    _mark_job_running(
+        store,
+        previous_job.job_id,
+        started_at=stale_timestamp,
+        heartbeat_at=stale_timestamp,
+    )
+    _mark_owner_heartbeat(
+        store,
+        "previous-owner",
+        started_at=stale_timestamp,
+        heartbeat_at=stale_timestamp,
+    )
+    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+
+    fresh, fresh_started = store.begin_sync_job("source_github")
+
+    assert fresh_started is True
+    assert fresh.job_id != previous_job.job_id
+    assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
 
 
 def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, monkeypatch):
