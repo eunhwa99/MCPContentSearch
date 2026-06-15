@@ -673,6 +673,14 @@ class ContextSearchService:
                 "attempted": bool(retrieval_debug.get("query_rewrite_attempted", False)),
                 "applied": bool(retrieval_debug.get("query_rewrite_applied", False)),
                 "reason": retrieval_debug.get("query_rewrite_reason", ""),
+                "initial_top_vector_score": round(
+                    float(retrieval_debug.get("initial_top_vector_score", 0.0) or 0.0),
+                    4,
+                ),
+                "final_top_score": round(
+                    float(retrieval_debug.get("final_top_score", 0.0) or 0.0),
+                    4,
+                ),
                 "original_query": self._redact_debug_query_text(query),
                 "rewritten_queries": rewritten_queries,
             },

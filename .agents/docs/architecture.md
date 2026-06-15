@@ -346,11 +346,16 @@ Contract intent:
   applied before retrieval.
 - The top-level `rewrite_skipped_reason` field should stay coarse and
   reviewer-readable. Current values explain state such as `disabled`,
-  `not_needed`, `rewrite_failed`, `no_matching_sources`, and `no_term_groups`.
+  `not_needed`, `rewrite_failed`, `no_matching_sources`, `no_term_groups`, and
+  `not_better_than_original`.
 - The nested `debug.query_rewrite.reason` field is the retrieval-pipeline
   explanation vocabulary. Current stable values include
-  `no_initial_candidates`, `missing_textual_match`,
-  `insufficient_candidate_count`, and `low_initial_score`.
+  `no_initial_candidates`, `missing_textual_match`, and
+  `low_initial_vector_score`.
+- `debug.query_rewrite.initial_top_vector_score` captures the prerank vector
+  score that triggered rewrite evaluation, while
+  `debug.query_rewrite.final_top_score` captures the selected final reranked top
+  score after the pipeline chooses between original and rewritten result sets.
 - A single strong exact-match candidate can also suppress rewrite even when the
   caller asked for a larger `top_k`; that guardrail keeps clearly correct
   direct hits from being rewritten unnecessarily.

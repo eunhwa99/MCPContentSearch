@@ -74,6 +74,8 @@ class ContextRetrievalPipeline:
                 "rewritten_queries": [],
                 "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
+                "initial_top_vector_score": self.top_vector_score(candidates),
+                "final_top_score": self.top_score(reranked),
                 "rewrite_debug": self._rewrite_debug_state(
                     term_groups=term_groups,
                     rewrite_enabled=self.query_rewriter is not None,
@@ -99,6 +101,8 @@ class ContextRetrievalPipeline:
                     "rewritten_queries": [],
                     "original_term_groups": [],
                     "effective_term_groups": [],
+                    "initial_top_vector_score": 0.0,
+                    "final_top_score": 0.0,
                     "rewrite_debug": self._rewrite_debug_state(
                         term_groups=[],
                         rewrite_enabled=self.query_rewriter is not None,
@@ -123,6 +127,8 @@ class ContextRetrievalPipeline:
                 "rewritten_queries": [],
                 "original_term_groups": term_groups,
                 "effective_term_groups": term_groups,
+                "initial_top_vector_score": self.top_vector_score(candidates),
+                "final_top_score": self.top_score(reranked),
                 "rewrite_debug": self._rewrite_debug_state(
                     term_groups=term_groups,
                     rewrite_enabled=self.query_rewriter is not None,
@@ -133,7 +139,8 @@ class ContextRetrievalPipeline:
             }
 
         retrieval_queries = retrieval_query_variants(query, term_groups)
-        candidates = self.retrieve_candidates_for_variants(
+        selected_retrieval_queries = retrieval_queries
+        candidates, initial_top_vector_score = self.retrieve_candidates_for_variants_with_vector_score(
             query,
             top_k,
             source_ids,
@@ -143,8 +150,8 @@ class ContextRetrievalPipeline:
         effective_term_groups = term_groups
         rewritten_queries: list[str] = []
         rewrite_reason = ""
-
-        rewrite_reason = ""
+        selected_reranked: list[dict[str, Any]] | None = None
+        rewrite_applied = False
         if not allow_query_rewrite:
             rewrite_debug = self._rewrite_debug_state(
                 term_groups=term_groups,
@@ -161,7 +168,13 @@ class ContextRetrievalPipeline:
                 rewrite_applied=False,
                 rewrite_skipped_reason="no_term_groups",
             )
-        elif self.should_try_query_rewrite(query, candidates, term_groups, top_k):
+        elif self.should_try_query_rewrite(
+            query,
+            candidates,
+            term_groups,
+            top_k,
+            initial_top_vector_score=initial_top_vector_score,
+        ):
             rewrite_debug = self._rewrite_debug_state(
                 term_groups=term_groups,
                 rewrite_enabled=self.query_rewriter is not None,
@@ -170,20 +183,19 @@ class ContextRetrievalPipeline:
                 rewrite_skipped_reason="",
             )
             rewritten_queries, rewrite_failed = await self.try_rewrite_queries(query, term_groups)
-            rewrite_reason = self.query_rewrite_reason(query, candidates, term_groups, top_k)
+            rewrite_reason = self.query_rewrite_reason(
+                query,
+                candidates,
+                term_groups,
+                top_k,
+                initial_top_vector_score=initial_top_vector_score,
+            )
             if rewritten_queries:
-                rewrite_debug = self._rewrite_debug_state(
-                    term_groups=term_groups,
-                    rewrite_enabled=self.query_rewriter is not None,
-                    rewrite_attempted=True,
-                    rewrite_applied=True,
-                    rewrite_skipped_reason="",
-                )
-                effective_term_groups = self.merged_term_groups(
+                rewritten_term_groups = self.merged_term_groups(
                     term_groups,
                     *[query_term_groups(rewrite) for rewrite in rewritten_queries],
                 )
-                retrieval_queries = self.dedupe_queries(
+                rewritten_retrieval_queries = self.dedupe_queries(
                     [
                         *retrieval_queries,
                         *rewritten_queries,
@@ -197,13 +209,41 @@ class ContextRetrievalPipeline:
                         ],
                     ]
                 )
-                candidates = self.retrieve_candidates_for_variants(
+                rewritten_candidates, _ = self.retrieve_candidates_for_variants_with_vector_score(
                     query,
                     top_k,
                     source_ids,
-                    effective_term_groups,
-                    retrieval_queries,
+                    rewritten_term_groups,
+                    rewritten_retrieval_queries,
                 )
+                original_reranked = self.ranker.rerank_candidates(query, candidates, term_groups, top_k)
+                rewritten_reranked = self.ranker.rerank_candidates(
+                    query,
+                    rewritten_candidates,
+                    rewritten_term_groups,
+                    top_k,
+                )
+                if self.prefer_rewritten_results(original_reranked, rewritten_reranked):
+                    rewrite_applied = True
+                    rewrite_debug = self._rewrite_debug_state(
+                        term_groups=term_groups,
+                        rewrite_enabled=self.query_rewriter is not None,
+                        rewrite_attempted=True,
+                        rewrite_applied=True,
+                        rewrite_skipped_reason="",
+                    )
+                    effective_term_groups = rewritten_term_groups
+                    selected_retrieval_queries = rewritten_retrieval_queries
+                    selected_reranked = rewritten_reranked
+                else:
+                    rewrite_debug = self._rewrite_debug_state(
+                        term_groups=term_groups,
+                        rewrite_enabled=self.query_rewriter is not None,
+                        rewrite_attempted=True,
+                        rewrite_applied=False,
+                        rewrite_skipped_reason="not_better_than_original",
+                    )
+                    selected_reranked = original_reranked
             elif rewrite_failed:
                 rewrite_debug = self._rewrite_debug_state(
                     term_groups=term_groups,
@@ -231,16 +271,23 @@ class ContextRetrievalPipeline:
                 ),
             )
 
-        reranked = self.ranker.rerank_candidates(query, candidates, effective_term_groups, top_k)
+        reranked = selected_reranked or self.ranker.rerank_candidates(
+            query,
+            candidates,
+            effective_term_groups,
+            top_k,
+        )
         return {
             "candidates": reranked,
-            "retrieval_queries": retrieval_queries,
+            "retrieval_queries": selected_retrieval_queries,
             "rewritten_queries": rewritten_queries,
             "original_term_groups": term_groups,
             "effective_term_groups": effective_term_groups,
             "query_rewrite_reason": rewrite_reason or "",
             "query_rewrite_attempted": bool(rewrite_reason),
-            "query_rewrite_applied": bool(rewritten_queries),
+            "query_rewrite_applied": rewrite_applied,
+            "initial_top_vector_score": initial_top_vector_score,
+            "final_top_score": self.top_score(reranked),
             "rewrite_debug": rewrite_debug,
         }
 
@@ -252,6 +299,23 @@ class ContextRetrievalPipeline:
         term_groups: list[set[str]],
         query_variants: list[str],
     ) -> list[dict[str, Any]]:
+        candidates, _ = self.retrieve_candidates_for_variants_with_vector_score(
+            query,
+            top_k,
+            source_ids,
+            term_groups,
+            query_variants,
+        )
+        return candidates
+
+    def retrieve_candidates_for_variants_with_vector_score(
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str] | None,
+        term_groups: list[set[str]],
+        query_variants: list[str],
+    ) -> tuple[list[dict[str, Any]], float]:
 
         index = self.indexer.get_or_create_index()
         base_limit = max(top_k, top_k * self.config.search_multiplier)
@@ -259,6 +323,7 @@ class ContextRetrievalPipeline:
         candidate_map: dict[str, dict[str, Any]] = {}
         rejected = set()
         limit = base_limit
+        top_initial_vector_score = 0.0
 
         while limit <= max_limit:
             retriever = self.vector_retriever_cls(
@@ -272,6 +337,8 @@ class ContextRetrievalPipeline:
                 nodes = retriever.retrieve(retrieval_query)
                 max_node_count = max(max_node_count, len(nodes))
                 for node in nodes:
+                    score = float(node.score or 0.0)
+                    top_initial_vector_score = max(top_initial_vector_score, score)
                     chunk_id = node.metadata.get("chunk_id") or node.metadata.get("doc_id")
                     if not chunk_id:
                         continue
@@ -288,7 +355,6 @@ class ContextRetrievalPipeline:
                         rejected.add(chunk_id)
                         continue
                     rejected.discard(chunk_id)
-                    score = float(node.score or 0.0)
                     existing = candidate_map.get(chunk_id)
                     if existing is None or score > float(existing.get("score", 0.0)):
                         candidate_map[chunk_id] = {
@@ -341,11 +407,14 @@ class ContextRetrievalPipeline:
                 candidates,
             )
 
-        return self.ranker.merge_ranked_candidates(
-            list(candidate_map.values()),
-            metadata_candidates,
-            rejected,
-            top_k,
+        return (
+            self.ranker.merge_ranked_candidates(
+                list(candidate_map.values()),
+                metadata_candidates,
+                rejected,
+                top_k,
+            ),
+            top_initial_vector_score,
         )
 
     async def rewrite_queries(self, query: str, term_groups: list[set[str]]) -> list[str]:
@@ -370,8 +439,17 @@ class ContextRetrievalPipeline:
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
+        initial_top_vector_score: float | None = None,
     ) -> bool:
-        return bool(self.query_rewrite_reason(query, candidates, term_groups, top_k))
+        return bool(
+            self.query_rewrite_reason(
+                query,
+                candidates,
+                term_groups,
+                top_k,
+                initial_top_vector_score=initial_top_vector_score,
+            )
+        )
 
     def query_rewrite_reason(
         self,
@@ -379,6 +457,7 @@ class ContextRetrievalPipeline:
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
+        initial_top_vector_score: float | None = None,
     ) -> str:
         if self.query_rewriter is None or not term_groups:
             return ""
@@ -387,8 +466,17 @@ class ContextRetrievalPipeline:
         textual_matches = self.ranker.candidates_have_textual_matches(candidates, term_groups)
         if not textual_matches:
             return "missing_textual_match"
-        top_score = max(float(candidate.get("score", 0.0)) for candidate in candidates)
-        top_candidate = max(candidates, key=lambda candidate: float(candidate.get("score", 0.0)))
+        top_vector_score = (
+            float(initial_top_vector_score)
+            if initial_top_vector_score is not None
+            else self.top_vector_score(candidates)
+        )
+        top_candidate = max(
+            candidates,
+            key=lambda candidate: float(
+                candidate.get("vector_score", candidate.get("score", 0.0)) or 0.0
+            ),
+        )
         unique_chunk_ids = {
             str(candidate.get("chunk_id") or "")
             for candidate in candidates
@@ -403,16 +491,54 @@ class ContextRetrievalPipeline:
         if (
             len(unique_chunk_ids) == 1
             and len(candidates) < top_k
-            and top_score >= QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD
+            and top_vector_score >= QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD
             and has_high_confidence_vector_hit
             and self._candidate_exactly_matches_query(query, top_candidate)
         ):
             return ""
-        if len(candidates) < top_k:
-            return "insufficient_candidate_count"
-        if top_score < QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD:
-            return "low_initial_score"
+        if top_vector_score < QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD:
+            return "low_initial_vector_score"
         return ""
+
+    @staticmethod
+    def top_vector_score(candidates: list[dict[str, Any]]) -> float:
+        return max(
+            (
+                float(candidate.get("vector_score", 0.0) or 0.0)
+                for candidate in candidates
+                if candidate.get("vector_score") is not None
+            ),
+            default=0.0,
+        )
+
+    @staticmethod
+    def top_score(candidates: list[dict[str, Any]]) -> float:
+        return max((float(candidate.get("score", 0.0) or 0.0) for candidate in candidates), default=0.0)
+
+    def prefer_rewritten_results(
+        self,
+        original_reranked: list[dict[str, Any]],
+        rewritten_reranked: list[dict[str, Any]],
+    ) -> bool:
+        return self.result_set_signature(rewritten_reranked) > self.result_set_signature(original_reranked)
+
+    @staticmethod
+    def result_set_signature(
+        candidates: list[dict[str, Any]],
+    ) -> tuple[tuple[tuple[float, float], ...], float, float, int]:
+        per_item = tuple(
+            (
+                float(candidate.get("score", 0.0) or 0.0),
+                float(candidate.get("vector_score", 0.0) or 0.0),
+            )
+            for candidate in candidates
+        )
+        return (
+            per_item,
+            sum(score for score, _ in per_item),
+            sum(vector_score for _, vector_score in per_item),
+            len(per_item),
+        )
 
     def _candidate_exactly_matches_query(
         self,
