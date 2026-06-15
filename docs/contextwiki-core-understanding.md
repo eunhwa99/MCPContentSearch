@@ -41,6 +41,11 @@ source registration
    or applied
 -> retrieval starts from Chroma candidates when available, then may add
    metadata-fallback candidates before SQLite validation
+-> retrieval policy keeps vector score and rerank score separate in debug, uses
+   named rerank/rewrite thresholds in code, and no longer treats a bare
+   lowercase long token as an implicit GitHub repo probe without explicit
+   repository-style evidence such as GitHub/repository wording, a strong
+   repo-shaped anchor, or a curated compound alias
 -> retrieval candidates are hydrated through SQLite before citation use
 -> search_context asks Chroma for candidates, may add metadata fallback, and
    validates managed hits through SQLite
@@ -209,6 +214,10 @@ rewrite_skipped_reason
 
 These fields explain whether query rewrite was disabled, not needed, or tried
 without producing an applied rewrite.
+
+Current rewrite policy keeps one more guardrail: a single high-confidence,
+textually matching result may suppress rewrite even when `top_k` asks for more
+rows, so `insufficient_candidate_count` alone does not force rewrite churn.
 
 Observed `rewrite_skipped_reason` values include:
 

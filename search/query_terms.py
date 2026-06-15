@@ -114,6 +114,16 @@ QUERY_TERM_EXPANSIONS = {
     "ecs": {"elastic container service", "aws ecs"},
     "lambda": {"aws lambda"},
 }
+COMPOUND_ASCII_QUERY_ALIASES = {
+    "amazons3": {"aws", "s3", "aws s3", "simple storage service"},
+    "awsec2": {"aws", "ec2", "aws ec2", "elastic compute cloud"},
+    "awsecs": {"aws", "ecs", "aws ecs", "elastic container service"},
+    "awseks": {"aws", "eks", "aws eks", "elastic kubernetes service"},
+    "awsiam": {"aws", "iam", "aws iam", "identity access management", "identity and access management"},
+    "awsrds": {"aws", "rds", "aws rds", "relational database service"},
+    "awss3": {"aws", "s3", "aws s3", "simple storage service"},
+    "awsvpc": {"aws", "vpc", "aws vpc", "virtual private cloud"},
+}
 
 
 def split_attached_latin_korean_token(raw_token: str) -> list[str]:
@@ -130,7 +140,9 @@ def append_query_term_group(raw_term: str, groups: list[set[str]], seen: set[tup
     if raw_term in QUERY_TERM_EXPANSIONS:
         matched_terms.append(raw_term)
         candidates.update(QUERY_TERM_EXPANSIONS[raw_term])
-    else:
+    elif raw_term in COMPOUND_ASCII_QUERY_ALIASES:
+        candidates.update(COMPOUND_ASCII_QUERY_ALIASES[raw_term])
+    elif _supports_substring_expansion(raw_term):
         for term, expansions in QUERY_TERM_EXPANSIONS.items():
             if term in raw_term:
                 matched_terms.append(term)
@@ -165,6 +177,10 @@ def append_query_term_group(raw_term: str, groups: list[set[str]], seen: set[tup
         return
     seen.add(key)
     groups.append(normalized)
+
+
+def _supports_substring_expansion(raw_term: str) -> bool:
+    return bool(re.search(r"[가-힣]", raw_term))
 
 
 def query_term_groups(query: str) -> list[set[str]]:

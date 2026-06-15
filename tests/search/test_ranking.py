@@ -87,3 +87,12 @@ def test_classify_intent_prefers_comparison_for_vs_query():
 
     assert decision.intent is RetrievalIntent.COMPARISON
     assert "comparison_hint" in decision.reasons
+
+
+def test_classify_intent_does_not_treat_korean_prefix_collision_as_comparison():
+    decision = classify_intent(
+        "비교적 쉬운 문서",
+        ranking.query_term_groups("비교적 쉬운 문서"),
+    )
+
+    assert decision.intent is not RetrievalIntent.COMPARISON

@@ -294,11 +294,12 @@ class ContextSearchService:
 
     def _should_try_query_rewrite(
         self,
+        query: str,
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
     ) -> bool:
-        return self._pipeline().should_try_query_rewrite(candidates, term_groups, top_k)
+        return self._pipeline().should_try_query_rewrite(query, candidates, term_groups, top_k)
 
     @staticmethod
     def _dedupe_queries(queries: list[str]) -> list[str]:
@@ -426,8 +427,13 @@ class ContextSearchService:
     def _is_document_like(self, document: DocumentModel, metadata_haystack: str) -> bool:
         return self.ranker.is_document_like(document, metadata_haystack)
 
-    def _document_intent_allows_chunk(self, term_groups: list[set[str]], chunk: ChunkModel) -> bool:
-        return self.ranker.document_intent_allows_chunk(term_groups, chunk)
+    def _document_intent_allows_chunk(
+        self,
+        query: str,
+        term_groups: list[set[str]],
+        chunk: ChunkModel,
+    ) -> bool:
+        return self.ranker.document_intent_allows_chunk(query, term_groups, chunk)
 
     @staticmethod
     def _term_group_matches(

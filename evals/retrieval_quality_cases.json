@@ -98,5 +98,36 @@
     "expected_top_chunk_id": "obsidian-daily-planning-chunk",
     "expected_source_id": "source_obsidian",
     "required_chunk_ids": ["obsidian-daily-planning-chunk"]
+  },
+  {
+    "case_id": "lowercase-long-token-no-github-bias",
+    "group": "generic-behavior",
+    "query": "runtimeconfiguration docs",
+    "top_k": 3,
+    "min_result_count": 0,
+    "forbidden_chunk_ids": [
+      "github-sync-doc-chunk",
+      "neetcode-problems-chunk",
+      "code-only-graph-chunk",
+      "graph-search-code-chunk",
+      "adr-markdown-chunk"
+    ]
+  },
+  {
+    "case_id": "mixed-language-comparison-no-github-bias",
+    "group": "mixed-language",
+    "query": "dynamodb와 cassandra 문서 비교해줘",
+    "top_k": 3,
+    "min_result_count": 2,
+    "required_chunk_ids": ["dynamodb-notes-chunk", "cassandra-notes-chunk"],
+    "forbidden_chunk_ids": ["adr-markdown-chunk"]
+  },
+  {
+    "case_id": "compound-expansion-collision-awslambda",
+    "group": "generic-behavior",
+    "query": "awslambda docs",
+    "top_k": 3,
+    "min_result_count": 0,
+    "forbidden_chunk_ids": ["aws-guide-chunk", "aws-runtime-chunk", "adr-markdown-chunk"]
   }
 ]

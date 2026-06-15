@@ -103,13 +103,21 @@ def test_retrieval_fixture_cases_load_and_suite_summarizes_results():
         "adr-markdown-scope": {"results": [{"chunk_id": "adr-markdown-chunk", "source_id": "source_github"}]},
         "obsidian-daily-planning": {"results": [{"chunk_id": "obsidian-daily-planning-chunk", "source_id": "source_obsidian"}]},
         "mixed-language-daily-note": {"results": [{"chunk_id": "obsidian-daily-planning-chunk", "source_id": "source_obsidian"}]},
+        "lowercase-long-token-no-github-bias": {"results": []},
+        "mixed-language-comparison-no-github-bias": {
+            "results": [
+                {"chunk_id": "dynamodb-notes-chunk", "source_id": "source_notion"},
+                {"chunk_id": "cassandra-notes-chunk", "source_id": "source_tistory"},
+            ]
+        },
+        "compound-expansion-collision-awslambda": {"results": []},
     }
 
     summary = evaluate_search_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 10
-    assert summary["passed_count"] == 10
+    assert summary["total"] == 13
+    assert summary["passed_count"] == 13
 
 
 def test_retrieval_fixture_cases_cover_mixed_query_groups():

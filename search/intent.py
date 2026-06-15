@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 from search.query_terms import (
     BROAD_TOPIC_TERMS,
@@ -132,7 +133,29 @@ def classify_intent(query: str, term_groups: list[set[str]] | None = None) -> In
 
 
 def _matches_any(query_tokens: set[str], terms: set[str]) -> bool:
-    return any(term in query_tokens for term in terms)
+    return any(
+        term in query_tokens
+        or (
+            _is_korean_hint(term)
+            and any(_matches_korean_request_hint(token, term) for token in query_tokens)
+        )
+        for term in terms
+    )
+
+
+def _is_korean_hint(term: str) -> bool:
+    return any("가" <= char <= "힣" for char in term)
+
+
+def _matches_korean_request_hint(token: str, term: str) -> bool:
+    if token == term:
+        return True
+    return bool(
+        re.fullmatch(
+            rf"{re.escape(term)}(?:해|해줘|해주세요|해줄래|해줄래요|좀)?",
+            token,
+        )
+    )
 
 
 def _looks_like_anchor(term: str) -> bool:
