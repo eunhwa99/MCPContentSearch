@@ -14,8 +14,7 @@ caller surfaces, not only through unit tests or helper functions.
 ## Inputs
 
 Read the current plan, local diff, `.agents/docs/harness-engineering.md`,
-`.agents/docs/architecture.md`, `.agents/docs/functional-smoke-matrix.md`,
-and directly relevant accepted ADRs.
+`.agents/docs/architecture.md`, and `.agents/docs/functional-smoke-matrix.md`.
 
 ## Build The Matrix
 

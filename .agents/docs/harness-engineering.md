@@ -81,19 +81,19 @@ File-changing work must create or update a plan document after branch preflight 
 
 - File name: `YYYY-MM-DD-short-task-name.md`
 - Required sections are listed in `docs/plan/README.md`.
-- Include branch preflight result, scope/non-goals, acceptance criteria, expected files, verification plan, architecture/ADR constraints, risk/rollback notes, and progress log.
+- Include branch preflight result, scope/non-goals, acceptance criteria, expected files, verification plan, architecture constraints, risk/rollback notes, and progress log.
 - If verification or review changes the plan, update the same plan document before continuing.
 - Final reports should include the plan document path.
 
-## Architecture and ADR
+## Architecture
 
 Planning must read:
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/README.md`
-- Directly relevant accepted ADRs only
 
-Review gates must check that the diff does not violate architecture docs or accepted ADRs. If a change intentionally changes long-term architecture, add or update an ADR in the same work item.
+Review gates must check that the diff does not violate the maintained
+architecture doc. If a change intentionally changes long-term architecture,
+update `.agents/docs/architecture.md` in the same work item.
 
 ## Multi-task Orchestration
 
@@ -130,7 +130,7 @@ explicit. After branch preflight and plan creation, the main agent should:
 - Ask the user only for unsafe ambiguity, credentials, destructive operations,
   local data mutation, unavailable delegation/review tools, or external
   approval. Do not ask for routine implementation choices that can be decided
-  from repo docs, architecture, ADRs, and the plan.
+  from repo docs, architecture, and the plan.
 
 Implementation/execution worker subagents and `$subagent-review-loop` reviewer
 subagents are separate roles. Workers may edit within their assigned boundary
@@ -143,7 +143,7 @@ Use this control loop:
 ```text
 read repository instructions
 read harness and GitHub workflow
-read architecture and relevant ADRs
+read architecture
 run branch preflight with GitHub workflow dirty/clean worktree safeguards
 write or update docs/plan plan
 run planning phase
@@ -180,7 +180,7 @@ until complete or blocked
 
 ## Review Gates
 
-Review gates use `$subagent-review-loop` and code-review stance. Each review pass must use exactly five newly spawned reviewer subagents, and the loop continues until all five reviewers in the newest pass report no actionable findings. Findings are prioritized by correctness, regressions, missing tests, data loss, security, MCP contract mismatch, async/concurrency issues, architecture/ADR violations, and change size.
+Review gates use `$subagent-review-loop` and code-review stance. Each review pass must use exactly five newly spawned reviewer subagents, and the loop continues until all five reviewers in the newest pass report no actionable findings. Findings are prioritized by correctness, regressions, missing tests, data loss, security, MCP contract mismatch, async/concurrency issues, architecture violations, and change size.
 
 Use review lenses that fit the change:
 

@@ -9,7 +9,7 @@ description: Orchestrates MCPContentSearch harness work for implementation, fixe
 
 Read `.agents/docs/harness-engineering.md` and `.agents/docs/github-workflow.md` first. For file-changing work, do not edit target files until branch preflight is complete and a `docs/plan/` plan exists.
 
-During planning, read `.agents/docs/architecture.md` and `.agents/docs/adr/README.md`. Open only accepted ADRs directly related to the change.
+During planning, read `.agents/docs/architecture.md`.
 
 ## Phases
 

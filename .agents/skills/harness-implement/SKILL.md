@@ -7,7 +7,7 @@ description: Implementation lane for scoped MCPContentSearch changes after plann
 
 ## Input
 
-Read the current plan, `.agents/docs/harness-engineering.md`, `.agents/docs/github-workflow.md`, `.agents/docs/architecture.md`, relevant ADRs, and the production files in scope.
+Read the current plan, `.agents/docs/harness-engineering.md`, `.agents/docs/github-workflow.md`, `.agents/docs/architecture.md`, and the production files in scope.
 
 ## Work
 

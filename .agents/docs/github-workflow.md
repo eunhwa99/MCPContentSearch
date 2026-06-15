@@ -135,7 +135,9 @@ Stop monitoring when the PR is merged/closed, a blocker needs user judgment, or 
 
 ## Release Policy
 
-This repository currently uses `main` as the default branch. If a later workflow introduces `develop` or release branches, update this document and relevant ADRs before applying that workflow.
+This repository currently uses `main` as the default branch. If a later
+workflow introduces `develop` or release branches, update this document and the
+maintained architecture doc before applying that workflow.
 
 ## Failure Handling
 

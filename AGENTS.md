@@ -3,7 +3,7 @@
 ## Project Harness
 
 - When the user asks to implement, add, fix, refactor, or test behavior, first read `.agents/docs/harness-engineering.md`, then follow `.agents/skills/harness-engineering/SKILL.md`.
-- Harness planning and review must read `.agents/docs/architecture.md` and `.agents/docs/adr/README.md`. Read only accepted ADRs that directly affect the requested change.
+- Harness planning and review must read `.agents/docs/architecture.md`.
 - Harness phase skills live under `.agents/skills/`: `harness-plan`, `harness-multitask`, `harness-implement`, `harness-test`, `harness-functional-smoke`, `harness-review`, `harness-refactor`, and `harness-integrate`.
 - Branch, commit, push, PR, and PR-watch policy is defined in `.agents/docs/github-workflow.md`.
 - File-changing work starts with branch preflight from the latest `main`: if the worktree is clean, switch to `main`, fast-forward it from `origin/main` when network is available, delete only safe local non-`main` work branches using `.agents/docs/github-workflow.md` safeguards, then create a fresh `feature/...` branch before target edits.
@@ -14,7 +14,7 @@
 - The main agent may implement directly only when the change is truly atomic. Record the reason in the plan progress log before editing target files. Shared-file overlap is not a reason to bypass workers: for non-atomic work, use a single-owner worker or sequential worker handoff instead of parallel edits. If subagent tools are unavailable for non-atomic work, or no safe worker boundary can be created, stop before target edits and ask the user for explicit approval before bypassing worker orchestration. Do not silently collapse worker orchestration into self-implementation.
 - Worker subagents and reviewer subagents are different roles. Workers may edit only inside their assigned boundary and must not commit, push, open PRs, inspect secrets, print secret values, inspect local Chroma/SQLite data, or mutate user data. Local Chroma/SQLite inspection or user-data mutation requires explicit user approval plus plan rationale, bounded instructions, and rollback/safety notes; secret values are not delegable. `$subagent-review-loop` reviewers are read-only and run only after verification and functional smoke.
 - The main agent owns integration: collect worker outputs, inspect diffs, resolve conflicts, update the plan, run verification, route actionable findings back to the responsible worker persona or a fresh replacement with the same ownership boundary, and minimize human intervention. Ask the user only when safety, credentials, destructive actions, unavailable delegation/review tools, or genuinely unclear requirements require human judgment.
-- Keep `docs/contextwiki-core-understanding.md` updated when changes affect ContextWiki source connectors, source sync, document identity, chunking, tombstones, retrieval, citation metadata, or answer behavior. This note is the maintained human explanation layer and should not drift behind README, architecture docs, ADRs, or implementation.
+- Keep `.agents/docs/architecture.md` updated when changes affect ContextWiki source connectors, source sync, document identity, chunking, tombstones, retrieval, citation metadata, answer behavior, or other maintained design assumptions. This document is the maintained human explanation layer and should not drift behind README or implementation.
 - After code-changing work, always run the relevant test or verification command before review. Use the repo-local commands in this file and `.agents/docs/harness-engineering.md`, not plugin-default paths such as `docs/superpowers/...`.
 - After implementation and focused tests, run the functional smoke gate before `$subagent-review-loop`: use `.agents/skills/harness-functional-smoke/SKILL.md` to exercise the task-relevant MCP/source-sync/user-visible feature inventory once through the safest real caller surfaces, not only unit-test the changed files. Record explicit safety blockers, approval needed, and nearest fake/temp substitutes in the plan.
 - After verification and before PR delivery for any code, configuration, documentation, or skill change, run `$subagent-review-loop`: spawn exactly five fresh reviewer subagents per pass and repeat until all five reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
@@ -32,13 +32,12 @@ LlamaIndex, ChromaDB, and SQLite metadata storage.
 - `api/`: MCP tool registration and tool handlers.
 - `core/`: shared models, exceptions, and utility code.
 - `environments/`: runtime configuration and secret/environment loading.
-- `fetching/`: Notion, Tistory, and GitHub source connectors.
+- `fetching/`: Notion, Tistory, GitHub, and Obsidian source connectors.
 - `indexing/`: document conversion, chunking, dedup/update detection, and vector indexing.
 - `search/`: ContextWiki retrieval, ranking, SQLite-backed active gates, query rewrite, and citation answer scaffolding.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata and active retrieval checks.
-- `docs/contextwiki-core-understanding.md`: maintained learning note for the current ContextWiki data flow, source connector behavior, lifecycle metadata, retrieval gate, and limitations.
 - `docs/plan/`: plan documents written before file-changing harness work.
-- `.agents/`: local harness docs, phase skills, and ADRs.
+- `.agents/`: local harness docs and phase skills.
 
 ## Development Commands
 

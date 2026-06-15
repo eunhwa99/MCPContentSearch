@@ -1,6 +1,6 @@
 ---
 name: harness-review
-description: Middle and final $subagent-review-loop gate for MCPContentSearch changes, focused on bugs, regressions, tests, contracts, data safety, secrets, and architecture/ADR compliance.
+description: Middle and final $subagent-review-loop gate for MCPContentSearch changes, focused on bugs, regressions, tests, contracts, data safety, secrets, and architecture compliance.
 ---
 
 # Harness Review
@@ -22,7 +22,7 @@ only when all five reviewers in the newest pass report no actionable findings.
 
 ## Input
 
-Read the plan, local diff, `.agents/docs/harness-engineering.md`, `.agents/docs/architecture.md`, `.agents/docs/functional-smoke-matrix.md`, `.agents/docs/adr/README.md`, relevant accepted ADRs, verification history, functional smoke matrix/results, and changed files.
+Read the plan, local diff, `.agents/docs/harness-engineering.md`, `.agents/docs/architecture.md`, `.agents/docs/functional-smoke-matrix.md`, verification history, functional smoke matrix/results, and changed files.
 
 ## Subagent Review Loop
 
@@ -65,7 +65,7 @@ Produce a checklist:
 
 | Item | Result | Notes |
 | --- | --- | --- |
-| Architecture/ADR compliance | pass/fail/n/a | Relevant violation or n/a reason |
+| Architecture compliance | pass/fail/n/a | Relevant violation or n/a reason |
 | Acceptance criteria | pass/fail/n/a | Missing behavior |
 | Tests/verification | pass/fail/n/a | Commands run or gaps |
 | Functional smoke matrix | pass/fail/n/a | Rows covered, blocked/gated checks, substitutes, and evidence |
