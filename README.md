@@ -241,28 +241,76 @@ Supported limitations:
 
 ## 🚦 Verification
 
+Verification is split into four explicit layers so local runs and CI describe
+the same trust boundary:
+
+- `Public MCP contract layer`: real `FastMCP.call_tool(...)` coverage for each retained public tool.
+- `Deterministic functional E2E layer`: retained sync/search/fetch/answer flows over temporary local state.
+- `Deterministic quality eval layer`: fixture-based retrieval and answer scoring plus reviewer-visible artifacts.
+- `Manual live smoke layer`: local configured-runtime checks for human debugging only, not automated portfolio assurance.
+
+No retained automated pytest currently uses the `live` marker.
+
 ### 1. Full gate
 
 ```bash
 ./scripts/verify_all.sh
 ```
 
-Includes syntax checks, Ruff, mypy, Bandit, pytest, and the functional E2E
-gate.
+Includes syntax checks, Ruff, mypy, Bandit, the public contract layer, the
+broader non-live pytest regression run, deterministic eval artifacts, and the
+functional E2E gate. The full gate defaults `IS_TESTING=1` to mirror the
+current CI env shape for non-live verification commands, even though the
+current retained suite does not branch on that variable.
 
-### 2. Functional E2E gate
+### 2. Public MCP contract layer
+
+```bash
+uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py
+```
+
+This verifies that each retained public MCP tool has at least one real
+`FastMCP.call_tool(...)` contract path with JSON payload assertions.
+
+### 3. Deterministic functional E2E layer
 
 ```bash
 ./scripts/verify_functional_e2e.sh
 ```
 
-This covers retained MCP flows with non-live tests and temporary storage.
+This covers retained MCP flows with non-live tests and temporary storage. The
+script now stays on the retained end-to-end flow modules instead of also
+re-running broader contract/service suites. It also defaults `IS_TESTING=1` to
+mirror the current CI env shape for non-live verification commands.
 
-### 3. Focused checks
+### 4. Deterministic quality eval layer
+
+```bash
+uv run --locked pytest -q tests/evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
+```
+
+`scripts/run_contextwiki_eval.py` is the deterministic reviewer-evidence runner.
+It seeds temporary SQLite fixture data, swaps in fixture retrieval behavior
+instead of the normal live indexing/vector setup, exercises retained retrieval
+and grounded-answer scoring paths, and writes deterministic JSON artifacts
+with:
+
+- group-level mixed-query metrics
+- suite pass/fail summaries
+
+When `--include-latency` is supplied, it also writes an informational
+`runtime_metrics.json` file with retrieval/answer latency summaries. CI uploads
+the deterministic JSON files as the `contextwiki-evals` artifact, while the
+timing file is produced only by opt-in local latency runs.
+
+### 5. Focused checks
 
 ```bash
 uv run --locked pytest -q tests/fetching/test_connectors.py
 uv run --locked pytest -q tests/api/test_tools_contract.py
+uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py
 uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
 uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
 uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
@@ -273,17 +321,9 @@ uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/co
 uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
 ```
 
-`scripts/run_contextwiki_eval.py` is the deterministic reviewer-evidence runner.
-It seeds temporary SQLite fixture data, exercises normal retrieval and
-grounded-answer flows, and writes deterministic JSON artifacts with:
-
-- group-level mixed-query metrics
-- suite pass/fail summaries
-
-When `--include-latency` is supplied, it also writes an informational
-`runtime_metrics.json` file with retrieval/answer latency summaries. CI uploads
-the deterministic JSON files plus that optional timing file as the
-`contextwiki-evals` artifact.
+`tests/scripts/test_live_query_smoke.py` only verifies the CLI contract,
+redaction rules, and summary wording for the manual smoke script. It does not
+turn the manual live smoke layer into automated live runtime verification.
 
 ## 🎬 One-command Demo
 
@@ -333,7 +373,7 @@ Optional flags:
 ./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
 ```
 
-## 🔎 Live Query Smoke
+## 🔎 Manual Live Smoke Layer
 
 Run a real local retrieval check against your configured ContextWiki runtime:
 
@@ -367,7 +407,8 @@ raw chunk text, previews, and direct `path`/`url` fields, but titles,
 identifiers, and synthesized helper answer text may still reflect local source
 content.
 
-This smoke is for retrieval and helper-surface validation. Check
+This smoke is for retrieval and helper-surface validation. It is manual live
+diagnostic evidence, not part of the automated portfolio gate. Check
 `citations`, `used_chunks`, and, when using direct MCP calls with
 `include_debug=True`, `debug` plus `debug_markdown`.
 
