@@ -63,6 +63,11 @@ class SyncJobModel(BaseModel):
     processed_documents: int = Field(ge=0, default=0)
     indexed_chunks: int = Field(ge=0, default=0)
     skipped_documents: int = Field(ge=0, default=0)
+    phase: str = ""
+    upstream_total_pages: int = Field(ge=0, default=0)
+    upstream_fetched_pages: int = Field(ge=0, default=0)
+    last_progress_at: str = ""
+    status_message: str = ""
     error_message: str = ""
 
     model_config = ConfigDict(frozen=True)

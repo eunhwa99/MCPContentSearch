@@ -71,19 +71,27 @@ docker run --rm -i \
 
 ### Source Activation
 
-| Source | Source ID | Required env var |
-|--------|-----------|-----------------|
+| Source | Source ID | Env var to enable |
+|--------|-----------|-------------------|
 | Notion | `source_notion` | `NOTION_API_KEY` |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES` |
 | Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` |
 
-A source is automatically disabled when its env var is missing or invalid.
+Set only the sources you plan to use. A source stays disabled when its enabling
+config is missing or empty. Bad credentials can still fail later during refresh
+or sync. Some invalid target values can fail earlier during startup or source
+refresh; for example, a malformed `CONTEXTWIKI_GITHUB_REPOSITORIES` value can
+prevent the server from starting cleanly.
+
+Source-specific env vars only register and enable each source. With the default
+embedding setup, successful sync/indexing still also requires `OPENAI_API_KEY`
+unless you reconfigure embeddings.
 
 ### `.env` Example
 
 ```bash
-OPENAI_API_KEY=...              # required for embeddings
+OPENAI_API_KEY=...              # required for default embeddings/indexing; also used by optional rewrite
 
 NOTION_API_KEY=...
 TISTORY_BLOG_NAME=devlog        # subdomain only, not the full URL
@@ -94,7 +102,39 @@ GITHUB_TOKEN=...                # needed for private repos or higher rate limits
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
 ```
 
-> ⚠️ Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes. Format: `owner/repo` or `owner/repo@ref`.
+Important GitHub notes:
+
+- Use `owner/repo` or `owner/repo@ref`.
+- Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
+- `GITHUB_TOKEN` is optional, but private repositories and higher rate limits
+  usually need it.
+
+**Notion example**
+
+```bash
+NOTION_API_KEY=...
+```
+
+Set this only if you want to enable the Notion source.
+
+**Tistory example**
+
+```bash
+TISTORY_BLOG_NAME=devlog
+```
+
+Use the blog subdomain only, not the full URL. For example, use `devlog`, not
+`https://devlog.tistory.com`.
+
+**Obsidian example**
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
+CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
+CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
+```
+
+Use the vault root path, not an individual `.md` file path.
 
 ### Search Query Rewrite (Optional)
 
@@ -110,7 +150,55 @@ CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 
 ### Claude Desktop — local uv (Recommended)
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+This is the easiest setup path on macOS because:
+
+- Claude Desktop can spawn the server directly.
+- ContextWiki loads the repository-local `.env` at startup, so Claude Desktop
+  does not need plaintext env entries in `claude_desktop_config.json`.
+- Obsidian can use your real host vault path directly.
+- You do not need Docker mounts for the vault.
+
+Important:
+
+- Repository `.env` values do not override env vars already set by Claude
+  Desktop or your shell.
+- If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or
+  other source env vars in `claude_desktop_config.json` or a parent shell, clear
+  the stale values there too.
+
+Do this in order:
+
+1. Create `.env` in your repo root.
+2. Put your real values there.
+3. Add the MCP entry below to Claude Desktop.
+4. Fully restart Claude Desktop.
+5. In a fresh Claude Desktop chat, ask it to call `list_sources()`.
+
+Example `.env`:
+
+```bash
+# Required for default sync/indexing because embeddings use OpenAI by default
+OPENAI_API_KEY=...
+
+# Optional: enable Notion source
+NOTION_API_KEY=...
+
+# Optional: enable Tistory source
+TISTORY_BLOG_NAME=devlog
+
+# Optional: enable GitHub source
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch
+CONTEXTWIKI_GITHUB_DEFAULT_REF=main
+
+# Optional for private repos or higher GitHub API limits
+GITHUB_TOKEN=...
+
+# Optional: enable Obsidian source
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
+```
+
+On macOS, add this to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {

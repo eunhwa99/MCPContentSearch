@@ -10,8 +10,12 @@ from core.models import (
     DocumentModel,
     SourceModel,
     SourceType,
+    SyncJobStatus,
     SyncStatus,
 )
+from fetching.connectors import SourceConnector, SourceRegistry
+from indexing.chunker import DocumentChunker
+from indexing.ingestion_service import IngestionService
 from storage.metadata_store import MetadataStore
 
 
@@ -78,6 +82,11 @@ class FakeLeakyJobIngestion:
                 "job_id": "job-leaky",
                 "source_id": source_id,
                 "status": "failed",
+                "phase": "fetching_page_content",
+                "upstream_total_pages": 265,
+                "upstream_fetched_pages": 18,
+                "last_progress_at": "2026-06-15T10:35:53+00:00",
+                "status_message": "Fetching Notion page content 18/265 before indexing begins.",
                 "error_message": (
                     "Sync failed with token=super-secret-value "
                     "and ghp_secretcredential"
@@ -85,7 +94,7 @@ class FakeLeakyJobIngestion:
             }
         )
 
-    async def sync_all(self):
+    async def sync_all(self, source_ids=None):
         return {
             "status": "completed",
             "summary": {
@@ -106,6 +115,13 @@ class FakeLeakyJobIngestion:
                             "job_id": "job-leaky",
                             "source_id": "source_github",
                             "status": "failed",
+                            "phase": "fetching_page_content",
+                            "upstream_total_pages": 265,
+                            "upstream_fetched_pages": 18,
+                            "last_progress_at": "2026-06-15T10:35:53+00:00",
+                            "status_message": (
+                                "Fetching Notion page content 18/265 before indexing begins."
+                            ),
                             "error_message": (
                                 "Sync failed with token=super-secret-value "
                                 "and ghp_secretcredential"
@@ -118,8 +134,43 @@ class FakeLeakyJobIngestion:
         }
 
 
+class ObserverCancelledOnceConnector(SourceConnector):
+    source = SourceModel(
+        source_id="source_github",
+        source_type=SourceType.GITHUB,
+        name="GitHub",
+        enabled=True,
+        auth_ref="env:GITHUB_TOKEN",
+        sync_status=SyncStatus.IDLE,
+    )
+
+    def __init__(self, documents=None):
+        self.documents = documents or []
+        self.external_stop_signal = object()
+        self.progress_callback = self._observer
+        self.progress_stop_signal = self.external_stop_signal
+        self.cancel_first_run = True
+
+    async def _observer(self, event):
+        if event.get("event") == "search_started" and self.cancel_first_run:
+            self.cancel_first_run = False
+            return self.external_stop_signal
+        return None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            result = self.progress_callback({"event": "search_started"})
+            if asyncio.iscoroutine(result):
+                result = await result
+            if result is self.progress_stop_signal:
+                from fetching.notion import _StopRequested
+
+                raise _StopRequested
+        return self.documents
+
+
 class FakeCompletedSkippedSyncAllIngestion:
-    async def sync_all(self):
+    async def sync_all(self, source_ids=None):
         return {
             "status": "completed",
             "summary": {
@@ -163,7 +214,7 @@ class FakeCompletedSkippedSyncAllIngestion:
 
 
 class FakePartialSyncAllIngestion:
-    async def sync_all(self):
+    async def sync_all(self, source_ids=None):
         return {
             "status": "partial",
             "summary": {
@@ -207,7 +258,7 @@ class FakePartialSyncAllIngestion:
 
 
 class FakeFailedSyncAllIngestion:
-    async def sync_all(self):
+    async def sync_all(self, source_ids=None):
         return {
             "status": "failed",
             "summary": {
@@ -244,7 +295,7 @@ class FakePathFailingIngestion:
             "with token supersecretvalue123456"
         )
 
-    async def sync_all(self):
+    async def sync_all(self, source_ids=None):
         raise ValueError(
             "Bulk sync failed at /Users/eunhwa/private/vault.md "
             "with token supersecretvalue123456"
@@ -307,6 +358,20 @@ class RefreshingObsidianRegistry:
         return self.connector
 
 
+class FailingSourceRegistry:
+    def __init__(self):
+        self.calls = 0
+
+    def list_sources(self):
+        self.calls += 1
+        if self.calls == 1:
+            return [Dumpable({"source_id": "source_github"}, source_id="source_github")]
+        raise RuntimeError("registry refresh failed with token=super-secret-value")
+
+    def get_connector(self, source_id):
+        raise AssertionError("get_connector should not be called")
+
+
 def _enabled_obsidian_source() -> SourceModel:
     return SourceModel(
         source_id="source_obsidian",
@@ -363,6 +428,11 @@ class FakeMetadataStore:
 
     def list_chunks_for_document(self, document_id):
         return []
+
+
+class FailingSyncAllMetadataStore(FakeMetadataStore):
+    def get_source(self, source_id):
+        raise RuntimeError("sync_all formatting failed with token=super-secret-value")
 
 
 def _insert_legacy_web_source_row(store: MetadataStore):
@@ -677,6 +747,36 @@ def test_sync_source_redacts_secret_like_unknown_source_ids():
     assert "token=<redacted>" in result["message"]
 
 
+def test_sync_source_rejects_non_public_source_ids(tmp_path):
+    class FakeStartOnlyIngestion:
+        async def start_sync_source(self, source_id):
+            raise AssertionError("non-public source should be rejected before launch")
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_private",
+            source_type=SourceType.GITHUB,
+            name="Private",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeStartOnlyIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(("source_github",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_source"]("source_private"))
+
+    assert result["status"] == "error"
+    assert "Unknown source" in result["message"]
+
+
 def test_sync_source_redacts_returned_job_error_payload():
     mcp = FakeMCP()
     register_tools(
@@ -690,6 +790,11 @@ def test_sync_source_redacts_returned_job_error_payload():
     assert result["error_message"] == "Sync failed with token=<redacted>"
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
+    assert "phase" not in result
+    assert "upstream_total_pages" not in result
+    assert "upstream_fetched_pages" not in result
+    assert "last_progress_at" not in result
+    assert "status_message" not in result
 
 
 def test_sync_source_returns_error_when_background_launcher_is_unavailable():
@@ -723,6 +828,66 @@ def test_sync_source_redacts_public_error_paths_and_whitespace_secrets():
     assert "token <redacted>" in result["message"]
 
 
+def test_sync_source_replays_observer_cancelled_background_failure_with_public_payload(
+    tmp_path,
+):
+    document = DocumentModel(
+        id="doc-1",
+        source_id="source_github",
+        title="GitHub doc",
+        content="Tool-layer replay should return the failed public job once before relaunching.",
+        url="https://example.com/doc-1",
+        platform="GitHub",
+        path="doc-1.md",
+    )
+    connector = ObserverCancelledOnceConnector([document])
+    registry = SourceRegistry([connector])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=registry,
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=FakeIndexer(),
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=service,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    async def run_flow():
+        launched = await mcp.tools["sync_source"]("source_github")
+        for _ in range(100):
+            latest = store.get_latest_sync_job("source_github")
+            task = service._background_sync_tasks.get("source_github")
+            if (
+                latest is not None
+                and latest.status != SyncJobStatus.RUNNING
+                and (task is None or task.done())
+            ):
+                break
+            await asyncio.sleep(0.01)
+        replayed = await mcp.tools["sync_source"]("source_github")
+        relaunched = await mcp.tools["sync_source"]("source_github")
+        return launched, replayed, relaunched
+
+    launched, replayed, relaunched = asyncio.run(run_flow())
+
+    assert launched["source_id"] == "source_github"
+    assert launched["status"] == SyncJobStatus.RUNNING.value
+    assert "phase" not in launched
+    assert replayed["job_id"] == launched["job_id"]
+    assert replayed["status"] == SyncJobStatus.FAILED.value
+    assert replayed["error_message"] == (
+        "Sync request was cancelled by a progress observer before completion."
+    )
+    assert "phase" not in replayed
+    assert relaunched["job_id"] != launched["job_id"]
+    assert relaunched["status"] == SyncJobStatus.RUNNING.value
+
+
 def test_sync_all_redacts_public_error_paths_and_whitespace_secrets():
     mcp = FakeMCP()
     register_tools(
@@ -737,6 +902,320 @@ def test_sync_all_redacts_public_error_paths_and_whitespace_secrets():
     assert "/Users/eunhwa/private/vault.md" not in payload
     assert "supersecretvalue123456" not in payload
     assert "token <redacted>" in result["message"]
+
+
+def test_sync_all_skips_signature_introspection_when_public_filtering_is_not_needed(
+    monkeypatch,
+):
+    class FakeInspectableIngestion:
+        async def sync_all(self):
+            return {
+                "status": "completed",
+                "summary": {
+                    "total_sources": 1,
+                    "succeeded": 1,
+                    "failed": 0,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "started_at": "2026-06-12T00:00:00+00:00",
+                    "finished_at": "2026-06-12T00:00:01+00:00",
+                },
+                "results": [
+                    {
+                        "source_id": "source_github",
+                        "sync_outcome": "succeeded",
+                        "job": None,
+                        "message": "",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        "api.tools.inspect.signature",
+        lambda _: (_ for _ in ()).throw(TypeError("signature unavailable")),
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeInspectableIngestion(),
+        source_registry=FakeSourceRegistry(("source_github",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "completed"
+    assert result["summary"]["succeeded"] == 1
+
+
+def test_sync_all_returns_structured_error_when_preflight_source_refresh_fails():
+    class FakeSyncAllIngestion:
+        async def sync_all(self):
+            raise AssertionError("sync_all should not be called when preflight fails")
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeSyncAllIngestion(),
+        source_registry=FailingSourceRegistry(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "error"
+    assert "registry refresh failed" in result["message"]
+    assert "super-secret-value" not in result["message"]
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_sync_all_returns_structured_error_when_ingestion_service_is_missing():
+    mcp = FakeMCP()
+    register_tools(mcp)
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "error"
+    assert result["message"] == "ingestion service is not configured"
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_sync_all_returns_structured_error_when_public_filtering_is_unsupported():
+    class GrowingSourceRegistry(FakeSourceRegistry):
+        def __init__(self):
+            super().__init__(("source_github",))
+            self.calls = 0
+
+        def list_sources(self):
+            self.calls += 1
+            if self.calls == 1:
+                return self.sources
+            return self.sources + [
+                Dumpable({"source_id": "source_private"}, source_id="source_private")
+            ]
+
+    class FakeNoFilterSupportIngestion:
+        async def sync_all(self):
+            raise AssertionError("legacy no-arg sync_all should not be called")
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeNoFilterSupportIngestion(),
+        source_registry=GrowingSourceRegistry(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "error"
+    assert "does not support public bulk sync filtering" in result["message"]
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_sync_all_returns_structured_error_when_public_result_formatting_fails():
+    class FakeSyncAllIngestion:
+        async def sync_all(self):
+            return {
+                "status": "completed",
+                "summary": {
+                    "total_sources": 1,
+                    "succeeded": 1,
+                    "failed": 0,
+                    "blocked": 0,
+                    "skipped": 0,
+                },
+                "results": [
+                    {
+                        "source_id": "source_fake",
+                        "sync_outcome": "succeeded",
+                        "job": None,
+                        "message": "",
+                    }
+                ],
+            }
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeSyncAllIngestion(),
+        metadata_store=FailingSyncAllMetadataStore(),
+        source_registry=FakeSourceRegistry(("source_fake",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "error"
+    assert "sync_all formatting failed" in result["message"]
+    assert "super-secret-value" not in result["message"]
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    mcp = FakeMCP()
+
+    class FakeEmptyErrorSyncAllIngestion:
+        async def sync_all(self):
+            return {"status": "error", "summary": {}, "results": []}
+
+    register_tools(
+        mcp,
+        ingestion_service=FakeEmptyErrorSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "error"
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_report_totals(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    mcp = FakeMCP()
+
+    class FakeEmptyFailedSyncAllIngestion:
+        async def sync_all(self):
+            return {
+                "status": "failed",
+                "summary": {
+                    "total_sources": 1,
+                    "succeeded": 0,
+                    "failed": 1,
+                    "blocked": 0,
+                    "skipped": 0,
+                },
+                "results": [],
+            }
+
+    register_tools(
+        mcp,
+        ingestion_service=FakeEmptyFailedSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "failed"
+    assert result["summary"] == {
+        "total_sources": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0,
+    }
+    assert result["results"] == []
+
+
+def test_get_sync_status_returns_structured_error_when_preflight_source_refresh_fails(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FailingSourceRegistry(),
+    )
+
+    result = asyncio.run(mcp.tools["get_sync_status"]())
+
+    assert result["status"] == "error"
+    assert result["sources"] == []
+    assert "registry refresh failed" in result["message"]
+    assert "super-secret-value" not in result["message"]
+
+
+def test_get_sync_status_single_source_preserves_shape_when_preflight_source_refresh_fails(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FailingSourceRegistry(),
+    )
+
+    result = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+
+    assert result["status"] == "error"
+    assert result["source"] is None
+    assert result["latest_job"] is None
+    assert "registry refresh failed" in result["message"]
+    assert "super-secret-value" not in result["message"]
+
+
+def test_list_sources_returns_structured_error_when_preflight_source_refresh_fails():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        source_registry=FailingSourceRegistry(),
+    )
+
+    result = asyncio.run(mcp.tools["list_sources"]())
+
+    assert result["status"] == "error"
+    assert result["sources"] == []
+    assert "registry refresh failed" in result["message"]
+    assert "super-secret-value" not in result["message"]
 
 
 def test_sync_all_redacts_returned_job_error_payload(tmp_path):
@@ -767,6 +1246,223 @@ def test_sync_all_redacts_returned_job_error_payload(tmp_path):
     assert result["results"][0]["sync_outcome"] == "failed"
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
+    assert "phase" not in result["results"][0]["job"]
+    assert "upstream_total_pages" not in result["results"][0]["job"]
+    assert "upstream_fetched_pages" not in result["results"][0]["job"]
+    assert "last_progress_at" not in result["results"][0]["job"]
+    assert "status_message" not in result["results"][0]["job"]
+
+
+def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
+    class FakeMixedSyncAllIngestion:
+        async def sync_all(self, source_ids=None):
+            assert source_ids is None
+            return {
+                "status": "partial",
+                "summary": {
+                    "total_sources": 2,
+                    "succeeded": 1,
+                    "failed": 1,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "started_at": "2026-06-12T00:00:00+00:00",
+                    "finished_at": "2026-06-12T00:00:01+00:00",
+                },
+                "results": [
+                    {
+                        "source_id": "source_github",
+                        "sync_outcome": "succeeded",
+                        "job": Dumpable(
+                            {
+                                "job_id": "job-public",
+                                "source_id": "source_github",
+                                "status": "succeeded",
+                                "error_message": "",
+                            }
+                        ),
+                        "message": "",
+                    },
+                    {
+                        "source_id": "source_private",
+                        "sync_outcome": "failed",
+                        "job": Dumpable(
+                            {
+                                "job_id": "job-private",
+                                "source_id": "source_private",
+                                "status": "failed",
+                                "error_message": "hidden",
+                            }
+                        ),
+                        "message": "hidden",
+                    },
+                ],
+            }
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.SUCCEEDED,
+        )
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_private",
+            source_type=SourceType.GITHUB,
+            name="Private",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeMixedSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(("source_github",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert [item["source_id"] for item in result["results"]] == ["source_github"]
+    assert result["status"] == "completed"
+    assert result["summary"]["total_sources"] == 1
+    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["started_at"] == "2026-06-12T00:00:00+00:00"
+    assert result["summary"]["finished_at"] == "2026-06-12T00:00:01+00:00"
+
+
+def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
+    class FakeHiddenOnlySyncAllIngestion:
+        async def sync_all(self, source_ids=None):
+            assert source_ids is None
+            return {
+                "status": "failed",
+                "summary": {
+                    "total_sources": 1,
+                    "succeeded": 0,
+                    "failed": 1,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "started_at": "2026-06-12T00:00:00+00:00",
+                    "finished_at": "2026-06-12T00:00:01+00:00",
+                },
+                "results": [
+                    {
+                        "source_id": "source_hidden",
+                        "sync_outcome": "failed",
+                        "job": None,
+                        "message": "hidden failure",
+                    }
+                ],
+            }
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeHiddenOnlySyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(("source_github",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "completed"
+    assert result["summary"]["total_sources"] == 0
+    assert "started_at" not in result["summary"]
+    assert "finished_at" not in result["summary"]
+    assert result["results"] == []
+
+
+def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_path):
+    class LegacySyncAllIngestion:
+        def __init__(self):
+            self.called = False
+
+        async def sync_all(self):
+            self.called = True
+            return {"status": "completed", "summary": {}, "results": []}
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    ingestion = LegacySyncAllIngestion()
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=ingestion,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(("source_github",)),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert result["status"] == "completed"
+    assert result["results"] == []
+    assert ingestion.called is True
+
+
+def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(tmp_path):
+    class OrderedSyncAllIngestion:
+        async def sync_all(self, source_ids=None):
+            assert source_ids is None
+            return {
+                "status": "completed",
+                "summary": {},
+                "results": [
+                    {"source_id": "source_b", "sync_outcome": "succeeded", "job": None, "message": ""},
+                    {"source_id": "source_a", "sync_outcome": "succeeded", "job": None, "message": ""},
+                ],
+            }
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for source_id in ("source_b", "source_a"):
+        store.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+                auth_ref="env:GITHUB_TOKEN",
+                sync_status=SyncStatus.IDLE,
+            )
+        )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=OrderedSyncAllIngestion(),
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(("source_b", "source_a")),
+    )
+
+    result = asyncio.run(mcp.tools["sync_all"]())
+
+    assert [item["source_id"] for item in result["results"]] == ["source_b", "source_a"]
 
 
 def test_sync_all_passthrough_preserves_completed_and_skipped_outcomes(tmp_path):
@@ -1454,6 +2150,137 @@ def test_get_sync_status_returns_source_after_status_recovery():
     assert single["latest_job"]["status"] == "failed"
     assert all_sources["sources"][0]["source"]["sync_status"] == "failed"
     assert all_sources["sources"][0]["latest_job"]["status"] == "failed"
+
+
+def test_get_sync_status_exposes_running_phase_hints(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    job, _ = store.begin_sync_job("source_notion")
+    store.update_sync_job(
+        job.job_id,
+        total_documents=265,
+        phase="fetching_page_content",
+        upstream_total_pages=265,
+        upstream_fetched_pages=18,
+        last_progress_at="2026-06-15T10:35:53+00:00",
+        status_message="Fetching Notion page content 18/265 before indexing begins.",
+    )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+
+    assert status["latest_job"]["status"] == "running"
+    assert status["latest_job"]["phase"] == "fetching_page_content"
+    assert status["latest_job"]["upstream_total_pages"] == 265
+    assert status["latest_job"]["upstream_fetched_pages"] == 18
+    assert status["latest_job"]["last_progress_at"] == "2026-06-15T10:35:53+00:00"
+    assert (
+        status["latest_job"]["status_message"]
+        == "Fetching Notion page content 18/265 before indexing begins."
+    )
+
+
+def test_get_sync_status_redacts_progress_status_message(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.RUNNING,
+        )
+    )
+    job, _ = store.begin_sync_job("source_notion")
+    store.update_sync_job(
+        job.job_id,
+        phase="fetching_page_content",
+        upstream_total_pages=10,
+        upstream_fetched_pages=3,
+        last_progress_at="2026-06-15T10:35:53+00:00",
+        status_message=(
+            "fetching /Users/eunhwa/private/vault.md with token supersecretvalue123456"
+        ),
+    )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+
+    assert "/Users/eunhwa/private/vault.md" not in status["latest_job"]["status_message"]
+    assert "supersecretvalue123456" not in status["latest_job"]["status_message"]
+    assert "token <redacted>" in status["latest_job"]["status_message"]
+
+
+def test_get_sync_status_hides_progress_hints_for_terminal_jobs(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.SUCCEEDED,
+        )
+    )
+    job, _ = store.begin_sync_job("source_notion")
+    store.update_sync_job(
+        job.job_id,
+        phase="fetching_page_content",
+        upstream_total_pages=10,
+        upstream_fetched_pages=3,
+        last_progress_at="2026-06-15T10:35:53+00:00",
+        status_message="Fetching Notion page content 3/10 before indexing begins.",
+    )
+    store.complete_successful_sync(
+        job_id=job.job_id,
+        source_id="source_notion",
+        total_documents=10,
+        processed_documents=10,
+        indexed_chunks=10,
+        skipped_documents=0,
+        last_seen_at="2026-06-15T10:35:53+00:00",
+        cleanup_missing_documents=False,
+        deleted_at="2026-06-15T10:35:53+00:00",
+    )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+
+    assert status["latest_job"]["status"] == "succeeded"
+    assert "phase" not in status["latest_job"]
+    assert "upstream_total_pages" not in status["latest_job"]
+    assert "upstream_fetched_pages" not in status["latest_job"]
+    assert "last_progress_at" not in status["latest_job"]
+    assert "status_message" not in status["latest_job"]
 
 
 def test_status_payloads_include_richer_source_fields(tmp_path):

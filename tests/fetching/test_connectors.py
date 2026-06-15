@@ -33,7 +33,13 @@ def clear_obsidian_env(monkeypatch):
 
 
 def test_notion_connector_persists_external_id(monkeypatch, tmp_path):
-    async def fake_fetch_notion_pages(api_key, config):
+    async def fake_fetch_notion_pages(
+        api_key,
+        config,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
         return [
             DocumentModel(
                 id="notion_page-1",
@@ -57,6 +63,39 @@ def test_notion_connector_persists_external_id(monkeypatch, tmp_path):
     assert document.document_id == "page-1"
     assert persisted.external_id == "page-1"
     assert persisted.canonical_url == "https://notion.so/page-1"
+
+
+def test_notion_connector_passes_progress_callback(monkeypatch):
+    captured = {}
+
+    async def fake_fetch_notion_pages(
+        api_key,
+        config,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        captured["api_key"] = api_key
+        captured["progress_callback"] = progress_callback
+        captured["progress_stop_signal"] = progress_stop_signal
+        captured["progress_stop_checker"] = progress_stop_checker
+        return []
+
+    async def fake_progress(event):
+        return None
+
+    monkeypatch.setattr(connector_module, "fetch_notion_pages", fake_fetch_notion_pages)
+    connector = NotionSourceConnector(
+        "secret",
+        AppConfig(),
+        progress_callback=fake_progress,
+    )
+
+    assert asyncio.run(connector.fetch_documents()) == []
+    assert captured["api_key"] == "secret"
+    assert captured["progress_callback"] is fake_progress
+    assert captured["progress_stop_signal"] is None
+    assert captured["progress_stop_checker"] is None
 
 
 def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):

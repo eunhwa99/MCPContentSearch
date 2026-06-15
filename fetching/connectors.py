@@ -50,9 +50,12 @@ class SourceRegistry:
 class NotionSourceConnector(SourceConnector):
     supports_stale_cleanup = True
 
-    def __init__(self, api_key: str, config: AppConfig):
+    def __init__(self, api_key: str, config: AppConfig, progress_callback=None):
         self.api_key = api_key
         self.config = config
+        self.progress_callback = progress_callback
+        self.progress_stop_signal = None
+        self.progress_stop_checker = None
         self.source = SourceModel(
             source_id="source_notion",
             source_type=SourceType.NOTION,
@@ -63,7 +66,13 @@ class NotionSourceConnector(SourceConnector):
         )
 
     async def fetch_documents(self) -> list[DocumentModel]:
-        documents = await fetch_notion_pages(self.api_key, self.config)
+        documents = await fetch_notion_pages(
+            self.api_key,
+            self.config,
+            progress_callback=self.progress_callback,
+            progress_stop_signal=getattr(self, "progress_stop_signal", None),
+            progress_stop_checker=getattr(self, "progress_stop_checker", None),
+        )
         return [
             doc.model_copy(
                 update={

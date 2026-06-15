@@ -8,6 +8,10 @@ from environments.config import AppConfig, NotionConfig
 from fetching.notion import (
     NotionAPIClient,
     NotionPageProcessor,
+    _StopRequested,
+    _await_request_with_stop,
+    _emit_progress,
+    fetch_notion_pages,
     fetch_notion_target,
     parse_notion_object_id,
 )
@@ -16,10 +20,685 @@ from fetching.notion import (
 pytestmark = pytest.mark.unit
 
 
+def test_fetch_notion_pages_emits_progress_events(monkeypatch):
+    events = []
+    pages = [
+        {
+            "id": "page-1",
+            "url": "https://notion.so/page-1",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+        },
+        {
+            "id": "page-2",
+            "url": "https://notion.so/page-2",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 2"}]}},
+        },
+    ]
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return pages
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        return f"content for {block_id}"
+
+    async def capture(event):
+        events.append(event)
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    documents = asyncio.run(fetch_notion_pages("secret", AppConfig(), progress_callback=capture))
+
+    assert [event["event"] for event in events] == [
+        "search_started",
+        "search_completed",
+        "page_fetch_started",
+        "page_fetch_completed",
+        "page_fetch_started",
+        "page_fetch_completed",
+    ]
+    assert events[1]["total_pages"] == 2
+    assert events[2]["current_page"] == 1
+    assert events[2]["page_id"] == "page-1"
+    assert events[3]["title"] == "Page 1"
+    assert events[5]["current_page"] == 2
+    assert len(documents) == 2
+
+
+def test_fetch_notion_pages_stops_when_progress_callback_returns_terminal_signal(monkeypatch):
+    pages = [
+        {
+            "id": "page-1",
+            "url": "https://notion.so/page-1",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+        },
+        {
+            "id": "page-2",
+            "url": "https://notion.so/page-2",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 2"}]}},
+        },
+    ]
+    fetch_calls = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return pages
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"content for {block_id}"
+
+    stop_signal = object()
+
+    async def stop_on_first_page(event):
+        if event["event"] == "page_fetch_started":
+            return stop_signal
+        return None
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_callback=stop_on_first_page,
+                progress_stop_signal=stop_signal,
+            )
+        )
+
+    assert fetch_calls == []
+
+
+def test_emit_progress_propagates_stop_requested():
+    async def stop_now(event):
+        raise _StopRequested
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(_emit_progress(stop_now, {"event": "search_started"}))
+
+
+def test_fetch_notion_pages_stops_during_search_discovery(monkeypatch):
+    fetch_calls = []
+    stop_signal = object()
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "page-1",
+                            "url": "https://notion.so/page-1",
+                            "created_time": "2026-06-01T00:00:00Z",
+                            "last_edited_time": "2026-06-01T00:00:00Z",
+                            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+                        }
+                    ],
+                    "has_more": True,
+                    "next_cursor": "cursor-2",
+                },
+                request=request,
+            )
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"content for {block_id}"
+
+    async def stop_during_discovery(event):
+        if event["event"] == "search_page_batch_completed":
+            return stop_signal
+        return None
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_callback=stop_during_discovery,
+                progress_stop_signal=stop_signal,
+            )
+        )
+
+    assert fetch_calls == []
+
+
+def test_fetch_notion_pages_stops_during_search_discovery_via_stop_checker(monkeypatch):
+    fetch_calls = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "page-1",
+                            "url": "https://notion.so/page-1",
+                            "created_time": "2026-06-01T00:00:00Z",
+                            "last_edited_time": "2026-06-01T00:00:00Z",
+                            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+                        }
+                    ],
+                    "has_more": True,
+                    "next_cursor": "cursor-2",
+                },
+                request=request,
+            )
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"content for {block_id}"
+
+    stop_checks = 0
+
+    async def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 3
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_stop_checker=stop_checker,
+            )
+        )
+
+    assert fetch_calls == []
+
+
+def test_search_pages_stops_before_discovery_progress_when_checker_trips(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    events = []
+
+    class FakeAsyncClient:
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "page-1",
+                            "url": "https://notion.so/page-1",
+                            "created_time": "2026-06-01T00:00:00Z",
+                            "last_edited_time": "2026-06-01T00:00:00Z",
+                            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+                        }
+                    ],
+                    "has_more": False,
+                },
+                request=request,
+            )
+
+    stop_checks = 0
+
+    async def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 2
+
+    async def capture(event):
+        events.append(event["event"])
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client.search_pages(
+                FakeAsyncClient(),
+                progress_callback=capture,
+                progress_stop_checker=stop_checker,
+            )
+        )
+
+    assert events == []
+
+
+def test_fetch_notion_pages_stops_after_final_discovery_batch_via_stop_checker(monkeypatch):
+    fetch_calls = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "page-1",
+                            "url": "https://notion.so/page-1",
+                            "created_time": "2026-06-01T00:00:00Z",
+                            "last_edited_time": "2026-06-01T00:00:00Z",
+                            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+                        }
+                    ],
+                    "has_more": False,
+                },
+                request=request,
+            )
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"content for {block_id}"
+
+    stop_checks = 0
+
+    async def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 3
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_stop_checker=stop_checker,
+            )
+        )
+
+    assert fetch_calls == []
+
+
+def test_request_json_stops_before_retry_sleep(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    sleep_calls = []
+
+    class FakeAsyncClient:
+        async def get(self, url, **kwargs):
+            request = httpx.Request("GET", url)
+            response = httpx.Response(429, headers={"Retry-After": "7"}, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client._request_json(
+                FakeAsyncClient(),
+                "get",
+                "https://api.notion.com/v1/pages/page-1",
+                stop_checker=lambda: True,
+            )
+        )
+
+    assert sleep_calls == []
+
+
+def test_request_json_stops_after_retry_sleep(monkeypatch):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    sleep_calls = []
+    stop_checks = 0
+
+    class FakeAsyncClient:
+        async def get(self, url, **kwargs):
+            request = httpx.Request("GET", url)
+            response = httpx.Response(429, headers={"Retry-After": "7"}, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    async def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 3
+
+    monkeypatch.setattr("fetching.notion.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client._request_json(
+                FakeAsyncClient(),
+                "get",
+                "https://api.notion.com/v1/pages/page-1",
+                stop_checker=stop_checker,
+            )
+        )
+
+    assert sleep_calls == []
+
+
+def test_request_json_propagates_stop_requested_from_stop_checker():
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+
+    async def stop_checker():
+        raise _StopRequested
+
+    class FakeAsyncClient:
+        async def get(self, url, **kwargs):
+            raise AssertionError("request should not be attempted after stop")
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client._request_json(
+                FakeAsyncClient(),
+                "get",
+                "https://api.notion.com/v1/pages/page-1",
+                stop_checker=stop_checker,
+            )
+        )
+
+
+def test_await_request_with_stop_prefers_stop_requested_over_completed_request_error(
+    monkeypatch,
+):
+    async def request_coro():
+        await asyncio.sleep(0)
+        request = httpx.Request("GET", "https://api.notion.com/v1/pages/page-1")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    async def fake_wait(tasks, timeout):
+        await asyncio.sleep(0)
+        return set(tasks), set()
+
+    monkeypatch.setattr("fetching.notion.asyncio.wait", fake_wait)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(_await_request_with_stop(request_coro(), stop_checker=lambda: True))
+
+
+def test_request_json_stops_while_request_is_in_flight():
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    started = asyncio.Event()
+    request_cancelled = asyncio.Event()
+    stop_checks = 0
+
+    class SlowHTTPClient:
+        async def get(self, url, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                request_cancelled.set()
+                raise
+
+    async def stop_checker():
+        nonlocal stop_checks
+        if not started.is_set():
+            return False
+        stop_checks += 1
+        return stop_checks >= 2
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client._request_json(
+                SlowHTTPClient(),
+                "get",
+                "https://api.notion.com/v1/pages/page-1",
+                stop_checker=stop_checker,
+            )
+        )
+
+    assert request_cancelled.is_set()
+
+
+def test_fetch_notion_pages_stops_before_search_completed_progress_when_checker_trips(
+    monkeypatch,
+):
+    events = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return [
+            {
+                "id": "page-1",
+                "url": "https://notion.so/page-1",
+                "created_time": "2026-06-01T00:00:00Z",
+                "last_edited_time": "2026-06-01T00:00:00Z",
+                "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+            }
+        ]
+
+    async def capture(event):
+        events.append(event["event"])
+
+    stop_checks = 0
+
+    async def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 2
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_callback=capture,
+                progress_stop_checker=stop_checker,
+            )
+        )
+
+    assert events == ["search_started"]
+
+
+def test_fetch_notion_pages_does_not_stop_on_non_sentinel_progress_value(monkeypatch):
+    pages = [
+        {
+            "id": "page-1",
+            "url": "https://notion.so/page-1",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+        }
+    ]
+    fetch_calls = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return pages
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"content for {block_id}"
+
+    async def ack(event):
+        return {"ack": event["event"]}
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    documents = asyncio.run(fetch_notion_pages("secret", AppConfig(), progress_callback=ack))
+
+    assert len(documents) == 1
+    assert fetch_calls == ["page-1"]
+
+
+def test_fetch_notion_pages_ignores_progress_callback_exception(monkeypatch):
+    pages = [
+        {
+            "id": "page-1",
+            "url": "https://notion.so/page-1",
+            "created_time": "2026-06-01T00:00:00Z",
+            "last_edited_time": "2026-06-01T00:00:00Z",
+            "properties": {"title": {"title": [{"plain_text": "Page 1"}]}},
+        }
+    ]
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return pages
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        return f"content for {block_id}"
+
+    async def fail(event):
+        raise RuntimeError("progress hook failed")
+
+    monkeypatch.setattr("fetching.notion.httpx.AsyncClient", lambda *args, **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+    documents = asyncio.run(fetch_notion_pages("secret", AppConfig(), progress_callback=fail))
+
+    assert len(documents) == 1
+
+
 def test_notion_block_fetch_can_surface_strict_full_sync_failures():
     client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
 
-    async def fail_fetch_blocks(http_client, block_id):
+    async def fail_fetch_blocks(http_client, block_id, stop_checker=None):
         raise RuntimeError("block fetch failed")
 
     client._fetch_blocks = fail_fetch_blocks
@@ -28,6 +707,62 @@ def test_notion_block_fetch_can_surface_strict_full_sync_failures():
         asyncio.run(client.fetch_block_content(object(), "block-id", strict=True))
 
     assert asyncio.run(client.fetch_block_content(object(), "block-id")) == ""
+
+
+def test_notion_block_fetch_stops_during_paginated_children():
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    calls = []
+    stop_checks = 0
+
+    async def fake_request_json(http_client, method, url, **kwargs):
+        calls.append(url)
+        return {
+            "results": [
+                {
+                    "id": "block-1",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"plain_text": "hello"}]},
+                }
+            ],
+            "has_more": True,
+            "next_cursor": "cursor-2",
+        }
+
+    def stop_checker():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 3
+
+    client._request_json = fake_request_json
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client.fetch_block_content(
+                object(),
+                "block-id",
+                strict=True,
+                stop_checker=stop_checker,
+            )
+        )
+
+    assert len(calls) == 1
+
+
+def test_notion_block_fetch_propagates_stop_requested_when_not_strict():
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+
+    async def stop_checker():
+        raise _StopRequested
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(
+            client.fetch_block_content(
+                object(),
+                "block-id",
+                strict=False,
+                stop_checker=stop_checker,
+            )
+        )
 
 
 def _notion_response(status_code: int, payload: dict | None = None) -> httpx.Response:
@@ -344,7 +1079,13 @@ def test_fetch_notion_target_fetches_single_page(monkeypatch):
             "properties": {"title": {"title": [{"plain_text": "Target page"}]}},
         }
 
-    async def fake_fetch_block_content(self, client, block_id, strict=False):
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        strict=False,
+        stop_checker=None,
+    ):
         calls.append(("fetch_block_content", block_id, strict))
         return "target page content"
 
@@ -400,7 +1141,13 @@ def test_fetch_notion_target_falls_back_to_database_on_page_404(monkeypatch):
             },
         ]
 
-    async def fake_fetch_block_content(self, client, block_id, strict=False):
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        strict=False,
+        stop_checker=None,
+    ):
         calls.append(("fetch_block_content", block_id, strict))
         return f"content for {block_id}"
 

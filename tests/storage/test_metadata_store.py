@@ -171,6 +171,136 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
     assert store.list_chunks_for_document("notion_page_1") == [chunk]
 
 
+def test_get_latest_sync_job_breaks_started_at_ties_by_rowid(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    first = store.create_sync_job("source_github")
+    second = store.create_sync_job("source_github")
+    tied_started_at = "2026-06-15T00:00:00+00:00"
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sync_jobs SET started_at = ?, status = ? WHERE job_id IN (?, ?)",
+            (
+                tied_started_at,
+                SyncJobStatus.FAILED.value,
+                first.job_id,
+                second.job_id,
+            ),
+        )
+
+    latest = store.get_latest_sync_job("source_github")
+
+    assert latest.job_id == second.job_id
+
+
+def test_get_latest_sync_job_prefers_newest_running_row_when_started_at_ties(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        running_job_timeout_seconds=24 * 60 * 60,
+        unowned_running_job_grace_seconds=24 * 60 * 60,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    first = store.create_sync_job("source_github")
+    second = store.create_sync_job("source_github")
+    tied_started_at = datetime.now(timezone.utc).isoformat()
+    _mark_job_running(store, first.job_id, started_at=tied_started_at)
+    _mark_job_running(store, second.job_id, started_at=tied_started_at)
+
+    latest = store.get_latest_sync_job("source_github")
+    first_job = store.get_sync_job(first.job_id)
+    second_job = store.get_sync_job(second.job_id)
+
+    assert latest.job_id == second.job_id
+    assert second_job.status == SyncJobStatus.RUNNING
+    assert first_job.status == SyncJobStatus.FAILED
+
+
+def test_source_status_snapshot_prefers_newest_finished_rows_when_timestamps_tie(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    success_first = store.create_sync_job("source_github")
+    success_second = store.create_sync_job("source_github")
+    failure_first = store.create_sync_job("source_github")
+    failure_second = store.create_sync_job("source_github")
+    tied_finished_at = "2026-06-15T00:00:00+00:00"
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs
+            SET status = ?, started_at = ?, finished_at = ?, error_message = ''
+            WHERE job_id IN (?, ?)
+            """,
+            (
+                SyncJobStatus.SUCCEEDED.value,
+                tied_finished_at,
+                tied_finished_at,
+                success_first.job_id,
+                success_second.job_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs
+            SET status = ?, started_at = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            (
+                SyncJobStatus.FAILED.value,
+                tied_finished_at,
+                tied_finished_at,
+                "older failure",
+                failure_first.job_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs
+            SET status = ?, started_at = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            (
+                SyncJobStatus.FAILED.value,
+                tied_finished_at,
+                tied_finished_at,
+                "newer failure",
+                failure_second.job_id,
+            ),
+        )
+
+    snapshot = store.get_source_status_snapshot("source_github")
+
+    assert snapshot["latest_success_at"] == tied_finished_at
+    assert snapshot["latest_failure_at"] == tied_finished_at
+    assert snapshot["latest_failure_reason"] == "newer failure"
+
+
 def test_metadata_store_loads_obsidian_source_rows(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
 
@@ -1179,6 +1309,46 @@ def test_update_sync_job_cannot_finish_job_without_guarded_completion(tmp_path):
 
     assert store.get_sync_job(job.job_id).status == SyncJobStatus.RUNNING
     assert store.get_source("source_github").sync_status == SyncStatus.RUNNING
+
+
+def test_update_sync_job_does_not_clobber_terminal_job_after_completion(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_github")
+    assert started is True
+
+    finished, _ = store.complete_successful_sync(
+        job_id=job.job_id,
+        source_id="source_github",
+        total_documents=1,
+        processed_documents=1,
+        indexed_chunks=1,
+        skipped_documents=0,
+        last_seen_at="2026-06-15T00:00:00+00:00",
+        cleanup_missing_documents=False,
+        deleted_at="2026-06-15T00:00:00+00:00",
+    )
+
+    updated = store.update_sync_job(
+        job.job_id,
+        phase="fetching_page_content",
+        last_progress_at="2026-06-15T01:00:00+00:00",
+        status_message="late progress should not win",
+    )
+
+    assert finished.status == SyncJobStatus.SUCCEEDED
+    assert updated.status == SyncJobStatus.SUCCEEDED
+    assert updated.phase == "completed"
+    assert updated.status_message == "Sync completed. Indexed 1/1 documents; skipped 0."
+    assert updated.last_progress_at == finished.last_progress_at
 
 
 def test_running_job_commit_rejects_cross_source_document(tmp_path):

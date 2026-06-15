@@ -98,6 +98,36 @@ stale_cleanup_disabled_reason
 Those fields explain recent source health, retained indexed volume, and whether
 cleanup is intentionally disabled for safety.
 
+When a sync job is actively running, `get_sync_status` may additionally expose
+`latest_job` progress hints that explain whether the system is still upstream
+discovery/fetch-bound or already indexing. Those hints are intentionally
+running-only and are suppressed again once the latest job reaches a terminal
+state. Maintained reviewer-facing hints now include:
+
+```text
+phase
+upstream_total_pages
+upstream_fetched_pages
+last_progress_at
+status_message
+```
+
+Those running-job hints are intentionally limited to `get_sync_status`; they do
+not broaden the public `sync_source` or `sync_all` response shapes.
+
+The numeric hint semantics are phase-aware but should remain monotonic within a
+running sync:
+
+```text
+discovering_pages:
+  upstream_total_pages = discovered-page count so far
+  upstream_fetched_pages = 0
+
+fetching_page_content:
+  upstream_total_pages = final discovered page count
+  upstream_fetched_pages = page bodies fetched so far
+```
+
 Running-job ownership is part of that status story. A source reports as
 effectively blocked when SQLite still sees an active sync owner/heartbeat for
 that source, which prevents overlapping syncs from starting.

@@ -1,10 +1,12 @@
 import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
 
 from core.models import DocumentModel, SyncJobStatus
 from core.utils import ContentHasher
 from fetching.connectors import SourceRegistry
+from fetching.notion import _StopRequested
 from indexing.background_tasks import safe_error_message
 from indexing.chunker import DocumentChunker
 from storage.metadata_store import MetadataStore
@@ -12,6 +14,16 @@ from storage.metadata_store import MetadataStore
 logger = logging.getLogger(__name__)
 
 CANCELLED_SYNC_ERROR = "Sync request was cancelled before completion."
+FETCHING_PAGE_CONTENT_PHASE = "fetching_page_content"
+INDEXING_DOCUMENTS_PHASE = "indexing_documents"
+FETCH_PROGRESS_STOP_SIGNAL = object()
+OBSERVER_CANCELLED_SYNC_ERROR = "Sync request was cancelled by a progress observer before completion."
+
+
+class _InactiveJobStop(Exception):
+    def __init__(self, job):
+        super().__init__("Sync job is no longer active")
+        self.job = job
 
 
 def _now() -> str:
@@ -45,13 +57,45 @@ def _bulk_sync_outcome_for_job(job, *, source_enabled: bool) -> str:
     return "failed"
 
 
+def _indexing_status_message(processed_documents: int, total_documents: int) -> str:
+    if total_documents <= 0:
+        return "Preparing indexing work."
+    return f"Indexing documents {processed_documents}/{total_documents}."
+
+
+def _int_progress_value(value, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_progress_value(value, default: float = 0.0) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return default
+
+
 def _bulk_sync_status_from_results(results: list[dict]) -> str:
     outcomes = {result["sync_outcome"] for result in results}
     if outcomes.issubset({"succeeded", "skipped"}):
         return "completed"
+    if outcomes == {"blocked"}:
+        return "blocked"
     if outcomes.intersection({"succeeded", "skipped"}):
         return "partial"
     return "failed"
+
+
+def _is_replayable_background_failure(job) -> bool:
+    if job is None:
+        return False
+    return (
+        getattr(job, "status", None) == SyncJobStatus.FAILED
+        and getattr(job, "error_message", "")
+        == OBSERVER_CANCELLED_SYNC_ERROR
+    )
 
 
 class IngestionService:
@@ -95,6 +139,33 @@ class IngestionService:
 
         async def _sync_one(selected_source_id: str) -> dict:
             try:
+                existing_task = self._background_sync_tasks.get(selected_source_id)
+                if existing_task is not None and existing_task.done():
+                    await self._await_finished_background_handoff(selected_source_id)
+                else:
+                    self._reconcile_finished_background_task(selected_source_id)
+                recent_terminal_job = self._recent_terminal_background_jobs.pop(
+                    selected_source_id,
+                    None,
+                )
+                if recent_terminal_job is not None:
+                    latest_job = self.metadata_store.get_latest_sync_job(selected_source_id)
+                    if (
+                        latest_job is not None
+                        and latest_job.job_id == recent_terminal_job.job_id
+                        and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
+                    ):
+                        connector = self.source_registry.get_connector(selected_source_id)
+                        outcome = _bulk_sync_outcome_for_job(
+                            latest_job,
+                            source_enabled=connector.source.enabled,
+                        )
+                        return {
+                            "source_id": selected_source_id,
+                            "sync_outcome": outcome,
+                            "job": latest_job,
+                            "message": "",
+                        }
                 connector = self.source_registry.get_connector(selected_source_id)
                 job = await self._sync_source_internal(
                     selected_source_id,
@@ -137,14 +208,14 @@ class IngestionService:
 
     async def sync_source(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
+        await self._await_finished_background_handoff(source_id)
         recent_terminal_job = self._recent_terminal_background_jobs.pop(source_id, None)
         if recent_terminal_job is not None:
             latest_job = self.metadata_store.get_latest_sync_job(source_id)
             if (
                 latest_job is not None
                 and latest_job.job_id == recent_terminal_job.job_id
-                and latest_job.status == SyncJobStatus.FAILED
-                and latest_job.error_message == CANCELLED_SYNC_ERROR
+                and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
             ):
                 return latest_job
         return await self._sync_source_internal(source_id, join_existing_background=True)
@@ -174,7 +245,16 @@ class IngestionService:
 
     async def start_sync_source(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
-        self._recent_terminal_background_jobs.pop(source_id, None)
+        await self._await_finished_background_handoff(source_id)
+        recent_terminal_job = self._recent_terminal_background_jobs.pop(source_id, None)
+        if recent_terminal_job is not None:
+            latest_job = self.metadata_store.get_latest_sync_job(source_id)
+            if (
+                latest_job is not None
+                and latest_job.job_id == recent_terminal_job.job_id
+                and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
+            ):
+                return latest_job
         connector, job, should_run = self._begin_sync_source(source_id)
         if not should_run:
             return job
@@ -241,6 +321,73 @@ class IngestionService:
 
     async def _run_sync_source_job(self, job_id: str, source_id: str, connector):
         job = None
+        observer_stop_requested = False
+        previous_progress_callback = getattr(connector, "progress_callback", None)
+        progress_callback_attached = hasattr(connector, "progress_callback")
+        previous_progress_stop_signal = getattr(connector, "progress_stop_signal", None)
+        progress_stop_signal_attached = hasattr(connector, "progress_stop_signal")
+        previous_progress_stop_checker = getattr(connector, "progress_stop_checker", None)
+        progress_stop_checker_attached = hasattr(connector, "progress_stop_checker")
+
+        async def _composed_progress_callback(event: dict):
+            nonlocal observer_stop_requested
+            result = await self._handle_source_fetch_progress(job_id, source_id, event)
+            nested_result = None
+            if previous_progress_callback is not None:
+                try:
+                    nested_result = previous_progress_callback(event)
+                    if inspect.isawaitable(nested_result):
+                        nested_result = await nested_result
+                except _StopRequested:
+                    observer_stop_requested = True
+                    return FETCH_PROGRESS_STOP_SIGNAL
+                except Exception as exc:
+                    logger.debug(
+                        "Ignoring nested progress observer failure for source %s: %s",
+                        source_id,
+                        _redact_sensitive_error(str(exc)),
+                    )
+            nested_stop_requested = nested_result is FETCH_PROGRESS_STOP_SIGNAL or (
+                previous_progress_stop_signal is not None
+                and nested_result is previous_progress_stop_signal
+            )
+            if nested_stop_requested:
+                observer_stop_requested = True
+            if result is FETCH_PROGRESS_STOP_SIGNAL or nested_stop_requested:
+                return FETCH_PROGRESS_STOP_SIGNAL
+            return result
+
+        async def _composed_progress_stop_checker():
+            nonlocal observer_stop_requested
+            nested_stop_requested = False
+            if previous_progress_stop_checker is not None:
+                try:
+                    nested_result = previous_progress_stop_checker()
+                    if inspect.isawaitable(nested_result):
+                        nested_result = await nested_result
+                    nested_stop_requested = bool(nested_result)
+                except _StopRequested:
+                    observer_stop_requested = True
+                    raise
+                except Exception as exc:
+                    logger.debug(
+                        "Ignoring nested progress stop checker failure for source %s: %s",
+                        source_id,
+                        _redact_sensitive_error(str(exc)),
+                    )
+            if nested_stop_requested:
+                observer_stop_requested = True
+                return True
+            current_job = self._refresh_running_job_for_progress(job_id)
+            if current_job is not None:
+                raise _InactiveJobStop(current_job)
+            return False
+
+        if progress_callback_attached:
+            connector.progress_callback = _composed_progress_callback
+        connector.progress_stop_signal = FETCH_PROGRESS_STOP_SIGNAL
+        if progress_stop_checker_attached:
+            connector.progress_stop_checker = _composed_progress_stop_checker
         try:
             job = self.metadata_store.get_sync_job(job_id)
             if not job:
@@ -249,6 +396,8 @@ class IngestionService:
             if inactive_job:
                 return inactive_job
             documents = await connector.fetch_documents()
+            if observer_stop_requested:
+                raise RuntimeError(OBSERVER_CANCELLED_SYNC_ERROR)
             inactive_job = self._refresh_running_job_or_current(job.job_id)
             if inactive_job:
                 return inactive_job
@@ -397,6 +546,23 @@ class IngestionService:
             await self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
             return finished
 
+        except _InactiveJobStop as stop:
+            return stop.job
+        except _StopRequested:
+            error_message = OBSERVER_CANCELLED_SYNC_ERROR
+            if "uncommitted_vector_ids" in locals():
+                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+            return self.metadata_store.complete_failed_sync(
+                job_id=job.job_id if job is not None else job_id,
+                source_id=source_id,
+                error_message=error_message,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, error_message)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
+            )
         except asyncio.CancelledError:
             error_message = CANCELLED_SYNC_ERROR
             logger.warning("Sync cancelled for source %s", source_id)
@@ -430,6 +596,18 @@ class IngestionService:
                     else ""
                 ),
             )
+        finally:
+            if progress_callback_attached:
+                connector.progress_callback = previous_progress_callback
+            if progress_stop_signal_attached:
+                connector.progress_stop_signal = previous_progress_stop_signal
+            else:
+                try:
+                    delattr(connector, "progress_stop_signal")
+                except AttributeError:
+                    pass
+            if progress_stop_checker_attached:
+                connector.progress_stop_checker = previous_progress_stop_checker
 
     def _reconcile_finished_background_task(self, source_id: str) -> None:
         existing_task = self._background_sync_tasks.get(source_id)
@@ -449,14 +627,13 @@ class IngestionService:
         connector,
         task: asyncio.Task,
     ) -> None:
-        current_task = self._background_sync_tasks.get(source_id)
-        if current_task is task:
-            self._background_sync_tasks.pop(source_id, None)
         try:
-            task.result()
+            result = task.result()
+            if _is_replayable_background_failure(result):
+                self._recent_terminal_background_jobs[source_id] = result
         except asyncio.CancelledError:
             logger.warning("Background sync task cancelled for source %s", source_id)
-            failed_job = self.metadata_store.complete_failed_sync(
+            self.metadata_store.complete_failed_sync(
                 job_id=job_id,
                 source_id=source_id,
                 error_message=CANCELLED_SYNC_ERROR,
@@ -467,13 +644,16 @@ class IngestionService:
                     else ""
                 ),
             )
-            self._recent_terminal_background_jobs[source_id] = failed_job
         except Exception as exc:
             logger.error(
                 "Background sync task failed for source %s: %s",
                 source_id,
                 _redact_sensitive_error(str(exc)),
             )
+        finally:
+            current_task = self._background_sync_tasks.get(source_id)
+            if current_task is task:
+                self._background_sync_tasks.pop(source_id, None)
 
     def _refresh_running_job_or_current(self, job_id: str):
         current_job = self.metadata_store.touch_sync_job(job_id)
@@ -491,14 +671,39 @@ class IngestionService:
         processed_documents: int,
         indexed_chunks: int,
         skipped_documents: int,
+        phase: str = INDEXING_DOCUMENTS_PHASE,
+        upstream_total_pages: int | None = None,
+        upstream_fetched_pages: int | None = None,
+        last_progress_at: str | None = None,
+        status_message: str | None = None,
     ):
         try:
+            current_job = self.metadata_store.get_sync_job(job_id)
+            if current_job is None:
+                raise ValueError(f"Unknown sync job: {job_id}")
             self.metadata_store.update_sync_job(
                 job_id,
                 total_documents=total_documents,
                 processed_documents=processed_documents,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped_documents,
+                phase=phase,
+                upstream_total_pages=(
+                    current_job.upstream_total_pages
+                    if upstream_total_pages is None
+                    else upstream_total_pages
+                ),
+                upstream_fetched_pages=(
+                    current_job.upstream_fetched_pages
+                    if upstream_fetched_pages is None
+                    else upstream_fetched_pages
+                ),
+                last_progress_at=last_progress_at or _now(),
+                status_message=(
+                    status_message
+                    if status_message is not None
+                    else _indexing_status_message(processed_documents, total_documents)
+                ),
             )
         except Exception as exc:
             logger.debug(
@@ -506,6 +711,174 @@ class IngestionService:
                 job_id,
                 _redact_sensitive_error(str(exc)),
             )
+
+    def _update_sync_job_hints_best_effort(self, job_id: str, **updates) -> None:
+        try:
+            self.metadata_store.update_sync_job(job_id, **updates)
+        except Exception as exc:
+            logger.debug(
+                "Unable to update sync job hints for job %s: %s",
+                job_id,
+                _redact_sensitive_error(str(exc)),
+            )
+
+    def _refresh_running_job_for_progress(self, job_id: str):
+        try:
+            current_job = self.metadata_store.touch_sync_job(job_id)
+            if not current_job:
+                raise ValueError(f"Unknown sync job: {job_id}")
+            if current_job.status != SyncJobStatus.RUNNING:
+                return current_job
+            if current_job.phase in {"discovering_pages", FETCHING_PAGE_CONTENT_PHASE}:
+                self._update_sync_job_hints_best_effort(
+                    job_id,
+                    last_progress_at=_now(),
+                )
+            return None
+        except Exception as exc:
+            logger.debug(
+                "Unable to refresh sync progress heartbeat for job %s: %s",
+                job_id,
+                _redact_sensitive_error(str(exc)),
+            )
+            return None
+
+    async def _handle_source_fetch_progress(self, job_id: str, source_id: str, event: dict):
+        current_job = self._refresh_running_job_for_progress(job_id)
+        if current_job:
+            raise _InactiveJobStop(current_job)
+        running_job = self.metadata_store.get_sync_job(job_id)
+
+        event_name = str(event.get("event") or "").strip()
+        total_pages = _int_progress_value(event.get("total_pages"))
+        current_page = _int_progress_value(event.get("current_page"))
+        page_id = str(event.get("page_id") or "").strip() or "unknown-page"
+        elapsed_seconds = _float_progress_value(event.get("elapsed_seconds"))
+        progress_timestamp = _now()
+        existing_total = _int_progress_value(
+            getattr(running_job, "upstream_total_pages", 0) if running_job else 0
+        )
+        existing_fetched = _int_progress_value(
+            getattr(running_job, "upstream_fetched_pages", 0) if running_job else 0
+        )
+
+        if event_name == "search_started":
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase="discovering_pages",
+                last_progress_at=progress_timestamp,
+                status_message="Discovering Notion pages before indexing begins.",
+            )
+            logger.info("Source %s started upstream page discovery", source_id)
+            return None
+
+        if event_name == "search_completed":
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase=FETCHING_PAGE_CONTENT_PHASE,
+                upstream_total_pages=total_pages,
+                upstream_fetched_pages=0,
+                last_progress_at=progress_timestamp,
+                status_message=(
+                    f"Fetching Notion page content 0/{total_pages} before indexing begins."
+                    if total_pages
+                    else "No Notion pages found to index."
+                ),
+            )
+            logger.info(
+                "Source %s discovered %s upstream page(s) before indexing",
+                source_id,
+                total_pages,
+            )
+            return None
+
+        if event_name == "search_page_batch_completed":
+            discovered = _int_progress_value(event.get("pages_discovered"))
+            batch_index = _int_progress_value(event.get("batch_index"))
+            has_more = bool(event.get("has_more"))
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase="discovering_pages",
+                upstream_total_pages=max(discovered, existing_total),
+                upstream_fetched_pages=existing_fetched,
+                last_progress_at=progress_timestamp,
+                status_message=(
+                    f"Discovering Notion pages: {discovered} found after batch {batch_index}."
+                    + (" More results remain." if has_more else "")
+                ),
+            )
+            logger.info(
+                "Source %s discovered %s Notion page(s) after search batch %s",
+                source_id,
+                discovered,
+                batch_index or "?",
+            )
+            return None
+
+        if event_name == "page_fetch_started":
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase=FETCHING_PAGE_CONTENT_PHASE,
+                upstream_total_pages=max(total_pages, existing_total),
+                upstream_fetched_pages=max(max(current_page - 1, 0), existing_fetched),
+                last_progress_at=progress_timestamp,
+                status_message=(
+                    "Fetching Notion page content "
+                    f"{max(current_page - 1, 0)}/{total_pages} completed; "
+                    f"now fetching page {current_page}."
+                    if total_pages
+                    else "Fetching Notion page content before indexing begins."
+                ),
+            )
+            logger.info(
+                "Source %s fetching upstream page %s/%s (%s)",
+                source_id,
+                current_page or "?",
+                total_pages or "?",
+                page_id,
+            )
+            return None
+
+        if event_name == "page_fetch_completed":
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase=FETCHING_PAGE_CONTENT_PHASE,
+                upstream_total_pages=max(total_pages, existing_total),
+                upstream_fetched_pages=max(current_page, existing_fetched),
+                last_progress_at=progress_timestamp,
+                status_message=(
+                    f"Fetching Notion page content {current_page}/{total_pages} before indexing begins."
+                    if total_pages
+                    else "Fetching Notion page content before indexing begins."
+                ),
+            )
+            logger.info(
+                "Source %s fetched upstream page %s/%s (%s) in %.2fs",
+                source_id,
+                current_page or "?",
+                total_pages or "?",
+                page_id,
+                elapsed_seconds,
+            )
+            return None
+
+        logger.debug(
+            "Ignoring unknown fetch progress event for source %s: %s",
+            source_id,
+            event_name or "<empty>",
+        )
+        return None
+
+    async def _await_finished_background_handoff(self, source_id: str, attempts: int = 5) -> None:
+        for _ in range(attempts):
+            existing_task = self._background_sync_tasks.get(source_id)
+            if existing_task is None:
+                return
+            if existing_task.done():
+                self._reconcile_finished_background_task(source_id)
+                if self._background_sync_tasks.get(source_id) is not existing_task:
+                    return
+            await asyncio.sleep(0)
 
     def _validate_document_before_index(self, job_id: str, document: DocumentModel):
         current_job = self.metadata_store.validate_running_job_document(job_id, document)
