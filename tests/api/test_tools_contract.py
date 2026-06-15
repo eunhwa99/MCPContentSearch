@@ -464,6 +464,23 @@ class RecoveringStatusMetadataStore(FakeMetadataStore):
 
 class FakeContextSearch:
     async def search_context(self, query, filters=None, top_k=10, include_debug=False):
+        debug_payload = {}
+        if include_debug:
+            debug_payload = {
+                "query_rewrite": {
+                    "attempted": True,
+                    "applied": True,
+                    "reason": "low_initial_vector_score",
+                    "initial_top_vector_score": 0.2,
+                    "final_top_score": 0.9,
+                    "original_query": query,
+                    "rewritten_queries": ["ContextWiki evidence"],
+                },
+                "rewrite_enabled": True,
+                "rewrite_attempted": True,
+                "rewrite_applied": True,
+                "rewrite_skipped_reason": "",
+            }
         return {
             "query": query,
             "results": [
@@ -478,21 +495,7 @@ class FakeContextSearch:
                     text="ContextWiki evidence",
                 )
             ],
-            "debug": {
-                "query_rewrite": {
-                    "attempted": include_debug,
-                    "applied": include_debug,
-                    "reason": "low_initial_vector_score" if include_debug else "",
-                    "initial_top_vector_score": 0.2 if include_debug else 0.0,
-                    "final_top_score": 0.9 if include_debug else 0.0,
-                    "original_query": query,
-                    "rewritten_queries": ["ContextWiki evidence"],
-                },
-                "rewrite_enabled": True,
-                "rewrite_attempted": include_debug,
-                "rewrite_applied": include_debug,
-                "rewrite_skipped_reason": "" if include_debug else "empty_result",
-            },
+            "debug": debug_payload,
         }
 
     async def search_documents(self, query, filters=None, top_k=10):
@@ -1166,7 +1169,7 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "document_count" in status["sources"][0]["source"]
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
-    assert "debug" not in search
+    assert search["debug"] == {}
     assert "vector_score" not in search["results"][0]
     assert document_search["results"][0]["document_id"] == "doc-1"
     assert document_search["results"][0]["chunk_id"] == "chunk-1"
@@ -1192,29 +1195,14 @@ def test_search_context_can_include_structured_debug_payload():
     assert search["debug"]["query_rewrite"]["final_top_score"] == 0.9
 
 
-def test_answer_with_citations_can_include_debug_payload():
-    answer_service = CapturingAnswerService()
+def test_answer_with_citations_is_not_registered_as_public_mcp_tool():
     mcp = FakeMCP()
     register_tools(
         mcp,
-        answer_service=answer_service,
+        answer_service=CapturingAnswerService(),
     )
 
-    answer = asyncio.run(
-        mcp.tools["answer_with_citations"](
-            "What is ContextWiki?",
-            include_debug=True,
-        )
-    )
-
-    assert answer["answer_mode"] == "contextwiki_debug"
-    assert answer["debug"]["question"] == "What is ContextWiki?"
-    assert answer["debug"]["query_rewrite"]["applied"] is False
-    assert answer["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
-    assert answer["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.2
-    assert answer["debug"]["query_rewrite"]["final_top_score"] == 0.9
-    assert "rewritten queries tried" in answer["debug_markdown"]
-    assert answer_service.calls[0]["include_debug"] is True
+    assert "answer_with_citations" not in mcp.tools
 
 
 def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_available(tmp_path):
@@ -1299,7 +1287,8 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     assert fetched_chunk["chunk"] is None
     assert fetched_document == {"document": None, "chunks": []}
     assert filtered_search["results"] == []
-    assert "debug" not in filtered_search
+    assert filtered_search["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
+    assert filtered_search["debug"]["rewrite_attempted"] is False
     assert filtered_search_with_debug["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
     assert filtered_document_search["results"] == []
 

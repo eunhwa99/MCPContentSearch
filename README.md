@@ -185,6 +185,8 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 ./scripts/demo.sh --query "your question"   # Custom query
 ```
 
+- `./scripts/demo.sh` is the default reviewer path. It uses the bundled sample vault, needs no credentials, and keeps retrieval plus helper preview on the same input by default.
+
 ---
 
 ## 📁 Project Structure
