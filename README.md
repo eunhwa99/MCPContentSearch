@@ -401,26 +401,60 @@ Run the full retained flow against the bundled sample vault:
 - Uses `MockEmbedding`
 - Requires no Notion, Tistory, GitHub, or Obsidian credentials
 
+The default demo transcript is the canonical portfolio path: the same question
+is used for retrieval and helper answer preview.
+
+The keyless bundled-sample-vault path above is the safer first-run path for reviewers, and it is the only documented
+path here that is intentionally keyless.
+
 ```bash
 ./scripts/demo.sh --query "Why does ContextWiki validate citations through SQLite?"
 ./scripts/demo.sh --json
 ```
 
+If you override both `--query` and `--question` with different values, treat the
+output as separate probes rather than one validated end-to-end chain. The
+default transcript is intentionally aligned so reviewers do not over-read a
+split-input run as a stronger product guarantee than it is.
+
 ---
 
 ## Verification
 
-If you only want a quick product-flow check, run:
+Verification layers are intentionally split:
+
+- Public MCP contract layer
+  Real `FastMCP.call_tool(...)` payload checks for retained public tools.
+- Deterministic functional E2E layer
+  Retained sync/search/fetch/answer flow checks over temp or local state.
+- Deterministic quality eval layer
+  Retrieval and answer quality checks through `tests/evals` and
+  `scripts/run_contextwiki_eval.py`.
+- Manual live smoke layer
+  Optional local configured-runtime diagnostics only.
+
+No retained automated pytest currently uses the `live` marker.
+`tests/scripts/test_live_query_smoke.py` only verifies the CLI contract for the
+manual smoke script, not live external source behavior.
+
+If you only want a quick product-flow check, run the aligned same-input smoke
+path:
 
 ```bash
 ./scripts/demo.sh
 ```
+
+This is the aligned same-input smoke path, and the transcript explicitly labels the output as
+separate probes so reviewers do not mistake it for one validated chain.
 
 If you changed code and want the main local verification gate, run:
 
 ```bash
 ./scripts/verify_all.sh
 ```
+
+All live-smoke output should be treated as local diagnostic data, not as a
+retained deterministic test artifact.
 
 ---
 
