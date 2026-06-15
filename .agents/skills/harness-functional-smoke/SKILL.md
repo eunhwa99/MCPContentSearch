@@ -60,8 +60,10 @@ Start from the full inventory below, then mark rows `passed`, `failed`,
 `not affected`, or `blocked/gated` rather than silently omitting them. Common
 MCPContentSearch surfaces:
 
-- MCP tools: `list_sources`, `sync_source`, `get_sync_status`,
-  `search_context`, `fetch_context`, `answer_with_citations`.
+- MCP tools: `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
+  `search_context`, `search_documents`, `fetch_context`.
+- Retained answer coverage through local demo/smoke scripts or retained tests
+  when grounded answer behavior is affected.
 - Configured-source sync: the normal `sync_source(source_id)` path for
   configured Notion, Tistory, or GitHub sources.
 - Storage-sensitive flows: prefer temporary Chroma/SQLite paths and fake
