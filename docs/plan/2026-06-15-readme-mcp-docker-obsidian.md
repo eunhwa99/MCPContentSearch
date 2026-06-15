@@ -47,8 +47,9 @@ Non-goals:
   or ADRs as required current docs.
 - Harness docs point to `.agents/docs/architecture.md` as the active design
   source of truth.
-- `docs/contextwiki-core-understanding.md` remains only as a compatibility stub
-  for historical links and redirects readers to `Architecture`.
+- The maintained design explanation now lives only in
+  `.agents/docs/architecture.md`, with the previously duplicated core
+  understanding content absorbed there.
 
 ## Step breakdown
 
@@ -74,7 +75,6 @@ Non-goals:
 - `.agents/skills/harness-review/SKILL.md`
 - `.agents/skills/harness-functional-smoke/SKILL.md`
 - `.agents/skills/harness-implement/SKILL.md`
-- `docs/contextwiki-core-understanding.md`
 - `docs/images/claude-desktop-dynamodb-star-example.png`
 - `docs/plan/README.md`
 - `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md`
@@ -92,7 +92,7 @@ Non-goals:
 | Surface | Planned check | Why |
 | --- | --- | --- |
 | README setup guidance | manual diff inspection | Docs-only request; no runtime behavior change |
-| Docs structure redirects | manual diff inspection | Confirm architecture-only active-doc path, ADR archive wording, and compatibility-stub behavior stay reader-clear |
+| Docs structure redirects | manual diff inspection | Confirm architecture-only active-doc path, ADR archive wording, and the intentional deletion of the duplicated core-understanding file stay reader-clear |
 | Harness and instruction contracts | manual diff inspection | Confirm AGENTS, harness docs, phase skills, and plan template all reflect the same architecture-first active-doc policy |
 
 ## Architecture constraints
@@ -119,12 +119,15 @@ Non-goals:
 | README Docker clarification follow-up | completed | Added an explicit split between the minimum Docker run example and the Obsidian-enabled Docker run example so readers do not assume the vault mount is optional when `source_obsidian` is in use. | `README.md` |
 | README Claude Desktop example | completed | Added a real Claude Desktop screenshot plus a short example prompt so readers can see a Claude client workflow using ContextWiki after setup. | `README.md`; `docs/images/claude-desktop-dynamodb-star-example.png` |
 | README wording cleanup follow-up | completed | Removed the extra explanatory sentence under the Claude Desktop example so the README stays focused on the prompt plus screenshot evidence only. | `README.md` |
-| Functional smoke | completed | Completed the docs-only smoke rows by manually inspecting the README setup flow, Docker/Obsidian notes, Claude Desktop example placement, architecture-only active-doc wording, ADR archive wording, compatibility-stub redirect behavior, and harness/instruction-contract consistency against the final staged wording. | `README.md`; `AGENTS.md`; `.agents/docs/harness-engineering.md`; `.agents/docs/github-workflow.md`; `.agents/skills/harness-*/SKILL.md`; `.agents/docs/adr/README.md`; `docs/contextwiki-core-understanding.md`; `docs/plan/README.md`; matrix rows above |
-| Review-fix pass 1 | completed | Resolved reviewer findings by converting `.agents/docs/adr/README.md` into a historical archive note instead of an active harness contract, and by restoring `docs/contextwiki-core-understanding.md` as a compatibility stub that redirects readers to `Architecture` so older plan-doc links do not break. | `.agents/docs/adr/README.md`; `docs/contextwiki-core-understanding.md` |
+| Functional smoke | completed | Completed the docs-only smoke rows by manually inspecting the README setup flow, Docker/Obsidian notes, Claude Desktop example placement, architecture-only active-doc wording, ADR archive wording, and harness/instruction-contract consistency against the final staged wording. | `README.md`; `AGENTS.md`; `.agents/docs/harness-engineering.md`; `.agents/docs/github-workflow.md`; `.agents/skills/harness-engineering/SKILL.md`; `.agents/skills/harness-functional-smoke/SKILL.md`; `.agents/skills/harness-review/SKILL.md`; `.agents/docs/adr/README.md`; `.agents/docs/architecture.md`; `docs/plan/README.md`; matrix rows above |
+| Review-fix pass 1 | completed | Resolved reviewer findings by converting `.agents/docs/adr/README.md` into a historical archive note instead of an active harness contract. | `.agents/docs/adr/README.md` |
 | Review-fix pass 2 | completed | Clarified that the documented Claude Desktop config path is the macOS path, added the missing Docker image build prerequisite, fixed the stale AGENTS connector inventory to include Obsidian, and synced the plan file list with the actual staged scope. | `README.md`; `AGENTS.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
 | Review-fix pass 3 | completed | Reframed the screenshot section as a Claude Desktop client workflow example rather than a direct server-answer capability, and updated the plan template wording from `Architecture/ADR constraints` to `Architecture constraints` so active plan guidance matches the simplified harness contract. | `README.md`; `docs/plan/README.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
-| Docs structure simplification | completed | Removed the active `Core Understanding` reader path from README and harness flows, dropped current-reader ADR dependencies from active harness docs, and positioned `Architecture` as the single maintained design reference beyond the README while keeping compatibility stubs for historical links. | `README.md`; `AGENTS.md`; `.agents/docs/architecture.md`; `.agents/docs/adr/README.md`; harness docs/skills; `docs/contextwiki-core-understanding.md` |
-| Review-fix pass 4 | completed | Separated local `uv` prerequisites from Docker prerequisites, clarified that the Docker Claude Desktop config is minimal by default and needs an extra mount only for Obsidian, and synced the plan language with the final compatibility-stub outcome for `docs/contextwiki-core-understanding.md`. | `README.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
-| Review-fix pass 5 | completed | Added an explicit warning about reusing a host-path Obsidian env var with the minimum Docker example, made the compatibility stub title visibly deprecated, and refreshed the plan wording so the final artifact stays aligned with the stub-based outcome. | `README.md`; `docs/contextwiki-core-understanding.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
-| Docs verification | completed | Reran docs-only file listing, branch status, whitespace checks, staged the final docs set including the compatibility stub, and confirmed the cached diff is clean after the structure simplification. | `rg --files AGENTS.md README.md docs .agents/docs .agents/skills`; `git status --short --branch`; `git diff --check`; `git add ...`; `git diff --cached --check` |
-| Final review gate | completed | Ran repeated fresh five-reviewer `$subagent-review-loop` passes while fixing every actionable finding. The newest pass converged to bookkeeping-only plan-state reminders, which were applied here before PR delivery. | reviewer outputs from the newest pass in this thread; latest plan rows updated to match delivery state |
+| Docs structure simplification | completed | Removed the active `Core Understanding` reader path from README and harness flows, dropped current-reader ADR dependencies from active harness docs, and positioned `Architecture` as the single maintained design reference beyond the README. | `README.md`; `AGENTS.md`; `.agents/docs/architecture.md`; `.agents/docs/adr/README.md`; harness docs/skills |
+| Review-fix pass 4 | completed | Separated local `uv` prerequisites from Docker prerequisites and clarified that the Docker Claude Desktop config is minimal by default and needs an extra mount only for Obsidian. | `README.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
+| Review-fix pass 5 | completed | Added an explicit warning about reusing a host-path Obsidian env var with the minimum Docker example. | `README.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
+| Follow-up docs merge | completed | Merged the remaining setup and runtime mental model into `.agents/docs/architecture.md`, then deleted `docs/contextwiki-core-understanding.md` per the latest request so current docs have a single maintained design document. Historical plan-doc mentions remain archival only. | `.agents/docs/architecture.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md`; delete `docs/contextwiki-core-understanding.md` |
+| Docs verification | completed | Reran docs-only file listing, branch status, whitespace checks, staged diff checks, and cached diff checks after the follow-up architecture merge and file deletion. | `rg --files AGENTS.md README.md docs .agents/docs .agents/skills`; `git status --short --branch`; `git diff --check`; `git add ...`; `git diff --cached --check` |
+| Review-fix pass 6 | completed | Cleared the stale post-merge plan state by marking docs verification complete and keeping the verification evidence path on the real `SKILL.md` files rather than a nonexistent markdown pattern. | `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
+| Review-fix pass 7 | completed | Expanded `.agents/docs/architecture.md` so the single maintained design doc now covers retained `sync_all` aggregate semantics, retrieval/debug policy boundaries, and the layered verification model that previously lived in the duplicated note. | `.agents/docs/architecture.md`; `docs/plan/2026-06-15-readme-mcp-docker-obsidian.md` |
+| Final review gate | completed | Ran a fresh five-reviewer `$subagent-review-loop` pass after the final architecture backfill fixes. The newest pass reported no actionable findings, so the architecture-only maintained-doc transition and file deletion are review-clean. | reviewers `Ramanujan`, `Poincare`, `Locke`, `Carson`, and `Hubble` in this thread |
