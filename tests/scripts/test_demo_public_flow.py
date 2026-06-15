@@ -20,8 +20,9 @@ def test_run_demo_returns_grounded_public_flow():
         )
     )
 
-    assert result["sync"]["status"] == "succeeded"
+    assert result["sync"]["status"] == "running"
     assert result["status"]["source"]["source_id"] == "source_obsidian"
+    assert result["status"]["latest_job"]["status"] == "succeeded"
     assert result["search"]["results"]
     assert result["answer"]["evidence_status"] == "grounded"
     assert result["answer"]["citations"]
@@ -35,7 +36,8 @@ def test_run_demo_returns_insufficient_for_unrelated_question():
         )
     )
 
-    assert result["sync"]["status"] == "succeeded"
+    assert result["sync"]["status"] == "running"
+    assert result["status"]["latest_job"]["status"] == "succeeded"
     assert result["search"]["results"]
     assert result["answer"]["evidence_status"] == "insufficient"
     assert (
@@ -104,8 +106,11 @@ def test_render_demo_text_includes_sync_search_and_answer_sections():
     text = render_demo_text(
         {
             "sample_vault": "sample_vault",
-            "sync": {"status": "succeeded"},
-            "status": {"source": {"source_id": "source_obsidian"}},
+            "sync": {"status": "running"},
+            "status": {
+                "source": {"source_id": "source_obsidian"},
+                "latest_job": {"status": "succeeded"},
+            },
             "search": {"results": [{"chunk_id": "chunk-1"}]},
             "answer": {"evidence_status": "grounded", "citations": [{"chunk_id": "chunk-1"}]},
         },
@@ -130,8 +135,11 @@ def test_render_demo_text_warns_when_search_and_answer_inputs_diverge():
     text = render_demo_text(
         {
             "sample_vault": "sample_vault",
-            "sync": {"status": "succeeded"},
-            "status": {"source": {"source_id": "source_obsidian"}},
+            "sync": {"status": "running"},
+            "status": {
+                "source": {"source_id": "source_obsidian"},
+                "latest_job": {"status": "succeeded"},
+            },
             "search": {"results": [{"chunk_id": "chunk-1"}]},
             "answer": {"evidence_status": "grounded", "citations": [{"chunk_id": "chunk-1"}]},
         },
@@ -166,10 +174,11 @@ def test_demo_script_json_mode_runs_successfully():
     assert payload["query"] == "How does ContextWiki prevent stale citations?"
     assert payload["question"] == "How does ContextWiki prevent stale citations?"
     assert payload["same_input"] is True
-    assert payload["sync"]["status"] == "succeeded"
+    assert payload["sync"]["status"] == "running"
     assert payload["sync"]["job_id"] == "<generated>"
     assert payload["status"]["source"]["last_synced_at"] == "<generated>"
     assert payload["status"]["source"]["latest_success_at"] == "<generated>"
+    assert payload["status"]["latest_job"]["status"] == "succeeded"
     assert payload["search"]["results"][0]["updated_at"] == "<generated>"
     assert payload["answer"]["evidence_status"] == "grounded"
     assert completed.stdout.lstrip().startswith("{")
@@ -242,7 +251,8 @@ def test_demo_public_flow_script_runs_from_repo_root_without_pythonpath():
     )
 
     payload = json.loads(completed.stdout)
-    assert payload["sync"]["status"] == "succeeded"
+    assert payload["sync"]["status"] == "running"
+    assert payload["status"]["latest_job"]["status"] == "succeeded"
     assert payload["answer"]["evidence_status"] == "grounded"
     assert completed.stdout.lstrip().startswith("{")
 

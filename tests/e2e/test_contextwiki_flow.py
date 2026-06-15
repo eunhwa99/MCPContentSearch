@@ -117,6 +117,29 @@ def _call_tool_json(mcp: FastMCP, name: str, arguments: dict | None = None) -> d
     return json.loads(blocks[0].text)
 
 
+async def _call_tool_json_async(mcp: FastMCP, name: str, arguments: dict | None = None) -> dict:
+    blocks = await mcp.call_tool(name, arguments or {})
+    return json.loads(blocks[0].text)
+
+
+async def _wait_for_sync_completion(mcp, source_id: str, attempts: int = 500) -> dict:
+    latest = None
+    for _ in range(attempts):
+        if hasattr(mcp, "tools"):
+            latest = await mcp.tools["get_sync_status"](source_id)
+        else:
+            latest = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": source_id},
+            )
+        latest_job = latest.get("latest_job") or {}
+        if latest_job.get("status") in {"succeeded", "failed"}:
+            return latest
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
+
+
 pytestmark = pytest.mark.e2e
 
 
@@ -143,36 +166,54 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
         source_registry=registry,
     )
 
-    sync_job = asyncio.run(mcp.tools["sync_source"]("source_fake_docs"))
-    status = asyncio.run(mcp.tools["get_sync_status"]("source_fake_docs"))
-    search_result = asyncio.run(
-        mcp.tools["search_context"](
+    async def run_flow():
+        sync_job = await mcp.tools["sync_source"]("source_fake_docs")
+        status = await _wait_for_sync_completion(mcp, "source_fake_docs")
+        search_result = await mcp.tools["search_context"](
             "citations",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
         )
-    )
-    collection_search = asyncio.run(
-        mcp.tools["search_context"](
+        collection_search = await mcp.tools["search_context"](
             "ContextWiki 관련 문서 모아줘",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
             include_debug=True,
         )
-    )
-    chunk_id = search_result["results"][0]["chunk_id"]
-    fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id=chunk_id))
-    answer = asyncio.run(mcp.tools["answer_with_citations"]("How does ContextWiki answer?"))
-    collection_answer = asyncio.run(
-        mcp.tools["answer_with_citations"](
+        chunk_id = search_result["results"][0]["chunk_id"]
+        fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
+        answer = await mcp.tools["answer_with_citations"]("How does ContextWiki answer?")
+        collection_answer = await mcp.tools["answer_with_citations"](
             "ContextWiki 관련 문서 모아줘",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
         )
-    )
-    unsupported = asyncio.run(mcp.tools["answer_with_citations"]("What is the deployment region?"))
+        unsupported = await mcp.tools["answer_with_citations"]("What is the deployment region?")
+        return (
+            sync_job,
+            status,
+            search_result,
+            collection_search,
+            chunk_id,
+            fetched,
+            answer,
+            collection_answer,
+            unsupported,
+        )
 
-    assert sync_job["status"] == "succeeded"
+    (
+        sync_job,
+        status,
+        search_result,
+        collection_search,
+        chunk_id,
+        fetched,
+        answer,
+        collection_answer,
+        unsupported,
+    ) = asyncio.run(run_flow())
+
+    assert sync_job["status"] == "running"
     assert status["source"]["sync_status"] == "succeeded"
     assert search_result["results"][0]["title"] == "ContextWiki MVP"
     assert collection_search["debug"]["intent"]["name"] == "list"
@@ -258,29 +299,32 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
                 ]
             )
         )
-        other_job = asyncio.run(mcp.tools["sync_source"]("source_other"))
-        target_job = asyncio.run(mcp.tools["sync_source"]("source_fake_docs"))
-        status = asyncio.run(mcp.tools["get_sync_status"]("source_fake_docs"))
-        search_result = asyncio.run(
-            mcp.tools["search_context"](
+        async def run_flow():
+            other_job = await mcp.tools["sync_source"]("source_other")
+            target_job = await mcp.tools["sync_source"]("source_fake_docs")
+            await _wait_for_sync_completion(mcp, "source_other")
+            status = await _wait_for_sync_completion(mcp, "source_fake_docs")
+            search_result = await mcp.tools["search_context"](
                 "ContextWiki citations",
                 filters={"source_id": "source_fake_docs"},
                 top_k=1,
             )
-        )
-        chunk_id = search_result["results"][0]["chunk_id"]
-        fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id=chunk_id))
-        answer = asyncio.run(
-            mcp.tools["answer_with_citations"](
+            chunk_id = search_result["results"][0]["chunk_id"]
+            fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
+            answer = await mcp.tools["answer_with_citations"](
                 "How does ContextWiki answer?",
                 filters={"source_id": "source_fake_docs"},
                 top_k=1,
             )
+            return other_job, target_job, status, search_result, chunk_id, fetched, answer
+
+        other_job, target_job, status, search_result, chunk_id, fetched, answer = asyncio.run(
+            run_flow()
         )
         metadatas = chroma_collection.get(include=["metadatas"])["metadatas"]
 
-        assert other_job["status"] == "succeeded"
-        assert target_job["status"] == "succeeded"
+        assert other_job["status"] == "running"
+        assert target_job["status"] == "running"
         assert status["source"]["sync_status"] == "succeeded"
         assert chroma_collection.count() >= 3
         assert any(metadata.get("contextwiki_managed") == "false" for metadata in metadatas)
@@ -359,7 +403,12 @@ def test_contextwiki_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
         source_registry=registry,
     )
 
-    sync_job = _call_tool_json(mcp, "sync_source", {"source_id": "source_alias_docs"})
+    async def run_flow():
+        sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": "source_alias_docs"})
+        await _wait_for_sync_completion(mcp, "source_alias_docs")
+        return sync_job
+
+    sync_job = asyncio.run(run_flow())
     chunk_id = store.list_chunks_for_document("doc_aws_alias")[0].chunk_id
     search_result = _call_tool_json(
         mcp,
@@ -371,7 +420,7 @@ def test_contextwiki_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
         },
     )
 
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert len(search_result["results"]) == 1
     assert search_result["results"][0]["title"] == "Cloud deployment checklist"
     assert search_result["results"][0]["chunk_id"] == chunk_id
@@ -459,7 +508,16 @@ def test_contextwiki_e2e_phase2_query_rewrite_recovers_rewrite_required_search_h
         source_registry=registry,
     )
 
-    sync_job = _call_tool_json(rewrite_mcp, "sync_source", {"source_id": "source_rewrite_docs"})
+    async def run_flow():
+        sync_job = await _call_tool_json_async(
+            rewrite_mcp,
+            "sync_source",
+            {"source_id": "source_rewrite_docs"},
+        )
+        await _wait_for_sync_completion(rewrite_mcp, "source_rewrite_docs")
+        return sync_job
+
+    sync_job = asyncio.run(run_flow())
     chunk_id = store.list_chunks_for_document("doc_ec2_setup")[0].chunk_id
     baseline_result = _call_tool_json(
         baseline_mcp,
@@ -482,7 +540,7 @@ def test_contextwiki_e2e_phase2_query_rewrite_recovers_rewrite_required_search_h
         },
     )
 
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert baseline_result["results"] == []
     assert "aws virtual machine startup" in baseline_queries
     assert "aws ec2 setup" not in baseline_queries
@@ -604,7 +662,16 @@ def test_contextwiki_e2e_phase3_repository_lookup_prefers_docs_before_code(tmp_p
         source_registry=registry,
     )
 
-    sync_job = _call_tool_json(mcp, "sync_source", {"source_id": "source_github_docs_intent"})
+    async def run_flow():
+        sync_job = await _call_tool_json_async(
+            mcp,
+            "sync_source",
+            {"source_id": "source_github_docs_intent"},
+        )
+        await _wait_for_sync_completion(mcp, "source_github_docs_intent")
+        return sync_job
+
+    sync_job = asyncio.run(run_flow())
     code_document_count = sum(
         1
         for document in indexer.documents
@@ -626,7 +693,7 @@ def test_contextwiki_e2e_phase3_repository_lookup_prefers_docs_before_code(tmp_p
         },
     )
 
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert code_document_count == 64
     assert retrieved_queries
     assert returned_candidate_ids[0] == docs_chunk_id

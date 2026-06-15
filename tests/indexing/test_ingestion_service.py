@@ -378,6 +378,571 @@ def test_overlapping_source_sync_returns_existing_running_job_without_second_fet
     assert store.get_source("source_fake").sync_status == SyncStatus.SUCCEEDED
 
 
+def test_start_sync_source_returns_running_job_and_completes_in_background(tmp_path):
+    document = DocumentModel(
+        id="doc-started",
+        source_id="source_fake",
+        title="Background",
+        content="Background launch should return before completion.",
+        url="https://example.com/doc-started",
+        platform="GitHub",
+        path="doc-started.md",
+    )
+
+    async def run_background_launch():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        running_job = store.get_latest_sync_job("source_fake")
+        release.set()
+
+        completed_job = None
+        for _ in range(20):
+            completed_job = store.get_latest_sync_job("source_fake")
+            if completed_job and completed_job.status != SyncJobStatus.RUNNING:
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("background sync did not complete within polling window")
+
+        return connector, launched_job, running_job, completed_job, store
+
+    connector, launched_job, running_job, completed_job, store = asyncio.run(
+        run_background_launch()
+    )
+
+    assert connector.calls == 1
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert running_job is not None
+    assert running_job.status == SyncJobStatus.RUNNING
+    assert completed_job is not None
+    assert completed_job.job_id == launched_job.job_id
+    assert completed_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_source("source_fake").sync_status == SyncStatus.SUCCEEDED
+
+
+def test_start_sync_source_reuses_existing_running_job_without_second_fetch(tmp_path):
+    document = DocumentModel(
+        id="doc-reuse",
+        source_id="source_fake",
+        title="Reuse",
+        content="A second launcher call should reuse the running job.",
+        url="https://example.com/doc-reuse",
+        platform="GitHub",
+        path="doc-reuse.md",
+    )
+
+    async def run_reused_background_launch():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        first_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        second_job = await service.start_sync_source("source_fake")
+        release.set()
+
+        completed_job = None
+        for _ in range(20):
+            completed_job = store.get_latest_sync_job("source_fake")
+            if completed_job and completed_job.status != SyncJobStatus.RUNNING:
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("background sync did not complete within polling window")
+
+        return connector, first_job, second_job, completed_job
+
+    connector, first_job, second_job, completed_job = asyncio.run(
+        run_reused_background_launch()
+    )
+
+    assert connector.calls == 1
+    assert first_job.status == SyncJobStatus.RUNNING
+    assert second_job.status == SyncJobStatus.RUNNING
+    assert second_job.job_id == first_job.job_id
+    assert completed_job is not None
+    assert completed_job.job_id == first_job.job_id
+    assert completed_job.status == SyncJobStatus.SUCCEEDED
+
+
+def test_sync_source_waits_for_local_background_job_completion(tmp_path):
+    document = DocumentModel(
+        id="doc-blocking-join",
+        source_id="source_fake",
+        title="Blocking join",
+        content="Direct sync_source should wait for a locally launched background sync.",
+        url="https://example.com/doc-blocking-join",
+        platform="GitHub",
+        path="doc-blocking-join.md",
+    )
+
+    async def run_blocking_join():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        direct_task = asyncio.create_task(service.sync_source("source_fake"))
+        await asyncio.sleep(0)
+        assert not direct_task.done()
+        release.set()
+        completed_job = await direct_task
+        return connector, launched_job, completed_job, store
+
+    connector, launched_job, completed_job, store = asyncio.run(run_blocking_join())
+
+    assert connector.calls == 1
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert completed_job.job_id == launched_job.job_id
+    assert completed_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
+
+
+def test_sync_source_starts_fresh_run_after_successful_background_completion(tmp_path):
+    document = DocumentModel(
+        id="doc-background-success-rerun",
+        source_id="source_fake",
+        title="Background rerun",
+        content="A completed background sync should not be cached as the next direct sync result.",
+        url="https://example.com/doc-background-success-rerun",
+        platform="GitHub",
+        path="doc-background-success-rerun.md",
+    )
+
+    async def run_background_then_direct_sync():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        release.set()
+        for _ in range(20):
+            latest_job = store.get_latest_sync_job("source_fake")
+            if latest_job and latest_job.status == SyncJobStatus.SUCCEEDED:
+                break
+            await asyncio.sleep(0)
+        rerun_job = await service.sync_source("source_fake")
+        return connector, launched_job, rerun_job
+
+    connector, launched_job, rerun_job = asyncio.run(run_background_then_direct_sync())
+
+    assert connector.calls == 2
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert rerun_job.status == SyncJobStatus.SUCCEEDED
+    assert rerun_job.job_id != launched_job.job_id
+
+
+def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled(tmp_path):
+    document = DocumentModel(
+        id="doc-blocking-cancel",
+        source_id="source_fake",
+        title="Blocking cancel",
+        content="Direct sync_source should return the reconciled failed job when the joined background task is cancelled.",
+        url="https://example.com/doc-blocking-cancel",
+        platform="GitHub",
+        path="doc-blocking-cancel.md",
+    )
+
+    async def run_blocking_join_cancel():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        background_task = service._background_sync_tasks["source_fake"]
+        direct_task = asyncio.create_task(service.sync_source("source_fake"))
+        await asyncio.sleep(0)
+        background_task.cancel()
+        completed_job = await direct_task
+        release.set()
+        return launched_job, completed_job, store
+
+    launched_job, completed_job, store = asyncio.run(run_blocking_join_cancel())
+
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert completed_job.job_id == launched_job.job_id
+    assert completed_job.status == SyncJobStatus.FAILED
+    assert completed_job.error_message == "Sync request was cancelled before completion."
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
+
+
+def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled_before_start(
+    tmp_path,
+):
+    document = DocumentModel(
+        id="doc-blocking-prestart-cancel",
+        source_id="source_fake",
+        title="Blocking prestart cancel",
+        content="Direct sync_source should return the reconciled failed job even when the joined background task is cancelled before it starts.",
+        url="https://example.com/doc-blocking-prestart-cancel",
+        platform="GitHub",
+        path="doc-blocking-prestart-cancel.md",
+    )
+
+    async def run_blocking_join_prestart_cancel():
+        connector = FakeConnector([document])
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        background_task = service._background_sync_tasks["source_fake"]
+        direct_task = asyncio.create_task(service.sync_source("source_fake"))
+        background_task.cancel()
+        completed_job = await direct_task
+        return launched_job, completed_job, store
+
+    launched_job, completed_job, store = asyncio.run(run_blocking_join_prestart_cancel())
+
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert completed_job.job_id == launched_job.job_id
+    assert completed_job.status == SyncJobStatus.FAILED
+    assert completed_job.error_message == "Sync request was cancelled before completion."
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
+
+
+def test_cancelled_background_sync_task_marks_job_failed(tmp_path):
+    document = DocumentModel(
+        id="doc-cancel-window",
+        source_id="source_fake",
+        title="Cancelled background",
+        content="Cancelling the background task should not leave a stuck running job.",
+        url="https://example.com/doc-cancel-window",
+        platform="GitHub",
+        path="doc-cancel-window.md",
+    )
+
+    async def run_cancelled_background_task():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        background_task = service._background_sync_tasks["source_fake"]
+        background_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+        await asyncio.sleep(0)
+        failed_job = store.get_latest_sync_job("source_fake")
+        release.set()
+        return launched_job, failed_job, store
+
+    launched_job, failed_job, store = asyncio.run(run_cancelled_background_task())
+
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert failed_job is not None
+    assert failed_job.job_id == launched_job.job_id
+    assert failed_job.status == SyncJobStatus.FAILED
+    assert failed_job.error_message == "Sync request was cancelled before completion."
+    assert store.get_source("source_fake").sync_status == SyncStatus.FAILED
+
+
+def test_start_sync_source_immediately_retries_after_cancelled_background_task(tmp_path):
+    document = DocumentModel(
+        id="doc-cancel-retry",
+        source_id="source_fake",
+        title="Cancel retry",
+        content="A cancelled local background sync should not block an immediate retry.",
+        url="https://example.com/doc-cancel-retry",
+        platform="GitHub",
+        path="doc-cancel-retry.md",
+    )
+
+    async def run_cancel_then_immediate_retry():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        first_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        background_task = service._background_sync_tasks["source_fake"]
+        background_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+        retried_job = await service.start_sync_source("source_fake")
+        release.set()
+
+        for _ in range(20):
+            latest_job = store.get_latest_sync_job("source_fake")
+            if latest_job and latest_job.job_id == retried_job.job_id and latest_job.status != SyncJobStatus.RUNNING:
+                return connector, first_job, retried_job, latest_job
+            await asyncio.sleep(0)
+        raise AssertionError("immediate retry did not reach a terminal status")
+
+    connector, first_job, retried_job, latest_job = asyncio.run(run_cancel_then_immediate_retry())
+
+    assert connector.calls == 2
+    assert first_job.status == SyncJobStatus.RUNNING
+    assert retried_job.status == SyncJobStatus.RUNNING
+    assert retried_job.job_id != first_job.job_id
+    assert latest_job.job_id == retried_job.job_id
+    assert latest_job.status == SyncJobStatus.SUCCEEDED
+
+
+def test_sync_source_returns_cancelled_background_failure_once_after_callback_finalizes(tmp_path):
+    document = DocumentModel(
+        id="doc-cancelled-callback-handoff",
+        source_id="source_fake",
+        title="Cancelled callback handoff",
+        content="A later direct sync should surface the reconciled cancelled background job once even after the callback finalizes it.",
+        url="https://example.com/doc-cancelled-callback-handoff",
+        platform="GitHub",
+        path="doc-cancelled-callback-handoff.md",
+    )
+
+    async def run_cancel_then_direct_sync():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        background_task = service._background_sync_tasks["source_fake"]
+        background_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+        await asyncio.sleep(0)
+
+        failed_job = await service.sync_source("source_fake")
+        release.set()
+        rerun_job = await service.sync_source("source_fake")
+        return connector, launched_job, failed_job, rerun_job, store
+
+    connector, launched_job, failed_job, rerun_job, store = asyncio.run(run_cancel_then_direct_sync())
+
+    assert connector.calls == 2
+    assert failed_job.job_id == launched_job.job_id
+    assert failed_job.status == SyncJobStatus.FAILED
+    assert failed_job.error_message == "Sync request was cancelled before completion."
+    assert rerun_job.status == SyncJobStatus.SUCCEEDED
+    assert rerun_job.job_id != launched_job.job_id
+    assert store.get_latest_sync_job("source_fake").job_id == rerun_job.job_id
+
+
+def test_sync_source_ignores_cancelled_background_cache_when_newer_foreign_job_is_running(tmp_path):
+    document = DocumentModel(
+        id="doc-cancelled-foreign-running",
+        source_id="source_fake",
+        title="Cancelled foreign running",
+        content="A stale cancelled background handoff must not override a newer authoritative running job.",
+        url="https://example.com/doc-cancelled-foreign-running",
+        platform="GitHub",
+        path="doc-cancelled-foreign-running.md",
+    )
+
+    async def run_cancel_then_foreign_restart():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        await started.wait()
+        background_task = service._background_sync_tasks["source_fake"]
+        background_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+        await asyncio.sleep(0)
+
+        foreign_job, started_foreign = store.begin_sync_job("source_fake")
+        assert started_foreign is True
+        direct_job = await service.sync_source("source_fake")
+        release.set()
+        return launched_job, foreign_job, direct_job
+
+    launched_job, foreign_job, direct_job = asyncio.run(run_cancel_then_foreign_restart())
+
+    assert direct_job.job_id != launched_job.job_id
+    assert direct_job.job_id == foreign_job.job_id
+    assert direct_job.status == SyncJobStatus.RUNNING
+
+
+def test_background_sync_missing_initial_job_marks_job_failed(tmp_path, monkeypatch):
+    document = DocumentModel(
+        id="doc-missing-job",
+        source_id="source_fake",
+        title="Missing job",
+        content="Initial metadata lookup failures should not leave the job running.",
+        url="https://example.com/doc-missing-job",
+        platform="GitHub",
+        path="doc-missing-job.md",
+    )
+
+    async def run_missing_job_flow():
+        connector = FakeConnector([document])
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        original_get_sync_job = store.get_sync_job
+        first_lookup = True
+
+        def fail_first_get_sync_job(job_id):
+            nonlocal first_lookup
+            if first_lookup:
+                first_lookup = False
+                return None
+            return original_get_sync_job(job_id)
+
+        monkeypatch.setattr(store, "get_sync_job", fail_first_get_sync_job)
+
+        launched_job = await service.start_sync_source("source_fake")
+
+        for _ in range(20):
+            failed_job = store.get_latest_sync_job("source_fake")
+            if failed_job and failed_job.status != SyncJobStatus.RUNNING:
+                return launched_job, failed_job, store
+            await asyncio.sleep(0)
+        raise AssertionError("missing-job failure did not reach a terminal status")
+
+    launched_job, failed_job, store = asyncio.run(run_missing_job_flow())
+
+    assert launched_job.status == SyncJobStatus.RUNNING
+    assert failed_job is not None
+    assert failed_job.job_id == launched_job.job_id
+    assert failed_job.status == SyncJobStatus.FAILED
+    assert failed_job.error_message == "Unknown sync job: " + launched_job.job_id
+    assert store.get_source("source_fake").sync_status == SyncStatus.FAILED
+
+
+def test_cancelled_source_sync_marks_job_failed_and_allows_retry(tmp_path):
+    document = DocumentModel(
+        id="doc-cancelled",
+        source_id="source_fake",
+        title="Cancelled",
+        content="A cancelled sync should not stay running forever.",
+        url="https://example.com/doc-cancelled",
+        platform="GitHub",
+        path="doc-cancelled.md",
+    )
+
+    async def run_cancelled_sync():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        indexer = RecordingIndexer()
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=indexer,
+        )
+
+        first_task = asyncio.create_task(service.sync_source("source_fake"))
+        await started.wait()
+        first_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_task
+        failed_job = store.get_latest_sync_job("source_fake")
+        source_after_cancel = store.get_source("source_fake")
+        release.set()
+        retried_job = await service.sync_source("source_fake")
+        return connector, failed_job, source_after_cancel, retried_job, store
+
+    connector, failed_job, source_after_cancel, retried_job, store = asyncio.run(
+        run_cancelled_sync()
+    )
+
+    assert connector.calls == 2
+    assert failed_job is not None
+    assert failed_job.status == SyncJobStatus.FAILED
+    assert failed_job.error_message == "Sync request was cancelled before completion."
+    assert source_after_cancel is not None
+    assert source_after_cancel.sync_status == SyncStatus.FAILED
+    assert source_after_cancel.last_error == "Sync request was cancelled before completion."
+    assert retried_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
+
+
 def test_source_registration_preserves_existing_sync_status(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     connector = FakeConnector()
@@ -749,6 +1314,54 @@ def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
 
     blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
     succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
+    assert result["status"] == "partial"
+    assert blocked["sync_outcome"] == "blocked"
+    assert blocked["job"].status == SyncJobStatus.RUNNING
+    assert succeeded["sync_outcome"] == "succeeded"
+    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["succeeded"] == 1
+
+
+def test_sync_all_reports_blocked_for_local_background_sync(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+
+    async def run_sync_all_while_background_sync_is_running():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        blocking_a = BlockingConnector([document], started, release)
+        blocking_a.source = SourceAConnector.source
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([
+                blocking_a,
+                SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
+            ]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+
+        launched_job = await service.start_sync_source("source_a")
+        await started.wait()
+        bulk_task = asyncio.create_task(service.sync_all())
+        await asyncio.sleep(0)
+        assert not bulk_task.done()
+        release.set()
+        return launched_job, await bulk_task
+
+    launched_job, result = asyncio.run(run_sync_all_while_background_sync_is_running())
+
+    blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
+    succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
+    assert launched_job.status == SyncJobStatus.RUNNING
     assert result["status"] == "partial"
     assert blocked["sync_outcome"] == "blocked"
     assert blocked["job"].status == SyncJobStatus.RUNNING

@@ -110,10 +110,16 @@ Bulk retained-source sync is also available:
 sync_all()
 ```
 
-This fans out one concurrent `sync_source()` run per retained source. Each
+This fans out one concurrent internal `sync_source()` run per retained source. Each
 source still keeps its own SQLite running-job guard, so a source that is
 already syncing is reported as blocked in the aggregate result instead of
-starting a second overlapping fetch.
+starting a second overlapping fetch. For the public MCP tool, `sync_source`
+now starts or reuses the running job quickly and returns the initial `running`
+job payload while the actual ingestion continues in a server-owned background
+task. Callers should use `get_sync_status` to observe terminal `succeeded` or
+`failed` completion. If the internal blocking ingestion path is cancelled before
+completion, the ingestion layer marks that source job failed instead of leaving
+a permanent `running` job behind, so a later retry can start cleanly.
 
 Obsidian example:
 
@@ -190,7 +196,7 @@ Current tools:
 | Tool | Use |
 | --- | --- |
 | `list_sources()` | see configured sources |
-| `sync_source(source_id)` | refresh one source |
+| `sync_source(source_id)` | start one source sync quickly and return the current job |
 | `sync_all()` | refresh all retained sources concurrently and return aggregate results |
 | `get_sync_status(source_id?)` | inspect source/job state |
 | `search_context(query, filters, top_k, include_debug)` | find SQLite-validated evidence |
@@ -202,6 +208,12 @@ The retained `search_context` response always includes a public `debug` key.
 On the normal default path `api/tools.py` returns `debug={}` unless
 `include_debug=True`, and when caller filters leave no matching public sources
 it still returns a small populated `debug` object even if `include_debug=False`.
+
+The MCP `sync_source(source_id)` tool name and arguments are unchanged, but the
+public tool now routes through `IngestionService.start_sync_source()`. A fresh
+tool call therefore returns the initial `running` job promptly, or the existing
+running job if one is already active. Callers should use
+`get_sync_status(source_id)` to observe terminal completion.
 
 The current debug payload includes rewrite decision fields:
 
@@ -440,8 +452,19 @@ indexing/indexer.py
 storage/metadata_store.py
 ```
 
-`IngestionService.sync_source()` is the core per-source business flow, and
-`IngestionService.sync_all()` is the retained-source aggregate fan-out entrypoint.
+`IngestionService.sync_source()` remains the blocking internal per-source
+business flow when it starts the sync itself or joins a same-process local
+background task. If another owner already holds the running SQLite job and
+there is no local task to join, it returns that current `running` job instead
+of blocking on foreign in-flight work. `IngestionService.start_sync_source()`
+is the immediate-return background launcher used by the public MCP tool, and
+`IngestionService.sync_all()` is the retained-source aggregate fan-out
+entrypoint. A just-cancelled same-process background task may be surfaced once
+as its reconciled failed job to a direct caller instead of immediately opening
+duplicate work, but only while that cancelled job is still the latest
+authoritative SQLite job for the source. A successfully completed background
+sync does not suppress the next fresh direct `sync_source()` run, and a newer
+foreign retry must override any stale local cancelled handoff.
 
 ```text
 sync_source(source_id)
@@ -457,6 +480,16 @@ sync_source(source_id)
 -> finalize successful sync
 -> tombstone stale documents when cleanup is safe
 -> best-effort vector cleanup
+```
+
+```text
+start_sync_source(source_id)
+-> SourceRegistry connector lookup
+-> MetadataStore register_source + begin_sync_job guard
+-> if a job is already running, return that running job
+-> otherwise spawn the blocking sync_source() work in a background task
+-> return the initial running job immediately
+-> caller polls get_sync_status(source_id) for succeeded / failed completion
 ```
 
 ```text

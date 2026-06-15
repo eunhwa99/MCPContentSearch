@@ -60,6 +60,22 @@ def _call_tool_json(mcp: FastMCP, name: str, arguments: dict | None = None) -> d
     return json.loads(blocks[0].text)
 
 
+async def _call_tool_json_async(mcp: FastMCP, name: str, arguments: dict | None = None) -> dict:
+    blocks = await mcp.call_tool(name, arguments or {})
+    return json.loads(blocks[0].text)
+
+
+async def _wait_for_sync_completion(mcp: FastMCP, source_id: str, attempts: int = 500) -> dict:
+    latest = None
+    for _ in range(attempts):
+        latest = await _call_tool_json_async(mcp, "get_sync_status", {"source_id": source_id})
+        latest_job = latest.get("latest_job") or {}
+        if latest_job.get("status") in {"succeeded", "failed"}:
+            return latest
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
+
+
 class FakeRetainedSourceConnector(SourceConnector):
     def __init__(
         self,
@@ -366,9 +382,13 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
         source_registry=registry,
     )
 
-    listed = _call_tool_json(mcp, "list_sources")
-    sync_job = _call_tool_json(mcp, "sync_source", {"source_id": source_id})
-    status = _call_tool_json(mcp, "get_sync_status", {"source_id": source_id})
+    async def run_flow():
+        listed = await _call_tool_json_async(mcp, "list_sources")
+        sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": source_id})
+        status = await _wait_for_sync_completion(mcp, source_id)
+        return listed, sync_job, status
+
+    listed, sync_job, status = asyncio.run(run_flow())
     document_id = connectors[source_id]._document.document_id
     chunks = store.list_chunks_for_document(document_id)
     search_result = _call_tool_json(
@@ -404,12 +424,12 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
         "source_notion",
         "source_tistory",
     ]
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert sync_job["source_id"] == source_id
-    assert sync_job["processed_documents"] == 1
-    assert sync_job["indexed_chunks"] >= 1
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["processed_documents"] == 1
+    assert status["latest_job"]["indexed_chunks"] >= 1
     assert connectors[source_id].fetch_count == 1
     assert all(
         connector.fetch_count == (1 if connector.source.source_id == source_id else 0)
@@ -460,9 +480,13 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
         source_registry=registry,
     )
 
-    listed = _call_tool_json(mcp, "list_sources")
-    sync_job = _call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
-    status = _call_tool_json(mcp, "get_sync_status", {"source_id": "source_github"})
+    async def run_flow():
+        listed = await _call_tool_json_async(mcp, "list_sources")
+        sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": "source_github"})
+        status = await _wait_for_sync_completion(mcp, "source_github")
+        return listed, sync_job, status
+
+    listed, sync_job, status = asyncio.run(run_flow())
     document_id = "github:eunhwa99/mcpcontentsearch:api/tools.py"
     chunks = store.list_chunks_for_document(document_id)
     search_result = _call_tool_json(
@@ -495,12 +519,12 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
     )
 
     assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert sync_job["source_id"] == "source_github"
-    assert sync_job["processed_documents"] == 1
-    assert sync_job["indexed_chunks"] >= 1
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["processed_documents"] == 1
+    assert status["latest_job"]["indexed_chunks"] >= 1
     assert store.get_source("source_github").sync_status == SyncStatus.SUCCEEDED
     assert store.get_document(document_id).source_id == "source_github"
     assert chunks

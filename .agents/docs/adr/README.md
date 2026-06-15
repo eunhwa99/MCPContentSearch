@@ -32,6 +32,7 @@ File names should be numbered and descriptive:
 | [0004](0004-contextwiki-phase-b-connectors.md) | accepted, website/docs superseded by [0006](0006-slim-mcp-core-scope.md) | ContextWiki Phase B GitHub connector, retained Obsidian local-vault connector, and superseded website/docs connector |
 | [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | superseded by [0006](0006-slim-mcp-core-scope.md) for current scope | Historical ContextWiki Auto Wiki LLM synthesis boundary |
 | [0006](0006-slim-mcp-core-scope.md) | accepted | Slim MCP core scope |
+| [0007](0007-sync-source-background-launch-contract.md) | accepted | Public MCP `sync_source` background-launch contract and internal blocking execution split |
 
 ## When to Add or Update ADRs
 

@@ -46,7 +46,7 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 | Tool | Purpose |
 | --- | --- |
 | `list_sources()` | List configured Notion, Tistory, GitHub, and Obsidian sources. |
-| `sync_source(source_id)` | Sync one configured source into SQLite metadata and Chroma vectors. |
+| `sync_source(source_id)` | Start or reuse one configured source sync job and return the current job state immediately. Poll `get_sync_status(source_id)` for terminal completion. |
 | `sync_all()` | Sync all retained sources concurrently and return aggregate results. |
 | `get_sync_status(source_id="")` | Read latest source and sync-job state. |
 | `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured evidence chunks after Chroma retrieval, metadata fallback when needed, and SQLite validation. |
@@ -57,6 +57,10 @@ Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
 At a glance:
 
 - `sync_all()` syncs all retained sources in one pass.
+- `sync_source(source_id)` is an immediate-return launcher for MCP clients. It
+  starts or reuses the current sync job for that source, typically returning a
+  `running` job payload immediately, and long sync completion should be
+  observed through `get_sync_status(source_id)`.
 - `sync_all()` reports aggregate `status` truthfully: `completed` for
   succeed/skip-only runs, `partial` when success/skip is mixed with blocked or
   failed sources, and `failed` when nothing completed successfully.
