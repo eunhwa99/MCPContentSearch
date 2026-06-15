@@ -32,7 +32,7 @@ Each plan document should include:
 - Files likely to change
 - Test and verification plan
 - Functional smoke matrix or planned matrix rows before review
-- Architecture/ADR constraints
+- Architecture constraints
 - Risks and rollback notes
 - Progress log
 

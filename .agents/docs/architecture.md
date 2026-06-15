@@ -4,11 +4,8 @@
 
 This document maps the current slim `MCPContentSearch` architecture. Harness
 planning and review use it to keep changes inside the focused MCP retrieval
-scope and to catch contract or data-safety regressions.
-
-Decision history is indexed in `.agents/docs/adr/README.md`. ADR 0006 is the
-current scope decision for the slim MCP core and supersedes the website/docs
-portion of ADR 0004 plus ADR 0005's Auto Wiki decision for current work.
+scope and to catch contract or data-safety regressions. It is the single
+maintained design reference beyond the README.
 
 ## Runtime Structure
 
@@ -40,6 +37,35 @@ The current architecture does not include a production Web Console, Auto Wiki
 generation, generic website/docs crawling, dynamic web fallback, or legacy
 live-search/indexing MCP tools.
 
+## Core Mental Model
+
+The shortest accurate description of the current system is:
+
+```text
+configured source sync
+-> normalized document identity and content hashes
+-> deterministic chunking
+-> Chroma semantic retrieval candidates
+-> SQLite active-document validation
+-> chunk evidence, grouped document browsing, or citation-gated answer helpers
+```
+
+Keep these design assumptions aligned with implementation:
+
+- Source sync is the only supported ingestion entrypoint for retained sources.
+- SQLite is the lifecycle source of truth for source status, sync jobs,
+  document/chunk activity, and citation-safe evidence gating.
+- Chroma is the retrieval accelerator, not the final authority on whether a hit
+  is still active or citeable.
+- `search_context` is the primary chunk-level evidence surface.
+- `search_documents` is the grouped browsing surface built from the same
+  validated retrieval path.
+- `answer_with_citations` is a helper answer surface built on top of validated
+  evidence, not a separate retrieval stack.
+- Search query rewrite is optional, disabled by default, and any egress it
+  performs is limited to query rewriting rather than source fetching or data
+  mutation.
+
 ## Data Flow
 
 ```text
@@ -56,6 +82,33 @@ list_sources / get_sync_status
   -> MetadataStore SQLite source/job metadata
 ```
 
+Reviewer-facing source/status fields should remain understandable from the
+maintained docs. Current status payloads are expected to center on fields such
+as:
+
+```text
+latest_success_at
+latest_failure_at
+document_count
+chunk_count
+latest_failure_reason
+stale_cleanup_disabled_reason
+```
+
+Those fields explain recent source health, retained indexed volume, and whether
+cleanup is intentionally disabled for safety.
+
+Running-job ownership is part of that status story. A source reports as
+effectively blocked when SQLite still sees an active sync owner/heartbeat for
+that source, which prevents overlapping syncs from starting.
+
+That blocked state is intentionally recoverable rather than permanent. Recovery
+distinguishes stale jobs, unowned-job grace, dead owners, and the container
+PID-reuse case where an old and new container can both appear as PID `1`.
+During that same-PID edge case, reclaim falls back to the running job's own
+heartbeat staleness window instead of reclaiming immediately from a transient
+owner mismatch.
+
 Source sync flow:
 
 ```text
@@ -67,6 +120,25 @@ sync_source
   -> DocumentChunker
   -> ContentIndexer and Chroma collection
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
+```
+
+Retained sync safety rule:
+
+- Tombstoning stale documents is allowed only for cleanup-capable sources after
+  a complete successful snapshot. Failed or incomplete syncs must not tombstone
+  documents simply because they were absent from a partial fetch.
+
+Bulk source sync flow:
+
+```text
+sync_all
+  -> enumerate retained configured sources
+  -> start one sync_source task per source
+  -> preserve per-source running-job guards in SQLite
+  -> aggregate per-source results as succeeded, failed, blocked, or skipped
+  -> return completed only when results are succeeded/skipped only
+  -> return partial for mixed success/skip/failure/block combinations
+  -> return failed when every source failed or was blocked by failure conditions
 ```
 
 Retrieval and answer flow:
@@ -126,6 +198,101 @@ New behavior should start in the module that owns the relevant responsibility.
 Avoid adding cross-module shortcuts in `api/tools.py` when a service boundary is
 more appropriate.
 
+## Incremental Indexing and Tombstone Safety
+
+The retained ingestion model depends on stable document identity plus cautious
+cleanup:
+
+- Source connectors should preserve stable document identity fields such as
+  source-specific external ids, canonical URLs, and version or freshness
+  markers when available.
+- Indexing compares content hashes and chunk ids so unchanged documents can skip
+  unnecessary vector rewrites.
+- Reappeared or reactivated documents should return to the active set through a
+  normal successful sync rather than through ad hoc metadata repair.
+- Tombstone and stale-cleanup behavior is safety-gated. Missing documents may be
+  marked stale only after a cleanup-capable source completes a full successful
+  snapshot. Failed, partial, or byte/file-limit-truncated snapshots must not
+  tombstone documents simply because they were absent from that incomplete run.
+
+## Source Identity and Chunking Model
+
+The retained indexing model distinguishes document management from chunk
+retrieval:
+
+- `DocumentModel` is the sync and lifecycle unit.
+- Chunks are the search and citation unit.
+- Chunk metadata carries the reviewer-visible citation context used by
+  `search_context`, `search_documents`, and `answer_with_citations`.
+
+Stable identity and version expectations stay source-aware:
+
+- Notion: page id drives stable identity.
+- Tistory: `blog_name:post_id` drives stable identity.
+- GitHub: repository path drives stable identity, while blob SHA is revision
+  metadata.
+- Obsidian: relative note path drives stable identity, while the
+  `obsidian://open` URL stays the citation-friendly canonical URL.
+
+The lifecycle fields that matter for reviewer understanding are:
+
+```text
+external_id
+document_id
+canonical_url
+version_id
+last_seen_at
+last_seen_sync_id
+deleted_at
+```
+
+Current chunking remains deterministic and source-aware:
+
+- heading-based markdown chunking when structure exists
+- deterministic plain-text fallback windows when structure does not
+- line-range-preserving code chunking for citeable code evidence
+
+Representative citation metadata per chunk should remain understandable from the
+maintained docs:
+
+```text
+chunk_id
+document_id
+source_id
+title
+url
+path
+chunk_index
+line_start
+line_end
+content_hash
+version_id
+updated_at
+```
+
+That deterministic chunking plus stable identity is what makes unchanged-doc
+skip behavior, reappeared-document recovery, and citation stability predictable
+across syncs.
+
+## Four-Layer View
+
+ContextWiki is easiest to reason about as four layers:
+
+```text
+MCP client
+-> FastMCP tool surface
+-> ingestion/search services
+-> SQLite metadata plus Chroma retrieval storage
+```
+
+That division is intentional:
+
+- MCP clients interact with tools, not storage internals.
+- Service boundaries own ingestion, retrieval, ranking, and answer assembly.
+- Chroma finds semantically relevant candidates.
+- SQLite decides whether those candidates are still active, valid, and safe to
+  return as evidence.
+
 ## MCP Tool Contract
 
 Current tools:
@@ -142,6 +309,13 @@ Current tools:
 Contract intent:
 
 - `search_context` remains the chunk-level evidence and citation surface.
+- `sync_all` is an aggregate orchestration helper, not a separate ingestion
+  stack. It fans out retained-source `sync_source` runs concurrently, preserves
+  each source's existing running-job guard, and reports mixed source outcomes
+  truthfully instead of pretending the whole batch succeeded when one source was
+  blocked or failed. Disabled or unconfigured sources may surface as `skipped`,
+  and the top-level batch status remains `completed` only when the aggregate
+  outcomes are limited to `succeeded` and `skipped`.
 - `search_documents` is additive and document-oriented: it uses the same
   retained-source retrieval path but returns one representative chunk-backed row
   per document for browsing.
@@ -156,6 +330,46 @@ Contract intent:
   `include_debug=False`.
 - `answer_with_citations` keeps `include_debug` as a true opt-in debug surface
   and does not mirror the `no_matching_sources` exception path.
+- Retrieval policy keeps vector retrieval, metadata fallback, and rerank/debug
+  reporting as distinct concerns. Query rewrite, fallback candidate addition,
+  and final SQLite validation should stay inspectable without blurring them into
+  one opaque score.
+- When query rewrite debug is included, the caller-visible explanation should
+  keep the current public fields aligned with behavior: `rewrite_enabled`,
+  `rewrite_attempted`, `rewrite_applied`, and `rewrite_skipped_reason` explain
+  whether rewrite was disabled, skipped, attempted but unused, or actually
+  applied before retrieval.
+- The top-level `rewrite_skipped_reason` field should stay coarse and
+  reviewer-readable. Current values explain state such as `disabled`,
+  `not_needed`, `rewrite_failed`, `no_matching_sources`, and `no_term_groups`.
+- The nested `debug.query_rewrite.reason` field is the retrieval-pipeline
+  explanation vocabulary. Current stable values include
+  `no_initial_candidates`, `missing_textual_match`,
+  `insufficient_candidate_count`, and `low_initial_score`.
+- A single strong exact-match candidate can also suppress rewrite even when the
+  caller asked for a larger `top_k`; that guardrail keeps clearly correct
+  direct hits from being rewritten unnecessarily.
+
+Retained debug-oriented answer inspection surfaces should stay documented and
+stable enough for local evaluation and reviewer use:
+
+- `search_context` debug explains retrieval/rewrite decisions.
+- Current reviewer-facing search debug commonly includes retrieval query and
+  result-selection surfaces such as `retrieval_queries`,
+  `rewritten_queries`, and `selected_results[]`.
+- Deterministic intent policy should remain readable in debug output when
+  present. The current retained intent vocabulary includes `strict_lookup`,
+  `broad_topic`, `list`, and `comparison`, and that intent is reused by
+  ranking and grounded answer rendering.
+- `answer_with_citations` exposes helper-answer inspection surfaces such as
+  `citations`, `used_chunks`, `debug`, and `debug_markdown` when the current
+  implementation returns them.
+- Public debug payloads may also surface deterministic intent and retrieval
+  inspection sections such as `intent.*`, `retrieval_queries`,
+  `rewritten_queries`, and `selected_results[]` so reviewers can explain why a
+  grounded result set was chosen.
+- Eval and reviewer workflows should be able to explain why a retrieval or
+  answer path was chosen without reading raw vector-store internals.
 
 When changing a tool:
 
@@ -183,6 +397,14 @@ ContextWiki source/job/document/chunk lifecycle and citation metadata.
 
 SQLite is the authoritative active-document gate. Stale Chroma hits must be
 filtered through SQLite metadata before being returned as evidence.
+
+GitHub stale cleanup remains repository-prefix scoped under the shared
+`source_github` source id. A sync for one configured repository must not
+tombstone documents that belong to another repository prefix.
+
+Soft-delete provenance matters here: SQLite tombstone metadata must remain able
+to suppress stale managed vector hits even when best-effort vector cleanup
+cannot remove every old Chroma candidate immediately.
 
 ## External Services and Local Sources
 
@@ -222,8 +444,8 @@ print credentials or local path details.
 - `environments/token.py`, `.env`, shell environment variables, and API keys are
   sensitive.
 - Do not add secret values to docs, tests, logs, screenshots, or examples.
-- If a configuration default changes long-term behavior, update architecture
-  docs or ADRs in the same work item.
+- If a configuration default changes long-term behavior, update this document in
+  the same work item.
 
 ## Error Handling
 
@@ -239,6 +461,24 @@ Domain exceptions live in `core/exceptions.py`.
 
 Use the smallest useful check first.
 
+The maintained verification model is layered:
+
+- docs-only verification for README, harness docs, plans, and other markdown
+  changes
+- focused syntax, import, or targeted pytest checks for the directly changed
+  modules
+- retained functional E2E coverage for MCP-visible sync/search/fetch/answer
+  workflows
+- full-wrapper verification through `./scripts/verify_all.sh` when the work item
+  needs the repo's broader default gate instead of only a narrow focused check
+- optional manual live smoke through `scripts/live_query_smoke.py` only when the
+  user explicitly approves real configured-source validation
+- retained local eval surfaces such as `python scripts/run_contextwiki_eval.py`
+  when the change affects a quality-sensitive retrieval or answer surface that
+  already has modeled eval coverage
+- retained eval or higher-level verification only when the change touches an
+  already-modeled quality-sensitive surface such as retrieval or answer quality
+
 - Docs-only changes: path listing, `git status --short --branch`,
   `git diff --check`, then stage relevant docs-only files and run
   `git diff --cached --check` so new docs are covered.
@@ -247,7 +487,9 @@ Use the smallest useful check first.
 - Unit/integration tests: `uv run --locked pytest -m "not live"` when the uv
   workspace is healthy.
 - MCP contract: focused tests around `register_tools` and retained tool
-  functions.
+  functions. The strongest public contract layer uses real
+  `FastMCP.call_tool(...)` payload checks rather than only internal helper
+  assertions.
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mock
   collection; avoid user data.
 - Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
@@ -255,9 +497,19 @@ Use the smallest useful check first.
 - Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
   retained MCP sync/search/fetch/answer paths, including grouped document
   browsing, without browser, wiki, live API, or LLM dependencies.
+- Full wrapper: `./scripts/verify_all.sh`, which includes compile, lint, type,
+  non-live pytest, and the functional E2E gate when that broader default repo
+  verification is required.
+- Manual live smoke: `python scripts/live_query_smoke.py`, only with explicit
+  approval because it can touch real configured sources or local user data.
+- Retained eval runner: `PYTHONPATH=. python scripts/run_contextwiki_eval.py`
+  or the repo wrapper that invokes it, used when a work item changes retrieval
+  or answer quality on a modeled local eval surface.
+- Deterministic reviewer-visible eval artifacts should stay separate from
+  optional runtime or latency metrics such as `runtime_metrics.json` so repeated
+  runs remain comparable.
 
 ## Harness Usage
 
 `harness-plan` must read this document before choosing implementation
-boundaries. Review gates must check changed files against this architecture and
-directly relevant accepted ADRs.
+boundaries. Review gates must check changed files against this architecture.
