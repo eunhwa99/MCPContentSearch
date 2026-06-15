@@ -9,10 +9,16 @@ from search.query_terms import retrieval_query_variants
 from search.ranking import (
     ContextCandidateRanker,
     query_term_groups,
+    repository_lookup_terms_from_groups,
     should_run_metadata_fallback,
     should_try_lowercase_github_probe,
 )
 from storage.metadata_store import MetadataStore
+
+
+class QueryRewritePolicy:
+    LOW_INITIAL_SCORE_THRESHOLD = 0.75
+    MAX_RETRIEVAL_LIMIT_MULTIPLIER = 64
 
 
 class ContextRetrievalPipeline:
@@ -155,7 +161,7 @@ class ContextRetrievalPipeline:
                 rewrite_applied=False,
                 rewrite_skipped_reason="no_term_groups",
             )
-        elif self.should_try_query_rewrite(candidates, term_groups, top_k):
+        elif self.should_try_query_rewrite(query, candidates, term_groups, top_k):
             rewrite_debug = self._rewrite_debug_state(
                 term_groups=term_groups,
                 rewrite_enabled=self.query_rewriter is not None,
@@ -164,7 +170,7 @@ class ContextRetrievalPipeline:
                 rewrite_skipped_reason="",
             )
             rewritten_queries, rewrite_failed = await self.try_rewrite_queries(query, term_groups)
-            rewrite_reason = self.query_rewrite_reason(candidates, term_groups, top_k)
+            rewrite_reason = self.query_rewrite_reason(query, candidates, term_groups, top_k)
             if rewritten_queries:
                 rewrite_debug = self._rewrite_debug_state(
                     term_groups=term_groups,
@@ -278,7 +284,7 @@ class ContextRetrievalPipeline:
                     if source_ids and chunk.source_id not in source_ids:
                         rejected.add(chunk_id)
                         continue
-                    if not self.ranker.document_intent_allows_chunk(term_groups, chunk):
+                    if not self.ranker.document_intent_allows_chunk(query, term_groups, chunk):
                         rejected.add(chunk_id)
                         continue
                     rejected.discard(chunk_id)
@@ -305,16 +311,27 @@ class ContextRetrievalPipeline:
             term_groups,
             source_ids,
         )
-        if should_run_metadata_fallback(
-            query,
-            term_groups,
+        missing_textual_matches = not self.ranker.candidates_have_textual_matches(
             candidates,
-            top_k,
-            source_ids,
+            term_groups,
+        )
+        force_textual_metadata_fallback = (
+            missing_textual_matches
+            and bool(repository_lookup_terms_from_groups(term_groups))
+        )
+        if (
+            should_run_metadata_fallback(
+                query,
+                term_groups,
+                candidates,
+                top_k,
+                source_ids,
+            )
+            or force_textual_metadata_fallback
         ) and not (
             lowercase_github_probe
             and len(candidates) >= top_k
-            and self.ranker.candidates_have_textual_matches(candidates, term_groups)
+            and not missing_textual_matches
         ):
             metadata_candidates = self.ranker.metadata_fallback_candidates(
                 query,
@@ -349,14 +366,16 @@ class ContextRetrievalPipeline:
 
     def should_try_query_rewrite(
         self,
+        query: str,
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
     ) -> bool:
-        return bool(self.query_rewrite_reason(candidates, term_groups, top_k))
+        return bool(self.query_rewrite_reason(query, candidates, term_groups, top_k))
 
     def query_rewrite_reason(
         self,
+        query: str,
         candidates: list[dict[str, Any]],
         term_groups: list[set[str]],
         top_k: int,
@@ -365,14 +384,61 @@ class ContextRetrievalPipeline:
             return ""
         if not candidates:
             return "no_initial_candidates"
-        if len(candidates) < top_k:
-            return "insufficient_candidate_count"
-        if not self.ranker.candidates_have_textual_matches(candidates, term_groups):
+        textual_matches = self.ranker.candidates_have_textual_matches(candidates, term_groups)
+        if not textual_matches:
             return "missing_textual_match"
         top_score = max(float(candidate.get("score", 0.0)) for candidate in candidates)
-        if top_score < 0.75:
+        top_candidate = max(candidates, key=lambda candidate: float(candidate.get("score", 0.0)))
+        unique_chunk_ids = {
+            str(candidate.get("chunk_id") or "")
+            for candidate in candidates
+            if candidate.get("chunk_id")
+        }
+        has_high_confidence_vector_hit = any(
+            candidate.get("vector_score") is not None
+            and float(candidate.get("vector_score", 0.0) or 0.0)
+            >= QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD
+            for candidate in candidates
+        )
+        if (
+            len(unique_chunk_ids) == 1
+            and len(candidates) < top_k
+            and top_score >= QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD
+            and has_high_confidence_vector_hit
+            and self._candidate_exactly_matches_query(query, top_candidate)
+        ):
+            return ""
+        if len(candidates) < top_k:
+            return "insufficient_candidate_count"
+        if top_score < QueryRewritePolicy.LOW_INITIAL_SCORE_THRESHOLD:
             return "low_initial_score"
         return ""
+
+    def _candidate_exactly_matches_query(
+        self,
+        query: str,
+        candidate: dict[str, Any],
+    ) -> bool:
+        chunk_id = str(candidate.get("chunk_id") or "")
+        if not chunk_id:
+            return False
+        chunk = self.metadata_store.get_chunk(chunk_id)
+        if chunk is None:
+            return False
+        document = chunk.to_document_model(platform=self.ranker.document_platform(chunk.source_id))
+        normalized_query = " ".join(str(query or "").split()).lower()
+        if not normalized_query:
+            return False
+        haystack = " ".join(
+            [
+                document.title or "",
+                document.document_id or "",
+                document.path or "",
+                document.url or "",
+                document.content or "",
+            ]
+        ).lower()
+        return normalized_query in haystack
 
     @staticmethod
     def _rewrite_debug_state(
@@ -429,7 +495,7 @@ class ContextRetrievalPipeline:
                 return max(base_limit, int(collection.count()))
             except Exception:
                 pass
-        return max(base_limit, base_limit * 64)
+        return max(base_limit, base_limit * QueryRewritePolicy.MAX_RETRIEVAL_LIMIT_MULTIPLIER)
 
 
 def managed_hit_matches_chunk(metadata: dict[str, Any], chunk) -> bool:

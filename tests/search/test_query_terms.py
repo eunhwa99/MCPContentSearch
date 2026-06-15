@@ -47,3 +47,11 @@ def test_query_term_groups_expand_korean_usage_terms_generically():
         {"사용법", "usage", "howto", "how-to", "guide", "guides", "tutorial", "tutorials"} == group
         for group in groups
     )
+
+
+def test_query_term_groups_preserve_explicit_ascii_compound_aliases_without_broad_collision():
+    aws_compound_groups = query_term_groups("awsec2 docs")
+    lambda_collision_groups = query_term_groups("awslambda docs")
+
+    assert any("ec2" in group and "aws ec2" in group for group in aws_compound_groups)
+    assert not any("lambda" in group for group in lambda_collision_groups)

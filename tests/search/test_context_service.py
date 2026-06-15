@@ -369,6 +369,124 @@ def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
     assert result["results"][0].score >= 0.91
 
 
+def test_vector_search_skips_query_rewrite_for_single_high_confidence_exact_match_even_when_top_k_is_larger(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+
+    class FakeVectorIndexRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            if "ec2" not in query.lower():
+                return []
+            node = FakeNode("ec2-chunk", 0.98)
+            node.metadata["document_id"] = "doc-ec2"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    rewriter = FakeQueryRewriter(["aws ec2 setup"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("ec2 setup guide", top_k=3, include_debug=True)
+    )
+
+    assert result["results"][0].chunk_id == "ec2-chunk"
+    assert rewriter.calls == []
+    assert result["debug"]["query_rewrite"] == {
+        "attempted": False,
+        "applied": False,
+        "reason": "",
+        "original_query": "ec2 setup guide",
+        "rewritten_queries": [],
+    }
+    assert result["debug"]["rewrite_skipped_reason"] == "not_needed"
+
+
+def test_context_service_helper_should_try_query_rewrite_stays_in_sync_with_pipeline_signature(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-ec2",
+        "ec2-chunk",
+        "source_target",
+        "EC2 setup guide",
+        "EC2 setup and instance launch notes.",
+    )
+
+    service = ContextSearchService(store, indexer=FakeIndexer())
+
+    assert (
+        service._should_try_query_rewrite(
+            "ec2 setup guide",
+            [{"chunk_id": "ec2-chunk", "score": 0.98, "vector_score": 0.98}],
+            [{"ec2"}, {"setup"}, {"guide"}],
+            3,
+        )
+        is False
+    )
+
+
+def test_vector_search_still_rewrites_when_single_candidate_is_metadata_promoted(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:eunhwa99/ec2-notes:docs/guide.md",
+        "ec2-metadata-doc",
+        "source_github",
+        "EC2 guide",
+        "EC2 setup and usage guide.",
+        path="docs/guide.md",
+        url="https://github.com/eunhwa99/ec2-notes/blob/main/docs/guide.md",
+    )
+
+    class EmptyVectorRetriever:
+        def __init__(self, **kwargs):
+            pass
+
+        def retrieve(self, query):
+            return []
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
+
+    rewriter = FakeQueryRewriter(["aws ec2 setup"])
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            indexer=FakeIndexer(),
+            query_rewriter=rewriter,
+        ).search_context("ec2 docs", top_k=3, include_debug=True)
+    )
+
+    assert result["results"][0].chunk_id == "ec2-metadata-doc"
+    assert rewriter.calls
+    assert result["debug"]["query_rewrite"]["attempted"] is True
+    assert result["debug"]["query_rewrite"]["reason"] == "insufficient_candidate_count"
+
+
 def test_search_documents_collapses_same_document_chunks_to_highest_ranked_representative(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
@@ -841,6 +959,117 @@ def test_search_context_debug_exposes_strict_lookup_intent_name(tmp_path):
     )
 
     assert result["debug"]["intent"]["name"] == "strict_lookup"
+
+
+def test_search_context_avoids_false_github_bias_for_plain_lowercase_long_token_document_query(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "github:example/repo:docs/usage.md",
+        "usage-doc-chunk",
+        "source_github",
+        "Usage guide",
+        "Usage guide content.",
+        path="docs/usage.md",
+        url="https://github.com/example/repo/blob/main/docs/usage.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "runtimeconfiguration docs",
+            top_k=3,
+        )
+    )
+
+    assert result["results"] == []
+
+
+def test_search_context_prefers_non_github_match_for_plain_lowercase_long_token_document_query(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion-runtimeconfiguration",
+        "notion-runtimeconfiguration-doc",
+        "source_notion",
+        "Runtime configuration docs",
+        "Runtimeconfiguration deployment notes.",
+    )
+    seed_document_chunks(
+        store,
+        "github:example/repo:docs/runtimeconfiguration.md",
+        "github-runtimeconfiguration-doc",
+        "source_github",
+        "Runtime configuration guide",
+        "Runtimeconfiguration usage notes.",
+        path="docs/runtimeconfiguration.md",
+        url="https://github.com/example/repo/blob/main/docs/runtimeconfiguration.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "runtimeconfiguration docs",
+            top_k=3,
+        )
+    )
+
+    assert result["results"][0].chunk_id == "notion-runtimeconfiguration-doc"
+
+
+def test_search_context_prefers_mixed_language_comparison_documents_without_github_doc_bias(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_notion", SourceType.NOTION, "Notion")
+    seed_source(store, "source_tistory", SourceType.TISTORY, "Tistory")
+    seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
+    seed_document_chunks(
+        store,
+        "notion:dynamodb-notes",
+        "dynamodb-notes-chunk",
+        "source_notion",
+        "DynamoDB notes",
+        "DynamoDB comparison notes with strengths, scaling characteristics, and operational tradeoffs.",
+    )
+    seed_document_chunks(
+        store,
+        "tistory:cassandra-notes",
+        "cassandra-notes-chunk",
+        "source_tistory",
+        "Cassandra notes",
+        "Cassandra comparison notes with consistency, partitioning, and operational tradeoffs.",
+    )
+    seed_document_chunks(
+        store,
+        "github:example/repo:docs/adr/0006-slim-core.md",
+        "adr-markdown-chunk",
+        "source_github",
+        "ADR 0006 slim MCP core scope",
+        "# ADR 0006\nSlim MCP core scope for retained retrieval and markdown decision records.",
+        path="docs/adr/0006-slim-core.md",
+        url="https://github.com/example/repo/blob/main/docs/adr/0006-slim-core.md",
+    )
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=list_search_documents(store)).search_context(
+            "dynamodb와 cassandra 문서 비교해줘",
+            top_k=3,
+            include_debug=True,
+        )
+    )
+
+    assert result["debug"]["intent"]["name"] == "comparison"
+    assert {item.chunk_id for item in result["results"][:2]} == {
+        "dynamodb-notes-chunk",
+        "cassandra-notes-chunk",
+    }
+    assert all(item.source_id != "source_github" for item in result["results"][:2])
 
 
 def test_broad_topic_list_query_prefers_document_like_docs_before_code(
@@ -3687,7 +3916,7 @@ def test_lowercase_repository_probe_uses_github_metadata_when_vector_results_are
     assert result["results"][0].chunk_id == "github-anothergallery-readme"
 
 
-def test_lowercase_repository_name_lookup_prefers_docs_before_code(
+def test_explicit_lowercase_repository_lookup_prefers_docs_before_code(
     monkeypatch,
     tmp_path,
 ):
@@ -3753,7 +3982,7 @@ def test_lowercase_repository_name_lookup_prefers_docs_before_code(
 
     result = asyncio.run(
         ContextSearchService(store, indexer=FakeIndexer()).search_context(
-            "imagegallery",
+            "imagegallery repository docs",
             top_k=1,
         )
     )

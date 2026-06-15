@@ -72,6 +72,9 @@ DEBUG_HOME_BACKSLASH_PATH_RE = re.compile(r"~\\(?:[^\s`\\]+\\)*[^\s`\\]+")
 DEBUG_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/](?:[^\s`\\/]+[\\/])*[^\s`\\/]+")
 DEBUG_URL_FRAGMENT_TOKEN_RE = re.compile(r"\b[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[^\s`]+")
 DEBUG_TLD_FRAGMENT_RE = re.compile(r"\b(?:com|net|org|io|dev|app|ai|co)/[^\s`]+")
+ANSWER_METADATA_GROUNDING_VECTOR_FLOOR = 0.1
+DEFAULT_ANSWER_MIN_SCORE = 0.35
+DEFAULT_ANSWER_MIN_RESULTS = 1
 PROBLEM_HINT_TERMS = {
     "problem",
     "problems",
@@ -91,9 +94,12 @@ DOCUMENT_LIKE_PATH_RE = re.compile(
 class CitationAnswerService:
     """Build a grounded helper answer preview from returned context and citations."""
 
-    _METADATA_GROUNDING_VECTOR_FLOOR = 0.1
-
-    def __init__(self, context_search, min_score: float = 0.35, min_results: int = 1):
+    def __init__(
+        self,
+        context_search,
+        min_score: float = DEFAULT_ANSWER_MIN_SCORE,
+        min_results: int = DEFAULT_ANSWER_MIN_RESULTS,
+    ):
         self.context_search = context_search
         self.min_score = min_score
         self.min_results = min_results
@@ -253,7 +259,7 @@ class CitationAnswerService:
         vector_score = float(getattr(item, "vector_score", 0.0) or 0.0)
         if (
             int(getattr(item, "metadata_priority", 0) or 0) > 0
-            and vector_score >= CitationAnswerService._METADATA_GROUNDING_VECTOR_FLOOR
+            and vector_score >= ANSWER_METADATA_GROUNDING_VECTOR_FLOOR
         ):
             return float(item.score or 0.0)
         return vector_score if vector_score > 0 else float(item.score or 0.0)

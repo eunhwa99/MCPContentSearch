@@ -4,7 +4,12 @@ from typing import Any, cast
 
 from core.models import ChunkModel, DocumentModel
 from environments.config import AppConfig
-from search.intent import RetrievalIntent, classify_intent
+from search.intent import (
+    COMPARISON_HINT_TERMS,
+    LIST_HINT_TERMS,
+    RetrievalIntent,
+    classify_intent,
+)
 from search.query_terms import (
     BROAD_TOPIC_TERMS,
     DOCUMENT_INTENT_TERMS,
@@ -81,6 +86,28 @@ DOCUMENT_LIKE_PATH_RE = re.compile(
     r"(^|[/:])(readme(\.|/|$)|docs?/|documentation/)|\.(md|mdx|markdown|rst|txt)(\s|$)",
     re.IGNORECASE,
 )
+REPOSITORY_INTENT_RE = re.compile(r"\b(repo|repository)\b", re.IGNORECASE)
+
+
+class RetrievalPolicy:
+    PHRASE_MATCH_BONUS = {
+        "short_phrase": 0.12,
+        "long_phrase": 0.18,
+    }
+    GITHUB_NON_DOCUMENT_VECTOR_CAP = 0.49
+    METADATA_PRIORITY_SCORE_FLOOR = 1.0
+    RERANK_MATCH_BONUS = 0.12
+    RERANK_METADATA_MATCH_BONUS = 0.08
+    RERANK_SOURCE_TYPE_BONUS = 0.12
+    RERANK_GITHUB_DOCUMENT_INTENT_BONUS = 0.05
+    RERANK_GENERIC_GITHUB_DOCUMENT_INTENT_PENALTY = 0.05
+    RERANK_STRONG_ANCHOR_BONUS = 0.1
+    RERANK_BROAD_DOCUMENT_LIKE_BONUS = 0.18
+    RERANK_BROAD_GITHUB_NON_DOCUMENT_PENALTY = 0.12
+    RERANK_COMPARISON_DOCUMENT_LIKE_BONUS = 0.08
+    RERANK_COMPARISON_SOURCE_TYPE_BONUS = 0.05
+    RERANK_STRICT_LOOKUP_DOCUMENT_LIKE_BONUS = 0.08
+    DUPLICATE_DOCUMENT_PENALTY_STEP = 0.08
 
 
 def document_haystack(document: DocumentModel) -> str:
@@ -213,16 +240,13 @@ def github_metadata_anchor_groups(query: str, term_groups: list[set[str]]) -> li
     has_document_intent = any(
         group.intersection(DOCUMENT_INTENT_TERMS) for group in term_groups
     )
-    has_repository_intent = bool(
-        re.search(r"\b(repo|repository)\b", query.lower())
-        or "리포지토리" in query
-    )
+    has_repository_intent = query_has_repository_lookup_intent(query, term_groups)
     if (
         has_document_intent
         or has_repository_intent
     ) and (
         query_has_strong_repository_signal(query, term_groups)
-        or query_has_lowercase_repository_probe(term_groups)
+        or query_has_explicit_lowercase_repository_lookup(query, term_groups)
     ):
         repo_terms = repository_lookup_terms_from_groups(term_groups)
     anchor_groups = []
@@ -280,7 +304,12 @@ def phrase_match_bonus(phrases: list[str], metadata_haystack: str) -> float:
     bonus = 0.0
     for phrase in phrases:
         if phrase in metadata_haystack:
-            bonus = max(bonus, 0.18 if len(phrase.split()) >= 3 else 0.12)
+            bonus = max(
+                bonus,
+                RetrievalPolicy.PHRASE_MATCH_BONUS["long_phrase"]
+                if len(phrase.split()) >= 3
+                else RetrievalPolicy.PHRASE_MATCH_BONUS["short_phrase"],
+            )
     return bonus
 
 
@@ -362,7 +391,7 @@ def query_is_metadata_like(query: str, term_groups: list[set[str]]) -> bool:
         return True
     return (
         query_has_strong_repository_signal(query, term_groups)
-        or query_has_lowercase_repository_probe(term_groups)
+        or query_has_explicit_lowercase_repository_lookup(query, term_groups)
     )
 
 
@@ -377,7 +406,30 @@ def should_try_lowercase_github_probe(
         return False
     if query_has_strong_repository_signal(query, term_groups):
         return False
-    return query_has_lowercase_repository_probe(term_groups)
+    return query_has_explicit_lowercase_repository_lookup(query, term_groups)
+
+
+def query_has_repository_lookup_intent(query: str, term_groups: list[set[str]]) -> bool:
+    if any("github" in source_type_terms_for_group(group) for group in term_groups):
+        return True
+    if REPOSITORY_INTENT_RE.search(query) or "리포지토리" in query:
+        return True
+    return any(group.intersection(DOCUMENT_INTENT_TERMS) for group in term_groups) and (
+        query_has_strong_repository_signal(query, term_groups)
+        or any(group.intersection(STRONG_ANCHOR_TERMS) for group in term_groups)
+    )
+
+
+def query_has_explicit_repository_signal(query: str, term_groups: list[set[str]]) -> bool:
+    if query_has_strong_repository_signal(query, term_groups):
+        return True
+    if any(group.intersection(STRONG_ANCHOR_TERMS) for group in term_groups):
+        return True
+    if any("github" in source_type_terms_for_group(group) for group in term_groups):
+        return True
+    if REPOSITORY_INTENT_RE.search(query) or "리포지토리" in query:
+        return True
+    return False
 
 
 def query_looks_like_repository_name(query: str) -> bool:
@@ -414,6 +466,16 @@ def query_has_lowercase_repository_probe(term_groups: list[set[str]]) -> bool:
     return bool(re.fullmatch(r"[a-z0-9]{10,}", term))
 
 
+def query_has_explicit_lowercase_repository_lookup(
+    query: str,
+    term_groups: list[set[str]],
+) -> bool:
+    return query_has_repository_lookup_intent(
+        query,
+        term_groups,
+    ) and query_has_lowercase_repository_probe(term_groups)
+
+
 def repository_lookup_terms_from_groups(term_groups: list[set[str]]) -> set[str]:
     terms = set()
     for group in term_groups:
@@ -443,6 +505,17 @@ def token_looks_like_api_path(token: str) -> bool:
     return bool(re.search(r"(^|/)v\d+($|/)", normalized))
 
 
+def specific_document_query_groups(term_groups: list[set[str]]) -> list[set[str]]:
+    return [
+        group
+        for group in term_groups
+        if not group.intersection(DOCUMENT_INTENT_TERMS)
+        and not group.intersection(LIST_HINT_TERMS)
+        and not group.intersection(COMPARISON_HINT_TERMS)
+        and not source_type_terms_for_group(group)
+    ]
+
+
 def preview(text: str, length: int = 240) -> str:
     return text if len(text) <= length else text[:length].rstrip() + "..."
 
@@ -466,6 +539,10 @@ class ContextCandidateRanker:
             source_type_terms_for_group(term_group)
             for term_group in scoring_groups
         ]
+        has_document_intent = any(
+            term_group.intersection(DOCUMENT_INTENT_TERMS) for term_group in scoring_groups
+        )
+        required_specific_groups = specific_document_query_groups(scoring_groups)
         github_anchor_groups = github_metadata_anchor_groups(
             query,
             term_groups,
@@ -485,18 +562,16 @@ class ContextCandidateRanker:
                 )
             ):
                 continue
-            has_document_intent = any(
-                term_group.intersection(DOCUMENT_INTENT_TERMS) for term_group in scoring_groups
-            )
             is_document_like_match = self.is_document_like(document, metadata_haystack)
             if has_document_intent and self.is_github_document(document) and not is_document_like_match:
                 continue
             matches = 0
+            matched_specific_groups = 0
             for term_group, source_type_terms in zip(
                 scoring_groups,
                 source_type_term_groups,
             ):
-                if term_group_matches(
+                matched = term_group_matches(
                     term_group,
                     haystack,
                     metadata_haystack,
@@ -504,9 +579,14 @@ class ContextCandidateRanker:
                 ) or (
                     source_type_terms
                     and self.document_matches_source_type_terms(document, source_type_terms)
-                ):
+                )
+                if matched:
                     matches += 1
+                    if term_group in required_specific_groups:
+                        matched_specific_groups += 1
             if matches == 0:
+                continue
+            if has_document_intent and required_specific_groups and matched_specific_groups == 0:
                 continue
             body_haystack = (document.content or "").lower()
             body_matches = sum(
@@ -516,7 +596,7 @@ class ContextCandidateRanker:
             )
             score = matches / max(len(scoring_groups), 1)
             if self.is_github_document(document) and not is_document_like_match and body_matches == 0:
-                score = min(score, 0.49)
+                score = min(score, RetrievalPolicy.GITHUB_NON_DOCUMENT_VECTOR_CAP)
             candidates.append(
                 {
                     "chunk_id": document.chunk_id or document.id,
@@ -780,11 +860,16 @@ class ContextCandidateRanker:
             chunk_id = candidate["chunk_id"]
             score = float(candidate["score"])
             if chunk_id in rejected_chunk_ids and not (
-                self.is_github_source_id(str(candidate.get("source_id") or "")) and score >= 1.0
+                self.is_github_source_id(str(candidate.get("source_id") or ""))
+                and score >= RetrievalPolicy.METADATA_PRIORITY_SCORE_FLOOR
             ):
                 continue
-            boost_priority = 1 if score >= 1.0 else 0
-            boosted_score = max(score, 1.0) if boost_priority else score
+            boost_priority = 1 if score >= RetrievalPolicy.METADATA_PRIORITY_SCORE_FLOOR else 0
+            boosted_score = (
+                max(score, RetrievalPolicy.METADATA_PRIORITY_SCORE_FLOOR)
+                if boost_priority
+                else score
+            )
             boosted = {
                 **candidate,
                 "score": boosted_score,
@@ -889,40 +974,43 @@ class ContextCandidateRanker:
                 if any(term in metadata_haystack for term in term_group)
             )
             rerank_score = float(candidate.get("score", 0.0))
-            rerank_score += match_count * 0.12
-            rerank_score += metadata_match_count * 0.08
+            rerank_score += match_count * RetrievalPolicy.RERANK_MATCH_BONUS
+            rerank_score += metadata_match_count * RetrievalPolicy.RERANK_METADATA_MATCH_BONUS
             if preferred_phrases:
                 rerank_score += phrase_match_bonus(preferred_phrases, metadata_haystack)
             if source_type_terms and self.document_matches_source_type_terms(document, source_type_terms):
-                rerank_score += 0.12
+                rerank_score += RetrievalPolicy.RERANK_SOURCE_TYPE_BONUS
             if (
                 any(group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups)
                 and self.is_github_document(document)
                 and is_document_like_match
             ):
-                rerank_score += 0.05
+                if query_has_explicit_repository_signal(query, term_groups):
+                    rerank_score += RetrievalPolicy.RERANK_GITHUB_DOCUMENT_INTENT_BONUS
+                else:
+                    rerank_score -= RetrievalPolicy.RERANK_GENERIC_GITHUB_DOCUMENT_INTENT_PENALTY
             if any(group.intersection(STRONG_ANCHOR_TERMS) for group in scoring_groups) and any(
                 term in metadata_haystack
                 for group in scoring_groups
                 if group.intersection(STRONG_ANCHOR_TERMS)
                 for term in group
             ):
-                rerank_score += 0.1
+                rerank_score += RetrievalPolicy.RERANK_STRONG_ANCHOR_BONUS
             if intent in {RetrievalIntent.BROAD_TOPIC, RetrievalIntent.LIST}:
                 if is_document_like_match:
-                    rerank_score += 0.18
+                    rerank_score += RetrievalPolicy.RERANK_BROAD_DOCUMENT_LIKE_BONUS
                 if self.is_github_document(document) and not is_document_like_match:
-                    rerank_score -= 0.12
+                    rerank_score -= RetrievalPolicy.RERANK_BROAD_GITHUB_NON_DOCUMENT_PENALTY
             elif intent is RetrievalIntent.COMPARISON:
                 if is_document_like_match:
-                    rerank_score += 0.08
+                    rerank_score += RetrievalPolicy.RERANK_COMPARISON_DOCUMENT_LIKE_BONUS
                 if source_type_terms and self.document_matches_source_type_terms(document, source_type_terms):
-                    rerank_score += 0.05
+                    rerank_score += RetrievalPolicy.RERANK_COMPARISON_SOURCE_TYPE_BONUS
             elif intent is RetrievalIntent.STRICT_LOOKUP:
                 if is_document_like_match and any(
                     group.intersection(DOCUMENT_INTENT_TERMS) for group in scoring_groups
                 ):
-                    rerank_score += 0.08
+                    rerank_score += RetrievalPolicy.RERANK_STRICT_LOOKUP_DOCUMENT_LIKE_BONUS
             prelim.append(
                 {
                     **candidate,
@@ -971,7 +1059,7 @@ class ContextCandidateRanker:
             for sibling_index, sibling in enumerate(siblings):
                 updated = dict(sibling)
                 if sibling_index > 0:
-                    penalty = 0.08 * sibling_index
+                    penalty = RetrievalPolicy.DUPLICATE_DOCUMENT_PENALTY_STEP * sibling_index
                     updated["rerank_score"] = float(updated.get("rerank_score", updated.get("score", 0.0))) - penalty
                     updated["score"] = float(updated.get("score", 0.0)) - penalty
                 adjusted.append(updated)
@@ -998,7 +1086,7 @@ class ContextCandidateRanker:
             and query_has_strong_repository_signal(query, term_groups)
         ):
             return github_source_ids or ["source_github"]
-        if query_has_lowercase_repository_probe(term_groups):
+        if query_has_explicit_lowercase_repository_lookup(query, term_groups):
             return github_source_ids or ["source_github"]
         return None
 
@@ -1082,7 +1170,7 @@ class ContextCandidateRanker:
             return False
         if query_has_strong_repository_signal(query, term_groups):
             return False
-        if query_has_lowercase_repository_probe(term_groups):
+        if query_has_explicit_lowercase_repository_lookup(query, term_groups):
             return False
         return True
 
@@ -1109,19 +1197,40 @@ class ContextCandidateRanker:
             bool(repository_lookup_terms_from_groups(term_groups))
             and (
                 query_has_strong_repository_signal(query, term_groups)
-                or query_has_lowercase_repository_probe(term_groups)
+                or query_has_explicit_lowercase_repository_lookup(query, term_groups)
             )
         )
 
-    def document_intent_allows_chunk(self, term_groups: list[set[str]], chunk: ChunkModel) -> bool:
+    def document_intent_allows_chunk(
+        self,
+        query: str,
+        term_groups: list[set[str]],
+        chunk: ChunkModel,
+    ) -> bool:
         has_document_intent = any(
             term_group.intersection(DOCUMENT_INTENT_TERMS) for term_group in term_groups
         )
         if not has_document_intent or not self.is_github_source_id(chunk.source_id):
             return True
         document = chunk.to_document_model(platform=self.document_platform(chunk.source_id))
+        haystack = document_haystack(document)
         metadata_haystack = document_metadata_haystack(document)
-        return self.is_document_like(document, metadata_haystack)
+        if not self.is_document_like(document, metadata_haystack):
+            return False
+        required_specific_groups = specific_document_query_groups(term_groups)
+        if not required_specific_groups:
+            return True
+        if query_has_explicit_repository_signal(query, term_groups):
+            return True
+        return any(
+            term_group_matches(
+                term_group,
+                haystack,
+                metadata_haystack,
+                True,
+            )
+            for term_group in required_specific_groups
+        )
 
     def github_source_ids(self, source_ids: list[str] | None = None) -> set[str]:
         candidate_ids = list(source_ids or [])
