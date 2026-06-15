@@ -457,6 +457,7 @@ class MetadataStore:
                 """,
                 (heartbeat_at, job_id, SyncJobStatus.RUNNING.value),
             )
+            self._touch_sync_owner(conn, heartbeat_at)
             row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._job_from_row(row) if row else None
 
@@ -507,6 +508,7 @@ class MetadataStore:
                 """,
                 (heartbeat_at, job_id),
             )
+            self._touch_sync_owner(conn, heartbeat_at)
             row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._job_from_row(row)
 
@@ -562,6 +564,7 @@ class MetadataStore:
                 """,
                 (heartbeat_at, job_id),
             )
+            self._touch_sync_owner(conn, heartbeat_at)
             self._upsert_document(conn, normalized)
             self._record_chunk_tombstones_for_document(conn, document_id, normalized.source_id)
             conn.execute(
@@ -1410,7 +1413,11 @@ class MetadataStore:
         ).fetchone()
         if not owner_row:
             return False
-        return not self._is_process_alive(owner_row["process_id"])
+        if not self._is_process_alive(owner_row["process_id"]):
+            return True
+        if self._owner_pid_matches_current_process(owner_row):
+            return self._is_stale_running_job(row)
+        return False
 
     def _should_recover_startup_running_job(self, conn, row) -> bool:
         owner_id = row["owner_id"] if "owner_id" in row.keys() else ""
@@ -1422,7 +1429,11 @@ class MetadataStore:
             if owner_row:
                 if owner_id == self.sync_owner_id:
                     return self._is_stale_running_job(row)
-                return not self._is_process_alive(owner_row["process_id"])
+                if not self._is_process_alive(owner_row["process_id"]):
+                    return True
+                if self._owner_pid_matches_current_process(owner_row):
+                    return self._is_stale_running_job(row)
+                return False
             return self._is_stale_running_job(row)
         return self._should_recover_unowned_running_job(row)
 
@@ -1436,6 +1447,13 @@ class MetadataStore:
         return datetime.now(timezone.utc) - parsed > timedelta(
             seconds=self.unowned_running_job_grace_seconds
         )
+
+    @staticmethod
+    def _owner_pid_matches_current_process(row) -> bool:
+        try:
+            return int(row["process_id"]) == os.getpid()
+        except (TypeError, ValueError):
+            return False
 
     def _touch_sync_owner(self, conn, timestamp: str):
         process_id = os.getpid()

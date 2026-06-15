@@ -2,25 +2,13 @@
 
 [![CI](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml)
 
-ContextWiki is a focused MCP retrieval server for private or project-specific
-knowledge. It syncs a small set of configured sources into local Chroma vectors,
-stores lifecycle and citation metadata in SQLite, and exposes MCP tools that let
-an LLM client retrieve grounded context without reading local databases
-directly.
+A **private knowledge retrieval MCP server** for LLM clients. It syncs
+configured sources from Notion, Tistory, GitHub, and Obsidian into local
+vector and metadata stores, then returns verified, citation-backed context.
 
-## 🚀 Key Features
+---
 
-- 🔌 **Multi-source connectors**: Notion, Tistory, GitHub, and local Obsidian
-- ⚖️ **Hybrid retrieval architecture**: Chroma for semantic search, SQLite for
-  lifecycle and citation validation
-- 🛠️ **Practical MCP tools**: source listing, sync, status, search, fetch, and
-  a helper citation-backed answer preview surface
-- 🛡️ **Citation safety**: only SQLite-validated chunks are returned as evidence
-- 🔒 **Local-first by default**: optional query rewrite stays off unless you
-  enable it explicitly, but fully non-egress operation still depends on your
-  embedding provider choice
-
-## 🏗️ Architecture Overview
+## Architecture
 
 ```text
 [ Sources ]
@@ -31,117 +19,148 @@ directly.
              /            \
             v              v
       [ Chroma ]      [ SQLite ]
-    semantic hits    metadata gate
+    semantic search   metadata gate
             \              /
-             \            /
-              v          v
+             v            v
          [ Verified Context ]
 ```
 
-## 🛠️ MCP Tools
+---
 
-Tool handlers live in `api/tools.py`. Business logic stays in `fetching/`,
-`indexing/`, `search/`, and `storage/`.
+## MCP Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `list_sources()` | List configured Notion, Tistory, GitHub, and Obsidian sources. |
-| `sync_source(source_id)` | Start or reuse one configured source sync job and return the current job state immediately. Poll `get_sync_status(source_id)` for terminal completion. |
-| `sync_all()` | Sync all retained sources concurrently and return aggregate results. |
-| `get_sync_status(source_id="")` | Read latest source and sync-job state. |
-| `search_context(query, filters=None, top_k=10, include_debug=False)` | Return structured evidence chunks after Chroma retrieval, metadata fallback when needed, and SQLite validation. |
-| `search_documents(query, filters=None, top_k=10)` | Return one representative, retrieval-ranked row per matching document. |
-| `fetch_context(document_id="", chunk_id="")` | Fetch a document or chunk directly from SQLite metadata. |
-| `answer_with_citations(question, filters=None, top_k=5, include_debug=False)` | Build a helper evidence-gated answer preview with citations and used chunks by reusing the `search_context` retrieval path. |
+| Tool | Description |
+|------|-------------|
+| `list_sources()` | List configured sources. |
+| `sync_source(source_id)` | Sync a specific source. |
+| `sync_all()` | Sync all configured sources in one pass. |
+| `get_sync_status(source_id="")` | Get source and sync job status. |
+| `search_context(query, ...)` | Semantic search with SQLite-validated chunks. |
+| `search_documents(query, ...)` | Search results grouped by document. |
+| `fetch_context(document_id, chunk_id)` | Fetch a specific document or chunk directly. |
+| `answer_with_citations(question, ...)` | Citation-backed answer preview for preview/debug/eval use. |
 
-At a glance:
+> In production, use `search_context` or `search_documents` to gather grounded
+> evidence, then let a downstream LLM generate the final answer.
 
-- `sync_all()` syncs all retained sources in one pass.
-- `sync_source(source_id)` is an immediate-return launcher for MCP clients. It
-  starts or reuses the current sync job for that source, typically returning a
-  `running` job payload immediately, and long sync completion should be
-  observed through `get_sync_status(source_id)`.
-- `sync_all()` reports aggregate `status` truthfully: `completed` for
-  succeed/skip-only runs, `partial` when success/skip is mixed with blocked or
-  failed sources, and `failed` when nothing completed successfully.
-- `sync_all()` summary counts include `succeeded`, `failed`, `blocked`, and
-  `skipped`. Disabled sources are counted as `skipped` during bulk sync.
-- `search_context(...)` always returns a `debug` key. On the default normal
-  path, `include_debug=False` returns `debug={}`, while `include_debug=True`
-  returns populated structured debug details.
-- `answer_with_citations(..., include_debug=True)` exposes helper-surface debug
-  details through the same retrieval path.
-- Today `search_context` also returns a small populated `debug` object when
-  `include_debug=False` if the public source filter leaves no matching sources,
-  including `debug.rewrite_skipped_reason=no_matching_sources`. In other words,
-  the normal default-path `debug` payload is empty, and only that fast path
-  returns populated debug data without `include_debug=True`.
-  `answer_with_citations` does not have that exception and exposes debug only
-  when `include_debug=True`.
+When validating `answer_with_citations`, inspect `citations`, `used_chunks`,
+and `debug` or `debug_markdown` when enabled.
 
-Production MCP clients usually use `search_context` or `search_documents` to
-collect grounded evidence, then let a downstream LLM generate the final
-natural-language answer. In this repo, `answer_with_citations` is intentionally
-positioned as an optional helper surface for preview, debug, evaluation, and
-developer inspection rather than the main production answer API.
+---
 
-When validating `answer_with_citations`, inspect:
+## Quick Start
 
-- `citations` to confirm every visible claim points to expected evidence
-- `used_chunks` to confirm the helper output stayed grounded in retrieved chunks
-- `debug` to inspect retrieval/grounding state when `include_debug=True`
-- `debug_markdown` to review the human-readable retrieval-to-answer trace
+**Prerequisites:** Python `3.13`, [`uv`](https://docs.astral.sh/uv/)
 
-## ⚙️ Configuration
-
-### 1. Source connectors
-
-| Source | Source id | Configuration | Notes |
-| --- | --- | --- | --- |
-| Notion | `source_notion` | `NOTION_API_KEY` | Syncs pages/documents through the Notion fetcher. |
-| Tistory | `source_tistory` | `TISTORY_BLOG_NAME` | Syncs blog posts through the Tistory fetcher. |
-| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES`, `CONTEXTWIKI_GITHUB_DEFAULT_REF`, `CONTEXTWIKI_GITHUB_MAX_FILES`, `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES`, optional `GITHUB_TOKEN`, optional `CONTEXTWIKI_GITHUB_USER_AGENT` | Syncs bounded text/code/Markdown files from configured repositories. |
-| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` | Syncs bounded Markdown notes from a configured local vault. |
-
-GitHub repositories are configured as comma-separated `owner/repo` entries with
-an optional `@ref`. If `@ref` is omitted, ContextWiki uses
-`CONTEXTWIKI_GITHUB_DEFAULT_REF` and defaults that env var to `main`.
+Use this path if you want to run ContextWiki directly with local Python and
+`uv`.
 
 ```bash
-CONTEXTWIKI_GITHUB_REPOSITORIES="eunhwa99/MCPContentSearch@main"
+uv sync --locked
+cp .env.example .env
+uv run --locked python main.py
+```
+
+**Syntax check only (no external services):**
+
+```bash
+python -m compileall api core environments fetching indexing search storage main.py
+```
+
+### Docker
+
+For Docker-only usage, you need Docker Desktop or Docker Engine instead of the
+local Python + `uv` setup above.
+
+The command below is the minimum Docker run example. It is enough if you are
+not using the Obsidian source.
+
+If your `.env` already contains a host path such as
+`CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault`, remove it or
+override it before using this minimum Docker path unless you are also mounting
+that vault into the container.
+
+```bash
+docker build -t contextwiki .
+cp .env.example .env
+docker run --rm -i \
+  --env-file .env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  contextwiki
+```
+
+Because ContextWiki is a stdio MCP server rather than a long-running HTTP API,
+`docker run -d ...` is not the normal integration path.
+
+If you also want `source_obsidian` inside Docker, add a vault mount and point
+`CONTEXTWIKI_OBSIDIAN_VAULT_PATH` at the container path:
+
+```bash
+docker run --rm -i \
+  --env-file .env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  -v "/absolute/path/to/your/vault:/vault:ro" \
+  contextwiki
+```
+
+Then set this in `.env` for the Docker run:
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault
+```
+
+---
+
+## Configuration
+
+### Source Connectors
+
+| Source | Source ID | Required Env Var |
+|--------|-----------|------------------|
+| Notion | `source_notion` | `NOTION_API_KEY` |
+| Tistory | `source_tistory` | `TISTORY_BLOG_NAME` |
+| GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES` |
+| Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` |
+
+**GitHub example**
+
+```bash
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main
 CONTEXTWIKI_GITHUB_DEFAULT_REF=main
 CONTEXTWIKI_GITHUB_MAX_FILES=200
 CONTEXTWIKI_GITHUB_MAX_FILE_BYTES=512000
-CONTEXTWIKI_GITHUB_USER_AGENT="ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)"
+CONTEXTWIKI_GITHUB_USER_AGENT=ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)
 GITHUB_TOKEN=...
 ```
 
-Notes:
+Important GitHub notes:
 
-- `GITHUB_TOKEN` is optional. Unauthenticated GitHub API access depends on the
-  target repository being visible without auth and is subject to lower rate
-  limits.
-- `CONTEXTWIKI_GITHUB_MAX_FILES` and `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES`
-  control fetch completeness. Exceeding those bounds means the connector does
-  not claim a complete repository snapshot for stale cleanup.
-- `CONTEXTWIKI_GITHUB_USER_AGENT` is the HTTP `User-Agent` header knob used by
-  the GitHub fetcher.
+- Use `owner/repo` or `owner/repo@ref`.
+- Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
+- `GITHUB_TOKEN` is optional, but unauthenticated access is more rate-limited.
+
+**Tistory example**
 
 ```bash
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH="/path/to/temp-or-real-vault"
+TISTORY_BLOG_NAME=devlog
+```
+
+Use the blog subdomain only, not the full URL. For example, use `devlog`, not
+`https://devlog.tistory.com`.
+
+**Obsidian example**
+
+```bash
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
 CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
 CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
 ```
 
-Raw secrets are read at runtime from environment variables. They are not stored
-in SQLite, committed to docs/tests, or printed by verification commands.
+Use the vault root path, not an individual `.md` file path.
 
-### 2. Optional search query rewrite
+### Search Query Rewrite (Optional)
 
-`search_context` can optionally ask an external LLM for short query rewrites
-when initial local retrieval looks weak. `answer_with_citations` inherits the
-same rewrite egress because its answer flow calls the `search_context`
-retrieval path. This is disabled by default.
+Rewrites weak queries via an external LLM. Disabled by default.
 
 ```bash
 CONTEXTWIKI_SEARCH_LLM_ENABLED=true
@@ -150,289 +169,307 @@ CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=...
 ```
 
-The default is `off`. When enabled, the search query and normalized query term
-groups may be sent to an external LLM. This setting does not fetch source
-content or mutate SQLite/Chroma.
+> The default embedding path also usually requires `OPENAI_API_KEY` for real
+> sync and search runs.
 
-## ⚡ Reproducible Launch Paths
+---
 
-### 1. Fresh-machine local launch
+## Usage
 
-Prerequisites:
+ContextWiki runs as a local stdio MCP server. Your MCP client spawns the
+server process and communicates with it over stdin/stdout.
 
-- Python `3.13`
-- [`uv`](https://docs.astral.sh/uv/)
+### Recommended: Claude Desktop via local `uv`
 
-Install dependencies, create a local env file, and start the slim MCP core:
+This is the easiest setup path on macOS because:
 
-```bash
-uv sync --locked --python 3.13 --dev
-cp .env.example .env
-uv run --locked python main.py
-```
+- Claude Desktop can spawn the server directly.
+- ContextWiki can load `.env` at startup when launched from the repo root or
+  via `uv --directory ...`.
+- Obsidian can use your real host vault path directly.
+- You do not need Docker mounts for the vault.
 
-Notes:
+Do this in order:
 
-- `environments/token.py` loads `.env`, so `cp .env.example .env` is the
-  intended local setup path.
-- Leaving optional source env vars blank is valid; those sources stay disabled
-  for future syncs until configured.
-- A disabled source does not automatically hide already indexed content from
-  retrieval. Existing SQLite-active documents remain retrievable until a later
-  cleanup or metadata change removes them.
-- The packaged runtime is not keyless today. For non-demo sync/search runs, the
-  default embedding path typically requires `OPENAI_API_KEY` even if query
-  rewrite stays disabled.
-- If you want a public GitHub example after first launch, set
-  `CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main` manually in
-  `.env`.
-- Default local SQLite/Chroma state is created under
-  `~/.mcp_content_search/`.
+1. Create `.env` in your repo root.
+2. Put your real values there.
+3. Add the MCP entry below to Claude Desktop.
+4. Fully restart Claude Desktop.
+5. In a fresh Claude Desktop chat, ask it to call `list_sources()`.
 
-For a plain syntax check without contacting external services:
+Example `.env`:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage main.py
+OPENAI_API_KEY=...
+NOTION_API_KEY=...
+TISTORY_BLOG_NAME=devlog
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch
+CONTEXTWIKI_GITHUB_DEFAULT_REF=main
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
 ```
 
-### 2. Container launch
+On macOS, add this to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-Build the image:
+```json
+{
+  "mcpServers": {
+    "content-search-server": {
+      "command": "/absolute/path/to/uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/MCPContentSearch",
+        "run",
+        "--python",
+        "3.13",
+        "python",
+        "main.py"
+      ]
+    }
+  }
+}
+```
+
+On macOS, find your `uv` path with:
+
+```bash
+which uv
+```
+
+You should not need to start `uv run python main.py` manually first. Claude
+Desktop should launch the configured command automatically when it needs the
+MCP server.
+
+### Claude Desktop via Docker
+
+Use this only if you specifically want the server to run inside Docker.
+Build the image first so the `contextwiki:latest` tag exists locally:
 
 ```bash
 docker build -t contextwiki .
 ```
 
-Prepare the runtime env file before starting the container:
+If you are not using Obsidian, you can omit the vault mount below.
+If you are using Obsidian in Docker, keep both the mount and the `/vault`
+environment setting shown after the JSON example.
+If your `.env` still contains a host-only
+`CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault` from the local
+`uv` setup, remove it or override it before using the no-Obsidian Docker
+client path below.
+On macOS, prefer the absolute Docker binary path from `which docker` if Claude
+Desktop cannot find the `docker` command from its GUI environment.
 
-```bash
-cp .env.example .env
+```json
+{
+  "mcpServers": {
+    "content-search-server": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env-file",
+        "/absolute/path/to/MCPContentSearch/.env",
+        "-v",
+        "contextwiki_data:/home/appuser/.mcp_content_search",
+        "contextwiki:latest"
+      ]
+    }
+  }
+}
 ```
 
-For a real sync/search run, edit `.env` and set an embedding-provider key first.
-With the current default runtime, that usually means setting `OPENAI_API_KEY`.
+If you want Obsidian in the Docker-spawned client path, add this mount to the
+JSON `args` list before `contextwiki:latest`:
 
-Start the MCP server in a container:
-
-```bash
-docker run --rm -it \
-  --env-file .env \
-  -v contextwiki_data:/home/appuser/.mcp_content_search \
-  contextwiki
+```json
+"-v",
+"/absolute/path/to/your/vault:/vault:ro"
 ```
 
-This named volume avoids first-run host-permission issues for reviewers.
-
-If you want to expose a real Obsidian vault to the container, mount it
-read-only and point `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` at the container path:
+Then set this in `.env`:
 
 ```bash
-docker run --rm -it \
-  --env-file .env \
-  -v contextwiki_data:/home/appuser/.mcp_content_search \
-  -v "/absolute/path/to/vault:/vault:ro" \
-  -e CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault \
-  contextwiki
+CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault
 ```
 
-Supported limitations:
+Why both the mount and the env var matter:
 
-- This image runs the retained slim MCP core only.
-- It does not add deployment automation, multi-service orchestration, or secret
-  management beyond `--env-file`.
-- Persisted runtime data lives inside `/home/appuser/.mcp_content_search` unless you
-  mount that path.
+- `-v /absolute/path/to/your/vault:/vault:ro` exposes your host vault inside
+  the container.
+- `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` tells the app where that vault
+  lives inside the container.
 
-## 🚦 Verification
+If you leave `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` set to a host path like
+`/Users/...` while using Docker, the container will not be able to read it.
 
-Verification is split into four explicit layers so local runs and CI describe
-the same trust boundary:
+### Cursor
 
-- `Public MCP contract layer`: real `FastMCP.call_tool(...)` coverage for each retained public tool.
-- `Deterministic functional E2E layer`: retained sync/search/fetch/answer flows over temporary local state.
-- `Deterministic quality eval layer`: fixture-based retrieval and answer scoring plus reviewer-visible artifacts.
-- `Manual live smoke layer`: local configured-runtime checks for human debugging only, not automated portfolio assurance.
+Add to `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "content-search-server": {
+      "command": "/absolute/path/to/uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/MCPContentSearch",
+        "run",
+        "--python",
+        "3.13",
+        "python",
+        "main.py"
+      ]
+    }
+  }
+}
+```
+
+### After connecting
+
+1. Ask the AI to call `sync_all()` or `sync_source("source_notion")`.
+2. Once synced, ask the AI to use `search_context()` or `search_documents()`
+   against your indexed sources.
+
+### Claude Desktop Client Workflow Example
+
+Example prompt:
+
+```text
+find my projects about DynamoDB and organize it with STAR method. Answer in English
+```
+
+This screenshot shows a Claude Desktop client workflow that uses ContextWiki as
+the retrieval backend. The final STAR-form prose is Claude output built on top
+of retrieved notes, not a direct server-side answer format.
+
+![Claude Desktop using ContextWiki MCP as a retrieval backend before Claude composes the final STAR-style response](docs/images/claude-desktop-dynamodb-star-example.png)
+
+### Troubleshooting
+
+**If Claude cannot discover the MCP server**
+
+- Recheck your Claude Desktop MCP config file. On macOS, the default path is
+  `~/Library/Application Support/Claude/claude_desktop_config.json`.
+- Fully restart Claude Desktop after any config change.
+- If needed, run the configured `command` and `args` manually outside Claude to
+  verify they start successfully.
+
+**If Claude only works after you start the server manually**
+
+- Claude Desktop is probably failing to launch the configured command.
+- Test the exact `command` and `args` outside Claude first.
+
+**If GitHub source startup fails with `Invalid GitHub repository spec`**
+
+- Remove quotes from `CONTEXTWIKI_GITHUB_REPOSITORIES` in `.env`.
+- Use `owner/repo` or `owner/repo@ref`, not a full GitHub URL.
+
+**If Obsidian works locally but not in Docker**
+
+- Make sure you both mounted the host vault and set
+  `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
+- The Docker mount path and the app env path are intentionally different.
+
+**If a source still appears disabled after config changes**
+
+- Fully restart the MCP client after updating config.
+- In Claude Desktop, a chat refresh alone is often not enough.
+
+**If `sync_all()` takes too long**
+
+- Sync sources individually with `sync_source("source_notion")`,
+  `sync_source("source_github")`, and so on.
+- GitHub sync can be slower for larger repositories.
+
+---
+
+## Demo
+
+Run the full retained flow against the bundled sample vault:
+
+```bash
+./scripts/demo.sh
+```
+
+- Uses temporary SQLite and Chroma state
+- Uses `MockEmbedding`
+- Requires no Notion, Tistory, GitHub, or Obsidian credentials
+
+The default demo transcript is the canonical portfolio path: the same question
+is used for retrieval and helper answer preview.
+
+The keyless bundled-sample-vault path above is the safer first-run path for reviewers, and it is the only documented
+path here that is intentionally keyless.
+
+```bash
+./scripts/demo.sh --query "Why does ContextWiki validate citations through SQLite?"
+./scripts/demo.sh --json
+```
+
+If you override both `--query` and `--question` with different values, treat the
+output as separate probes rather than one validated end-to-end chain. The
+default transcript is intentionally aligned so reviewers do not over-read a
+split-input run as a stronger product guarantee than it is.
+
+---
+
+## Verification
+
+Verification layers are intentionally split:
+
+- Public MCP contract layer
+  Real `FastMCP.call_tool(...)` payload checks for retained public tools.
+- Deterministic functional E2E layer
+  Retained sync/search/fetch/answer flow checks over temp or local state.
+- Deterministic quality eval layer
+  Retrieval and answer quality checks through `tests/evals` and
+  `scripts/run_contextwiki_eval.py`.
+- Manual live smoke layer
+  Optional local configured-runtime diagnostics only.
 
 No retained automated pytest currently uses the `live` marker.
+`tests/scripts/test_live_query_smoke.py` only verifies the CLI contract for the
+manual smoke script, not live external source behavior.
 
-### 1. Full gate
+If you only want a quick product-flow check, run the aligned same-input smoke
+path:
+
+```bash
+./scripts/demo.sh
+```
+
+This is the aligned same-input smoke path, and the transcript explicitly labels the output as
+separate probes so reviewers do not mistake it for one validated chain.
+
+If you changed code and want the main local verification gate, run:
 
 ```bash
 ./scripts/verify_all.sh
 ```
 
-Includes syntax checks, Ruff, mypy, Bandit, the public contract layer, the
-broader non-live pytest regression run, deterministic eval artifacts, and the
-functional E2E gate. The full gate defaults `IS_TESTING=1` to mirror the
-current CI env shape for non-live verification commands, even though the
-current retained suite does not branch on that variable.
+All live-smoke output should be treated as local diagnostic data, not as a
+retained deterministic test artifact.
 
-### 2. Public MCP contract layer
+---
 
-```bash
-uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py
+## Project Structure
+
+```text
+main.py          FastMCP server entry point
+api/             MCP tool handlers
+core/            Shared models, exceptions, utilities
+environments/    Env var and secret loading
+fetching/        Source connectors (Notion, Tistory, GitHub, Obsidian)
+indexing/        Chunking, deduplication, Chroma indexing
+search/          Search, ranking, metadata gate, citation answer support
+storage/         SQLite lifecycle management
+tests/, scripts/ Verification harnesses and utilities
 ```
 
-This verifies that each retained public MCP tool has at least one real
-`FastMCP.call_tool(...)` contract path with JSON payload assertions.
+---
 
-### 3. Deterministic functional E2E layer
+## Additional Docs
 
-```bash
-./scripts/verify_functional_e2e.sh
-```
-
-This covers retained MCP flows with non-live tests and temporary storage. The
-script now stays on the retained end-to-end flow modules instead of also
-re-running broader contract/service suites. It also defaults `IS_TESTING=1` to
-mirror the current CI env shape for non-live verification commands.
-
-### 4. Deterministic quality eval layer
-
-```bash
-uv run --locked pytest -q tests/evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
-```
-
-`scripts/run_contextwiki_eval.py` is the deterministic reviewer-evidence runner.
-It seeds temporary SQLite fixture data, swaps in fixture retrieval behavior
-instead of the normal live indexing/vector setup, exercises retained retrieval
-and grounded-answer scoring paths, and writes deterministic JSON artifacts
-with:
-
-- group-level mixed-query metrics
-- suite pass/fail summaries
-
-When `--include-latency` is supplied, it also writes an informational
-`runtime_metrics.json` file with retrieval/answer latency summaries. CI uploads
-the deterministic JSON files as the `contextwiki-evals` artifact, while the
-timing file is produced only by opt-in local latency runs.
-
-### 5. Focused checks
-
-```bash
-uv run --locked pytest -q tests/fetching/test_connectors.py
-uv run --locked pytest -q tests/api/test_tools_contract.py
-uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py
-uv run --locked pytest -q tests/e2e/test_contextwiki_flow.py
-uv run --locked pytest -q tests/search/test_context_service.py tests/search/test_answer_service.py
-uv run --locked pytest -q tests/storage/test_metadata_store.py tests/indexing/test_ingestion_service.py
-uv run --locked pytest -q tests/scripts/test_demo_public_flow.py
-uv run --locked pytest -q tests/scripts/test_live_query_smoke.py
-uv run --locked pytest -q tests/evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
-```
-
-`tests/scripts/test_live_query_smoke.py` only verifies the CLI contract,
-redaction rules, and summary wording for the manual smoke script. It does not
-turn the manual live smoke layer into automated live runtime verification.
-
-## 🎬 One-command Demo
-
-Run the retained slim tool-handler and service flow against the bundled public
-sample vault:
-
-```bash
-./scripts/demo.sh
-```
-
-If you have not installed dependencies yet:
-
-```bash
-uv sync --locked --python 3.13 --dev
-./scripts/demo.sh
-```
-
-What it does:
-
-1. Uses `sample_vault/` as a bounded public Obsidian source.
-2. Syncs it through the retained `source_obsidian` connector.
-3. By default, runs `search_context` with the canonical question shown in the transcript.
-4. By default, runs `answer_with_citations` with that same canonical question.
-5. Prints sync, search, and helper answer preview payloads.
-
-This demo is non-live and:
-
-- it uses temporary SQLite and Chroma storage
-- it uses `MockEmbedding` instead of a live embedding provider
-- it does not require Notion, Tistory, GitHub, or Obsidian credentials
-- it forces `CONTEXTWIKI_SEARCH_LLM_ENABLED=false` even if your shell sets it
-- it normalizes generated ids and timestamps so the transcript stays stable
-
-Use the answer step here as a grounded helper preview. In production MCP usage,
-downstream LLMs usually turn the retrieved evidence into the final answer.
-The default demo transcript is the canonical portfolio path: the same question
-is used for retrieval and helper answer preview.
-If you pass only `--query`, the demo reuses that same text for the answer step.
-If you override both `--query` and `--question` with different values, read the
-output as separate probes rather than one validated end-to-end chain.
-
-Optional flags:
-
-```bash
-./scripts/demo.sh --json
-./scripts/demo.sh --query "Why does ContextWiki validate citations through SQLite?"
-./scripts/demo.sh --query "sqlite active evidence gate" --question "Why does ContextWiki validate citations through SQLite?"
-```
-
-## 🔎 Manual Live Smoke Layer
-
-Run a real local retrieval check against your configured ContextWiki runtime:
-
-```bash
-uv run --locked python scripts/live_query_smoke.py --query "How does github sync work?"
-```
-
-This is the aligned same-input smoke path: when `--question` is omitted, the
-script reuses the same text for retrieval and helper answer preview. If you
-supply a different `--question`, the transcript explicitly labels the output as
-separate probes so reviewers do not mistake it for one validated chain.
-
-Useful options:
-
-```bash
-uv run --locked python scripts/live_query_smoke.py --query "aws startup"
-uv run --locked python scripts/live_query_smoke.py --query "aws startup" --question "How do I start EC2?"
-uv run --locked python scripts/live_query_smoke.py --query "github sync" --source-id source_github --top-k 3
-uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --rewrite off
-uv run --locked python scripts/live_query_smoke.py --query "obsidian citation" --json
-```
-
-Use this only after you have configured real sources in `.env`. The public demo
-above is the safer first-run path for reviewers, and it is the only documented
-path here that is intentionally keyless.
-
-All live-smoke output should be treated as local diagnostic data rather than
-public sample content. The default text summary can still reveal local
-source-derived titles, citation titles, and helper-answer text. `--json` removes
-raw chunk text, previews, and direct `path`/`url` fields, but titles,
-identifiers, and synthesized helper answer text may still reflect local source
-content.
-
-This smoke is for retrieval and helper-surface validation. It is manual live
-diagnostic evidence, not part of the automated portfolio gate. Check
-`citations`, `used_chunks`, and, when using direct MCP calls with
-`include_debug=True`, `debug` plus `debug_markdown`.
-
-## 🗺️ Project Map
-
-- `main.py`: FastMCP server composition
-- `api/`: MCP-facing tool contracts and response formatting
-- `core/`: shared models, exceptions, and utilities
-- `environments/`: runtime configuration and secret/environment access
-- `fetching/`: Notion, Tistory, GitHub, and Obsidian connectors/fetchers
-- `indexing/`: chunking, deduplication, lifecycle coordination, and Chroma writes
-- `search/`: ContextWiki retrieval, ranking, active metadata gates, and answers
-- `storage/`: SQLite source/job/document/chunk lifecycle metadata
-- `tests/`, `scripts/`: non-live verification harnesses and reviewer utilities
-
-## 📖 Additional Docs
-
-- [ContextWiki Core Understanding](docs/contextwiki-core-understanding.md)
 - [Architecture](.agents/docs/architecture.md)
-- [ADRs](.agents/docs/adr/)
-- [Harness engineering](.agents/docs/harness-engineering.md)
-- [GitHub workflow policy](.agents/docs/github-workflow.md)
-- [Plan log](docs/plan/)
