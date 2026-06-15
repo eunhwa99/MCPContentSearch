@@ -321,7 +321,7 @@ def register_tools(
         top_k: int = 5,
         include_debug: bool = False,
     ) -> dict:
-        """검색 근거 기반 helper answer preview와 citation/debug 데이터를 반환"""
+        """검색 근거 기반 helper answer payload를 반환하고 answer service 경로에서만 include_debug를 전달"""
         public_filters, has_no_public_source = _public_filters(
             filters,
             metadata_store,

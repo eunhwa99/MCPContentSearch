@@ -37,14 +37,16 @@ vector and metadata stores, then returns verified, citation-backed context.
 | `get_sync_status(source_id="")` | Get source and sync job status. |
 | `search_context(query, ...)` | Semantic search with SQLite-validated chunks. |
 | `search_documents(query, ...)` | Search results grouped by document. |
-| `fetch_context(document_id, chunk_id)` | Fetch a specific document or chunk directly. |
-| `answer_with_citations(question, ...)` | Citation-backed answer preview for preview/debug/eval use. |
+| `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly; provide at least one input. |
+| `answer_with_citations(question, ...)` | Evidence-aware answer preview for preview/debug/eval use. |
 
-> In production, use `search_context` or `search_documents` to gather grounded
-> evidence, then let a downstream LLM generate the final answer.
+> In production, use `search_context` to gather grounded evidence and use
+> `search_documents` for document discovery, then let a downstream LLM generate
+> the final answer.
 
 When validating `answer_with_citations`, inspect `citations`, `used_chunks`,
-and `debug` or `debug_markdown` when enabled.
+and, when the request reaches a configured answer-service path with
+`include_debug=True`, `debug` or `debug_markdown`.
 
 ---
 
