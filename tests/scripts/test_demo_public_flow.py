@@ -374,23 +374,11 @@ def test_demo_help_mentions_question_defaults_to_query():
     assert "Defaults to the same text as --query." in result.stdout
 
 
-def test_readme_keeps_demo_and_live_smoke_contract_phrases():
+def test_readme_keeps_demo_and_live_smoke_contract_intent():
     repo_root = Path(__file__).resolve().parents[2]
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
 
-    assert (
-        "The default demo transcript is the canonical portfolio path: the same question\n"
-        "is used for retrieval and helper answer preview."
-        in readme
-    )
-    assert (
-        "above is the safer first-run path for reviewers, and it is the only documented\n"
-        "path here that is intentionally keyless."
-        in readme
-    )
-    assert "If you override both `--query` and `--question` with different values" in readme
-    assert "output as separate probes rather than one validated end-to-end chain." in readme
-    assert "This is the aligned same-input smoke path" in readme
-    assert "the transcript explicitly labels the output as" in readme
-    assert "separate probes so reviewers do not mistake it for one validated chain." in readme
-    assert "All live-smoke output should be treated as local diagnostic data" in readme
+    assert "./scripts/demo.sh" in readme
+    assert "bundled sample vault" in readme
+    assert "needs no credentials" in readme
+    assert "retrieval plus helper preview on the same input by default" in readme

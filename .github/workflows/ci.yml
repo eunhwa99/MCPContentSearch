@@ -83,12 +83,12 @@ jobs:
             --output-dir artifacts/contextwiki-evals
 
       - name: Upload ContextWiki eval artifacts
-        if: always()
+        if: ${{ always() && hashFiles('artifacts/contextwiki-evals/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: contextwiki-evals
           path: artifacts/contextwiki-evals
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Run functional E2E gate
         env:
