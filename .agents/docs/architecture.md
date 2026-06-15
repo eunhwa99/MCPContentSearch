@@ -316,23 +316,25 @@ Contract intent:
   stack. It fans out retained-source `sync_source` runs concurrently, preserves
   each source's existing running-job guard, and reports mixed source outcomes
   truthfully instead of pretending the whole batch succeeded when one source was
-  blocked or failed. Disabled or unconfigured sources may surface as `skipped`,
-  and the top-level batch status remains `completed` only when the aggregate
-  outcomes are limited to `succeeded` and `skipped`.
+  blocked or failed. Disabled sources may surface as `skipped`, and the
+  top-level batch status remains `completed` only when the aggregate outcomes
+  are limited to `succeeded` and `skipped`.
 - `search_documents` is additive and document-oriented: it uses the same
   retained-source retrieval path but returns one representative chunk-backed row
   per document for browsing.
 - `answer_with_citations` reuses `search_context_for_answer` /
   `search_context`, so query-rewrite egress and retrieval semantics stay aligned
   across search and answer flows.
-- `search_context` always returns a `debug` key. On the normal path,
-  `include_debug=False` leaves that key as `{}`, while `include_debug=True`
-  populates it with structured retrieval detail.
+- `search_context` returns a `debug` key on configured search-service paths.
+  On the normal path, `include_debug=False` leaves that key as `{}`, while
+  `include_debug=True` populates it with structured retrieval detail. The
+  current service-unconfigured fallback returns only `query` and `results`.
 - The current public exception is `search_context`'s `no_matching_sources`
   fast path, which still returns a small populated `debug` object even when
   `include_debug=False`.
-- `answer_with_citations` keeps `include_debug` as a true opt-in debug surface
-  and does not mirror the `no_matching_sources` exception path.
+- `answer_with_citations` keeps `include_debug` as a true opt-in debug surface,
+  does not mirror the `no_matching_sources` exception path, and does not
+  guarantee debug fields on default or service-unconfigured paths.
 - Retrieval policy keeps vector retrieval, metadata fallback, and rerank/debug
   reporting as distinct concerns. Query rewrite, fallback candidate addition,
   and final SQLite validation should stay inspectable without blurring them into
