@@ -47,7 +47,8 @@ Retain:
   - `search_context`
   - `search_documents`
   - `fetch_context`
-  - `answer_with_citations`
+- Internal helper answer surface:
+  - `CitationAnswerService.answer_with_citations(...)`
 - Internal connector helper functions may still parse or fetch explicit
   Notion/GitHub targets for connector tests and implementation reuse, but they
   are not a retained MCP tool surface and must not become one-off target sync
@@ -62,8 +63,8 @@ Retain:
   default. If explicitly enabled through `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`
   and a configured provider API key, the server may send the user's search
   query and normalized query terms to that external provider before
-  Chroma/LlamaIndex retrieval. `answer_with_citations` inherits that same
-  egress because it reuses `search_context_for_answer` / `search_context`.
+  Chroma/LlamaIndex retrieval. Internal helper-answer flows inherit that same
+  egress because they reuse `search_context_for_answer` / `search_context`.
   This is external egress, not dynamic web fallback, and it must not fetch
   source content or mutate SQLite/Chroma.
 

@@ -108,7 +108,7 @@ def _obsidian_service(tmp_path, vault, **config_overrides):
         metadata_store=store,
         source_registry=registry,
     )
-    return connector, store, indexer, mcp
+    return connector, store, indexer, answer_service, mcp
 
 
 def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations(tmp_path):
@@ -132,7 +132,7 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
     (vault / ".trash").mkdir()
     (vault / ".trash" / "deleted.md").write_text("deleted", encoding="utf-8")
 
-    connector, store, indexer, mcp = _obsidian_service(tmp_path, vault)
+    connector, store, indexer, answer_service, mcp = _obsidian_service(tmp_path, vault)
 
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
@@ -162,14 +162,12 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
         "fetch_context",
         {"chunk_id": search_result["results"][0]["chunk_id"]},
     )
-    answer = _call_tool_json(
-        mcp,
-        "answer_with_citations",
-        {
-            "question": "What does the Obsidian project note say about smoke coverage?",
-            "filters": {"source_id": "source_obsidian"},
-            "top_k": 3,
-        },
+    answer = asyncio.run(
+        answer_service.answer_with_citations(
+            "What does the Obsidian project note say about smoke coverage?",
+            filters={"source_id": "source_obsidian"},
+            top_k=3,
+        )
     )
 
     assert [source["source_id"] for source in listed["sources"]] == ["source_obsidian"]

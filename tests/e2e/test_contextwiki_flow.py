@@ -182,13 +182,13 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
         )
         chunk_id = search_result["results"][0]["chunk_id"]
         fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
-        answer = await mcp.tools["answer_with_citations"]("How does ContextWiki answer?")
-        collection_answer = await mcp.tools["answer_with_citations"](
+        answer = await answer_service.answer_with_citations("How does ContextWiki answer?")
+        collection_answer = await answer_service.answer_with_citations(
             "ContextWiki 관련 문서 모아줘",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
         )
-        unsupported = await mcp.tools["answer_with_citations"]("What is the deployment region?")
+        unsupported = await answer_service.answer_with_citations("What is the deployment region?")
         return (
             sync_job,
             status,
@@ -311,7 +311,7 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
             )
             chunk_id = search_result["results"][0]["chunk_id"]
             fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
-            answer = await mcp.tools["answer_with_citations"](
+            answer = await answer_service.answer_with_citations(
                 "How does ContextWiki answer?",
                 filters={"source_id": "source_fake_docs"},
                 top_k=1,

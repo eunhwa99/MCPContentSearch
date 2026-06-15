@@ -49,11 +49,11 @@ Use uv when it is available and healthy. If uv fails because local setup is brok
 After focused verification, run `.agents/skills/harness-functional-smoke/SKILL.md`
 before review. The test lane must leave a smoke matrix in the plan that covers
 the task-relevant inventory of retained MCP tools, source-sync and connector
-fetch paths, `list_sources`/`get_sync_status` status surfaces,
-`search_context`, `fetch_context`, `answer_with_citations`, script smokes, and
-other retained user-visible behavior once through the safest real caller
-surfaces. Include changed features, directly affected neighboring features, and
-core workflows a user would expect to still work. For source sync, cover
+fetch paths, `list_sources`/`get_sync_status` status surfaces, `sync_all`,
+`search_context`, `search_documents`, `fetch_context`, retained answer
+coverage, script smokes, and other retained user-visible behavior once through
+the safest real caller surfaces. Include changed features, directly affected
+neighboring features, and core workflows a user would expect to still work. For source sync, cover
 `sync_source`, `list_sources`, and `get_sync_status` with fake/temp
 dependencies where possible. If a live or user-data check is unsafe, record it
 as blocked/gated with the approval needed and the nearest fake/temp substitute.

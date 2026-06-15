@@ -410,14 +410,12 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
         "fetch_context",
         {"chunk_id": search_result["results"][0]["chunk_id"]},
     )
-    answer = _call_tool_json(
-        mcp,
-        "answer_with_citations",
-        {
-            "question": query,
-            "filters": {"source_id": source_id},
-            "top_k": 3,
-        },
+    answer = asyncio.run(
+        answer_service.answer_with_citations(
+            query,
+            filters={"source_id": source_id},
+            top_k=3,
+        )
     )
 
     assert [source["source_id"] for source in listed["sources"]] == [
@@ -508,14 +506,12 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
         "fetch_context",
         {"chunk_id": search_result["results"][0]["chunk_id"]},
     )
-    answer = _call_tool_json(
-        mcp,
-        "answer_with_citations",
-        {
-            "question": "register_tools ok",
-            "filters": {"source_id": "source_github"},
-            "top_k": 3,
-        },
+    answer = asyncio.run(
+        answer_service.answer_with_citations(
+            "register_tools ok",
+            filters={"source_id": "source_github"},
+            top_k=3,
+        )
     )
 
     assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
