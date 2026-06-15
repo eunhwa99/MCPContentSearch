@@ -39,7 +39,6 @@ Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and 
 | `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly |
 
 > 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
->
 
 ---
 
@@ -185,21 +184,6 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 ./scripts/verify_all.sh                     # Full verification after code changes
 ./scripts/demo.sh --query "your question"   # Custom query
 ```
-
-The default demo transcript is the canonical portfolio path: the same question
-is used for retrieval and helper answer preview.
-
-That path above is the safer first-run path for reviewers, and it is the only documented
-path here that is intentionally keyless.
-
-If you override both `--query` and `--question` with different values, read the
-output as separate probes rather than one validated end-to-end chain.
-
-This is the aligned same-input smoke path for reviewer-friendly transcripts.
-When `--query` and `--question` diverge, the transcript explicitly labels the output as
-separate probes so reviewers do not mistake it for one validated chain.
-
-All live-smoke output should be treated as local diagnostic data.
 
 ---
 
