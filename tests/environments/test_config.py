@@ -1,11 +1,27 @@
+import importlib
 from pathlib import Path
 
 import pytest
 
+from environments import runtime_env
 from environments.config import AppConfig
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_config_module_loads_repo_dotenv_before_reading_defaults(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        runtime_env,
+        "load_repo_dotenv",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or False,
+    )
+
+    config_module = importlib.import_module("environments.config")
+    importlib.reload(config_module)
+
+    assert calls == [((), {})]
 
 
 @pytest.mark.parametrize(

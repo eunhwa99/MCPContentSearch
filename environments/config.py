@@ -5,6 +5,11 @@ from pathlib import Path
 import re
 import chromadb
 
+from environments.runtime_env import load_repo_dotenv
+
+
+load_repo_dotenv()
+
 
 SAFE_ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 SECRET_LIKE_ENV_VALUE_RE = re.compile(
