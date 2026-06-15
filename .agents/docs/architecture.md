@@ -113,13 +113,16 @@ Source sync flow:
 
 ```text
 sync_source
-  -> IngestionService
+  -> IngestionService.start_sync_source() for MCP callers
   -> SourceRegistry connector lookup
   -> MetadataStore source registration and sync job guard
+  -> immediate running-job payload returned to caller
+  -> background IngestionService worker fetch/index lifecycle
   -> Notion, Tistory, GitHub, or Obsidian connector fetch
   -> DocumentChunker
   -> ContentIndexer and Chroma collection
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
+  -> get_sync_status reads terminal completion
 ```
 
 Retained sync safety rule:

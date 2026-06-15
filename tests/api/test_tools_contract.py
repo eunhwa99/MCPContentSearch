@@ -55,12 +55,24 @@ class FakeIndexer:
 
 
 class FakeFailingIngestion:
-    async def sync_source(self, source_id):
+    async def start_sync_source(self, source_id):
         raise ValueError(f"Unknown source: {source_id}")
 
 
-class FakeLeakyJobIngestion:
+class FakeBlockingOnlyIngestion:
     async def sync_source(self, source_id):
+        return Dumpable(
+            {
+                "job_id": "job-blocking-only",
+                "source_id": source_id,
+                "status": "succeeded",
+                "error_message": "",
+            }
+        )
+
+
+class FakeLeakyJobIngestion:
+    async def start_sync_source(self, source_id):
         return Dumpable(
             {
                 "job_id": "job-leaky",
@@ -226,7 +238,7 @@ class FakeFailedSyncAllIngestion:
 
 
 class FakePathFailingIngestion:
-    async def sync_source(self, source_id):
+    async def start_sync_source(self, source_id):
         raise ValueError(
             "Sync failed at /Users/eunhwa/private/vault.md "
             "with token supersecretvalue123456"
@@ -662,6 +674,21 @@ def test_sync_source_redacts_returned_job_error_payload():
     assert result["error_message"] == "Sync failed with token=<redacted>"
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
+
+
+def test_sync_source_returns_error_when_background_launcher_is_unavailable():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeBlockingOnlyIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_source"]("source_github"))
+
+    assert result == {
+        "status": "error",
+        "message": "ingestion service does not support background sync launch",
+    }
 
 
 def test_sync_source_redacts_public_error_paths_and_whitespace_secrets():

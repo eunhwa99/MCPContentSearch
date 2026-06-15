@@ -49,6 +49,22 @@ def _call_tool_json(mcp: FastMCP, name: str, arguments: dict | None = None) -> d
     return json.loads(blocks[0].text)
 
 
+async def _call_tool_json_async(mcp: FastMCP, name: str, arguments: dict | None = None) -> dict:
+    blocks = await mcp.call_tool(name, arguments or {})
+    return json.loads(blocks[0].text)
+
+
+async def _wait_for_sync_completion(mcp: FastMCP, source_id: str, attempts: int = 500) -> dict:
+    latest = None
+    for _ in range(attempts):
+        latest = await _call_tool_json_async(mcp, "get_sync_status", {"source_id": source_id})
+        latest_job = latest.get("latest_job") or {}
+        if latest_job.get("status") in {"succeeded", "failed"}:
+            return latest
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
+
+
 def _make_vault(tmp_path, files: dict[str, str]):
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -118,9 +134,13 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
 
     connector, store, indexer, mcp = _obsidian_service(tmp_path, vault)
 
-    listed = _call_tool_json(mcp, "list_sources")
-    sync_job = _call_tool_json(mcp, "sync_source", {"source_id": "source_obsidian"})
-    status = _call_tool_json(mcp, "get_sync_status", {"source_id": "source_obsidian"})
+    async def run_flow():
+        listed = await _call_tool_json_async(mcp, "list_sources")
+        sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": "source_obsidian"})
+        status = await _wait_for_sync_completion(mcp, "source_obsidian")
+        return listed, sync_job, status
+
+    listed, sync_job, status = asyncio.run(run_flow())
     project = store.get_document("notes/project.md")
     project_chunks = store.list_chunks_for_document("notes/project.md")
     search_result = _call_tool_json(
@@ -155,11 +175,11 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
     assert [source["source_id"] for source in listed["sources"]] == ["source_obsidian"]
     assert listed["sources"][0]["enabled"] is True
     assert connector.supports_stale_cleanup is True
-    assert sync_job["status"] == "succeeded"
+    assert sync_job["status"] == "running"
     assert sync_job["source_id"] == "source_obsidian"
-    assert sync_job["processed_documents"] == 2
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["processed_documents"] == 2
     assert store.get_source("source_obsidian").sync_status == SyncStatus.SUCCEEDED
     assert project is not None
     assert project.source_id == "source_obsidian"

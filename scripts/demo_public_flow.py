@@ -116,6 +116,22 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
     return mcp
 
 
+async def _wait_for_demo_sync_completion(
+    mcp: DemoMCP,
+    source_id: str,
+    *,
+    attempts: int = 500,
+) -> dict:
+    latest = None
+    for _ in range(attempts):
+        latest = await mcp.tools["get_sync_status"](source_id)
+        latest_job = latest.get("latest_job") or {}
+        if latest_job.get("status") in {"succeeded", "failed"}:
+            return latest
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for demo sync completion: {latest}")
+
+
 async def run_demo(query: str, question: str) -> dict:
     had_embed_model_attr = hasattr(Settings, "_embed_model")
     previous_embed_model = getattr(Settings, "_embed_model", None)
@@ -129,7 +145,7 @@ async def run_demo(query: str, question: str) -> dict:
             sample_vault = repo_root / "sample_vault"
             mcp = build_demo_components(sample_vault, Path(temp_dir))
             sync_payload = await mcp.tools["sync_source"]("source_obsidian")
-            status_payload = await mcp.tools["get_sync_status"]("source_obsidian")
+            status_payload = await _wait_for_demo_sync_completion(mcp, "source_obsidian")
             search_payload = await mcp.tools["search_context"](
                 query,
                 filters={"source_id": "source_obsidian"},

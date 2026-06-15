@@ -11,6 +11,8 @@ from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
 
+CANCELLED_SYNC_ERROR = "Sync request was cancelled before completion."
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -67,6 +69,8 @@ class IngestionService:
         self.source_registry = source_registry
         self.chunker = chunker
         self.indexer = indexer
+        self._background_sync_tasks: dict[str, asyncio.Task] = {}
+        self._recent_terminal_background_jobs: dict[str, object] = {}
         self.register_source_config = register_source_config
         self.metadata_store.ensure_schema()
         if self.register_source_config:
@@ -92,7 +96,10 @@ class IngestionService:
         async def _sync_one(selected_source_id: str) -> dict:
             try:
                 connector = self.source_registry.get_connector(selected_source_id)
-                job = await self.sync_source(selected_source_id)
+                job = await self._sync_source_internal(
+                    selected_source_id,
+                    join_existing_background=False,
+                )
             except Exception as exc:
                 message = _redact_sensitive_error(str(exc))
                 logger.error("Bulk sync failed for source %s: %s", selected_source_id, message)
@@ -129,6 +136,85 @@ class IngestionService:
         }
 
     async def sync_source(self, source_id: str):
+        self._reconcile_finished_background_task(source_id)
+        recent_terminal_job = self._recent_terminal_background_jobs.pop(source_id, None)
+        if recent_terminal_job is not None:
+            latest_job = self.metadata_store.get_latest_sync_job(source_id)
+            if (
+                latest_job is not None
+                and latest_job.job_id == recent_terminal_job.job_id
+                and latest_job.status == SyncJobStatus.FAILED
+                and latest_job.error_message == CANCELLED_SYNC_ERROR
+            ):
+                return latest_job
+        return await self._sync_source_internal(source_id, join_existing_background=True)
+
+    async def _sync_source_internal(self, source_id: str, *, join_existing_background: bool):
+        connector, job, should_run = self._begin_sync_source(source_id)
+        if not should_run:
+            existing_task = self._background_sync_tasks.get(source_id)
+            if (
+                join_existing_background
+                and job.status == SyncJobStatus.RUNNING
+                and existing_task is not None
+            ):
+                try:
+                    return await asyncio.shield(existing_task)
+                except asyncio.CancelledError:
+                    if existing_task.cancelled() or existing_task.done():
+                        for _ in range(5):
+                            self._reconcile_finished_background_task(source_id)
+                            latest_job = self.metadata_store.get_latest_sync_job(source_id)
+                            if latest_job is not None and latest_job.status != SyncJobStatus.RUNNING:
+                                return latest_job
+                            await asyncio.sleep(0)
+                    raise
+            return job
+        return await self._run_sync_source_job(job.job_id, source_id, connector)
+
+    async def start_sync_source(self, source_id: str):
+        self._reconcile_finished_background_task(source_id)
+        self._recent_terminal_background_jobs.pop(source_id, None)
+        connector, job, should_run = self._begin_sync_source(source_id)
+        if not should_run:
+            return job
+        try:
+            task = asyncio.create_task(
+                self._run_sync_source_job(job.job_id, source_id, connector),
+                name=f"sync-source:{source_id}:{job.job_id}",
+            )
+        except Exception as exc:
+            error_message = _redact_sensitive_error(str(exc))
+            logger.error(
+                "Unable to start background sync for source %s: %s",
+                source_id,
+                error_message,
+            )
+            return self.metadata_store.complete_failed_sync(
+                job_id=job.job_id,
+                source_id=source_id,
+                error_message=error_message,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, error_message)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
+            )
+        self._background_sync_tasks[source_id] = task
+        setattr(task, "contextwiki_job_id", job.job_id)
+        setattr(task, "contextwiki_connector", connector)
+        task.add_done_callback(
+            lambda completed_task, sid=source_id, jid=job.job_id, sync_connector=connector: self._finalize_background_sync_task(
+                sid,
+                jid,
+                sync_connector,
+                completed_task,
+            )
+        )
+        return job
+
+    def _begin_sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)
         if self.register_source_config:
             self.refresh_registered_sources()
@@ -137,12 +223,12 @@ class IngestionService:
         job, started = self.metadata_store.begin_sync_job(source_id)
         if not started:
             logger.info("Sync already running for source %s", source_id)
-            return job
+            return connector, job, False
         if not connector.source.enabled:
             message = _redact_sensitive_error(
                 getattr(connector, "disabled_reason", "") or f"Source {source_id} is disabled"
             )
-            return self.metadata_store.complete_failed_sync(
+            return connector, self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
                 error_message=message,
@@ -150,9 +236,15 @@ class IngestionService:
                     connector,
                     message,
                 ),
-            )
+            ), False
+        return connector, job, True
 
+    async def _run_sync_source_job(self, job_id: str, source_id: str, connector):
+        job = None
         try:
+            job = self.metadata_store.get_sync_job(job_id)
+            if not job:
+                raise ValueError(f"Unknown sync job: {job_id}")
             inactive_job = self._refresh_running_job_or_current(job.job_id)
             if inactive_job:
                 return inactive_job
@@ -305,12 +397,12 @@ class IngestionService:
             await self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
             return finished
 
-        except Exception as exc:
-            error_message = _redact_sensitive_error(str(exc))
-            logger.error("Sync failed for source %s: %s", source_id, error_message)
+        except asyncio.CancelledError:
+            error_message = CANCELLED_SYNC_ERROR
+            logger.warning("Sync cancelled for source %s", source_id)
             if "uncommitted_vector_ids" in locals():
                 await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
-            return self.metadata_store.complete_failed_sync(
+            self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
                 error_message=error_message,
@@ -320,6 +412,67 @@ class IngestionService:
                     or not connector.source.enabled
                     else ""
                 ),
+            )
+            raise
+        except Exception as exc:
+            error_message = _redact_sensitive_error(str(exc))
+            logger.error("Sync failed for source %s: %s", source_id, error_message)
+            if "uncommitted_vector_ids" in locals():
+                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+            return self.metadata_store.complete_failed_sync(
+                job_id=job.job_id if job is not None else job_id,
+                source_id=source_id,
+                error_message=error_message,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, error_message)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
+            )
+
+    def _reconcile_finished_background_task(self, source_id: str) -> None:
+        existing_task = self._background_sync_tasks.get(source_id)
+        if existing_task is None or not existing_task.done():
+            return
+        job_id = getattr(existing_task, "contextwiki_job_id", "")
+        connector = getattr(existing_task, "contextwiki_connector", None)
+        if not job_id or connector is None:
+            self._background_sync_tasks.pop(source_id, None)
+            return
+        self._finalize_background_sync_task(source_id, job_id, connector, existing_task)
+
+    def _finalize_background_sync_task(
+        self,
+        source_id: str,
+        job_id: str,
+        connector,
+        task: asyncio.Task,
+    ) -> None:
+        current_task = self._background_sync_tasks.get(source_id)
+        if current_task is task:
+            self._background_sync_tasks.pop(source_id, None)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.warning("Background sync task cancelled for source %s", source_id)
+            failed_job = self.metadata_store.complete_failed_sync(
+                job_id=job_id,
+                source_id=source_id,
+                error_message=CANCELLED_SYNC_ERROR,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, CANCELLED_SYNC_ERROR)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
+            )
+            self._recent_terminal_background_jobs[source_id] = failed_job
+        except Exception as exc:
+            logger.error(
+                "Background sync task failed for source %s: %s",
+                source_id,
+                _redact_sensitive_error(str(exc)),
             )
 
     def _refresh_running_job_or_current(self, job_id: str):

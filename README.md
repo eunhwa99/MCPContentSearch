@@ -25,10 +25,6 @@ vector and metadata stores, then returns verified, citation-backed context.
          [ Verified Context ]
 ```
 
-- **Chroma** handles semantic retrieval.
-- **SQLite** tracks document lifecycle and citation validity.
-- Only chunks still active in SQLite are returned as evidence.
-
 ---
 
 ## MCP Tools

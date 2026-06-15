@@ -76,11 +76,16 @@ def register_tools(
 
     @mcp.tool()
     async def sync_source(source_id: str) -> dict:
-        """특정 source incremental sync 실행"""
+        """특정 source sync를 시작하거나 기존 running job을 재사용한다."""
         if ingestion_service is None:
             return {"status": "error", "message": "ingestion service is not configured"}
+        if not hasattr(ingestion_service, "start_sync_source"):
+            return {
+                "status": "error",
+                "message": "ingestion service does not support background sync launch",
+            }
         try:
-            job = await ingestion_service.sync_source(source_id)
+            job = await ingestion_service.start_sync_source(source_id)
             return _safe_sync_job_payload(job)
         except Exception as exc:
             message = safe_error_message(exc)

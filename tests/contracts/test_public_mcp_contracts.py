@@ -102,6 +102,9 @@ class FakeMetadataStore:
             chunk_id="chunk-1",
         )
 
+    def set_job(self, source_id, job_payload):
+        self.jobs[source_id] = Dumpable(job_payload, **job_payload)
+
     def register_source(self, source):
         self.sources[source.source_id] = source
         return source
@@ -138,17 +141,29 @@ class FakeMetadataStore:
 
 
 class FakeIngestionService:
-    async def sync_source(self, source_id):
-        return Dumpable(
-            {
-                "job_id": f"job-{source_id}",
-                "source_id": source_id,
-                "status": "succeeded",
-                "started_at": "2026-06-15T00:00:00+00:00",
-                "finished_at": "2026-06-15T00:00:01+00:00",
-                "error_message": "",
-            }
-        )
+    def __init__(self, metadata_store: FakeMetadataStore):
+        self.metadata_store = metadata_store
+        self.calls: dict[str, int] = {}
+        self.job_numbers: dict[str, int] = {}
+
+    async def start_sync_source(self, source_id):
+        self.calls[source_id] = self.calls.get(source_id, 0) + 1
+        existing_job = self.metadata_store.get_latest_sync_job(source_id)
+        if existing_job and getattr(existing_job, "status", "") == "running":
+            return existing_job
+
+        next_job_number = self.job_numbers.get(source_id, 0) + 1
+        self.job_numbers[source_id] = next_job_number
+        job_payload = {
+            "job_id": f"job-{source_id}-{next_job_number}",
+            "source_id": source_id,
+            "status": "running",
+            "started_at": "2026-06-15T00:00:00+00:00",
+            "finished_at": "",
+            "error_message": "",
+        }
+        self.metadata_store.set_job(source_id, job_payload)
+        return Dumpable(job_payload, **job_payload)
 
     async def sync_all(self):
         return {
@@ -193,6 +208,26 @@ class FakeIngestionService:
                 },
             ],
         }
+
+
+class FakeBlockingOnlyIngestionService:
+    async def sync_source(self, source_id):
+        return Dumpable(
+            {
+                "job_id": f"job-{source_id}-blocking-only",
+                "source_id": source_id,
+                "status": "succeeded",
+                "started_at": "2026-06-15T00:00:00+00:00",
+                "finished_at": "2026-06-15T00:00:01+00:00",
+                "error_message": "",
+            },
+            job_id=f"job-{source_id}-blocking-only",
+            source_id=source_id,
+            status="succeeded",
+            started_at="2026-06-15T00:00:00+00:00",
+            finished_at="2026-06-15T00:00:01+00:00",
+            error_message="",
+        )
 
 
 class FakeContextSearchService:
@@ -271,19 +306,28 @@ class FakeAnswerService:
         return payload
 
 
-def build_contract_mcp() -> FastMCP:
+def build_contract_harness():
     source_registry = FakeSourceRegistry()
     metadata_store = FakeMetadataStore(source_registry)
     mcp = FastMCP("public-contract-test")
+    ingestion_service = FakeIngestionService(metadata_store)
     register_tools(
         mcp,
-        ingestion_service=FakeIngestionService(),
+        ingestion_service=ingestion_service,
         context_search_service=FakeContextSearchService(),
         answer_service=FakeAnswerService(),
         metadata_store=metadata_store,
         source_registry=source_registry,
     )
-    return mcp
+    return {
+        "mcp": mcp,
+        "metadata_store": metadata_store,
+        "ingestion_service": ingestion_service,
+    }
+
+
+def build_contract_mcp() -> FastMCP:
+    return build_contract_harness()["mcp"]
 
 
 def call_tool_json(mcp: FastMCP, name: str, arguments: dict | None = None) -> dict:
@@ -308,8 +352,60 @@ def test_sync_source_contract_uses_real_fastmcp_call_tool():
         {"source_id": "source_github"},
     )
 
-    assert payload["status"] == "succeeded"
+    assert payload["status"] == "running"
     assert payload["source_id"] == "source_github"
+
+
+def test_sync_source_contract_reuses_running_job_and_polls_to_terminal_status():
+    harness = build_contract_harness()
+    mcp = harness["mcp"]
+    metadata_store = harness["metadata_store"]
+    ingestion_service = harness["ingestion_service"]
+
+    first_payload = call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
+    second_payload = call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
+
+    assert first_payload["status"] == "running"
+    assert second_payload["status"] == "running"
+    assert second_payload["job_id"] == first_payload["job_id"]
+    assert ingestion_service.calls["source_github"] == 2
+
+    metadata_store.set_job(
+        "source_github",
+        {
+            "job_id": first_payload["job_id"],
+            "source_id": "source_github",
+            "status": "succeeded",
+            "started_at": first_payload["started_at"],
+            "finished_at": "2026-06-15T00:00:01+00:00",
+            "error_message": "",
+        },
+    )
+    status_payload = call_tool_json(mcp, "get_sync_status", {"source_id": "source_github"})
+
+    assert status_payload["latest_job"]["job_id"] == first_payload["job_id"]
+    assert status_payload["latest_job"]["status"] == "succeeded"
+
+
+def test_sync_source_contract_returns_error_without_background_launcher():
+    source_registry = FakeSourceRegistry()
+    metadata_store = FakeMetadataStore(source_registry)
+    mcp = FastMCP("public-contract-test-no-launcher")
+    register_tools(
+        mcp,
+        ingestion_service=FakeBlockingOnlyIngestionService(),
+        context_search_service=FakeContextSearchService(),
+        answer_service=FakeAnswerService(),
+        metadata_store=metadata_store,
+        source_registry=source_registry,
+    )
+
+    payload = call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
+
+    assert payload == {
+        "status": "error",
+        "message": "ingestion service does not support background sync launch",
+    }
 
 
 def test_sync_all_contract_uses_real_fastmcp_call_tool():
