@@ -27,6 +27,7 @@
 - `tests/scripts/test_demo_public_flow.py::test_readme_keeps_demo_and_live_smoke_contract_phrases` passes.
 - CI workflow still runs eval generation and upload, but the upload step no longer creates a secondary failure when no artifacts exist because an earlier step already failed.
 - Targeted verification for README/workflow contract surfaces passes locally.
+- After syncing the branch with latest `origin/main`, the public MCP contract layer also passes so PR merge CI is not blocked by stale-base failures.
 
 ## Step breakdown
 
@@ -40,6 +41,8 @@
    - Restore the required README wording and tighten the CI artifact upload guard with the narrowest workflow change.
 4. `verification`
    - Run targeted tests and a workflow/docs sanity pass.
+5. `merge-ref-repair`
+   - If PR CI fails only on the GitHub merge ref, fast-forward or merge `origin/main` into the branch, reproduce the failure locally, and fix only the branch-related regression.
 
 ## Files likely to change
 
@@ -83,3 +86,6 @@
 | Minimal fix | completed | Kept the README to the single reviewer-path bullet the user wanted, trimmed the README contract test to match that smaller doc surface, and guarded the eval artifact upload step so absent artifacts after earlier failures do not create a second CI failure. | `README.md`; `tests/scripts/test_demo_public_flow.py`; `.github/workflows/ci.yml` |
 | Verification | completed | Targeted README/workflow contract tests still passed after removing the extra bullets, and the diff is whitespace-clean. | `uv run --locked pytest -q tests/scripts/test_demo_public_flow.py tests/scripts/test_verification_architecture.py` -> `20 passed`; `git diff --check` |
 | Review gate bypass | completed | The user explicitly approved bypassing the required five-reviewer subagent loop for this PR delivery. Proceeding with local verification evidence only. | User message: `2번` |
+| PR CI root-cause investigation | completed | Confirmed PR #79 failed on the merge ref because latest `origin/main` was already red in the public MCP contract layer; the branch itself passed locally before syncing with main. | `gh pr checks 79`; `gh run view 27547827309 --log-failed`; `gh run view 27547716266 --log-failed`; `uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py` before merge -> `11 passed`; `git rev-list --left-right --count HEAD...origin/main` -> `1 3` |
+| Merge-ref repair | completed | Merged latest `origin/main` into the branch to reproduce the merge-ref state locally, then restored the public `search_context` debug key contract at the API boundary while preserving the workflow upload guard from this branch. | `git merge --no-edit origin/main`; `api/tools.py`; `.github/workflows/ci.yml` |
+| Merge-ref verification | completed | The public contract layer plus README/workflow contract checks all passed on the merged branch state. | `uv run --locked pytest -q tests/contracts/test_public_mcp_contracts.py tests/test_app_composition.py tests/scripts/test_demo_public_flow.py tests/scripts/test_verification_architecture.py` -> `31 passed`; `git diff --check` |
