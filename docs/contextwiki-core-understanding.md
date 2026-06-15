@@ -113,7 +113,13 @@ sync_all()
 This fans out one concurrent `sync_source()` run per retained source. Each
 source still keeps its own SQLite running-job guard, so a source that is
 already syncing is reported as blocked in the aggregate result instead of
-starting a second overlapping fetch.
+starting a second overlapping fetch. The running-job guard also refreshes a
+sync-owner heartbeat beside the per-job heartbeat during active running-job
+metadata updates. When a previous owner still looks alive only because both old
+and new containers report the app as PID `1`, startup recovery and
+`begin_sync_job()` specifically fall back to the running job's own staleness
+window before reclaiming the source, instead of treating the short unowned-job
+grace as proof that the previous sync is dead.
 
 Obsidian example:
 
