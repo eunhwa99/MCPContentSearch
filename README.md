@@ -40,7 +40,6 @@ Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and 
 
 > 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
 >
-> Internal demo/eval flows may still use `CitationAnswerService.answer_with_citations(...)` as a helper preview, but it is no longer a public MCP tool.
 
 ---
 
