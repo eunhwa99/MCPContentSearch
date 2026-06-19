@@ -1,6 +1,8 @@
 import asyncio
+import inspect
 import logging
 import re
+import time
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -9,8 +11,10 @@ import httpx
 from environments.config import AppConfig, NotionConfig
 from core.models import DocumentModel
 from core.exceptions import APIError, FetchError
+from indexing.background_tasks import safe_error_message
 
 logger = logging.getLogger(__name__)
+
 NOTION_OBJECT_ID_RE = re.compile(
     r"(?i)([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})"
 )
@@ -21,6 +25,78 @@ NOTION_HYPHENATED_OBJECT_ID_RE = re.compile(
 NOTION_HOST_SUFFIXES = ("notion.so", "notion.site")
 NOTION_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 NOTION_MAX_RETRY_ATTEMPTS = 3
+NOTION_STOP_POLL_INTERVAL_SECONDS = 0.1
+
+
+class _StopRequested(Exception):
+    pass
+
+
+async def _should_stop(stop_checker) -> bool:
+    if stop_checker is None:
+        return False
+    try:
+        result = stop_checker()
+        if inspect.isawaitable(result):
+            result = await result
+    except _StopRequested:
+        raise
+    except Exception:
+        logger.debug("Ignoring stop checker failure")
+        return False
+    return bool(result)
+
+
+async def _raise_if_stop_requested(stop_checker) -> None:
+    if await _should_stop(stop_checker):
+        raise _StopRequested
+
+
+async def _drain_request_task(task: asyncio.Task) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
+async def _await_request_with_stop(request_coro, stop_checker):
+    if stop_checker is None:
+        return await request_coro
+    request_task = asyncio.create_task(request_coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {request_task},
+                timeout=NOTION_STOP_POLL_INTERVAL_SECONDS,
+            )
+            if request_task in done:
+                await _raise_if_stop_requested(stop_checker)
+                return await request_task
+            await _raise_if_stop_requested(stop_checker)
+    except _StopRequested:
+        request_task.cancel()
+        await _drain_request_task(request_task)
+        raise
+    except asyncio.CancelledError:
+        request_task.cancel()
+        await _drain_request_task(request_task)
+        raise
+
+
+async def _sleep_with_stop(delay_seconds: float, stop_checker) -> None:
+    remaining = max(0.0, float(delay_seconds))
+    if stop_checker is None:
+        await asyncio.sleep(remaining)
+        return
+    while remaining > 0:
+        await _raise_if_stop_requested(stop_checker)
+        step = min(remaining, NOTION_STOP_POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(step)
+        remaining -= step
+    await _raise_if_stop_requested(stop_checker)
+
 
 class NotionAPIClient:
     def __init__(self, config: NotionConfig, app_config: AppConfig):
@@ -32,11 +108,19 @@ class NotionAPIClient:
             "Content-Type": "application/json",
         }
     
-    async def search_pages(self, client: httpx.AsyncClient) -> List[dict]:
+    async def search_pages(
+        self,
+        client: httpx.AsyncClient,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ) -> List[dict]:
         pages = []
         next_cursor = None
+        batch_index = 0
         
         while True:
+            await _raise_if_stop_requested(progress_stop_checker)
             payload = self._build_search_payload(next_cursor)
 
             data = await self._request_json(
@@ -44,15 +128,30 @@ class NotionAPIClient:
                 "post",
                 f"{self.config.base_url}/search",
                 json=payload,
+                stop_checker=progress_stop_checker,
             )
 
             pages.extend(data.get("results", []))
+            batch_index += 1
+            await _raise_if_stop_requested(progress_stop_checker)
+            if await _emit_progress(
+                progress_callback,
+                {
+                    "event": "search_page_batch_completed",
+                    "batch_index": batch_index,
+                    "pages_discovered": len(pages),
+                    "has_more": bool(data.get("has_more", False)),
+                },
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
 
             if not data.get("has_more", False):
                 break
 
             next_cursor = data.get("next_cursor")
-        
+            await _raise_if_stop_requested(progress_stop_checker)
+        await _raise_if_stop_requested(progress_stop_checker)
         return pages
     
     async def fetch_block_content(
@@ -61,6 +160,7 @@ class NotionAPIClient:
         block_id: str,
         depth: int = 0,
         strict: bool = False,
+        stop_checker=None,
     ) -> str:
         """블록 컨텐츠 재귀 추출"""
         if depth > self.app_config.notion_max_depth:
@@ -68,20 +168,36 @@ class NotionAPIClient:
             return ""
         
         try:
-            blocks = await self._fetch_blocks(client, block_id)
-            return await self._extract_text_recursive(client, blocks, depth, strict)
+            await _raise_if_stop_requested(stop_checker)
+            blocks = await self._fetch_blocks(client, block_id, stop_checker=stop_checker)
+            await _raise_if_stop_requested(stop_checker)
+            return await self._extract_text_recursive(
+                client,
+                blocks,
+                depth,
+                strict,
+                stop_checker=stop_checker,
+            )
+        except _StopRequested:
+            raise
         except Exception as e:
             if strict:
                 raise
             logger.debug(f"Failed to fetch block {block_id}: {e}")
             return ""
     
-    async def _fetch_blocks(self, client: httpx.AsyncClient, block_id: str) -> List[dict]:
+    async def _fetch_blocks(
+        self,
+        client: httpx.AsyncClient,
+        block_id: str,
+        stop_checker=None,
+    ) -> List[dict]:
         """페이지네이션 지원 블록 가져오기"""
         all_blocks = []
         next_cursor = None
         
         while True:
+            await _raise_if_stop_requested(stop_checker)
             params = {"page_size": self.app_config.notion_page_size}
             if next_cursor:
                 params["start_cursor"] = next_cursor
@@ -91,6 +207,7 @@ class NotionAPIClient:
                 "get",
                 f"{self.config.base_url}/blocks/{block_id}/children",
                 params=params,
+                stop_checker=stop_checker,
             )
 
             all_blocks.extend(data.get("results", []))
@@ -102,18 +219,20 @@ class NotionAPIClient:
         
         return all_blocks
 
-    async def fetch_page(self, client: httpx.AsyncClient, page_id: str) -> dict:
+    async def fetch_page(self, client: httpx.AsyncClient, page_id: str, stop_checker=None) -> dict:
         return await self._request_json(
             client,
             "get",
             f"{self.config.base_url}/pages/{page_id}",
+            stop_checker=stop_checker,
         )
 
-    async def query_database(self, client: httpx.AsyncClient, database_id: str) -> List[dict]:
+    async def query_database(self, client: httpx.AsyncClient, database_id: str, stop_checker=None) -> List[dict]:
         pages = []
         next_cursor = None
 
         while True:
+            await _raise_if_stop_requested(stop_checker)
             payload = {"page_size": 100}
             if next_cursor:
                 payload["start_cursor"] = next_cursor
@@ -123,6 +242,7 @@ class NotionAPIClient:
                 "post",
                 f"{self.config.base_url}/databases/{database_id}/query",
                 json=payload,
+                stop_checker=stop_checker,
             )
 
             pages.extend(data.get("results", []))
@@ -137,17 +257,23 @@ class NotionAPIClient:
         client: httpx.AsyncClient,
         method: str,
         url: str,
+        stop_checker=None,
         **kwargs,
     ) -> dict:
         request = getattr(client, method)
         for attempt in range(1, NOTION_MAX_RETRY_ATTEMPTS + 1):
+            await _raise_if_stop_requested(stop_checker)
             try:
-                response = await request(
-                    url,
-                    headers=self.headers,
-                    timeout=self.app_config.request_timeout,
-                    **kwargs,
+                response = await _await_request_with_stop(
+                    request(
+                        url,
+                        headers=self.headers,
+                        timeout=self.app_config.request_timeout,
+                        **kwargs,
+                    ),
+                    stop_checker,
                 )
+                await _raise_if_stop_requested(stop_checker)
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:
@@ -156,12 +282,18 @@ class NotionAPIClient:
                     status_code in NOTION_TRANSIENT_STATUS_CODES
                     and attempt < NOTION_MAX_RETRY_ATTEMPTS
                 ):
-                    await asyncio.sleep(self._retry_delay_seconds(attempt, e.response))
+                    await _sleep_with_stop(
+                        self._retry_delay_seconds(attempt, e.response),
+                        stop_checker,
+                    )
                     continue
                 raise APIError("Notion", status_code, self._error_message(e))
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 if attempt < NOTION_MAX_RETRY_ATTEMPTS:
-                    await asyncio.sleep(self._retry_delay_seconds(attempt))
+                    await _sleep_with_stop(
+                        self._retry_delay_seconds(attempt),
+                        stop_checker,
+                    )
                     continue
                 raise APIError("Notion", 0, str(e))
 
@@ -200,11 +332,13 @@ class NotionAPIClient:
         blocks: List[dict],
         depth: int,
         strict: bool = False,
+        stop_checker=None,
     ) -> str:
         """재귀적 텍스트 추출"""
         content_parts = []
         
         for block in blocks:
+            await _raise_if_stop_requested(stop_checker)
             block_type = block.get("type")
             
             if block_type in self.config.supported_block_types:
@@ -217,7 +351,11 @@ class NotionAPIClient:
             
             if block.get("has_children", False):
                 child_content = await self.fetch_block_content(
-                    client, block["id"], depth + 1, strict=strict
+                    client,
+                    block["id"],
+                    depth + 1,
+                    strict=strict,
+                    stop_checker=stop_checker,
                 )
                 if child_content:
                     content_parts.append(child_content)
@@ -270,7 +408,29 @@ class NotionPageProcessor:
             updated_at=page.get("last_edited_time", page.get("created_time", "")),
         )
 
-async def fetch_notion_pages(api_key: str, app_config: AppConfig) -> List[DocumentModel]:
+
+async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) -> bool:
+    if progress_callback is None:
+        return False
+    try:
+        result = progress_callback(event)
+        if inspect.isawaitable(result):
+            result = await result
+    except _StopRequested:
+        raise
+    except Exception:
+        logger.debug("Ignoring progress callback failure")
+        return False
+    return stop_signal is not None and result is stop_signal
+
+
+async def fetch_notion_pages(
+    api_key: str,
+    app_config: AppConfig,
+    progress_callback=None,
+    progress_stop_signal=None,
+    progress_stop_checker=None,
+) -> List[DocumentModel]:
     """Notion 페이지 가져오기"""
     if not api_key:
         logger.warning("NOTION_API_KEY not set. Skipping.")
@@ -284,25 +444,99 @@ async def fetch_notion_pages(api_key: str, app_config: AppConfig) -> List[Docume
     
     try:
         async with httpx.AsyncClient(timeout=app_config.request_timeout) as client:
-            raw_pages = await api_client.search_pages(client)
+            await _raise_if_stop_requested(progress_stop_checker)
+            if await _emit_progress(
+                progress_callback,
+                {"event": "search_started"},
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
+            try:
+                raw_pages = await api_client.search_pages(
+                    client,
+                    progress_callback=progress_callback,
+                    progress_stop_signal=progress_stop_signal,
+                    progress_stop_checker=progress_stop_checker,
+                )
+            except _StopRequested:
+                raise
             logger.info(f"Found {len(raw_pages)} Notion pages")
+            await _raise_if_stop_requested(progress_stop_checker)
+            if await _emit_progress(
+                progress_callback,
+                {
+                    "event": "search_completed",
+                    "total_pages": len(raw_pages),
+                },
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
             
             for idx, page in enumerate(raw_pages, 1):
-                content = await api_client.fetch_block_content(client, page["id"], strict=True)
+                await _raise_if_stop_requested(progress_stop_checker)
+                page_id = page["id"]
+                title = processor.extract_title(page.get("properties", {}))
+                if await _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "page_fetch_started",
+                        "current_page": idx,
+                        "total_pages": len(raw_pages),
+                        "page_id": page_id,
+                        "title": title,
+                    },
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
+                started_at = time.monotonic()
+                try:
+                    content = await api_client.fetch_block_content(
+                        client,
+                        page_id,
+                        strict=True,
+                        stop_checker=progress_stop_checker,
+                    )
+                except _StopRequested:
+                    raise
+                except Exception:
+                    logger.error(
+                        "Notion page fetch failed at %s/%s for page %s",
+                        idx,
+                        len(raw_pages),
+                        page_id,
+                    )
+                    raise
                 document = processor.build_document(page, content)
                 documents.append(document)
+                await _raise_if_stop_requested(progress_stop_checker)
+                if await _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "page_fetch_completed",
+                        "current_page": idx,
+                        "total_pages": len(raw_pages),
+                        "page_id": page_id,
+                        "title": title,
+                        "elapsed_seconds": time.monotonic() - started_at,
+                    },
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
                 
                 if idx % 10 == 0:
                     logger.info(f"Progress: {idx}/{len(raw_pages)}")
             
             logger.info(f"✅ Complete: {len(documents)} pages")
-    
+
     except APIError as e:
-        logger.error(f"Notion API error: {e}")
+        logger.error("Notion API error: %s", safe_error_message(e))
+        raise
+    except _StopRequested:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise FetchError(f"Failed to fetch Notion pages: {e}")
+        message = safe_error_message(e)
+        logger.error("Unexpected error: %s", message)
+        raise FetchError(f"Failed to fetch Notion pages: {message}")
     
     return documents
 

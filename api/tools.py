@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -44,35 +45,48 @@ def register_tools(
     """Register the retained slim ContextWiki MCP tool surface."""
     allowed_source_ids = _source_registry_ids(source_registry)
 
+    def _sync_all_error_payload(message: str) -> dict:
+        return {
+            "status": "error",
+            "message": message,
+            "summary": _public_bulk_sync_summary({}, []),
+            "results": [],
+        }
+
     @mcp.tool()
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
-        _refresh_registered_sources(metadata_store, source_registry)
-        if metadata_store is not None:
-            sources = metadata_store.list_sources()
-        elif source_registry is not None:
-            sources = source_registry.list_sources()
-        else:
-            sources = []
-        sources = [
-            source
-            for source in sources
-            if _source_id_is_public(
-                getattr(source, "source_id", ""),
-                metadata_store,
-                allowed_source_ids,
-            )
-        ]
-        return {
-            "sources": [
-                _safe_source_payload(
-                    source,
-                    metadata_store=metadata_store,
-                    source_registry=source_registry,
-                )
+        try:
+            _refresh_registered_sources(metadata_store, source_registry)
+            if metadata_store is not None:
+                sources = metadata_store.list_sources()
+            elif source_registry is not None:
+                sources = source_registry.list_sources()
+            else:
+                sources = []
+            sources = [
+                source
                 for source in sources
+                if _source_id_is_public(
+                    getattr(source, "source_id", ""),
+                    metadata_store,
+                    allowed_source_ids,
+                )
             ]
-        }
+            return {
+                "sources": [
+                    _safe_source_payload(
+                        source,
+                        metadata_store=metadata_store,
+                        source_registry=source_registry,
+                    )
+                    for source in sources
+                ]
+            }
+        except Exception as exc:
+            message = safe_error_message(exc)
+            logger.error("List sources error: %s", message)
+            return {"status": "error", "message": message, "sources": []}
 
     @mcp.tool()
     async def sync_source(source_id: str) -> dict:
@@ -84,6 +98,13 @@ def register_tools(
                 "status": "error",
                 "message": "ingestion service does not support background sync launch",
             }
+        if not _source_id_is_public(
+            source_id,
+            metadata_store,
+            allowed_source_ids,
+        ):
+            message = safe_error_message(ValueError(f"Unknown source: {source_id}"))
+            return {"status": "error", "message": message}
         try:
             job = await ingestion_service.start_sync_source(source_id)
             return _safe_sync_job_payload(job)
@@ -96,93 +117,142 @@ def register_tools(
     async def sync_all() -> dict:
         """retained source 전체 sync 실행"""
         if ingestion_service is None:
-            return {"status": "error", "message": "ingestion service is not configured"}
+            return _sync_all_error_payload("ingestion service is not configured")
         try:
-            result = await ingestion_service.sync_all()
+            _refresh_registered_sources(metadata_store, source_registry)
+            public_source_ids = _ordered_public_source_ids(
+                metadata_store,
+                source_registry,
+                allowed_source_ids,
+            )
+            public_bulk_sync_requires_filtering = _public_bulk_sync_requires_filtering(
+                source_registry,
+                public_source_ids,
+            )
+            sync_all_callable = ingestion_service.sync_all
+            if public_bulk_sync_requires_filtering:
+                sync_all_signature = inspect.signature(sync_all_callable)
+                if "source_ids" not in sync_all_signature.parameters:
+                    return _sync_all_error_payload(
+                        "ingestion service does not support public bulk sync filtering"
+                    )
+                result = await sync_all_callable(source_ids=public_source_ids)
+            else:
+                result = await sync_all_callable()
+            sync_results = []
+            for item in result.get("results", []):
+                source_id = str(item.get("source_id", ""))
+                if not _source_id_is_public(
+                    source_id,
+                    metadata_store,
+                    allowed_source_ids,
+                ):
+                    continue
+                source = metadata_store.get_source(source_id) if metadata_store is not None else None
+                sync_results.append(
+                    {
+                        "source_id": source_id,
+                        "sync_outcome": item.get("sync_outcome", ""),
+                        "message": _redact_public_error_text(item.get("message", "")),
+                        "source": (
+                            _safe_source_payload(
+                                source,
+                                metadata_store=metadata_store,
+                                source_registry=source_registry,
+                            )
+                            if source
+                            else None
+                        ),
+                        "job": _safe_sync_job_payload(item.get("job")) if item.get("job") else None,
+                    }
+                )
+            summary = _public_bulk_sync_summary(result.get("summary", {}), sync_results)
+            return {
+                "status": _public_bulk_sync_status(
+                    sync_results,
+                    result.get("status", "completed"),
+                    upstream_result_count=len(result.get("results", [])),
+                ),
+                "summary": summary,
+                "results": sync_results,
+            }
         except Exception as exc:
             message = safe_error_message(exc)
             logger.error("Sync all error: %s", message)
-            return {"status": "error", "message": message}
-
-        sync_results = []
-        for item in result.get("results", []):
-            source_id = str(item.get("source_id", ""))
-            source = metadata_store.get_source(source_id) if metadata_store is not None else None
-            sync_results.append(
-                {
-                    "source_id": source_id,
-                    "sync_outcome": item.get("sync_outcome", ""),
-                    "message": _redact_public_error_text(item.get("message", "")),
-                    "source": (
-                        _safe_source_payload(
-                            source,
-                            metadata_store=metadata_store,
-                            source_registry=source_registry,
-                        )
-                        if source
-                        else None
-                    ),
-                    "job": _safe_sync_job_payload(item.get("job")) if item.get("job") else None,
-                }
-            )
-        return {
-            "status": result.get("status", "completed"),
-            "summary": result.get("summary", {}),
-            "results": sync_results,
-        }
+            return _sync_all_error_payload(message)
 
     @mcp.tool()
     async def get_sync_status(source_id: str = "") -> dict:
         """source 및 sync job 상태 조회"""
         if metadata_store is None:
             return {"sources": []}
-        _refresh_registered_sources(metadata_store, source_registry)
+        try:
+            _refresh_registered_sources(metadata_store, source_registry)
 
-        if source_id:
-            source = metadata_store.get_source(source_id)
-            if not source or not _source_id_is_public(
-                source_id,
-                metadata_store,
-                allowed_source_ids,
-            ):
+            if source_id:
+                source = metadata_store.get_source(source_id)
+                if not source or not _source_id_is_public(
+                    source_id,
+                    metadata_store,
+                    allowed_source_ids,
+                ):
+                    return {
+                        "source": None,
+                        "latest_job": None,
+                    }
+                latest_job = metadata_store.get_latest_sync_job(source_id)
+                source = metadata_store.get_source(source_id) or source
                 return {
-                    "source": None,
-                    "latest_job": None,
-                }
-            latest_job = metadata_store.get_latest_sync_job(source_id)
-            source = metadata_store.get_source(source_id) or source
-            return {
-                "source": _safe_source_payload(
-                    source,
-                    metadata_store=metadata_store,
-                    source_registry=source_registry,
-                )
-                if source
-                else None,
-                "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
-            }
-
-        statuses = []
-        for source in metadata_store.list_sources():
-            if not _source_id_is_public(
-                source.source_id,
-                metadata_store,
-                allowed_source_ids,
-            ):
-                continue
-            latest_job = metadata_store.get_latest_sync_job(source.source_id)
-            source = metadata_store.get_source(source.source_id) or source
-            statuses.append(
-                {
                     "source": _safe_source_payload(
                         source,
                         metadata_store=metadata_store,
                         source_registry=source_registry,
+                    )
+                    if source
+                    else None,
+                    "latest_job": (
+                        _safe_sync_job_payload(latest_job, include_progress_hints=True)
+                        if latest_job
+                        else None
                     ),
-                    "latest_job": _safe_sync_job_payload(latest_job) if latest_job else None,
                 }
-            )
-        return {"sources": statuses}
+
+            statuses = []
+            for source in metadata_store.list_sources():
+                if not _source_id_is_public(
+                    source.source_id,
+                    metadata_store,
+                    allowed_source_ids,
+                ):
+                    continue
+                latest_job = metadata_store.get_latest_sync_job(source.source_id)
+                source = metadata_store.get_source(source.source_id) or source
+                statuses.append(
+                    {
+                        "source": _safe_source_payload(
+                            source,
+                            metadata_store=metadata_store,
+                            source_registry=source_registry,
+                        ),
+                        "latest_job": (
+                            _safe_sync_job_payload(latest_job, include_progress_hints=True)
+                            if latest_job
+                            else None
+                        ),
+                    }
+                )
+            return {"sources": statuses}
+        except Exception as exc:
+            message = safe_error_message(exc)
+            logger.error("Get sync status error: %s", message)
+            if source_id:
+                return {
+                    "status": "error",
+                    "message": message,
+                    "source": None,
+                    "latest_job": None,
+                }
+            return {"status": "error", "message": message, "sources": []}
 
     @mcp.tool()
     async def search_context(
@@ -324,6 +394,26 @@ def _source_registry_ids(source_registry) -> frozenset[str] | None:
     )
 
 
+def _ordered_public_source_ids(
+    metadata_store,
+    source_registry,
+    allowed_source_ids: frozenset[str] | None,
+) -> list[str] | None:
+    if allowed_source_ids is None or source_registry is None:
+        return None
+    return [
+        str(source.source_id)
+        for source in source_registry.list_sources()
+        if _source_id_is_public(source.source_id, metadata_store, allowed_source_ids)
+    ]
+
+
+def _public_bulk_sync_requires_filtering(source_registry, ordered_public_source_ids: list[str] | None) -> bool:
+    if source_registry is None or ordered_public_source_ids is None:
+        return False
+    return len(ordered_public_source_ids) != len(source_registry.list_sources())
+
+
 def _refresh_registered_sources(metadata_store, source_registry) -> None:
     if metadata_store is None or source_registry is None:
         return
@@ -372,8 +462,21 @@ def _safe_source_payload(source, *, metadata_store=None, source_registry=None) -
     return payload
 
 
-def _safe_sync_job_payload(job) -> dict:
+def _safe_sync_job_payload(job, *, include_progress_hints: bool = False) -> dict:
     payload = _model_payload(job)
+    if include_progress_hints and payload.get("status") != "running":
+        include_progress_hints = False
+    if not include_progress_hints:
+        for key in (
+            "phase",
+            "upstream_total_pages",
+            "upstream_fetched_pages",
+            "last_progress_at",
+            "status_message",
+        ):
+            payload.pop(key, None)
+    elif "status_message" in payload:
+        payload["status_message"] = _redact_public_error_text(payload["status_message"])
     if "error_message" in payload:
         payload["error_message"] = _redact_public_error_text(payload["error_message"])
     return payload
@@ -406,6 +509,42 @@ def _safe_source_status_surface(source, metadata_store, source_registry) -> dict
             persisted_reason=persisted_stale_cleanup_disabled_reason,
         ),
     }
+
+
+def _public_bulk_sync_status(
+    sync_results: list[dict],
+    fallback_status: str,
+    *,
+    upstream_result_count: int = 0,
+) -> str:
+    outcomes = {item.get("sync_outcome", "") for item in sync_results}
+    if not outcomes:
+        if upstream_result_count > 0:
+            return "completed"
+        return fallback_status or "completed"
+    if outcomes == {"blocked"}:
+        return "blocked"
+    if outcomes.issubset({"succeeded", "skipped"}):
+        return "completed"
+    if outcomes.intersection({"succeeded", "skipped"}):
+        return "partial"
+    return "failed"
+
+
+def _public_bulk_sync_summary(upstream_summary: dict, sync_results: list[dict]) -> dict:
+    summary = {
+        "total_sources": len(sync_results),
+        "succeeded": sum(1 for item in sync_results if item.get("sync_outcome") == "succeeded"),
+        "failed": sum(1 for item in sync_results if item.get("sync_outcome") == "failed"),
+        "blocked": sum(1 for item in sync_results if item.get("sync_outcome") == "blocked"),
+        "skipped": sum(1 for item in sync_results if item.get("sync_outcome") == "skipped"),
+    }
+    if sync_results:
+        if "started_at" in upstream_summary:
+            summary["started_at"] = upstream_summary["started_at"]
+        if "finished_at" in upstream_summary:
+            summary["finished_at"] = upstream_summary["finished_at"]
+    return summary
 
 
 def _stale_cleanup_disabled_reason(

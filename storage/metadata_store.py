@@ -84,6 +84,11 @@ class MetadataStore:
                     processed_documents INTEGER NOT NULL,
                     indexed_chunks INTEGER NOT NULL,
                     skipped_documents INTEGER NOT NULL,
+                    phase TEXT NOT NULL DEFAULT '',
+                    upstream_total_pages INTEGER NOT NULL DEFAULT 0,
+                    upstream_fetched_pages INTEGER NOT NULL DEFAULT 0,
+                    last_progress_at TEXT NOT NULL DEFAULT '',
+                    status_message TEXT NOT NULL DEFAULT '',
                     error_message TEXT NOT NULL
                 );
 
@@ -169,6 +174,11 @@ class MetadataStore:
                 {
                     "owner_id": "TEXT NOT NULL DEFAULT ''",
                     "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
+                    "phase": "TEXT NOT NULL DEFAULT ''",
+                    "upstream_total_pages": "INTEGER NOT NULL DEFAULT 0",
+                    "upstream_fetched_pages": "INTEGER NOT NULL DEFAULT 0",
+                    "last_progress_at": "TEXT NOT NULL DEFAULT ''",
+                    "status_message": "TEXT NOT NULL DEFAULT ''",
                 },
             )
             self._ensure_columns(
@@ -337,8 +347,9 @@ class MetadataStore:
                 INSERT INTO sync_jobs (
                     job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
-                    skipped_documents, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    last_progress_at, status_message, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -352,6 +363,11 @@ class MetadataStore:
                     job.processed_documents,
                     job.indexed_chunks,
                     job.skipped_documents,
+                    job.phase,
+                    job.upstream_total_pages,
+                    job.upstream_fetched_pages,
+                    job.last_progress_at,
+                    job.status_message,
                     job.error_message,
                 ),
             )
@@ -394,8 +410,9 @@ class MetadataStore:
                 INSERT INTO sync_jobs (
                     job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
-                    skipped_documents, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    last_progress_at, status_message, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -409,6 +426,11 @@ class MetadataStore:
                     job.processed_documents,
                     job.indexed_chunks,
                     job.skipped_documents,
+                    job.phase,
+                    job.upstream_total_pages,
+                    job.upstream_fetched_pages,
+                    job.last_progress_at,
+                    job.status_message,
                     job.error_message,
                 ),
             )
@@ -593,13 +615,15 @@ class MetadataStore:
             raise ValueError("Use complete_successful_sync() or complete_failed_sync()")
         updated = job.model_copy(update=updates)
         with self._connect() as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
                 """
                 UPDATE sync_jobs SET
                     status = ?, started_at = ?, finished_at = ?, total_documents = ?,
                     processed_documents = ?, indexed_chunks = ?, skipped_documents = ?,
-                    error_message = ?
-                WHERE job_id = ?
+                    phase = ?, upstream_total_pages = ?, upstream_fetched_pages = ?,
+                    last_progress_at = ?, status_message = ?, error_message = ?
+                WHERE job_id = ? AND status IN (?, ?)
                 """,
                 (
                     updated.status.value,
@@ -609,11 +633,23 @@ class MetadataStore:
                     updated.processed_documents,
                     updated.indexed_chunks,
                     updated.skipped_documents,
+                    updated.phase,
+                    updated.upstream_total_pages,
+                    updated.upstream_fetched_pages,
+                    updated.last_progress_at,
+                    updated.status_message,
                     updated.error_message,
                     updated.job_id,
+                    SyncJobStatus.QUEUED.value,
+                    SyncJobStatus.RUNNING.value,
                 ),
             )
-        return updated
+            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if cursor.rowcount == 0:
+            if not row:
+                raise ValueError(f"Unknown sync job: {job_id}")
+            return self._job_from_row(row)
+        return self._job_from_row(row)
 
     def complete_failed_sync(
         self,
@@ -641,10 +677,21 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?,
                     finished_at = ?,
+                    phase = ?,
+                    last_progress_at = ?,
+                    status_message = ?,
                     error_message = ?
                 WHERE job_id = ?
                 """,
-                (SyncJobStatus.FAILED.value, finished_at, error_message, job_id),
+                (
+                    SyncJobStatus.FAILED.value,
+                    finished_at,
+                    "failed",
+                    finished_at,
+                    error_message,
+                    error_message,
+                    job_id,
+                ),
             )
             conn.execute("DELETE FROM document_claims WHERE job_id = ?", (job_id,))
             active_row = self._resolve_active_running_job(conn, source_id, finished_at)
@@ -786,7 +833,7 @@ class MetadataStore:
                 """
                 SELECT * FROM sync_jobs
                 WHERE source_id = ?
-                ORDER BY started_at DESC
+                ORDER BY started_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (source_id,),
@@ -801,7 +848,7 @@ class MetadataStore:
                 SELECT finished_at
                 FROM sync_jobs
                 WHERE source_id = ? AND status = ? AND finished_at != ''
-                ORDER BY finished_at DESC, started_at DESC, job_id DESC
+                ORDER BY finished_at DESC, started_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (source_id, SyncJobStatus.SUCCEEDED.value),
@@ -811,7 +858,7 @@ class MetadataStore:
                 SELECT finished_at, error_message
                 FROM sync_jobs
                 WHERE source_id = ? AND status = ? AND finished_at != ''
-                ORDER BY finished_at DESC, started_at DESC, job_id DESC
+                ORDER BY finished_at DESC, started_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (source_id, SyncJobStatus.FAILED.value),
@@ -1207,7 +1254,8 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?, finished_at = ?, total_documents = ?,
                     processed_documents = ?, indexed_chunks = ?,
-                    skipped_documents = ?, error_message = ''
+                    skipped_documents = ?, phase = ?, last_progress_at = ?,
+                    status_message = ?, error_message = ''
                 WHERE job_id = ?
                 """,
                 (
@@ -1217,6 +1265,13 @@ class MetadataStore:
                     processed_documents,
                     indexed_chunks,
                     skipped_documents,
+                    "completed",
+                    finished_at,
+                    (
+                        "Sync completed. "
+                        f"Indexed {processed_documents}/{total_documents} documents; "
+                        f"skipped {skipped_documents}."
+                    ),
                     job_id,
                 ),
             )
@@ -1266,7 +1321,7 @@ class MetadataStore:
             """
             SELECT * FROM sync_jobs
             WHERE source_id = ? AND status = ?
-            ORDER BY started_at DESC, job_id DESC
+            ORDER BY started_at DESC, rowid DESC
             """,
             (source_id, SyncJobStatus.RUNNING.value),
         ).fetchall()
@@ -1327,12 +1382,18 @@ class MetadataStore:
             UPDATE sync_jobs SET
                 status = ?,
                 finished_at = ?,
+                phase = ?,
+                last_progress_at = ?,
+                status_message = ?,
                 error_message = ?
             WHERE job_id = ?
             """,
             (
                 SyncJobStatus.FAILED.value,
                 finished_at,
+                "failed",
+                finished_at,
+                error_message,
                 error_message,
                 job_id,
             ),
@@ -1763,6 +1824,11 @@ class MetadataStore:
             processed_documents=row["processed_documents"],
             indexed_chunks=row["indexed_chunks"],
             skipped_documents=row["skipped_documents"],
+            phase=row["phase"],
+            upstream_total_pages=row["upstream_total_pages"],
+            upstream_fetched_pages=row["upstream_fetched_pages"],
+            last_progress_at=row["last_progress_at"],
+            status_message=row["status_message"],
             error_message=row["error_message"],
         )
 

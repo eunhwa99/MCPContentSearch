@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 
 import pytest
@@ -58,9 +59,44 @@ class ProgressRecordingMetadataStore(MetadataStore):
         return super().update_sync_job(job_id, **updates)
 
 
+class TouchRecordingMetadataStore(ProgressRecordingMetadataStore):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.touched_job_ids = []
+
+    def touch_sync_job(self, job_id: str):
+        self.touched_job_ids.append(job_id)
+        return super().touch_sync_job(job_id)
+
+
 class FailingProgressMetadataStore(MetadataStore):
     def update_sync_job(self, job_id: str, **updates):
         raise RuntimeError("progress failed with token=secret-value")
+
+
+class HintFailingMetadataStore(MetadataStore):
+    def update_sync_job(self, job_id: str, **updates):
+        if {
+            "phase",
+            "upstream_total_pages",
+            "upstream_fetched_pages",
+            "last_progress_at",
+            "status_message",
+        }.intersection(updates):
+            raise RuntimeError("hint progress failed with token=secret-value")
+        return super().update_sync_job(job_id, **updates)
+
+
+class SecondTouchFailingMetadataStore(MetadataStore):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.touch_calls = 0
+
+    def touch_sync_job(self, job_id: str):
+        self.touch_calls += 1
+        if self.touch_calls == 2:
+            raise RuntimeError("touch failed with token=secret-value")
+        return super().touch_sync_job(job_id)
 
 
 class SourceAConnector(FakeConnector):
@@ -118,6 +154,246 @@ class DisabledConnector(FakeConnector):
 
 class DisabledSameSourceConnector(DisabledConnector):
     source = FakeConnector.source.model_copy(update={"enabled": False, "name": "Disabled Fake"})
+
+
+class ProgressAwareConnector(FakeConnector):
+    def __init__(self, documents=None, error=None):
+        super().__init__(documents, error=error)
+        self.progress_callback = None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            await self.progress_callback(
+                {
+                    "event": "search_completed",
+                    "total_pages": len(self.documents),
+                }
+            )
+            for index, document in enumerate(self.documents, 1):
+                await self.progress_callback(
+                    {
+                        "event": "page_fetch_started",
+                        "current_page": index,
+                        "total_pages": len(self.documents),
+                        "page_id": document.document_id or document.id,
+                        "title": document.title,
+                    }
+                )
+                await self.progress_callback(
+                    {
+                        "event": "page_fetch_completed",
+                        "current_page": index,
+                        "total_pages": len(self.documents),
+                        "page_id": document.document_id or document.id,
+                        "title": document.title,
+                        "elapsed_seconds": 0.25,
+                    }
+                )
+        return await super().fetch_documents()
+
+
+class DiscoveryProgressConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.progress_callback = None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            await self.progress_callback(
+                {
+                    "event": "search_started",
+                }
+            )
+            await self.progress_callback(
+                {
+                    "event": "search_page_batch_completed",
+                    "batch_index": 1,
+                    "pages_discovered": 42,
+                    "has_more": True,
+                }
+            )
+            await self.progress_callback(
+                {
+                    "event": "search_completed",
+                    "total_pages": len(self.documents),
+                }
+            )
+        return await super().fetch_documents()
+
+
+class ExistingObserverStopConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.external_stop_signal = object()
+        self.progress_stop_signal = self.external_stop_signal
+        self.progress_callback = self._observer
+        self.stop_requested = False
+
+    async def _observer(self, event):
+        if event.get("event") == "search_started":
+            self.stop_requested = True
+            return self.external_stop_signal
+        return None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            result = await self.progress_callback({"event": "search_started"})
+            if result is getattr(self, "progress_stop_signal", None):
+                return []
+        return await super().fetch_documents()
+
+
+class _ResolvedAwaitable:
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        async def _resolve():
+            return self.value
+
+        return _resolve().__await__()
+
+
+class AwaitableObserverStopConnector(ExistingObserverStopConnector):
+    def _observer(self, event):
+        if event.get("event") == "search_started":
+            self.stop_requested = True
+            return _ResolvedAwaitable(self.external_stop_signal)
+        return None
+
+
+class CallbackOnlyObserverStopConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.stop_requested = False
+        self.progress_stop_signal = True
+        self.progress_callback = self._observer
+
+    async def _observer(self, event):
+        if event.get("event") == "search_started":
+            self.stop_requested = True
+            return True
+        return None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            result = self.progress_callback({"event": "search_started"})
+            if inspect.isawaitable(result):
+                result = await result
+            if result is getattr(self, "progress_stop_signal", None):
+                raise ingestion_module._StopRequested
+        return await super().fetch_documents()
+
+
+class AsyncFalseStopCheckerConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.progress_stop_checker = self._stop_checker
+        self.stop_checks = 0
+
+    async def _stop_checker(self):
+        self.stop_checks += 1
+        return False
+
+    async def fetch_documents(self):
+        if self.progress_stop_checker is not None:
+            result = self.progress_stop_checker()
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                return []
+        return await super().fetch_documents()
+
+
+class RaisingStopCheckerConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.progress_stop_checker = self._stop_checker
+        self.stop_requested = False
+
+    async def _stop_checker(self):
+        self.stop_requested = True
+        raise ingestion_module._StopRequested
+
+    async def fetch_documents(self):
+        if self.progress_stop_checker is not None:
+            result = self.progress_stop_checker()
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                return []
+        return await super().fetch_documents()
+
+
+class ObserverCancelledOnceConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.external_stop_signal = object()
+        self.progress_callback = self._observer
+        self.progress_stop_signal = self.external_stop_signal
+        self.cancel_first_run = True
+
+    async def _observer(self, event):
+        if event.get("event") == "search_started" and self.cancel_first_run:
+            self.cancel_first_run = False
+            return self.external_stop_signal
+        return None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            result = self.progress_callback({"event": "search_started"})
+            if inspect.isawaitable(result):
+                result = await result
+            if result is getattr(self, "progress_stop_signal", None):
+                raise ingestion_module._StopRequested
+        return await super().fetch_documents()
+
+
+class LeaseLostDuringFetchConnector(FakeConnector):
+    def __init__(self, db_path, documents=None):
+        super().__init__(documents or [])
+        self.db_path = db_path
+        self.progress_stop_checker = self._stop_checker
+        self.replacement_job = None
+        self.stop_checks = 0
+
+    async def _stop_checker(self):
+        self.stop_checks += 1
+        if self.stop_checks == 1:
+            replacement_store = MetadataStore(self.db_path, running_job_timeout_seconds=0)
+            self.replacement_job, _ = replacement_store.begin_sync_job("source_fake")
+        return False
+
+    async def fetch_documents(self):
+        if self.progress_stop_checker is not None:
+            result = self.progress_stop_checker()
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                return []
+        return await super().fetch_documents()
+
+
+class ExceptionObserverStopConnector(FakeConnector):
+    def __init__(self, documents=None):
+        super().__init__(documents or [])
+        self.stop_requested = False
+        self.progress_callback = self._observer
+
+    async def _observer(self, event):
+        if event.get("event") == "search_started":
+            self.stop_requested = True
+            raise ingestion_module._StopRequested
+        return None
+
+    async def fetch_documents(self):
+        if self.progress_callback is not None:
+            result = self.progress_callback({"event": "search_started"})
+            if inspect.isawaitable(result):
+                result = await result
+            if result is getattr(self, "progress_stop_signal", None):
+                raise ingestion_module._StopRequested
+        return await super().fetch_documents()
 
 
 class RecordingIndexer:
@@ -338,7 +614,7 @@ def test_ingestion_can_skip_source_config_registration_for_ad_hoc_sync(tmp_path)
     assert source.name == "Configured Fake"
 
 
-def test_overlapping_source_sync_returns_existing_running_job_without_second_fetch(tmp_path):
+def test_overlapping_source_sync_reuses_running_job_without_second_fetch(tmp_path):
     document = DocumentModel(
         id="doc-1",
         source_id="source_fake",
@@ -485,12 +761,12 @@ def test_start_sync_source_reuses_existing_running_job_without_second_fetch(tmp_
     assert completed_job.status == SyncJobStatus.SUCCEEDED
 
 
-def test_sync_source_waits_for_local_background_job_completion(tmp_path):
+def test_sync_source_can_start_fresh_run_after_local_background_completion(tmp_path):
     document = DocumentModel(
         id="doc-blocking-join",
         source_id="source_fake",
         title="Blocking join",
-        content="Direct sync_source should wait for a locally launched background sync.",
+        content="Direct sync_source can start a fresh run after a local background launch finishes.",
         url="https://example.com/doc-blocking-join",
         platform="GitHub",
         path="doc-blocking-join.md",
@@ -520,9 +796,9 @@ def test_sync_source_waits_for_local_background_job_completion(tmp_path):
 
     connector, launched_job, completed_job, store = asyncio.run(run_blocking_join())
 
-    assert connector.calls == 1
+    assert connector.calls == 2
     assert launched_job.status == SyncJobStatus.RUNNING
-    assert completed_job.job_id == launched_job.job_id
+    assert completed_job.job_id != launched_job.job_id
     assert completed_job.status == SyncJobStatus.SUCCEEDED
     assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
 
@@ -570,12 +846,12 @@ def test_sync_source_starts_fresh_run_after_successful_background_completion(tmp
     assert rerun_job.job_id != launched_job.job_id
 
 
-def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled(tmp_path):
+def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled(tmp_path):
     document = DocumentModel(
         id="doc-blocking-cancel",
         source_id="source_fake",
         title="Blocking cancel",
-        content="Direct sync_source should return the reconciled failed job when the joined background task is cancelled.",
+        content="Direct sync_source may start a fresh run after a joined local background task is cancelled.",
         url="https://example.com/doc-blocking-cancel",
         platform="GitHub",
         path="doc-blocking-cancel.md",
@@ -600,27 +876,26 @@ def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled
         direct_task = asyncio.create_task(service.sync_source("source_fake"))
         await asyncio.sleep(0)
         background_task.cancel()
-        completed_job = await direct_task
         release.set()
+        completed_job = await direct_task
         return launched_job, completed_job, store
 
     launched_job, completed_job, store = asyncio.run(run_blocking_join_cancel())
 
     assert launched_job.status == SyncJobStatus.RUNNING
-    assert completed_job.job_id == launched_job.job_id
-    assert completed_job.status == SyncJobStatus.FAILED
-    assert completed_job.error_message == "Sync request was cancelled before completion."
-    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
+    assert completed_job.job_id != launched_job.job_id
+    assert completed_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
 
 
-def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled_before_start(
+def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled_before_start(
     tmp_path,
 ):
     document = DocumentModel(
         id="doc-blocking-prestart-cancel",
         source_id="source_fake",
         title="Blocking prestart cancel",
-        content="Direct sync_source should return the reconciled failed job even when the joined background task is cancelled before it starts.",
+        content="Direct sync_source may start a fresh run when a local background task is cancelled before the handoff settles.",
         url="https://example.com/doc-blocking-prestart-cancel",
         platform="GitHub",
         path="doc-blocking-prestart-cancel.md",
@@ -647,10 +922,9 @@ def test_sync_source_returns_failed_job_when_joined_background_task_is_cancelled
     launched_job, completed_job, store = asyncio.run(run_blocking_join_prestart_cancel())
 
     assert launched_job.status == SyncJobStatus.RUNNING
-    assert completed_job.job_id == launched_job.job_id
-    assert completed_job.status == SyncJobStatus.FAILED
-    assert completed_job.error_message == "Sync request was cancelled before completion."
-    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
+    assert completed_job.job_id != launched_job.job_id
+    assert completed_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
 
 
 def test_cancelled_background_sync_task_marks_job_failed(tmp_path):
@@ -697,12 +971,12 @@ def test_cancelled_background_sync_task_marks_job_failed(tmp_path):
     assert store.get_source("source_fake").sync_status == SyncStatus.FAILED
 
 
-def test_start_sync_source_immediately_retries_after_cancelled_background_task(tmp_path):
+def test_start_sync_source_retries_immediately_after_generic_background_cancellation(tmp_path):
     document = DocumentModel(
         id="doc-cancel-retry",
         source_id="source_fake",
         title="Cancel retry",
-        content="A cancelled local background sync should not block an immediate retry.",
+        content="A cancelled local background sync can surface its terminal failure once before a later retry launches new work.",
         url="https://example.com/doc-cancel-retry",
         platform="GitHub",
         path="doc-cancel-retry.md",
@@ -727,32 +1001,38 @@ def test_start_sync_source_immediately_retries_after_cancelled_background_task(t
         background_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await background_task
-        retried_job = await service.start_sync_source("source_fake")
         release.set()
+        retried_job = await service.start_sync_source("source_fake")
 
         for _ in range(20):
             latest_job = store.get_latest_sync_job("source_fake")
             if latest_job and latest_job.job_id == retried_job.job_id and latest_job.status != SyncJobStatus.RUNNING:
-                return connector, first_job, retried_job, latest_job
+                cancelled_job = store.get_sync_job(first_job.job_id)
+                return connector, first_job, cancelled_job, retried_job, latest_job
             await asyncio.sleep(0)
-        raise AssertionError("immediate retry did not reach a terminal status")
+        raise AssertionError("follow-up retry did not reach a terminal status")
 
-    connector, first_job, retried_job, latest_job = asyncio.run(run_cancel_then_immediate_retry())
+    connector, first_job, cancelled_job, retried_job, latest_job = asyncio.run(
+        run_cancel_then_immediate_retry()
+    )
 
     assert connector.calls == 2
     assert first_job.status == SyncJobStatus.RUNNING
+    assert cancelled_job is not None
+    assert cancelled_job.job_id == first_job.job_id
+    assert cancelled_job.status == SyncJobStatus.FAILED
     assert retried_job.status == SyncJobStatus.RUNNING
     assert retried_job.job_id != first_job.job_id
     assert latest_job.job_id == retried_job.job_id
     assert latest_job.status == SyncJobStatus.SUCCEEDED
 
 
-def test_sync_source_returns_cancelled_background_failure_once_after_callback_finalizes(tmp_path):
+def test_sync_source_can_start_new_job_after_cancelled_background_callback_finalizes(tmp_path):
     document = DocumentModel(
         id="doc-cancelled-callback-handoff",
         source_id="source_fake",
         title="Cancelled callback handoff",
-        content="A later direct sync should surface the reconciled cancelled background job once even after the callback finalizes it.",
+        content="A later direct sync can start a fresh run after a cancelled background callback finalizes.",
         url="https://example.com/doc-cancelled-callback-handoff",
         platform="GitHub",
         path="doc-cancelled-callback-handoff.md",
@@ -779,17 +1059,13 @@ def test_sync_source_returns_cancelled_background_failure_once_after_callback_fi
             await background_task
         await asyncio.sleep(0)
 
-        failed_job = await service.sync_source("source_fake")
         release.set()
         rerun_job = await service.sync_source("source_fake")
-        return connector, launched_job, failed_job, rerun_job, store
+        return connector, launched_job, rerun_job, store
 
-    connector, launched_job, failed_job, rerun_job, store = asyncio.run(run_cancel_then_direct_sync())
+    connector, launched_job, rerun_job, store = asyncio.run(run_cancel_then_direct_sync())
 
     assert connector.calls == 2
-    assert failed_job.job_id == launched_job.job_id
-    assert failed_job.status == SyncJobStatus.FAILED
-    assert failed_job.error_message == "Sync request was cancelled before completion."
     assert rerun_job.status == SyncJobStatus.SUCCEEDED
     assert rerun_job.job_id != launched_job.job_id
     assert store.get_latest_sync_job("source_fake").job_id == rerun_job.job_id
@@ -1032,6 +1308,34 @@ def test_stale_sync_does_not_commit_metadata_after_losing_lease_during_indexing(
     assert indexer.deleted_ids == [
         indexer.indexed_batches[0][0].chunk_id,
     ]
+
+
+def test_sync_source_returns_failed_job_when_lease_is_lost_during_fetch(tmp_path):
+    document = DocumentModel(
+        id="lease-lost-fetch",
+        source_id="source_fake",
+        title="Lease Lost Fetch",
+        content="A stale fetch-phase sync should return its failed job instead of raising raw cancellation.",
+        url="https://example.com/lease-lost-fetch",
+        platform="GitHub",
+        path="lease-lost-fetch.md",
+    )
+    db_path = tmp_path / "contextwiki.sqlite3"
+    store = MetadataStore(db_path, running_job_timeout_seconds=60)
+    connector = LeaseLostDuringFetchConnector(db_path, [document])
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    result = asyncio.run(service.sync_source("source_fake"))
+
+    assert result.status == SyncJobStatus.FAILED
+    assert "timed out" in result.error_message
+    assert connector.replacement_job is not None
+    assert connector.replacement_job.status == SyncJobStatus.RUNNING
 
 
 def test_stale_sync_does_not_delete_replacement_active_vector_after_losing_lease(tmp_path):
@@ -1370,7 +1674,7 @@ def test_sync_all_reports_blocked_for_local_background_sync(tmp_path):
     assert result["summary"]["succeeded"] == 1
 
 
-def test_sync_all_reports_failed_when_all_selected_sources_are_blocked(tmp_path):
+def test_sync_all_reports_blocked_when_all_selected_sources_are_blocked(tmp_path):
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -1405,7 +1709,7 @@ def test_sync_all_reports_failed_when_all_selected_sources_are_blocked(tmp_path)
 
     result = asyncio.run(run_sync_all_while_source_is_running())
 
-    assert result["status"] == "failed"
+    assert result["status"] == "blocked"
     assert result["summary"]["total_sources"] == 1
     assert result["summary"]["succeeded"] == 0
     assert result["summary"]["failed"] == 0
@@ -1804,6 +2108,453 @@ def test_running_sync_progress_update_failure_logs_redacted_error(tmp_path, capl
 
     assert job.status == SyncJobStatus.SUCCEEDED
     assert "token=secret-value" not in caplog.text
+    assert "token=<redacted>" in caplog.text
+
+
+def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, caplog):
+    first = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    second = DocumentModel(
+        id="second",
+        document_id="page-2",
+        source_id="source_fake",
+        title="Second",
+        content="Second document.",
+        url="https://example.com/second",
+        platform="Notion",
+        path="second.md",
+    )
+    store = TouchRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([ProgressAwareConnector([first, second])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert store.progress_updates[0]["total_documents"] == 2
+    assert store.touched_job_ids
+    assert "discovered 2 upstream page(s) before indexing" in caplog.text
+    assert "fetching upstream page 1/2" in caplog.text
+    assert "fetched upstream page 2/2" in caplog.text
+    latest = store.get_latest_sync_job("source_fake")
+    assert latest.phase == "completed"
+    assert latest.upstream_total_pages == 2
+    assert latest.upstream_fetched_pages == 2
+    assert latest.last_progress_at
+    assert latest.status_message == "Sync completed. Indexed 2/2 documents; skipped 0."
+
+
+def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([DiscoveryProgressConnector([])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_fake")
+    assert started is True
+
+    result = asyncio.run(
+        service._handle_source_fetch_progress(
+            job.job_id,
+            "source_fake",
+            {
+                "event": "search_page_batch_completed",
+                "batch_index": 1,
+                "pages_discovered": 42,
+                "has_more": True,
+            },
+        )
+    )
+    latest = store.get_sync_job(job.job_id)
+
+    assert result is None
+    assert latest.phase == "discovering_pages"
+    assert latest.upstream_total_pages == 42
+    assert latest.upstream_fetched_pages == 0
+    assert latest.status_message == "Discovering Notion pages: 42 found after batch 1. More results remain."
+
+
+def test_refresh_running_job_for_progress_updates_visible_progress_timestamp(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_fake")
+    assert started is True
+    store.update_sync_job(
+        job.job_id,
+        phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
+        last_progress_at="2026-06-15T00:00:00+00:00",
+        status_message="Fetching Notion page content 0/10 before indexing begins.",
+    )
+
+    result = service._refresh_running_job_for_progress(job.job_id)
+    latest = store.get_sync_job(job.job_id)
+
+    assert result is None
+    assert latest.last_progress_at != "2026-06-15T00:00:00+00:00"
+    assert latest.status_message == "Fetching Notion page content 0/10 before indexing begins."
+
+
+def test_running_sync_fails_when_existing_observer_requests_stop(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = ExistingObserverStopConnector([document])
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_requested is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.total_documents == 0
+    assert job.processed_documents == 0
+    assert indexer.indexed_batches == []
+    assert job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+
+
+def test_running_sync_fails_when_awaitable_observer_requests_stop(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = AwaitableObserverStopConnector([document])
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_requested is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+
+
+def test_running_sync_fails_when_callback_only_observer_requests_stop(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = CallbackOnlyObserverStopConnector([document])
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_requested is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+
+
+def test_running_sync_fails_when_observer_raises_stop_requested(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = ExceptionObserverStopConnector([document])
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_requested is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+
+
+def test_running_sync_fails_when_nested_stop_checker_raises_stop_requested(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = RaisingStopCheckerConnector([document])
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_requested is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+
+
+def test_sync_source_replays_observer_cancelled_background_failure_once(tmp_path):
+    document = DocumentModel(
+        id="doc-observer-cancelled-handoff",
+        source_id="source_fake",
+        title="Observer cancelled handoff",
+        content="The first direct retry should replay the failed observer-cancelled background job once.",
+        url="https://example.com/doc-observer-cancelled-handoff",
+        platform="Notion",
+        path="doc-observer-cancelled-handoff.md",
+    )
+
+    async def run_background_then_direct_sync():
+        connector = ExistingObserverStopConnector([document])
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        for _ in range(20):
+            latest_job = store.get_latest_sync_job("source_fake")
+            if latest_job and latest_job.status == SyncJobStatus.FAILED:
+                break
+            await asyncio.sleep(0)
+        replayed_job = await service.sync_source("source_fake")
+        rerun_job = await service.sync_source("source_fake")
+        return launched_job, replayed_job, rerun_job, store
+
+    launched_job, replayed_job, rerun_job, store = asyncio.run(run_background_then_direct_sync())
+
+    assert replayed_job.job_id == launched_job.job_id
+    assert replayed_job.status == SyncJobStatus.FAILED
+    assert replayed_job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+    assert rerun_job.job_id != launched_job.job_id
+    assert store.get_latest_sync_job("source_fake").job_id == rerun_job.job_id
+
+
+def test_start_sync_source_replays_observer_cancelled_background_failure_once(tmp_path):
+    document = DocumentModel(
+        id="doc-observer-cancelled-start-replay",
+        source_id="source_fake",
+        title="Observer cancelled start replay",
+        content="The first MCP-style retry should replay the failed observer-cancelled background job once.",
+        url="https://example.com/doc-observer-cancelled-start-replay",
+        platform="Notion",
+        path="doc-observer-cancelled-start-replay.md",
+    )
+
+    async def run_background_then_restart():
+        connector = ExistingObserverStopConnector([document])
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        for _ in range(20):
+            latest_job = store.get_latest_sync_job("source_fake")
+            if latest_job and latest_job.status == SyncJobStatus.FAILED:
+                break
+            await asyncio.sleep(0)
+        replayed_job = await service.start_sync_source("source_fake")
+        rerun_job = await service.start_sync_source("source_fake")
+        return launched_job, replayed_job, rerun_job, store
+
+    launched_job, replayed_job, rerun_job, store = asyncio.run(run_background_then_restart())
+
+    assert replayed_job.job_id == launched_job.job_id
+    assert replayed_job.status == SyncJobStatus.FAILED
+    assert replayed_job.error_message == ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+    assert rerun_job.job_id != launched_job.job_id
+    assert store.get_latest_sync_job("source_fake").job_id == rerun_job.job_id
+
+
+def test_sync_all_replays_observer_cancelled_background_failure_once(tmp_path):
+    document = DocumentModel(
+        id="doc-observer-cancelled-bulk-replay",
+        source_id="source_fake",
+        title="Observer cancelled bulk replay",
+        content="The first bulk retry should replay the failed observer-cancelled background job once.",
+        url="https://example.com/doc-observer-cancelled-bulk-replay",
+        platform="Notion",
+        path="doc-observer-cancelled-bulk-replay.md",
+    )
+
+    async def run_background_then_bulk_sync():
+        connector = ObserverCancelledOnceConnector([document])
+        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        service = IngestionService(
+            metadata_store=store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+
+        launched_job = await service.start_sync_source("source_fake")
+        for _ in range(100):
+            latest_job = store.get_latest_sync_job("source_fake")
+            if latest_job is not None and latest_job.status != SyncJobStatus.RUNNING:
+                break
+            await asyncio.sleep(0.01)
+        replayed = await service.sync_all(["source_fake"])
+        rerun = await service.sync_all(["source_fake"])
+        return launched_job, replayed, rerun
+
+    launched_job, replayed, rerun = asyncio.run(run_background_then_bulk_sync())
+
+    assert replayed["results"][0]["job"].job_id == launched_job.job_id
+    assert replayed["results"][0]["job"].status == SyncJobStatus.FAILED
+    assert replayed["results"][0]["job"].error_message == (
+        ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
+    )
+    assert rerun["results"][0]["job"].job_id != launched_job.job_id
+    assert rerun["results"][0]["job"].status == SyncJobStatus.SUCCEEDED
+
+
+def test_running_sync_supports_async_nested_stop_checker_without_false_stop(tmp_path):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    connector = AsyncFalseStopCheckerConnector([document])
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert connector.stop_checks >= 1
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert job.processed_documents == 1
+    assert len(indexer.indexed_batches) == 1
+
+
+def test_running_sync_fetch_progress_hint_failure_logs_redacted_error_and_sync_survives(
+    tmp_path,
+    caplog,
+):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    store = HintFailingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([ProgressAwareConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert "hint progress failed with token=secret-value" not in caplog.text
+    assert "token=<redacted>" in caplog.text
+
+
+def test_running_sync_fetch_progress_heartbeat_failure_logs_redacted_error_and_sync_survives(
+    tmp_path,
+    caplog,
+):
+    document = DocumentModel(
+        id="first",
+        document_id="page-1",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="Notion",
+        path="first.md",
+    )
+    store = SecondTouchFailingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([ProgressAwareConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="indexing.ingestion_service"):
+        job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert "touch failed with token=secret-value" not in caplog.text
     assert "token=<redacted>" in caplog.text
 
 
