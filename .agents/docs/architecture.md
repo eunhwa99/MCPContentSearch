@@ -4,8 +4,9 @@
 
 This document maps the current slim `MCPContentSearch` architecture. Harness
 planning and review use it to keep changes inside the focused MCP retrieval
-scope and to catch contract or data-safety regressions. It is the single
-maintained design reference beyond the README.
+scope and to catch contract or data-safety regressions. It is the maintained
+design reference; `docs/evaluation.md` and `SECURITY.md` own evaluation
+methodology and operator-facing data-egress guidance respectively.
 
 ## Runtime Structure
 
@@ -474,6 +475,9 @@ Current integrations and local configured sources:
 - Embedding provider behavior comes from the configured LlamaIndex embedding
   setup. Disabling search query rewrite only disables query-rewrite egress;
   fully local operation also requires local or otherwise non-egress embeddings.
+  The current application startup does not expose a supported environment
+  switch for the embedding model; that requires code-level LlamaIndex
+  composition.
 
 Testing should prefer mocked external APIs and temporary local vaults. Live
 network or real-vault validation requires explicit user approval and must not
@@ -549,7 +553,12 @@ The maintained verification model is layered:
   or answer quality on a modeled local eval surface.
 - Deterministic reviewer-visible eval artifacts should stay separate from
   optional runtime or latency metrics such as `runtime_metrics.json` so repeated
-  runs remain comparable.
+  runs remain comparable. The eval runner's stable artifacts include a
+  reviewer-facing `portfolio_report.md`; `docs/evaluation.md` owns the metric
+  definitions and interpretation boundaries. The current fixture runner uses a
+  deterministic lexical stand-in for `VectorIndexRetriever` and seeds active
+  records only, so it does not cover inactive or tombstoned candidate
+  suppression.
 
 ## Harness Usage
 

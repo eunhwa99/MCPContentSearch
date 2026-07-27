@@ -12,6 +12,7 @@ from evals.retrieval_quality import (
     evaluate_search_suite,
     load_cases as load_retrieval_cases,
 )
+from evals.reporting import render_portfolio_report
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from search.query_terms import query_term_groups
@@ -96,7 +97,7 @@ def _source_ids_from_filters(filters) -> set[str]:
         return set()
     try:
         filter_list = getattr(filters, "filters", None) or []
-        source_ids = set()
+        source_ids: set[str] = set()
         for single in filter_list:
             if getattr(single, "key", "") != "source_id":
                 continue
@@ -272,6 +273,10 @@ def _write_artifacts(output_dir: Path, summary: dict) -> None:
     (output_dir / "answer_suite.json").write_text(
         json.dumps(stable_summary["answer_suite"], ensure_ascii=False, indent=2)
         + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "portfolio_report.md").write_text(
+        render_portfolio_report(stable_summary),
         encoding="utf-8",
     )
     if "runtime_metrics" in summary:

@@ -82,6 +82,11 @@ jobs:
           uv run --locked python scripts/run_contextwiki_eval.py \
             --output-dir artifacts/contextwiki-evals
 
+      - name: Publish ContextWiki eval report
+        if: ${{ always() && hashFiles('artifacts/contextwiki-evals/portfolio_report.md') != '' }}
+        run: |
+          cat artifacts/contextwiki-evals/portfolio_report.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload ContextWiki eval artifacts
         if: ${{ always() && hashFiles('artifacts/contextwiki-evals/**') != '' }}
         uses: actions/upload-artifact@v4

@@ -129,6 +129,7 @@ def evaluate_answer_suite(
             "passed_count": 0,
             "average_score": 0.0,
             "group_breakdown": {},
+            "quality_metrics": _answer_quality_metrics({}, []),
             "results": [],
         }
     raw_results = [
@@ -147,6 +148,7 @@ def evaluate_answer_suite(
         "passed_count": len(passed),
         "average_score": average_score,
         "group_breakdown": _group_breakdown(cases, raw_results),
+        "quality_metrics": _answer_quality_metrics(payloads_by_case_id, cases),
         "results": [result.as_dict() for result in raw_results],
     }
 
@@ -165,6 +167,81 @@ def _citation_chunk_ids(citations: list[Any]) -> set[str]:
         if isinstance(citation, dict) and citation.get("chunk_id"):
             chunk_ids.add(str(citation["chunk_id"]))
     return chunk_ids
+
+
+def _answer_quality_metrics(
+    payloads_by_case_id: dict[str, dict[str, Any]],
+    cases: list[AnswerQualityCase],
+) -> dict[str, Any]:
+    correct_status_count = 0
+    required_citation_hits = 0
+    required_citation_count = 0
+    covered_used_chunk_count = 0
+    used_chunk_count = 0
+    correct_insufficient_status_count = 0
+    insufficient_status_case_count = 0
+    required_citation_case_count = 0
+    citation_coverage_case_count = 0
+
+    for case in cases:
+        payload = payloads_by_case_id.get(case.case_id, {})
+        evidence_status = str(
+            payload.get("evidence_status") or payload.get("status") or ""
+        )
+        citations = _citation_chunk_ids(_as_list(payload.get("citations")))
+        used_chunks = _string_set(_as_list(payload.get("used_chunks")))
+        required_citations = set(case.required_citation_chunk_ids)
+
+        correct_status_count += int(evidence_status == case.expected_status)
+
+        if required_citations:
+            required_citation_case_count += 1
+            required_citation_hits += len(required_citations.intersection(citations))
+            required_citation_count += len(required_citations)
+
+        if used_chunks:
+            citation_coverage_case_count += 1
+            covered_used_chunk_count += len(used_chunks.intersection(citations))
+            used_chunk_count += len(used_chunks)
+
+        if case.expected_status == "insufficient":
+            insufficient_status_case_count += 1
+            correct_insufficient_status_count += int(
+                evidence_status == "insufficient"
+            )
+
+    return {
+        "scorable_case_counts": {
+            "status_accuracy": len(cases),
+            "required_citation_recall": required_citation_case_count,
+            "citation_coverage": citation_coverage_case_count,
+            "insufficient_status_accuracy": insufficient_status_case_count,
+        },
+        "status_accuracy": _ratio_metric(correct_status_count, len(cases)),
+        "required_citation_recall": _ratio_metric(
+            required_citation_hits,
+            required_citation_count,
+        ),
+        "citation_coverage": _ratio_metric(
+            covered_used_chunk_count,
+            used_chunk_count,
+        ),
+        "insufficient_status_accuracy": _ratio_metric(
+            correct_insufficient_status_count,
+            insufficient_status_case_count,
+        ),
+    }
+
+
+def _ratio_metric(
+    numerator: int,
+    denominator: int,
+) -> dict[str, float | int | None]:
+    return {
+        "value": numerator / denominator if denominator else None,
+        "numerator": numerator,
+        "denominator": denominator,
+    }
 
 
 def _group_breakdown(

@@ -88,6 +88,16 @@ def test_github_source_list_parses_comma_newline_and_whitespace(monkeypatch):
     )
 
 
+def test_github_user_agent_defaults_to_canonical_repository(monkeypatch):
+    monkeypatch.delenv("CONTEXTWIKI_GITHUB_USER_AGENT", raising=False)
+
+    config = AppConfig()
+
+    assert config.github_user_agent == (
+        "ContextWikiBot/0.1 (+https://github.com/eunaverse/MCPContentSearch)"
+    )
+
+
 @pytest.mark.parametrize(
     "name",
     [

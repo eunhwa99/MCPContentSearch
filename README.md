@@ -1,58 +1,140 @@
-# 🔍 ContextWiki
+# ContextWiki
 
-[![CI](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml)
+[![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
-**A private knowledge retrieval MCP server for LLM clients.**
-Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
+**A private, multi-source RAG retrieval server that gives MCP clients
+citation-ready evidence without trusting stale vector hits.**
 
----
+ContextWiki syncs Notion, Tistory, GitHub, and Obsidian into a retrieval layer
+built with FastMCP, LlamaIndex, ChromaDB, and SQLite. Chroma finds semantically
+similar candidates; SQLite remains the lifecycle source of truth and removes
+documents or chunks that are no longer active before evidence reaches the
+caller.
 
-## 🏗️ Architecture
+## Why this project exists
 
-```text
-[ Sources ]
- Notion / Tistory / GitHub / Obsidian
-                |
-                v
-         [ Ingestion Service ]
-             /            \
-            v              v
-      [ Chroma ]      [ SQLite ]
-    semantic search   metadata gate
-            \              /
-             v            v
-         [ Verified Context ]
-```
+A vector database can retain an old embedding after its source document has
+changed or disappeared. Returning that hit produces a plausible but stale
+citation. ContextWiki separates the two responsibilities:
 
----
+- **Chroma is the retrieval accelerator.** It proposes semantic candidates.
+- **SQLite is the active-evidence gate.** It validates document and chunk
+  lifecycle state before a result can be returned or cited.
+- **MCP is the caller contract.** Seven focused tools expose source sync,
+  lifecycle status, chunk search, document search, and direct evidence fetch.
 
-## 🛠️ MCP Tools
+The result is an applied RAG backend with explicit document identity,
+deterministic chunking, incremental indexing, tombstone safety, inspectable
+ranking, and citation metadata.
 
-| Tool | Description |
-|------|-------------|
-| `list_sources()` | List configured sources |
-| `sync_source(source_id)` | Sync a specific source |
-| `sync_all()` | Sync all sources at once |
-| `get_sync_status(source_id="")` | Get source and sync job status |
-| `search_context(query, ...)` | Semantic search with SQLite validation |
-| `search_documents(query, ...)` | Search results grouped by document |
-| `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly |
+## Reproduce the portfolio path
 
-> 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
-
----
-
-## ⚡ Quick Start
-
-**Prerequisites:** Python `3.13`, [`uv`](https://docs.astral.sh/uv/)
+Prerequisites: Python `3.13` and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --locked
+uv sync --locked --python 3.13 --dev
+./scripts/demo.sh
+```
+
+`./scripts/demo.sh` is the default reviewer path: it syncs the bundled sample vault into temporary storage and needs no credentials. It disables LLM query
+rewrite, uses a mock embedding model, and keeps retrieval plus helper preview on the same input by default without reading or mutating the default user ChromaDB
+or SQLite database.
+
+Run the deterministic evaluation and write reviewer-readable artifacts:
+
+```bash
+uv run --locked python scripts/run_contextwiki_eval.py \
+  --output-dir artifacts/contextwiki-evals
+```
+
+## Deterministic evaluation snapshot
+
+The checked-in fixture suite currently passes **13/13 retrieval cases** and
+**9/9 answer cases**. The generated report also presents ranking,
+citation, status, and insufficient-status metrics with their scorable
+denominators.
+
+| Surface | Current fixture result | What it checks |
+| --- | ---: | --- |
+| Retrieval cases | 13/13 passed | top result, required/forbidden chunks, source, mixed-language and negative queries |
+| Answer cases | 9/9 passed | evidence status, required terms, citation linkage, unsupported terms, secret-like output |
+| Retrieval ranking | hit rate 1.0000; MRR 1.0000; recall 1.0000; nDCG 1.0000 | 11 positively labeled cases at each case's `top_k` |
+| Grounding status | 1.0000 (9/9) | expected `grounded` or `insufficient` status |
+| Required-citation recall | 1.0000 (9/9 labels) | 8 cases with required chunk citations |
+| Citation coverage | 1.0000 (12/12 used chunks) | 8 cases that used evidence chunks |
+| Insufficient-status accuracy | 1.0000 (1/1) | status-only check for the labeled insufficient-evidence case |
+
+This is a **small deterministic regression suite**, not a production-quality
+benchmark. It uses 13 labeled retrieval queries, 9 answer cases, temporary
+SQLite state, a deterministic lexical stand-in for `VectorIndexRetriever`,
+deterministic answer rendering, and no live LLM, source API, user Chroma data,
+or user SQLite data. All seeded fixture records are active, so this run executes
+the normal SQLite validation path but does not test inactive or tombstoned
+candidate suppression. The results demonstrate repeatable behavior on retained
+fixtures; they do not establish general RAG quality or live-provider latency.
+Two negative retrieval cases are pass/fail regressions but are intentionally
+excluded from positive ranking denominators.
+
+See [Evaluation methodology](docs/evaluation.md) for metric definitions,
+denominators, limitations, and the next benchmark steps.
+
+## Architecture
+
+```text
+Notion / Tistory / GitHub / Obsidian
+                  |
+                  v
+        normalized source documents
+                  |
+                  v
+     stable identity + deterministic chunks
+             /                 \
+            v                   v
+   Chroma / LlamaIndex       SQLite
+   semantic candidates       lifecycle truth
+             \                 /
+              v               v
+          active-evidence validation
+                    |
+                    v
+    MCP search / fetch / citation helper
+```
+
+The active-evidence boundary is intentional: vector deletion is best effort,
+while SQLite tombstones and active lifecycle records can still suppress a stale
+candidate. Cleanup is allowed only after a complete successful source snapshot;
+failed or bounded partial syncs do not infer that missing documents were
+deleted.
+
+For the maintained data flow and contract details, see
+[Architecture](.agents/docs/architecture.md).
+
+## MCP tools
+
+| Tool | Description |
+| --- | --- |
+| `list_sources()` | List configured sources |
+| `sync_source(source_id)` | Start sync for one configured source |
+| `sync_all()` | Start sync across configured sources |
+| `get_sync_status(source_id="")` | Read source state and sync-job progress |
+| `search_context(query, ...)` | Search chunk evidence with SQLite validation |
+| `search_documents(query, ...)` | Search and group results by document |
+| `fetch_context(document_id="", chunk_id="")` | Fetch one active document or chunk |
+
+In normal use, an MCP client calls `search_context` or `search_documents` to
+collect validated evidence, then a downstream LLM composes the final response.
+`CitationAnswerService` is an internal debug/evaluation helper, not an eighth
+public MCP tool.
+
+## Quick start
+
+```bash
+uv sync --locked --python 3.13
 cp .env.example .env
 uv run --locked python main.py
 ```
 
-**Docker:**
+Docker:
 
 ```bash
 docker build -t contextwiki .
@@ -63,80 +145,55 @@ docker run --rm -i \
   contextwiki
 ```
 
-> For Obsidian in Docker, add `-v "/path/to/vault:/vault:ro"` and set `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
+For Obsidian in Docker, add
+`-v "/path/to/vault:/vault:ro"` and set
+`CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
 
----
+## Configuration
 
-## ⚙️ Configuration
+### Source activation
 
-### Source Activation
-
-| Source | Source ID | Env var to enable |
-|--------|-----------|-------------------|
+| Source | Source ID | Environment variable |
+| --- | --- | --- |
 | Notion | `source_notion` | `NOTION_API_KEY` |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES` |
 | Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` |
 
-Set only the sources you plan to use. A source stays disabled when its enabling
-config is missing or empty. Bad credentials can still fail later during refresh
-or sync. Some invalid target values can fail earlier during startup or source
-refresh; for example, a malformed `CONTEXTWIKI_GITHUB_REPOSITORIES` value can
-prevent the server from starting cleanly.
+Set only the sources you plan to use. A source remains disabled when its
+enabling configuration is missing or empty. Bad credentials can fail later
+during refresh or sync; malformed target configuration can fail earlier during
+startup.
 
-Source-specific env vars only register and enable each source. With the default
-embedding setup, successful sync/indexing still also requires `OPENAI_API_KEY`
-unless you reconfigure embeddings.
+With the default embedding setup, successful indexing requires
+`OPENAI_API_KEY`. Disabling query rewrite alone does not make embedding and
+search fully local. The current application startup has no supported
+environment-variable switch for local embeddings; a local or non-egress model
+requires code-level LlamaIndex composition.
 
-### `.env` Example
+Example:
 
 ```bash
-OPENAI_API_KEY=...              # required for default embeddings/indexing; also used by optional rewrite
+OPENAI_API_KEY=...              # default embedding path
 
 NOTION_API_KEY=...
-TISTORY_BLOG_NAME=devlog        # subdomain only, not the full URL
+TISTORY_BLOG_NAME=devlog        # subdomain only, not a full URL
 
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main
-GITHUB_TOKEN=...                # needed for private repos or higher rate limits
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch@main
+GITHUB_TOKEN=...                # private repos or higher rate limits
 
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
-```
-
-Important GitHub notes:
-
-- Use `owner/repo` or `owner/repo@ref`.
-- Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
-- `GITHUB_TOKEN` is optional, but private repositories and higher rate limits
-  usually need it.
-
-**Notion example**
-
-```bash
-NOTION_API_KEY=...
-```
-
-Set this only if you want to enable the Notion source.
-
-**Tistory example**
-
-```bash
-TISTORY_BLOG_NAME=devlog
-```
-
-Use the blog subdomain only, not the full URL. For example, use `devlog`, not
-`https://devlog.tistory.com`.
-
-**Obsidian example**
-
-```bash
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
 CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
 CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
 ```
 
-Use the vault root path, not an individual `.md` file path.
+GitHub repository specs use `owner/repo` or `owner/repo@ref`. Do not wrap
+`CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
 
-### Search Query Rewrite (Optional)
+### Optional query rewrite
+
+Query rewrite is disabled by default. Enabling it sends a redacted form of the
+user query and normalized terms to the configured provider:
 
 ```bash
 CONTEXTWIKI_SEARCH_LLM_ENABLED=true
@@ -144,58 +201,18 @@ CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
 CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 ```
 
----
+Review [Security and data flow](SECURITY.md) before enabling external
+providers with private knowledge.
 
-## 🚀 Usage
+## MCP client setup
 
-### Claude Desktop — local uv (Recommended)
+### Claude Desktop: local uv
 
-This is the easiest setup path on macOS because:
-
-- Claude Desktop can spawn the server directly.
-- ContextWiki loads the repository-local `.env` at startup, so Claude Desktop
-  does not need plaintext env entries in `claude_desktop_config.json`.
-- Obsidian can use your real host vault path directly.
-- You do not need Docker mounts for the vault.
-
-Important:
-
-- Repository `.env` values do not override env vars already set by Claude
-  Desktop or your shell.
-- If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or
-  other source env vars in `claude_desktop_config.json` or a parent shell, clear
-  the stale values there too.
-
-Do this in order:
-
-1. Create `.env` in your repo root.
-2. Put your real values there.
-3. Add the MCP entry below to Claude Desktop.
+1. Create `.env` in the repository root.
+2. Add only the source and provider values you need.
+3. Add the server configuration below to Claude Desktop.
 4. Fully restart Claude Desktop.
-5. In a fresh Claude Desktop chat, ask it to call `list_sources()`.
-
-Example `.env`:
-
-```bash
-# Required for default sync/indexing because embeddings use OpenAI by default
-OPENAI_API_KEY=...
-
-# Optional: enable Notion source
-NOTION_API_KEY=...
-
-# Optional: enable Tistory source
-TISTORY_BLOG_NAME=devlog
-
-# Optional: enable GitHub source
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch
-CONTEXTWIKI_GITHUB_DEFAULT_REF=main
-
-# Optional for private repos or higher GitHub API limits
-GITHUB_TOKEN=...
-
-# Optional: enable Obsidian source
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
-```
+5. In a fresh chat, ask it to call `list_sources()`.
 
 On macOS, add this to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -214,9 +231,11 @@ On macOS, add this to
 }
 ```
 
-> Run `which uv` to find the path. **Fully restart Claude Desktop** after any config change.
+Run `which uv` to locate the executable. ContextWiki loads the repository-local
+`.env`, but already-set parent-process environment variables take precedence.
+Fully restart the client after changing either location.
 
-### Claude Desktop — Docker
+### Claude Desktop: Docker
 
 ```json
 {
@@ -236,63 +255,76 @@ On macOS, add this to
 
 ### Cursor
 
-Add the same local uv config above to `.cursor/mcp.json`.
+Add the same local uv MCP configuration to `.cursor/mcp.json`.
 
-### After Connecting
+After connecting:
 
-1. Call `sync_all()` or `sync_source("source_notion")`
-2. Search with `search_context()` or `search_documents()`
+1. Call `sync_all()` or `sync_source("source_obsidian")`.
+2. Poll `get_sync_status()` until the job reaches a terminal state.
+3. Call `search_context()` or `search_documents()`.
 
-**Example prompt:**
+Example prompt:
+
 ```text
-find my projects about DynamoDB and organize it with STAR method. Answer in English
+Find my projects about DynamoDB and organize them with the STAR method.
 ```
 
-![Claude Desktop using ContextWiki MCP as a retrieval backend before Claude composes the final STAR-style response](docs/images/claude-desktop-dynamodb-star-example.png)
+![Claude Desktop using ContextWiki as a retrieval backend before composing a STAR-style response](docs/images/claude-desktop-dynamodb-star-example.png)
 
----
+## Engineering trade-offs
 
-## 🔧 Troubleshooting
+| Decision | Benefit | Cost |
+| --- | --- | --- |
+| Chroma candidates + SQLite active gate | Fast semantic recall without treating vector state as deletion truth | Two stores must remain lifecycle-aligned |
+| Stable source-aware document IDs | Incremental sync and predictable reactivation | Connector identity rules require care |
+| Deterministic source-aware chunking | Repeatable citations and comparable eval fixtures | Less adaptive than model-driven chunking |
+| Complete-snapshot cleanup gate | Partial fetches cannot silently tombstone valid content | Stale cleanup may be deferred after incomplete sync |
+| Optional LLM query rewrite | Can recover vocabulary mismatch | Adds latency, cost, nondeterminism, and query egress |
+| Fixture-first evaluation | Fast, credential-free regression evidence | Does not measure live embeddings, LLMs, or production corpora |
 
-| Symptom | Fix |
-|---------|-----|
-| MCP server not discovered | Recheck config path and fully restart the client |
-| Only works after manual start | Run `command` + `args` directly in terminal to see errors |
-| `Invalid GitHub repository spec` | Remove quotes from `.env`; use `owner/repo`, not a full URL |
-| Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
-| Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
-| `sync_all()` too slow | Sync individually: `sync_source("source_github")`, etc. |
-
----
-
-## ✅ Verification
+## Verification
 
 ```bash
-./scripts/demo.sh                           # Quick flow check with sample vault (no credentials needed)
-./scripts/verify_all.sh                     # Full verification after code changes
-./scripts/demo.sh --query "your question"   # Custom query
+./scripts/demo.sh
+./scripts/demo.sh --query "your question"
+uv run --locked python scripts/run_contextwiki_eval.py \
+  --output-dir artifacts/contextwiki-evals
+./scripts/verify_functional_e2e.sh
+./scripts/verify_all.sh
 ```
 
-- `./scripts/demo.sh` is the default reviewer path. It uses the bundled sample vault, needs no credentials, and keeps retrieval plus helper preview on the same input by default.
+Live source validation is intentionally separate because it can call external
+services and read or mutate configured user storage.
 
----
+## Troubleshooting
 
-## 📁 Project Structure
+| Symptom | Fix |
+| --- | --- |
+| MCP server not discovered | Recheck executable/repository paths and fully restart the client |
+| Only works after manual start | Run the configured `command` and `args` in a terminal |
+| `Invalid GitHub repository spec` | Remove quotes; use `owner/repo`, not a full URL |
+| Obsidian fails in Docker | Set both the read-only vault mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
+| Source remains disabled | Fully restart the MCP process after configuration changes |
+| `sync_all()` is too slow | Start one source with `sync_source(...)` and poll its status |
+
+## Project structure
 
 ```text
-main.py          FastMCP server entry point
-api/             MCP tool handlers
-core/            Shared models, exceptions, utilities
-environments/    Env var and secret loading
-fetching/        Source connectors (Notion, Tistory, GitHub, Obsidian)
-indexing/        Chunking, deduplication, Chroma indexing
-search/          Search, ranking, metadata gate, citation answer support
-storage/         SQLite lifecycle management
-tests/, scripts/ Verification harnesses and utilities
+main.py          FastMCP composition and server startup
+api/             Stable MCP tool handlers
+core/            Shared models, exceptions, and utilities
+environments/    Runtime configuration and secret loading
+fetching/        Notion, Tistory, GitHub, and Obsidian connectors
+indexing/        Chunking, incremental indexing, and lifecycle coordination
+search/          Retrieval, ranking, active gate, and citation support
+storage/         SQLite source/job/document/chunk lifecycle state
+evals/           Deterministic retrieval and answer-quality fixtures
+tests/, scripts/ Verification, demo, and evaluation entrypoints
 ```
 
----
+## Further documentation
 
-## 📖 Additional Docs
-
+- [Evaluation methodology](docs/evaluation.md)
+- [Security and data flow](SECURITY.md)
 - [Architecture](.agents/docs/architecture.md)
+- [Evaluation runner reference](evals/README.md)

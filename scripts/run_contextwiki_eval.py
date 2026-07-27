@@ -20,12 +20,15 @@ from evals.contextwiki_eval import run_contextwiki_eval
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run deterministic ContextWiki evals and optionally write JSON artifacts."
+        description=(
+            "Run deterministic ContextWiki evals and optionally write JSON and "
+            "Markdown artifacts."
+        )
     )
     parser.add_argument(
         "--output-dir",
         default="",
-        help="Optional directory where eval JSON artifacts will be written.",
+        help="Optional directory where eval JSON and Markdown artifacts will be written.",
     )
     parser.add_argument(
         "--include-latency",

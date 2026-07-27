@@ -31,6 +31,21 @@ def test_ci_artifact_upload_is_guarded_when_eval_output_is_missing():
     assert "if-no-files-found: warn" in workflow
 
 
+def test_ci_publishes_deterministic_eval_report_to_step_summary():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "Publish ContextWiki eval report" in workflow
+    assert (
+        "always() && "
+        "hashFiles('artifacts/contextwiki-evals/portfolio_report.md') != ''"
+    ) in workflow
+    assert (
+        'cat artifacts/contextwiki-evals/portfolio_report.md '
+        '>> "$GITHUB_STEP_SUMMARY"'
+    ) in workflow
+
+
 def test_pyproject_live_marker_is_truthful_about_current_suite():
     repo_root = Path(__file__).resolve().parents[2]
     pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")

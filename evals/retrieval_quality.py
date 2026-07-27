@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -105,6 +106,7 @@ def evaluate_search_suite(
             "passed_count": 0,
             "average_score": 0.0,
             "group_breakdown": {},
+            "quality_metrics": _retrieval_quality_metrics({}, []),
             "results": [],
         }
     raw_results = [
@@ -123,6 +125,7 @@ def evaluate_search_suite(
         "passed_count": len(passed),
         "average_score": average_score,
         "group_breakdown": _group_breakdown(cases, raw_results),
+        "quality_metrics": _retrieval_quality_metrics(payloads_by_case_id, cases),
         "results": [result.as_dict() for result in raw_results],
     }
 
@@ -135,6 +138,92 @@ def _item_value(item: Any, key: str) -> Any:
     if isinstance(item, dict):
         return item.get(key)
     return getattr(item, key, None)
+
+
+def _retrieval_quality_metrics(
+    payloads_by_case_id: dict[str, dict[str, Any]],
+    cases: list[RetrievalQualityCase],
+) -> dict[str, Any]:
+    case_values: list[dict[str, float]] = []
+    for case in cases:
+        relevant_ids = {
+            chunk_id for chunk_id in case.required_chunk_ids if chunk_id
+        }
+        if case.expected_top_chunk_id:
+            relevant_ids.add(case.expected_top_chunk_id)
+        if not relevant_ids:
+            continue
+
+        payload = payloads_by_case_id.get(case.case_id, {})
+        ranked_ids = [
+            str(_item_value(item, "chunk_id") or "")
+            for item in _as_list(payload.get("results"))[: max(case.top_k, 0)]
+        ]
+        case_values.append(_ranking_values(ranked_ids, relevant_ids, case.top_k))
+
+    scorable_count = len(case_values)
+    return {
+        "scorable_case_count": scorable_count,
+        "unscorable_case_count": len(cases) - scorable_count,
+        "cutoff": "case_top_k",
+        "hit_rate_at_k": _aggregate_metric(case_values, "hit"),
+        "mrr_at_k": _aggregate_metric(case_values, "reciprocal_rank"),
+        "recall_at_k": _aggregate_metric(case_values, "recall"),
+        "ndcg_at_k": _aggregate_metric(case_values, "ndcg"),
+    }
+
+
+def _ranking_values(
+    ranked_ids: list[str],
+    relevant_ids: set[str],
+    top_k: int,
+) -> dict[str, float]:
+    seen_ids: set[str] = set()
+    first_relevant_rank = 0
+    relevant_retrieved: set[str] = set()
+    discounted_gain = 0.0
+
+    for rank, chunk_id in enumerate(ranked_ids, start=1):
+        if chunk_id in seen_ids:
+            continue
+        seen_ids.add(chunk_id)
+        if chunk_id not in relevant_ids:
+            continue
+        relevant_retrieved.add(chunk_id)
+        if not first_relevant_rank:
+            first_relevant_rank = rank
+        discounted_gain += 1.0 / math.log2(rank + 1)
+
+    ideal_relevant_count = min(len(relevant_ids), max(top_k, 0))
+    ideal_discounted_gain = sum(
+        1.0 / math.log2(rank + 1)
+        for rank in range(1, ideal_relevant_count + 1)
+    )
+    return {
+        "hit": float(bool(relevant_retrieved)),
+        "reciprocal_rank": (
+            1.0 / first_relevant_rank if first_relevant_rank else 0.0
+        ),
+        "recall": len(relevant_retrieved) / len(relevant_ids),
+        "ndcg": (
+            discounted_gain / ideal_discounted_gain
+            if ideal_discounted_gain
+            else 0.0
+        ),
+    }
+
+
+def _aggregate_metric(
+    case_values: list[dict[str, float]],
+    metric_name: str,
+) -> dict[str, float | int | None]:
+    denominator = len(case_values)
+    numerator = sum(values[metric_name] for values in case_values)
+    return {
+        "value": numerator / denominator if denominator else None,
+        "numerator": numerator,
+        "denominator": denominator,
+    }
 
 
 def _group_breakdown(

@@ -1,4 +1,7 @@
 import json
+import math
+
+import pytest
 
 from evals.contextwiki_eval import run_contextwiki_eval
 from evals.retrieval_quality import (
@@ -140,6 +143,148 @@ def test_retrieval_suite_fails_when_case_list_is_empty():
     assert summary["total"] == 0
 
 
+def test_retrieval_quality_metrics_use_standard_ranked_relevance_semantics():
+    cases = [
+        RetrievalQualityCase(
+            case_id="relevant-at-ranks-two-and-three",
+            query="ranked relevance",
+            top_k=3,
+            required_chunk_ids=("relevant-a", "relevant-b"),
+        ),
+        RetrievalQualityCase(
+            case_id="relevant-outside-cutoff",
+            query="cutoff behavior",
+            top_k=2,
+            required_chunk_ids=("relevant-c",),
+        ),
+        RetrievalQualityCase(
+            case_id="negative-unscorable",
+            query="must not match",
+            top_k=3,
+            min_result_count=0,
+            forbidden_chunk_ids=("forbidden",),
+        ),
+    ]
+    payloads = {
+        "relevant-at-ranks-two-and-three": {
+            "results": [
+                {"chunk_id": "distractor"},
+                {"chunk_id": "relevant-a"},
+                {"chunk_id": "relevant-b"},
+            ]
+        },
+        "relevant-outside-cutoff": {
+            "results": [
+                {"chunk_id": "distractor-1"},
+                {"chunk_id": "distractor-2"},
+                {"chunk_id": "relevant-c"},
+            ]
+        },
+        "negative-unscorable": {"results": []},
+    }
+
+    summary = evaluate_search_suite(payloads, cases)
+
+    metrics = summary["quality_metrics"]
+    expected_first_case_ndcg = (
+        (1 / math.log2(3)) + (1 / math.log2(4))
+    ) / (1.0 + (1 / math.log2(3)))
+
+    assert metrics["cutoff"] == "case_top_k"
+    assert metrics["scorable_case_count"] == 2
+    assert metrics["unscorable_case_count"] == 1
+    assert metrics["hit_rate_at_k"] == {
+        "value": 0.5,
+        "numerator": 1.0,
+        "denominator": 2,
+    }
+    assert metrics["mrr_at_k"] == {
+        "value": 0.25,
+        "numerator": 0.5,
+        "denominator": 2,
+    }
+    assert metrics["recall_at_k"] == {
+        "value": 0.5,
+        "numerator": 1.0,
+        "denominator": 2,
+    }
+    assert metrics["ndcg_at_k"]["denominator"] == 2
+    assert metrics["ndcg_at_k"]["numerator"] == pytest.approx(
+        expected_first_case_ndcg
+    )
+    assert metrics["ndcg_at_k"]["value"] == pytest.approx(
+        expected_first_case_ndcg / 2
+    )
+
+
+def test_retrieval_quality_metrics_report_unscorable_suites_without_perfect_scores():
+    negative_case = RetrievalQualityCase(
+        case_id="negative-only",
+        query="must not match",
+        min_result_count=0,
+        forbidden_chunk_ids=("forbidden",),
+    )
+
+    negative_summary = evaluate_search_suite(
+        {"negative-only": {"results": []}},
+        [negative_case],
+    )
+    empty_summary = evaluate_search_suite({}, [])
+
+    for summary, unscorable_count in (
+        (negative_summary, 1),
+        (empty_summary, 0),
+    ):
+        metrics = summary["quality_metrics"]
+        assert metrics["scorable_case_count"] == 0
+        assert metrics["unscorable_case_count"] == unscorable_count
+        for metric_name in (
+            "hit_rate_at_k",
+            "mrr_at_k",
+            "recall_at_k",
+            "ndcg_at_k",
+        ):
+            assert metrics[metric_name] == {
+                "value": None,
+                "numerator": 0.0,
+                "denominator": 0,
+            }
+
+    assert set(empty_summary) >= {
+        "passed",
+        "total",
+        "passed_count",
+        "average_score",
+        "group_breakdown",
+        "results",
+        "quality_metrics",
+    }
+
+
+def test_retrieval_metrics_preserve_malformed_result_rank_positions():
+    case = RetrievalQualityCase(
+        case_id="malformed-rank-one",
+        query="rank preservation",
+        top_k=2,
+        required_chunk_ids=("relevant",),
+    )
+    payloads = {
+        "malformed-rank-one": {
+            "results": [
+                {"title": "missing chunk id"},
+                {"chunk_id": "relevant"},
+            ]
+        }
+    }
+
+    metrics = evaluate_search_suite(payloads, [case])["quality_metrics"]
+
+    assert metrics["hit_rate_at_k"]["value"] == 1.0
+    assert metrics["mrr_at_k"]["value"] == 0.5
+    assert metrics["recall_at_k"]["value"] == 1.0
+    assert metrics["ndcg_at_k"]["value"] == pytest.approx(1 / math.log2(3))
+
+
 def test_contextwiki_eval_runner_passes_fixture_suites():
     summary = run_contextwiki_eval()
 
@@ -180,6 +325,7 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     assert (output_dir / "retrieval_suite.json").is_file()
     assert (output_dir / "answer_suite.json").is_file()
     assert (output_dir / "runtime_metrics.json").is_file()
+    assert (output_dir / "portfolio_report.md").is_file()
 
     written_summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     written_retrieval_suite = json.loads(
@@ -210,6 +356,9 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     ).read_text(encoding="utf-8")
     assert (output_dir / "answer_suite.json").read_text(encoding="utf-8") == (
         second_output_dir / "answer_suite.json"
+    ).read_text(encoding="utf-8")
+    assert (output_dir / "portfolio_report.md").read_text(encoding="utf-8") == (
+        second_output_dir / "portfolio_report.md"
     ).read_text(encoding="utf-8")
 
     deterministic_rerun = run_contextwiki_eval(output_dir=output_dir)

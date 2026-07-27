@@ -2,8 +2,6 @@ from pathlib import Path
 
 import pytest
 
-import pytest
-
 from evals.answer_quality import (
     AnswerQualityCase,
     evaluate_answer_payload,
@@ -212,6 +210,116 @@ def test_answer_suite_fails_when_case_list_is_empty():
 
     assert not summary["passed"]
     assert summary["total"] == 0
+
+
+def test_answer_quality_metrics_use_explicit_micro_and_case_denominators():
+    cases = [
+        AnswerQualityCase(
+            case_id="partially-cited-grounded",
+            question="What is grounded?",
+            required_citation_chunk_ids=("required-a", "required-b"),
+        ),
+        AnswerQualityCase(
+            case_id="correct-insufficient-status",
+            question="Unknown fact one?",
+            expected_status="insufficient",
+            min_citation_count=0,
+        ),
+        AnswerQualityCase(
+            case_id="missed-insufficient-status",
+            question="Unknown fact two?",
+            expected_status="insufficient",
+            min_citation_count=0,
+        ),
+    ]
+    payloads = {
+        "partially-cited-grounded": {
+            "answer": "A partially supported answer.",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "required-a"}],
+            "used_chunks": ["required-a", "uncited-used"],
+        },
+        "correct-insufficient-status": {
+            "answer": "Insufficient evidence.",
+            "evidence_status": "insufficient",
+            "citations": [],
+            "used_chunks": [],
+        },
+        "missed-insufficient-status": {
+            "answer": "An unsupported answer.",
+            "evidence_status": "grounded",
+            "citations": [],
+            "used_chunks": [],
+        },
+    }
+
+    summary = evaluate_answer_suite(payloads, cases)
+
+    metrics = summary["quality_metrics"]
+    assert metrics["status_accuracy"] == {
+        "value": pytest.approx(2 / 3),
+        "numerator": 2.0,
+        "denominator": 3,
+    }
+    assert metrics["required_citation_recall"] == {
+        "value": 0.5,
+        "numerator": 1.0,
+        "denominator": 2,
+    }
+    assert metrics["citation_coverage"] == {
+        "value": 0.5,
+        "numerator": 1.0,
+        "denominator": 2,
+    }
+    assert metrics["insufficient_status_accuracy"] == {
+        "value": 0.5,
+        "numerator": 1.0,
+        "denominator": 2,
+    }
+    assert metrics["scorable_case_counts"] == {
+        "status_accuracy": 3,
+        "required_citation_recall": 1,
+        "citation_coverage": 1,
+        "insufficient_status_accuracy": 2,
+    }
+
+    assert not summary["passed"]
+    assert summary["total"] == 3
+    assert summary["passed_count"] == 1
+    assert len(summary["results"]) == 3
+
+
+def test_answer_quality_metrics_report_empty_suite_as_unscorable():
+    summary = evaluate_answer_suite({}, [])
+
+    metrics = summary["quality_metrics"]
+    assert metrics["scorable_case_counts"] == {
+        "status_accuracy": 0,
+        "required_citation_recall": 0,
+        "citation_coverage": 0,
+        "insufficient_status_accuracy": 0,
+    }
+    for metric_name in (
+        "status_accuracy",
+        "required_citation_recall",
+        "citation_coverage",
+        "insufficient_status_accuracy",
+    ):
+        assert metrics[metric_name] == {
+            "value": None,
+            "numerator": 0.0,
+            "denominator": 0,
+        }
+
+    assert set(summary) >= {
+        "passed",
+        "total",
+        "passed_count",
+        "average_score",
+        "group_breakdown",
+        "results",
+        "quality_metrics",
+    }
 
 
 def test_eval_runner_cli_exits_nonzero_when_summary_fails(monkeypatch, capsys):
