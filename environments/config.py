@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-import math
 import os
 from pathlib import Path
 import re
@@ -33,35 +32,6 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from None
 
 
-def _float_env(name: str, default: float) -> float:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError:
-        raise ValueError(f"{name} must be a finite float") from None
-    if not math.isfinite(value):
-        raise ValueError(f"{name} must be a finite float")
-    return value
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    normalized = raw_value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be a boolean")
-
-
-def _search_llm_enabled_default() -> bool:
-    return _bool_env("CONTEXTWIKI_SEARCH_LLM_ENABLED", False)
-
-
 def _obsidian_vault_path_default() -> Path | None:
     raw_value = os.getenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "").strip()
     if not raw_value:
@@ -82,15 +52,6 @@ def _require_positive_int(name: str, value: int):
         raise ValueError(f"{name} must be an integer")
     if value <= 0:
         raise ValueError(f"{name} must be positive")
-
-
-def _require_non_negative(name: str, value: float):
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be numeric")
-    if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite")
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative")
 
 
 def _require_safe_env_var_name(name: str, value: str):
@@ -123,23 +84,6 @@ class AppConfig:
     search_multiplier: int = 2
     preview_length: int = 200
     default_search_results: int = 10
-    search_llm_enabled: bool = field(default_factory=_search_llm_enabled_default)
-    search_llm_provider: str = field(
-        default_factory=lambda: os.getenv("CONTEXTWIKI_SEARCH_LLM_PROVIDER", "openai")
-        .strip()
-        .lower()
-    )
-    search_llm_model: str = field(
-        default_factory=lambda: os.getenv("CONTEXTWIKI_SEARCH_LLM_MODEL", "gpt-4.1-mini")
-        .strip()
-    )
-    search_llm_api_key_env_var: str = "OPENAI_API_KEY"
-    search_llm_timeout: float = field(
-        default_factory=lambda: _float_env("CONTEXTWIKI_SEARCH_LLM_TIMEOUT", 10.0)
-    )
-    search_llm_max_rewrites: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_SEARCH_LLM_MAX_REWRITES", 3)
-    )
 
     # API
     request_timeout: float = 10.0
@@ -171,7 +115,7 @@ class AppConfig:
     github_user_agent: str = field(
         default_factory=lambda: os.getenv(
             "CONTEXTWIKI_GITHUB_USER_AGENT",
-            "ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)",
+            "ContextWikiBot/0.1 (+https://github.com/eunaverse/MCPContentSearch)",
         )
     )
 
@@ -207,20 +151,6 @@ class AppConfig:
             self.obsidian_max_file_bytes,
         )
         _require_safe_env_var_name("github_token_env_var", self.github_token_env_var)
-        _require_safe_env_var_name(
-            "search_llm_api_key_env_var",
-            self.search_llm_api_key_env_var,
-        )
-        _require_non_negative("search_llm_timeout", self.search_llm_timeout)
-        _require_positive_int("search_llm_max_rewrites", self.search_llm_max_rewrites)
-        if (
-            self.search_llm_enabled
-            and self.search_llm_provider == "openai"
-            and not self.search_llm_model
-        ):
-            raise ValueError(
-                "CONTEXTWIKI_SEARCH_LLM_MODEL must be set when search LLM is enabled"
-            )
         if self.chroma_db_path is None:
             object.__setattr__(
                 self,

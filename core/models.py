@@ -174,7 +174,7 @@ class DocumentSearchResult(BaseModel):
     score: float = 0.0
     vector_score: float = 0.0
     metadata_priority: int = 0
-    preview: str = ""
+    matched_context: str
 
     model_config = ConfigDict(frozen=True)
 

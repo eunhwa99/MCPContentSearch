@@ -1,10 +1,11 @@
 import sqlite3
 import os
 import uuid
+from contextlib import contextmanager
 from errno import EPERM, ESRCH
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 from core.models import (
     ChunkModel,
@@ -1304,10 +1305,15 @@ class MetadataStore:
 
         return self._job_from_row(row), deleted_chunk_ids
 
-    def _connect(self):
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _resolve_active_running_job(
         self,

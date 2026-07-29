@@ -5,10 +5,10 @@
 accepted
 
 Status note: ADR 0006 supersedes the historical dynamic fallback and broader
-crawler wording in this ADR for current work. The layered boundary remains
-accepted; `search/` currently owns ContextWiki retrieval, ranking, optional
-default-disabled query rewrite, metadata fallback, citation answer support, and
-SQLite-gated evidence hydration.
+crawler wording in this ADR for current work. ADR 0008 supersedes its
+query-rewrite wording. The layered boundary remains accepted; `search/`
+currently owns deterministic ContextWiki retrieval, ranking, metadata fallback,
+citation answer support, and SQLite-gated evidence hydration.
 
 ## Date
 
@@ -57,3 +57,4 @@ Cross-module behavior should flow through these boundaries instead of reaching a
 ## Related
 
 - `.agents/docs/architecture.md`
+- `.agents/docs/adr/0008-background-sync-all-and-deterministic-retrieval.md`

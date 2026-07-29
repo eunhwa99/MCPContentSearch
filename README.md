@@ -1,8 +1,8 @@
 # 🔍 ContextWiki
 
-[![CI](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml)
+[![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
-**A private knowledge retrieval MCP server for LLM clients.**
+**A self-hosted knowledge retrieval MCP server for LLM clients.**
 Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
 
 ---
@@ -24,19 +24,46 @@ Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and 
          [ Verified Context ]
 ```
 
+For detailed data flows and design constraints, see
+[Architecture](.agents/docs/architecture.md).
+
 ---
 
 ## 🛠️ MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `list_sources()` | List configured sources |
-| `sync_source(source_id)` | Sync a specific source |
-| `sync_all()` | Sync all sources at once |
-| `get_sync_status(source_id="")` | Get source and sync job status |
-| `search_context(query, ...)` | Semantic search with SQLite validation |
-| `search_documents(query, ...)` | Search results grouped by document |
-| `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly |
+| Tool | What it does | When the LLM uses it |
+|------|--------------|----------------------|
+| `list_sources()` | Lists configured sources and their current state | When the user asks which sources are connected or available |
+| `sync_source(source_id)` | Starts a sync for one source, or returns its already-running sync job | When the user asks to import or refresh one specific source |
+| `sync_all()` | Starts all configured source syncs in the background and immediately reports each launch result | When the user asks to import or refresh every source |
+| `get_sync_status(source_id="")` | Shows source and sync-job status for one source, or all sources when `source_id` is omitted | When the user asks whether a sync has finished or why it failed |
+| `search_context(query, ...)` | Finds relevant chunks and returns citation-ready context after SQLite validation | When the LLM needs focused evidence to answer the user's question |
+| `search_documents(query, ...)` | Returns one result per document with the full best-matching chunk text in `matched_context` | When the user asks for relevant documents and the LLM needs one representative passage from each document |
+| `fetch_context(document_id="", chunk_id="")` | Fetches stored document content and its chunks, or one known chunk, directly by ID | As an optional drill-down when the LLM already has an ID and needs more stored content than the search result provides |
+
+`matched_context` is specific to `search_documents`. The separate preview
+behavior of `search_context` is unchanged.
+
+### `source_id` values
+
+| Source | `source_id` | Example |
+|--------|-------------|---------|
+| Notion | `source_notion` | `sync_source("source_notion")` |
+| Tistory | `source_tistory` | `sync_source("source_tistory")` |
+| GitHub | `source_github` | `sync_source("source_github")` |
+| Obsidian | `source_obsidian` | `sync_source("source_obsidian")` |
+
+### Example LLM tool selection
+
+| User request | Tool the LLM may call |
+|--------------|-----------------------|
+| “Which sources are connected?” | `list_sources()` |
+| “Refresh my Notion content.” | `sync_source("source_notion")` |
+| “Refresh all of my connected sources.” | `sync_all()` |
+| “Has the Notion sync finished?” | `get_sync_status("source_notion")` |
+| “Find evidence about how this project prevents stale citations.” | `search_context(...)` |
+| “Show me each relevant document about SQLite with its most relevant passage.” | `search_documents(...)` |
+| “Retrieve the stored content and chunks for the document you just found.” | `fetch_context(document_id="...")` |
 
 > 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
 
@@ -85,63 +112,27 @@ refresh; for example, a malformed `CONTEXTWIKI_GITHUB_REPOSITORIES` value can
 prevent the server from starting cleanly.
 
 Source-specific env vars only register and enable each source. With the default
-embedding setup, successful sync/indexing still also requires `OPENAI_API_KEY`
-unless you reconfigure embeddings.
+embedding setup, indexing and search also require `OPENAI_API_KEY` unless you
+change the LlamaIndex embedding setup in code.
+
+By default, LlamaIndex uses OpenAI embeddings, so indexing may send document
+chunks and search may send queries to OpenAI.
 
 ### `.env` Example
 
 ```bash
-OPENAI_API_KEY=...              # required for default embeddings/indexing; also used by optional rewrite
+OPENAI_API_KEY=...              # required for default indexing/search embeddings
 
 NOTION_API_KEY=...
-TISTORY_BLOG_NAME=devlog        # subdomain only, not the full URL
+# Use the blog subdomain only, not the full URL.
+# For example, use devlog, not https://devlog.tistory.com.
+TISTORY_BLOG_NAME=devlog
 
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main
+# Use owner/repo or owner/repo@ref.
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch@main
 GITHUB_TOKEN=...                # needed for private repos or higher rate limits
 
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
-```
-
-Important GitHub notes:
-
-- Use `owner/repo` or `owner/repo@ref`.
-- Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
-- `GITHUB_TOKEN` is optional, but private repositories and higher rate limits
-  usually need it.
-
-**Notion example**
-
-```bash
-NOTION_API_KEY=...
-```
-
-Set this only if you want to enable the Notion source.
-
-**Tistory example**
-
-```bash
-TISTORY_BLOG_NAME=devlog
-```
-
-Use the blog subdomain only, not the full URL. For example, use `devlog`, not
-`https://devlog.tistory.com`.
-
-**Obsidian example**
-
-```bash
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
-CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
-CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
-```
-
-Use the vault root path, not an individual `.md` file path.
-
-### Search Query Rewrite (Optional)
-
-```bash
-CONTEXTWIKI_SEARCH_LLM_ENABLED=true
-CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
-CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
 ```
 
 ---
@@ -173,29 +164,6 @@ Do this in order:
 3. Add the MCP entry below to Claude Desktop.
 4. Fully restart Claude Desktop.
 5. In a fresh Claude Desktop chat, ask it to call `list_sources()`.
-
-Example `.env`:
-
-```bash
-# Required for default sync/indexing because embeddings use OpenAI by default
-OPENAI_API_KEY=...
-
-# Optional: enable Notion source
-NOTION_API_KEY=...
-
-# Optional: enable Tistory source
-TISTORY_BLOG_NAME=devlog
-
-# Optional: enable GitHub source
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch
-CONTEXTWIKI_GITHUB_DEFAULT_REF=main
-
-# Optional for private repos or higher GitHub API limits
-GITHUB_TOKEN=...
-
-# Optional: enable Obsidian source
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
-```
 
 On macOS, add this to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -240,8 +208,24 @@ Add the same local uv config above to `.cursor/mcp.json`.
 
 ### After Connecting
 
-1. Call `sync_all()` or `sync_source("source_notion")`
-2. Search with `search_context()` or `search_documents()`
+1. Refresh content:
+   - For one source, call `sync_source("source_notion")` and inspect its
+     top-level `status`. If it is `running`, call
+     `get_sync_status("source_notion")` until `latest_job.status` becomes
+     `succeeded` or `failed`. Continue only after `succeeded`. An immediate
+     `failed` response uses `error_message`, while an `error` response uses
+     `message`; after polling ends in `failed`, inspect
+     `latest_job.error_message` or `source.latest_failure_reason`.
+   - For all sources, call `sync_all()`. It returns after launch decisions,
+     without waiting for the syncs to finish. Check each
+     `results[].launch_outcome`: `started` means a new job was launched,
+     `already_running` means the existing job was reused, and `skipped` or
+     `failed` means that source did not start. For every started or already
+     running source, poll `get_sync_status(source_id)` until
+     `latest_job.status` becomes `succeeded` or `failed`. The top-level status
+     summarizes launch acceptance: `accepted`, `partial`, or `failed`.
+2. Search successfully refreshed sources with `search_context()` or
+   `search_documents()`.
 
 **Example prompt:**
 ```text
@@ -258,22 +242,24 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 |---------|-----|
 | MCP server not discovered | Recheck config path and fully restart the client |
 | Only works after manual start | Run `command` + `args` directly in terminal to see errors |
-| `Invalid GitHub repository spec` | Remove quotes from `.env`; use `owner/repo`, not a full URL |
+| `Invalid GitHub repository spec` | Use `owner/repo` or `owner/repo@ref`; separate multiple repositories with commas |
 | Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
 | Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
-| `sync_all()` too slow | Sync individually: `sync_source("source_github")`, etc. |
+| A sync failed | Call `get_sync_status("source_notion")`, replacing `source_notion` with the failed source ID shown above |
 
 ---
 
 ## ✅ Verification
 
 ```bash
-./scripts/demo.sh                           # Quick flow check with sample vault (no credentials needed)
-./scripts/verify_all.sh                     # Full verification after code changes
-./scripts/demo.sh --query "your question"   # Custom query
+./scripts/demo.sh                           # Run the local sample flow
+./scripts/demo.sh --query "your question"   # Run it with a custom query
+./scripts/verify_all.sh                     # Run the full developer checks
 ```
 
-- `./scripts/demo.sh` is the default reviewer path. It uses the bundled sample vault, needs no credentials, and keeps retrieval plus helper preview on the same input by default.
+`demo.sh` needs no credentials. It uses the bundled Obsidian sample vault,
+temporary SQLite and Chroma storage, and mock embeddings. `verify_all.sh` runs
+the full checks used after code changes.
 
 ---
 
@@ -290,9 +276,3 @@ search/          Search, ranking, metadata gate, citation answer support
 storage/         SQLite lifecycle management
 tests/, scripts/ Verification harnesses and utilities
 ```
-
----
-
-## 📖 Additional Docs
-
-- [Architecture](.agents/docs/architecture.md)

@@ -1222,7 +1222,7 @@ def test_cancelled_source_sync_marks_job_failed_and_allows_retry(tmp_path):
 def test_source_registration_preserves_existing_sync_status(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     connector = FakeConnector()
-    service = IngestionService(
+    IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(),
@@ -1499,15 +1499,24 @@ def test_sync_all_runs_multiple_sources_and_returns_aggregate_summary(tmp_path):
         indexer=RecordingIndexer(),
     )
 
-    result = asyncio.run(service.sync_all())
+    async def launch_and_wait():
+        result = await service.sync_all()
+        assert all(item["job"].status == SyncJobStatus.RUNNING for item in result["results"])
+        await asyncio.gather(*service._background_sync_tasks.values())
+        return result
 
-    assert result["status"] == "completed"
+    result = asyncio.run(launch_and_wait())
+
+    assert result["status"] == "accepted"
     assert result["summary"]["total_sources"] == 2
-    assert result["summary"]["succeeded"] == 2
+    assert result["summary"]["started"] == 2
+    assert result["summary"]["already_running"] == 0
     assert result["summary"]["failed"] == 0
-    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["requested_at"]
     assert {item["source_id"] for item in result["results"]} == {"source_a", "source_b"}
-    assert all(item["job"].status == SyncJobStatus.SUCCEEDED for item in result["results"])
+    assert all(item["launch_outcome"] == "started" for item in result["results"])
+    assert store.get_latest_sync_job("source_a").status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_b").status == SyncJobStatus.SUCCEEDED
 
 
 def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
@@ -1531,18 +1540,61 @@ def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
         indexer=RecordingIndexer(),
     )
 
-    result = asyncio.run(service.sync_all(["source_a", "source_disabled"]))
+    async def launch_and_wait():
+        result = await service.sync_all(["source_a", "source_disabled"])
+        await asyncio.gather(*service._background_sync_tasks.values())
+        return result
 
-    succeeded = next(item for item in result["results"] if item["source_id"] == "source_a")
+    result = asyncio.run(launch_and_wait())
+
+    started = next(item for item in result["results"] if item["source_id"] == "source_a")
     skipped = next(item for item in result["results"] if item["source_id"] == "source_disabled")
-    assert result["status"] == "completed"
-    assert succeeded["sync_outcome"] == "succeeded"
-    assert skipped["sync_outcome"] == "skipped"
+    assert result["status"] == "accepted"
+    assert started["launch_outcome"] == "started"
+    assert skipped["launch_outcome"] == "skipped"
     assert skipped["job"].status == SyncJobStatus.FAILED
-    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["started"] == 1
+    assert result["summary"]["already_running"] == 0
     assert result["summary"]["failed"] == 0
-    assert result["summary"]["blocked"] == 0
     assert result["summary"]["skipped"] == 1
+
+
+def test_sync_all_returns_before_new_background_connector_completes(tmp_path):
+    document = DocumentModel(
+        id="doc-a",
+        source_id="source_a",
+        title="Source A",
+        content="source a content",
+        url="https://example.com/a",
+        platform="GitHub",
+        path="a.md",
+    )
+
+    async def launch_before_release():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        connector = BlockingConnector([document], started, release)
+        connector.source = SourceAConnector.source
+        service = IngestionService(
+            metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+
+        result = await asyncio.wait_for(service.sync_all(["source_a"]), timeout=0.5)
+        await started.wait()
+        background_task = service._background_sync_tasks["source_a"]
+        assert not background_task.done()
+        release.set()
+        await background_task
+        return result
+
+    result = asyncio.run(launch_before_release())
+
+    assert result["status"] == "accepted"
+    assert result["results"][0]["launch_outcome"] == "started"
+    assert result["results"][0]["job"].status == SyncJobStatus.RUNNING
 
 
 def test_sync_all_empty_selection_is_a_no_op(tmp_path):
@@ -1565,17 +1617,18 @@ def test_sync_all_empty_selection_is_a_no_op(tmp_path):
 
     result = asyncio.run(service.sync_all([]))
 
-    assert result["status"] == "completed"
+    assert result["status"] == "accepted"
     assert result["summary"]["total_sources"] == 0
-    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["started"] == 0
+    assert result["summary"]["already_running"] == 0
     assert result["summary"]["failed"] == 0
-    assert result["summary"]["blocked"] == 0
     assert result["summary"]["skipped"] == 0
+    assert result["summary"]["requested_at"]
     assert result["results"] == []
     assert indexer.indexed_batches == []
 
 
-def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
+def test_sync_all_reports_already_running_source_without_waiting(tmp_path):
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -1608,25 +1661,26 @@ def test_sync_all_reports_blocked_source_when_job_already_running(tmp_path):
 
         first_task = asyncio.create_task(service.sync_source("source_a"))
         await started.wait()
-        bulk_task = asyncio.create_task(service.sync_all())
-        await asyncio.sleep(0)
+        result = await service.sync_all()
+        assert result["results"][0]["launch_outcome"] == "already_running"
         release.set()
         await first_task
-        return await bulk_task
+        await asyncio.gather(*service._background_sync_tasks.values())
+        return result
 
     result = asyncio.run(run_sync_all_while_one_source_is_running())
 
-    blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
-    succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
-    assert result["status"] == "partial"
-    assert blocked["sync_outcome"] == "blocked"
-    assert blocked["job"].status == SyncJobStatus.RUNNING
-    assert succeeded["sync_outcome"] == "succeeded"
-    assert result["summary"]["blocked"] == 1
-    assert result["summary"]["succeeded"] == 1
+    running = next(item for item in result["results"] if item["source_id"] == "source_a")
+    started = next(item for item in result["results"] if item["source_id"] == "source_b")
+    assert result["status"] == "accepted"
+    assert running["launch_outcome"] == "already_running"
+    assert running["job"].status == SyncJobStatus.RUNNING
+    assert started["launch_outcome"] == "started"
+    assert result["summary"]["already_running"] == 1
+    assert result["summary"]["started"] == 1
 
 
-def test_sync_all_reports_blocked_for_local_background_sync(tmp_path):
+def test_sync_all_reuses_local_background_sync_without_waiting(tmp_path):
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -1655,26 +1709,25 @@ def test_sync_all_reports_blocked_for_local_background_sync(tmp_path):
 
         launched_job = await service.start_sync_source("source_a")
         await started.wait()
-        bulk_task = asyncio.create_task(service.sync_all())
-        await asyncio.sleep(0)
-        assert not bulk_task.done()
+        result = await service.sync_all()
         release.set()
-        return launched_job, await bulk_task
+        await asyncio.gather(*service._background_sync_tasks.values())
+        return launched_job, result
 
     launched_job, result = asyncio.run(run_sync_all_while_background_sync_is_running())
 
-    blocked = next(item for item in result["results"] if item["source_id"] == "source_a")
-    succeeded = next(item for item in result["results"] if item["source_id"] == "source_b")
+    running = next(item for item in result["results"] if item["source_id"] == "source_a")
+    started = next(item for item in result["results"] if item["source_id"] == "source_b")
     assert launched_job.status == SyncJobStatus.RUNNING
-    assert result["status"] == "partial"
-    assert blocked["sync_outcome"] == "blocked"
-    assert blocked["job"].status == SyncJobStatus.RUNNING
-    assert succeeded["sync_outcome"] == "succeeded"
-    assert result["summary"]["blocked"] == 1
-    assert result["summary"]["succeeded"] == 1
+    assert result["status"] == "accepted"
+    assert running["launch_outcome"] == "already_running"
+    assert running["job"].status == SyncJobStatus.RUNNING
+    assert started["launch_outcome"] == "started"
+    assert result["summary"]["already_running"] == 1
+    assert result["summary"]["started"] == 1
 
 
-def test_sync_all_reports_blocked_when_all_selected_sources_are_blocked(tmp_path):
+def test_sync_all_accepts_when_all_selected_sources_are_already_running(tmp_path):
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -1701,26 +1754,25 @@ def test_sync_all_reports_blocked_when_all_selected_sources_are_blocked(tmp_path
 
         first_task = asyncio.create_task(service.sync_source("source_a"))
         await started.wait()
-        bulk_task = asyncio.create_task(service.sync_all(["source_a"]))
-        await asyncio.sleep(0)
+        result = await service.sync_all(["source_a"])
         release.set()
         await first_task
-        return await bulk_task
+        return result
 
     result = asyncio.run(run_sync_all_while_source_is_running())
 
-    assert result["status"] == "blocked"
+    assert result["status"] == "accepted"
     assert result["summary"]["total_sources"] == 1
-    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["started"] == 0
     assert result["summary"]["failed"] == 0
-    assert result["summary"]["blocked"] == 1
+    assert result["summary"]["already_running"] == 1
     assert result["summary"]["skipped"] == 0
     assert result["results"][0]["source_id"] == "source_a"
-    assert result["results"][0]["sync_outcome"] == "blocked"
+    assert result["results"][0]["launch_outcome"] == "already_running"
     assert result["results"][0]["job"].status == SyncJobStatus.RUNNING
 
 
-def test_sync_all_reports_partial_when_success_and_failure_are_mixed(tmp_path):
+def test_sync_all_launch_acceptance_does_not_claim_connector_completion(tmp_path):
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -1741,37 +1793,45 @@ def test_sync_all_reports_partial_when_success_and_failure_are_mixed(tmp_path):
         indexer=RecordingIndexer(),
     )
 
-    result = asyncio.run(service.sync_all(["source_a", "source_fake"]))
+    async def launch_and_wait():
+        result = await service.sync_all(["source_a", "source_fake"])
+        assert all(item["launch_outcome"] == "started" for item in result["results"])
+        await asyncio.gather(*service._background_sync_tasks.values())
+        return result
 
-    assert result["status"] == "partial"
-    assert result["summary"]["succeeded"] == 1
-    assert result["summary"]["failed"] == 1
-    assert result["summary"]["blocked"] == 0
+    result = asyncio.run(launch_and_wait())
+
+    assert result["status"] == "accepted"
+    assert result["summary"]["started"] == 2
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["already_running"] == 0
     assert result["summary"]["skipped"] == 0
     assert {
-        (item["source_id"], item["sync_outcome"])
+        (item["source_id"], item["launch_outcome"])
         for item in result["results"]
-    } == {("source_a", "succeeded"), ("source_fake", "failed")}
+    } == {("source_a", "started"), ("source_fake", "started")}
+    assert store.get_latest_sync_job("source_a").status == SyncJobStatus.SUCCEEDED
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
 
 
-def test_sync_all_reports_failed_when_nothing_completed_successfully(tmp_path):
+def test_sync_all_reports_failed_when_source_launch_cannot_start(tmp_path):
     service = IngestionService(
         metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
-        source_registry=SourceRegistry([FakeConnector(error=RuntimeError("boom"))]),
+        source_registry=SourceRegistry([FakeConnector()]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
     )
 
-    result = asyncio.run(service.sync_all(["source_fake"]))
+    result = asyncio.run(service.sync_all(["source_missing"]))
 
     assert result["status"] == "failed"
     assert result["summary"]["total_sources"] == 1
-    assert result["summary"]["succeeded"] == 0
+    assert result["summary"]["started"] == 0
     assert result["summary"]["failed"] == 1
-    assert result["summary"]["blocked"] == 0
+    assert result["summary"]["already_running"] == 0
     assert result["summary"]["skipped"] == 0
-    assert result["results"][0]["source_id"] == "source_fake"
-    assert result["results"][0]["sync_outcome"] == "failed"
+    assert result["results"][0]["source_id"] == "source_missing"
+    assert result["results"][0]["launch_outcome"] == "failed"
 
 
 def test_concurrent_cross_source_collision_is_rejected_before_vector_write(tmp_path):
@@ -2457,6 +2517,7 @@ def test_sync_all_replays_observer_cancelled_background_failure_once(tmp_path):
             await asyncio.sleep(0.01)
         replayed = await service.sync_all(["source_fake"])
         rerun = await service.sync_all(["source_fake"])
+        await asyncio.gather(*service._background_sync_tasks.values())
         return launched_job, replayed, rerun
 
     launched_job, replayed, rerun = asyncio.run(run_background_then_bulk_sync())
@@ -2467,7 +2528,7 @@ def test_sync_all_replays_observer_cancelled_background_failure_once(tmp_path):
         ingestion_module.OBSERVER_CANCELLED_SYNC_ERROR
     )
     assert rerun["results"][0]["job"].job_id != launched_job.job_id
-    assert rerun["results"][0]["job"].status == SyncJobStatus.SUCCEEDED
+    assert rerun["results"][0]["launch_outcome"] == "started"
 
 
 def test_running_sync_supports_async_nested_stop_checker_without_false_stop(tmp_path):

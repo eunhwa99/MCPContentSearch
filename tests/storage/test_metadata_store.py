@@ -1,3 +1,6 @@
+import gc
+import sqlite3
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
@@ -452,6 +455,82 @@ def test_atomic_document_chunk_commit_rolls_back_when_chunk_insert_fails(tmp_pat
 
     assert store.get_document("doc_atomic") is None
     assert store.list_chunks_for_document("doc_atomic") == []
+
+
+def test_connection_context_commits_rolls_back_and_closes(tmp_path, monkeypatch):
+    opened_connections = []
+    original_connect = sqlite3.connect
+
+    class TrackingConnection(sqlite3.Connection):
+        close_count = 0
+
+        def close(self):
+            self.close_count += 1
+            super().close()
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        connection = original_connect(*args, **kwargs)
+        opened_connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(
+        "storage.metadata_store.sqlite3.connect",
+        tracking_connect,
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    with store._connect() as conn:
+        conn.execute("CREATE TABLE transaction_probe (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO transaction_probe VALUES ('committed')")
+
+    with pytest.raises(RuntimeError, match="rollback probe"):
+        with store._connect() as conn:
+            conn.execute("INSERT INTO transaction_probe VALUES ('rolled back')")
+            raise RuntimeError("rollback probe")
+
+    with store._connect() as conn:
+        values = [
+            row["value"]
+            for row in conn.execute(
+                "SELECT value FROM transaction_probe ORDER BY rowid"
+            ).fetchall()
+        ]
+
+    assert values == ["committed"]
+    assert opened_connections
+    assert all(connection.close_count == 1 for connection in opened_connections)
+    for connection in opened_connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
+def test_repeated_metadata_access_emits_no_unclosed_sqlite_resource_warning(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always", ResourceWarning)
+        for _ in range(25):
+            assert store.get_source("source_github") is not None
+            assert len(store.list_sources()) == 1
+        gc.collect()
+
+    unclosed_sqlite_warnings = [
+        warning
+        for warning in caught_warnings
+        if issubclass(warning.category, ResourceWarning)
+        and "sqlite3.Connection" in str(warning.message)
+    ]
+    assert unclosed_sqlite_warnings == []
 
 
 def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):

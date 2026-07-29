@@ -5,7 +5,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
-export CONTEXTWIKI_SEARCH_LLM_ENABLED=false
 
 choose_python() {
   if [[ -n "${PYTHON:-}" ]]; then

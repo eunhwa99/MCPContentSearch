@@ -310,7 +310,7 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
         text="EC2 setup and instance launch notes.",
     )
 
-    class RewriteDebugContextSearch(FakeContextSearch):
+    class DeterministicDebugContextSearch(FakeContextSearch):
         async def search_context(
             self,
             query,
@@ -325,12 +325,11 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
                 "debug": {
                     "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
                     "retrieval_queries": ["aws virtual machine startup", "aws ec2 setup"],
-                    "rewritten_queries": ["aws ec2 setup"],
                 },
             }
 
     service = CitationAnswerService(
-        context_search=RewriteDebugContextSearch([result]),
+        context_search=DeterministicDebugContextSearch([result]),
         min_score=0.5,
         min_results=1,
     )
@@ -339,10 +338,13 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
 
     assert answer["evidence_status"] == "grounded"
     assert answer["used_chunks"] == ["chunk-ec2-guide"]
-    assert answer["debug"]["rewritten_queries"] == ["aws ec2 setup"]
+    assert answer["debug"]["retrieval_queries"] == [
+        "aws virtual machine startup",
+        "aws ec2 setup",
+    ]
 
 
-def test_answer_service_carries_query_rewrite_explainability_from_search_debug():
+def test_answer_service_carries_retrieval_explainability_from_search_debug():
     result = ContextSearchResult(
         chunk_id="chunk-1",
         document_id="doc-1",
@@ -372,17 +374,7 @@ def test_answer_service_carries_query_rewrite_explainability_from_search_debug()
                 },
                 "debug": {
                     "retrieval_queries": ["aws virtual machine startup", "aws ec2 setup"],
-                    "rewritten_queries": ["aws ec2 setup"],
                     "effective_term_groups": [["aws"], ["ec2"], ["setup"]],
-                    "query_rewrite": {
-                        "attempted": True,
-                        "applied": True,
-                        "reason": "low_initial_vector_score",
-                        "initial_top_vector_score": 0.42,
-                        "final_top_score": 0.91,
-                        "original_query": "aws virtual machine startup",
-                        "rewritten_queries": ["aws ec2 setup"],
-                    },
                     "filters": {"source_ids": ["source_fake"]},
                     "selected_results": [{"chunk_id": "chunk-1", "source_id": "source_fake"}],
                 },
@@ -396,15 +388,16 @@ def test_answer_service_carries_query_rewrite_explainability_from_search_debug()
 
     answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
 
-    assert answer["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
-    assert answer["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.42
-    assert answer["debug"]["query_rewrite"]["final_top_score"] == 0.91
+    assert answer["debug"]["retrieval_queries"] == [
+        "aws virtual machine startup",
+        "aws ec2 setup",
+    ]
     assert answer["debug"]["filters"] == {"source_ids": ["source_fake"]}
     assert answer["debug"]["retrieval_selected_results"][0]["chunk_id"] == "chunk-1"
-    assert "rewrite reason: `low_initial_vector_score`" in answer["debug_markdown"]
+    assert "rewrite" not in answer["debug_markdown"]
 
 
-def test_answer_service_marks_rejected_rewrite_as_tried_not_used():
+def test_answer_service_debug_markdown_contains_only_deterministic_queries():
     result = ContextSearchResult(
         chunk_id="chunk-1",
         document_id="doc-1",
@@ -416,7 +409,7 @@ def test_answer_service_marks_rejected_rewrite_as_tried_not_used():
         text="EC2 setup notes",
     )
 
-    class RejectedRewriteContextSearch(FakeContextSearch):
+    class DeterministicContextSearch(FakeContextSearch):
         async def search_context(
             self,
             query,
@@ -430,31 +423,21 @@ def test_answer_service_marks_rejected_rewrite_as_tried_not_used():
                 "results": [result],
                 "debug": {
                     "retrieval_queries": ["aws virtual machine startup"],
-                    "rewritten_queries": ["aws ec2 setup"],
-                    "query_rewrite": {
-                        "attempted": True,
-                        "applied": False,
-                        "reason": "low_initial_vector_score",
-                        "initial_top_vector_score": 0.42,
-                        "final_top_score": 0.9,
-                        "original_query": "aws virtual machine startup",
-                        "rewritten_queries": ["aws ec2 setup"],
-                    },
                     "filters": {"source_ids": ["source_fake"]},
                     "selected_results": [{"chunk_id": "chunk-1", "source_id": "source_fake"}],
                 },
             }
 
     service = CitationAnswerService(
-        context_search=RejectedRewriteContextSearch([result]),
+        context_search=DeterministicContextSearch([result]),
         min_score=0.1,
         min_results=1,
     )
 
     answer = asyncio.run(service.answer_with_citations("aws virtual machine startup", include_debug=True))
 
-    assert "- rewritten queries tried: `aws ec2 setup`" in answer["debug_markdown"]
-    assert "rewritten queries used" not in answer["debug_markdown"]
+    assert "- retrieval queries: `aws virtual machine startup`" in answer["debug_markdown"]
+    assert "rewrite" not in answer["debug_markdown"]
 
 
 def test_answer_service_renders_grounded_list_for_collection_request():
@@ -1029,7 +1012,7 @@ def test_answer_service_visible_answer_keeps_benign_repo_slugs():
     assert "context-wiki-debug guide" in answer["answer"]
 
 
-def test_answer_service_keeps_original_topical_constraint_when_rewrite_relaxes_query():
+def test_answer_service_keeps_original_topical_constraint_from_grounding_state():
     result = ContextSearchResult(
         chunk_id="chunk-neetcode-arrays",
         document_id="doc-neetcode-arrays",
@@ -1046,7 +1029,7 @@ def test_answer_service_keeps_original_topical_constraint_when_rewrite_relaxes_q
         text="Neetcode arrays walkthrough and study notes.",
     )
 
-    class RewriteDebugContextSearch(FakeContextSearch):
+    class GroundingContextSearch(FakeContextSearch):
         async def search_context(
             self,
             query,
@@ -1064,12 +1047,11 @@ def test_answer_service_keeps_original_topical_constraint_when_rewrite_relaxes_q
                 },
                 "debug": {
                     "effective_term_groups": [["neetcode"], ["graph"], ["docs"], ["guide"]],
-                    "rewritten_queries": ["neetcode docs guide"],
                 },
             }
 
     service = CitationAnswerService(
-        context_search=RewriteDebugContextSearch([result]),
+        context_search=GroundingContextSearch([result]),
         min_score=0.5,
         min_results=1,
     )
@@ -1264,7 +1246,6 @@ def test_answer_service_redacts_query_fields_when_they_include_paths_or_credenti
                         "/Users/eunhwa/private/doc.md",
                         "https://user:pass@example.com/path?token=abc",
                     ],
-                    "rewritten_queries": ["~/private/doc.md C:/Users/test/private/doc.md"],
                 },
             }
 
@@ -1283,7 +1264,7 @@ def test_answer_service_redacts_query_fields_when_they_include_paths_or_credenti
 
     assert answer["debug"]["question"] == "redacted redacted"
     assert answer["debug"]["retrieval_queries"] == ["redacted", "redacted"]
-    assert answer["debug"]["rewritten_queries"] == ["redacted redacted"]
+    assert "rewritten_queries" not in answer["debug"]
     assert "/Users/eunhwa" not in answer["debug_markdown"]
     assert "user:pass@" not in answer["debug_markdown"]
     assert "~/" not in answer["debug_markdown"]

@@ -23,11 +23,6 @@ RETRIEVAL_CASES_PATH = Path("evals/retrieval_quality_cases.json")
 ANSWER_CASES_PATH = Path("evals/contextwiki_answer_quality_cases.json")
 
 
-class DisabledQueryRewriter:
-    async def rewrite_query(self, query: str, term_groups: list[set[str]]) -> list[str]:
-        return []
-
-
 class FixtureIndexer:
     def __init__(self, store: MetadataStore):
         self.store = store
@@ -129,7 +124,6 @@ def run_contextwiki_eval(
         search_service = ContextSearchService(
             store,
             indexer=FixtureIndexer(store),
-            query_rewriter=DisabledQueryRewriter(),
             vector_retriever_cls=FIXTURE_VECTOR_RETRIEVER_CLASS,
         )
         answer_service = CitationAnswerService(search_service)

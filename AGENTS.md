@@ -34,7 +34,7 @@ LlamaIndex, ChromaDB, and SQLite metadata storage.
 - `environments/`: runtime configuration and secret/environment loading.
 - `fetching/`: Notion, Tistory, GitHub, and Obsidian source connectors.
 - `indexing/`: document conversion, chunking, dedup/update detection, and vector indexing.
-- `search/`: ContextWiki retrieval, ranking, SQLite-backed active gates, query rewrite, and citation answer scaffolding.
+- `search/`: ContextWiki retrieval, ranking, SQLite-backed active gates, and citation answer scaffolding.
 - `storage/`: SQLite source/job/document/chunk lifecycle metadata and active retrieval checks.
 - `docs/plan/`: plan documents written before file-changing harness work.
 - `.agents/`: local harness docs and phase skills.

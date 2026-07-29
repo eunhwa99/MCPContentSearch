@@ -65,11 +65,6 @@ def redact_debug_query_text(value: str) -> str:
     return DEBUG_SECRET_VALUE_SHAPE_RE.sub("[REDACTED]", text)
 
 
-def redact_prompt_query_text(value: str) -> str:
-    """Redact prompt payload secrets without dropping benign technical IDs."""
-    return _redact_sensitive_query_parts(str(value or ""))
-
-
 def _redact_sensitive_query_parts(text: str) -> str:
     text = DEBUG_HTTP_URL_RE.sub(
         lambda match: safe_debug_location(match.group(0)),

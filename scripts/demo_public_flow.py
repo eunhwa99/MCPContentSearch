@@ -79,7 +79,6 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
         collection_name="contextwiki_demo",
         obsidian_vault_path=sample_vault,
         search_multiplier=4,
-        search_llm_enabled=False,
     )
     chroma_collection = setup_chroma(config)
     storage_context = StorageContext.from_defaults(
@@ -212,20 +211,26 @@ def normalize_demo_result(result: dict) -> dict:
 
 def render_demo_text(result: dict, query: str, question: str) -> str:
     lines = [
-        "ContextWiki Public Demo",
-        "=======================",
+        "ContextWiki Local Demo",
+        "======================",
         f"Sample vault: {result['sample_vault']}",
+        (
+            "Local workflow smoke: bundled vault through the local Obsidian "
+            "connector, temporary SQLite/Chroma, and MockEmbedding."
+        ),
+        "Checks: local Obsidian sync, status, search, and citation wiring.",
+        (
+            "Does not validate: remote Notion/Tistory/GitHub connectors, "
+            "user-configured sources, real MCP-client transport, or production "
+            "semantic embedding quality."
+        ),
         "Downstream LLMs usually turn this evidence into the final answer.",
-        "The answer step below is a grounded helper preview for debug/eval.",
+        "The answer step below is a grounded helper preview, not an LLM-generated answer.",
     ]
     if query == question:
-        lines.append(
-            "Canonical portfolio path: the same question is used for retrieval and helper answer preview."
-        )
+        lines.append("Retrieval and helper preview use the same input.")
     else:
-        lines.append(
-            "This transcript uses separate retrieval and answer probes, so do not read it as one validated end-to-end chain."
-        )
+        lines.append("Retrieval and helper preview use different inputs; treat them as separate probes.")
     lines.extend(
         [
             "",
@@ -247,7 +252,13 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the public ContextWiki helper-preview demo against the bundled sample vault."
+        description=(
+            "Run a safe local ContextWiki workflow smoke against the bundled sample vault. "
+            "It checks the local Obsidian connector, sync, status, search, and citation "
+            "wiring with temporary stores and MockEmbedding; it does not validate remote "
+            "Notion/Tistory/GitHub connectors, user-configured sources, real MCP-client "
+            "transport, or production semantic embedding quality."
+        )
     )
     parser.add_argument(
         "--query",
