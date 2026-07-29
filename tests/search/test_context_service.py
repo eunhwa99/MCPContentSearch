@@ -2,7 +2,14 @@ import asyncio
 
 import pytest
 
-from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
+from core.models import (
+    ChunkModel,
+    DocumentModel,
+    DocumentSearchResult,
+    SourceModel,
+    SourceType,
+    SyncStatus,
+)
 from search import ranking
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
@@ -23,19 +30,24 @@ class FakeIndexer:
         return object()
 
 
-class FakeQueryRewriter:
-    def __init__(self, rewrites):
-        self.rewrites = rewrites
-        self.calls = []
+def test_document_search_result_requires_typed_matched_context():
+    required_fields = {
+        "document_id": "doc-1",
+        "chunk_id": "chunk-1",
+        "source_id": "source-1",
+        "source_type": "notion",
+        "title": "Required context",
+    }
 
-    async def rewrite_query(self, query, term_groups):
-        self.calls.append({"query": query, "term_groups": term_groups})
-        return list(self.rewrites)
+    with pytest.raises(ValueError, match="matched_context"):
+        DocumentSearchResult(**required_fields)
+    with pytest.raises(ValueError, match="matched_context"):
+        DocumentSearchResult(**required_fields, matched_context=None)
 
-
-class FailingQueryRewriter:
-    async def rewrite_query(self, query, term_groups):
-        raise RuntimeError("rewrite provider timeout")
+    assert DocumentSearchResult(
+        **required_fields,
+        matched_context="",
+    ).matched_context == ""
 
 
 def test_vector_search_tries_alias_expanded_query_variants(monkeypatch, tmp_path):
@@ -75,7 +87,7 @@ def test_vector_search_tries_alias_expanded_query_variants(monkeypatch, tmp_path
     assert any("amazon web services" in query.lower() for query in retrieval_queries)
 
 
-def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_confidence(
+def test_vector_search_does_not_issue_external_rewrite_queries(
     monkeypatch,
     tmp_path,
 ):
@@ -106,37 +118,20 @@ def test_vector_search_uses_llm_rewrite_queries_when_initial_results_are_low_con
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
 
-    rewriter = FakeQueryRewriter(["aws ec2 setup"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("aws virtual machine startup", top_k=1, include_debug=True)
     )
 
-    assert len(result["results"]) == 1
-    assert result["results"][0].chunk_id == "ec2-chunk"
-    assert rewriter.calls
-    assert "aws ec2 setup" in result["debug"]["rewritten_queries"]
-    assert result["debug"]["query_rewrite"] == {
-        "attempted": True,
-        "applied": True,
-        "reason": "no_initial_candidates",
-        "initial_top_vector_score": 0.0,
-        "final_top_score": round(result["results"][0].score, 4),
-        "original_query": "aws virtual machine startup",
-        "rewritten_queries": ["aws ec2 setup"],
-    }
-    assert result["debug"]["selected_results"][0]["chunk_id"] == "ec2-chunk"
-    assert result["debug"]["rewrite_enabled"] is True
-    assert result["debug"]["rewrite_attempted"] is True
-    assert result["debug"]["rewrite_applied"] is True
-    assert result["debug"]["rewrite_skipped_reason"] == ""
-    assert any("ec2" in query.lower() for query in retrieval_queries)
+    assert result["results"] == []
+    assert result["debug"]["retrieval_queries"]
+    assert all("ec2" not in query.lower() for query in retrieval_queries)
+    assert not any("rewrite" in key for key in result["debug"])
 
 
-def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_already_confident(
+def test_vector_search_uses_metadata_identity_fallback_without_query_rewrite(
     monkeypatch,
     tmp_path,
 ):
@@ -162,32 +157,18 @@ def test_vector_search_skips_query_rewrite_when_metadata_only_identity_match_is_
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", MetadataOnlyVectorRetriever)
 
-    rewriter = FakeQueryRewriter(["should-not-run"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("ImageGallery docs", top_k=1, include_debug=True)
     )
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "imagegallery-doc-chunk"
-    assert rewriter.calls
-    assert result["debug"]["rewritten_queries"] == ["[REDACTED]"]
-    assert result["debug"]["query_rewrite"] == {
-        "attempted": True,
-        "applied": False,
-        "reason": "low_initial_vector_score",
-        "initial_top_vector_score": 0.0,
-        "final_top_score": round(result["results"][0].score, 4),
-        "original_query": "ImageGallery docs",
-        "rewritten_queries": ["[REDACTED]"],
-    }
-    assert result["debug"]["rewrite_enabled"] is True
-    assert result["debug"]["rewrite_attempted"] is True
-    assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "not_better_than_original"
+    assert result["debug"]["initial_top_vector_score"] == 0.0
+    assert result["debug"]["final_top_score"] == round(result["results"][0].score, 4)
+    assert not any("rewrite" in key for key in result["debug"])
 
 
 def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
@@ -212,8 +193,8 @@ def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
     )
 
     assert result["debug"]["filters"] == {"source_ids": ["source_target"]}
-    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.0
-    assert result["debug"]["query_rewrite"]["final_top_score"] == round(result["results"][0].score, 4)
+    assert result["debug"]["initial_top_vector_score"] == 0.0
+    assert result["debug"]["final_top_score"] == round(result["results"][0].score, 4)
     assert result["debug"]["selected_results"][0]["chunk_id"] == "debug-chunk"
     assert result["debug"]["selected_results"][0]["source_id"] == "source_target"
     assert result["debug"]["selected_results"][0]["matched_terms"]
@@ -243,7 +224,7 @@ def test_search_context_defaults_to_non_debug_payload(tmp_path):
     assert "_grounding" not in result
 
 
-def test_vector_search_marks_rewrite_disabled_in_debug_when_no_rewriter_is_configured(
+def test_vector_search_debug_contains_no_query_rewrite_fields(
     monkeypatch,
     tmp_path,
 ):
@@ -266,8 +247,6 @@ def test_vector_search_marks_rewrite_disabled_in_debug_when_no_rewriter_is_confi
             return []
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
-    monkeypatch.setattr("search.context_service.build_query_rewriter", lambda *args, **kwargs: None)
-
     result = asyncio.run(
         ContextSearchService(
             store,
@@ -275,45 +254,12 @@ def test_vector_search_marks_rewrite_disabled_in_debug_when_no_rewriter_is_confi
         ).search_context("aws virtual machine startup", top_k=1, include_debug=True)
     )
 
-    assert result["debug"]["rewritten_queries"] == []
-    assert result["debug"]["rewrite_enabled"] is False
-    assert result["debug"]["rewrite_attempted"] is False
-    assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "disabled"
+    assert not any("rewrite" in key for key in result["debug"])
 
 
-def test_vector_search_marks_rewrite_failed_when_rewriter_raises(monkeypatch, tmp_path):
+def test_search_context_empty_filter_result_keeps_deterministic_debug(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
-
-    class FakeVectorIndexRetriever:
-        def __init__(self, **kwargs):
-            pass
-
-        def retrieve(self, query):
-            return []
-
-    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
-
-    result = asyncio.run(
-        ContextSearchService(
-            store,
-            indexer=FakeIndexer(),
-            query_rewriter=FailingQueryRewriter(),
-        ).search_context("aws virtual machine startup", top_k=1, include_debug=True)
-    )
-
-    assert result["debug"]["rewrite_enabled"] is True
-    assert result["debug"]["rewrite_attempted"] is True
-    assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "rewrite_failed"
-
-
-def test_search_context_empty_filter_result_preserves_rewrite_state(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
-    seed_source(store, "source_target", SourceType.NOTION, "Target")
-    monkeypatch.setattr("search.context_service.build_query_rewriter", lambda *args, **kwargs: None)
-
     result = asyncio.run(
         ContextSearchService(
             store,
@@ -328,10 +274,9 @@ def test_search_context_empty_filter_result_preserves_rewrite_state(monkeypatch,
     )
 
     assert result["results"] == []
-    assert result["debug"]["rewrite_enabled"] is False
-    assert result["debug"]["rewrite_attempted"] is False
-    assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
+    assert result["debug"]["retrieval_queries"] == []
+    assert result["debug"]["effective_term_groups"] == []
+    assert not any("rewrite" in key for key in result["debug"])
 
 
 def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
@@ -354,28 +299,29 @@ def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
             pass
 
         def retrieve(self, query):
-            node = FakeNode("ec2-chunk", 0.22 if "virtual machine" in query.lower() else 0.91)
+            node = FakeNode(
+                "ec2-chunk",
+                0.91 if "amazon web services" in query.lower() else 0.22,
+            )
             node.metadata["document_id"] = "doc-ec2"
             node.metadata["source_id"] = "source_target"
             return [node]
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
 
-    rewriter = FakeQueryRewriter(["aws ec2 setup"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("aws virtual machine startup", top_k=1)
     )
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "ec2-chunk"
-    assert result["results"][0].score >= 0.91
+    assert result["results"][0].vector_score == 0.91
 
 
-def test_vector_search_skips_query_rewrite_for_single_high_confidence_exact_match_even_when_top_k_is_larger(
+def test_vector_search_keeps_single_high_confidence_exact_match_when_top_k_is_larger(
     monkeypatch,
     tmp_path,
 ):
@@ -404,30 +350,19 @@ def test_vector_search_skips_query_rewrite_for_single_high_confidence_exact_matc
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
 
-    rewriter = FakeQueryRewriter(["aws ec2 setup"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("ec2 setup guide", top_k=3, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "ec2-chunk"
-    assert rewriter.calls == []
-    assert result["debug"]["query_rewrite"] == {
-        "attempted": False,
-        "applied": False,
-        "reason": "",
-        "initial_top_vector_score": 0.98,
-        "final_top_score": round(result["results"][0].score, 4),
-        "original_query": "ec2 setup guide",
-        "rewritten_queries": [],
-    }
-    assert result["debug"]["rewrite_skipped_reason"] == "not_needed"
+    assert result["debug"]["initial_top_vector_score"] == 0.98
+    assert result["debug"]["final_top_score"] == round(result["results"][0].score, 4)
 
 
-def test_context_service_helper_should_try_query_rewrite_stays_in_sync_with_pipeline_signature(
+def test_context_service_exposes_no_query_rewrite_helpers(
     tmp_path,
 ):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
@@ -443,18 +378,11 @@ def test_context_service_helper_should_try_query_rewrite_stays_in_sync_with_pipe
 
     service = ContextSearchService(store, indexer=FakeIndexer())
 
-    assert (
-        service._should_try_query_rewrite(
-            "ec2 setup guide",
-            [{"chunk_id": "ec2-chunk", "score": 0.98, "vector_score": 0.98}],
-            [{"ec2"}, {"setup"}, {"guide"}],
-            3,
-        )
-        is False
-    )
+    assert not hasattr(service, "_should_try_query_rewrite")
+    assert not hasattr(service._pipeline(), "rewrite_queries")
 
 
-def test_vector_search_renames_low_initial_vector_reason_and_keeps_original_when_rewrite_is_worse(
+def test_vector_search_keeps_original_deterministic_query_results(
     monkeypatch,
     tmp_path,
 ):
@@ -499,26 +427,16 @@ def test_vector_search_renames_low_initial_vector_reason_and_keeps_original_when
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=FakeQueryRewriter(["rewrite improved setup"]),
         ).search_context("contextwiki setup", top_k=1, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "chunk-original"
-    assert result["debug"]["query_rewrite"] == {
-        "attempted": True,
-        "applied": False,
-        "reason": "low_initial_vector_score",
-        "initial_top_vector_score": 0.72,
-        "final_top_score": round(result["results"][0].score, 4),
-        "original_query": "contextwiki setup",
-        "rewritten_queries": ["rewrite improved setup"],
-    }
     assert result["debug"]["retrieval_queries"] == ["contextwiki setup"]
-    assert result["debug"]["rewrite_applied"] is False
-    assert result["debug"]["rewrite_skipped_reason"] == "not_better_than_original"
+    assert result["debug"]["initial_top_vector_score"] == 0.72
+    assert not any("rewrite" in key for key in result["debug"])
 
 
-def test_vector_search_prefers_rewritten_results_when_they_score_higher_than_original(
+def test_vector_search_does_not_probe_unrequested_alternate_queries(
     monkeypatch,
     tmp_path,
 ):
@@ -563,41 +481,21 @@ def test_vector_search_prefers_rewritten_results_when_they_score_higher_than_ori
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=FakeQueryRewriter(["rewrite improved setup"]),
         ).search_context("contextwiki setup", top_k=1, include_debug=True)
     )
 
-    assert result["results"][0].chunk_id == "chunk-rewritten"
-    assert result["debug"]["query_rewrite"] == {
-        "attempted": True,
-        "applied": True,
-        "reason": "low_initial_vector_score",
-        "initial_top_vector_score": 0.72,
-        "final_top_score": round(result["results"][0].score, 4),
-        "original_query": "contextwiki setup",
-        "rewritten_queries": ["rewrite improved setup"],
-    }
-    assert result["debug"]["rewrite_applied"] is True
-    assert result["debug"]["rewrite_skipped_reason"] == ""
+    assert result["results"][0].chunk_id == "chunk-original"
+    assert result["debug"]["retrieval_queries"] == ["contextwiki setup"]
 
 
-def test_rewrite_result_set_comparison_prefers_stronger_overall_original_set(tmp_path):
+def test_retrieval_pipeline_exposes_no_rewrite_result_comparison(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     service = ContextSearchService(store, indexer=FakeIndexer())
 
-    original_reranked = [
-        {"chunk_id": "chunk-original-1", "score": 0.72, "vector_score": 0.72},
-        {"chunk_id": "chunk-original-2", "score": 0.71, "vector_score": 0.71},
-    ]
-    rewritten_reranked = [
-        {"chunk_id": "chunk-rewritten-1", "score": 0.72, "vector_score": 0.72},
-        {"chunk_id": "chunk-rewritten-2", "score": 0.20, "vector_score": 0.20},
-    ]
-
-    assert service._pipeline().prefer_rewritten_results(original_reranked, rewritten_reranked) is False
+    assert not hasattr(service._pipeline(), "prefer_rewritten_results")
 
 
-def test_vector_search_still_rewrites_when_single_candidate_is_metadata_promoted(
+def test_vector_search_uses_metadata_promoted_candidate_without_external_rewrite(
     monkeypatch,
     tmp_path,
 ):
@@ -623,22 +521,18 @@ def test_vector_search_still_rewrites_when_single_candidate_is_metadata_promoted
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", EmptyVectorRetriever)
 
-    rewriter = FakeQueryRewriter(["aws ec2 setup"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("ec2 docs", top_k=3, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "ec2-metadata-doc"
-    assert rewriter.calls
-    assert result["debug"]["query_rewrite"]["attempted"] is True
-    assert result["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
+    assert result["debug"]["initial_top_vector_score"] == 0.0
 
 
-def test_vector_search_skips_rewrite_when_raw_initial_vector_hits_are_strong_even_if_top_k_is_larger(
+def test_vector_search_reports_raw_initial_vector_score_when_top_k_is_larger(
     monkeypatch,
     tmp_path,
 ):
@@ -676,22 +570,17 @@ def test_vector_search_skips_rewrite_when_raw_initial_vector_hits_are_strong_eve
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", StrongVectorRetriever)
 
-    rewriter = FakeQueryRewriter(["should-not-run"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("contextwiki setup", top_k=3, include_debug=True)
     )
 
-    assert rewriter.calls == []
-    assert result["debug"]["query_rewrite"]["attempted"] is False
-    assert result["debug"]["query_rewrite"]["reason"] == ""
-    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.93
+    assert result["debug"]["initial_top_vector_score"] == 0.93
 
 
-def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion_for_debug_and_gating(
+def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion(
     monkeypatch,
     tmp_path,
 ):
@@ -730,18 +619,14 @@ def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion_f
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", MixedVectorRetriever)
 
-    rewriter = FakeQueryRewriter(["should-not-run"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("contextwiki docs", top_k=3, include_debug=True)
     )
 
-    assert rewriter.calls == []
-    assert result["debug"]["query_rewrite"]["attempted"] is False
-    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.91
+    assert result["debug"]["initial_top_vector_score"] == 0.91
 
 
 def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_filtered_out(
@@ -783,19 +668,15 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
 
     monkeypatch.setattr("search.context_service.VectorIndexRetriever", FilteredTopHitRetriever)
 
-    rewriter = FakeQueryRewriter(["should-not-run"])
     result = asyncio.run(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-            query_rewriter=rewriter,
         ).search_context("contextwiki setup", top_k=1, include_debug=True)
     )
 
-    assert rewriter.calls == []
     assert result["results"][0].chunk_id == "chunk-valid"
-    assert result["debug"]["query_rewrite"]["attempted"] is False
-    assert result["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.96
+    assert result["debug"]["initial_top_vector_score"] == 0.96
 
 
 def test_search_documents_collapses_same_document_chunks_to_highest_ranked_representative(tmp_path):
@@ -849,7 +730,7 @@ def test_search_documents_collapses_same_document_chunks_to_highest_ranked_repre
     )
     service = ContextSearchService(store)
 
-    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+    async def fake_retrieve_candidates(query, top_k, source_ids):
         return {
             "candidates": [
                 {"chunk_id": "alpha-chunk-2", "score": 0.97, "vector_score": 0.97, "metadata_priority": 1},
@@ -859,7 +740,6 @@ def test_search_documents_collapses_same_document_chunks_to_highest_ranked_repre
             "effective_term_groups": [],
             "original_term_groups": [],
             "retrieval_queries": [query],
-            "rewritten_queries": [],
         }
 
     service._retrieve_candidates = fake_retrieve_candidates
@@ -869,6 +749,10 @@ def test_search_documents_collapses_same_document_chunks_to_highest_ranked_repre
     assert [item.document_id for item in result["results"]] == ["doc-alpha", "doc-beta"]
     assert [item.chunk_id for item in result["results"]] == ["alpha-chunk-2", "beta-chunk-1"]
     assert [item.score for item in result["results"]] == [0.97, 0.91]
+    assert [item.matched_context for item in result["results"]] == [
+        "Alpha second chunk",
+        "Beta guide content",
+    ]
 
 
 def test_search_documents_preserves_document_metadata_and_representative_chunk_id(tmp_path):
@@ -906,7 +790,7 @@ def test_search_documents_preserves_document_metadata_and_representative_chunk_i
     )
     service = ContextSearchService(store)
 
-    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+    async def fake_retrieve_candidates(query, top_k, source_ids):
         return {
             "candidates": [
                 {"chunk_id": "readme-chunk-1", "score": 0.88, "vector_score": 0.77, "metadata_priority": 2},
@@ -914,7 +798,6 @@ def test_search_documents_preserves_document_metadata_and_representative_chunk_i
             "effective_term_groups": [],
             "original_term_groups": [],
             "retrieval_queries": [query],
-            "rewritten_queries": [],
         }
 
     service._retrieve_candidates = fake_retrieve_candidates
@@ -930,9 +813,42 @@ def test_search_documents_preserves_document_metadata_and_representative_chunk_i
     assert item.title == "README"
     assert item.url == "https://github.com/example/repo/blob/main/README.md"
     assert item.path == "README.md"
-    assert item.preview == "Repository overview chunk"
+    assert not hasattr(item, "preview")
+    assert item.matched_context == "Repository overview chunk"
     assert item.vector_score == 0.77
     assert item.metadata_priority == 2
+
+
+def test_search_documents_returns_full_matched_context_without_preview_truncation(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    matched_text = "Representative evidence " + ("continues beyond preview. " * 12)
+    seed_document_chunks(
+        store,
+        "doc-long",
+        "long-chunk-1",
+        "source_target",
+        "Long guide",
+        matched_text,
+    )
+    service = ContextSearchService(store)
+
+    async def fake_retrieve_candidates(query, top_k, source_ids):
+        return {
+            "candidates": [{"chunk_id": "long-chunk-1", "score": 0.95}],
+            "effective_term_groups": [],
+            "original_term_groups": [],
+            "retrieval_queries": [query],
+        }
+
+    service._retrieve_candidates = fake_retrieve_candidates
+
+    result = asyncio.run(service.search_documents("representative evidence", top_k=1))
+
+    item = result["results"][0]
+    assert len(matched_text) > 240
+    assert item.matched_context == matched_text
+    assert not hasattr(item, "preview")
 
 
 def test_search_documents_expands_candidate_window_until_unique_document_target_is_met(tmp_path):
@@ -971,7 +887,7 @@ def test_search_documents_expands_candidate_window_until_unique_document_target_
     service = ContextSearchService(store)
     requested_limits = []
 
-    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+    async def fake_retrieve_candidates(query, top_k, source_ids):
         requested_limits.append(top_k)
         duplicate_heavy = [
             {"chunk_id": "alpha-chunk-1", "score": 0.99, "vector_score": 0.99, "metadata_priority": 0},
@@ -984,7 +900,6 @@ def test_search_documents_expands_candidate_window_until_unique_document_target_
             "effective_term_groups": [],
             "original_term_groups": [],
             "retrieval_queries": [query],
-            "rewritten_queries": [],
         }
 
     service._retrieve_candidates = fake_retrieve_candidates
@@ -1038,7 +953,7 @@ def test_search_documents_keeps_first_reranked_chunk_as_document_representative(
     )
     service = ContextSearchService(store)
 
-    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
+    async def fake_retrieve_candidates(query, top_k, source_ids):
         return {
             "candidates": [
                 {"chunk_id": "alpha-chunk-1", "score": 0.9, "vector_score": 0.6, "metadata_priority": 0},
@@ -1047,7 +962,6 @@ def test_search_documents_keeps_first_reranked_chunk_as_document_representative(
             "effective_term_groups": [],
             "original_term_groups": [],
             "retrieval_queries": [query],
-            "rewritten_queries": [],
         }
 
     service._retrieve_candidates = fake_retrieve_candidates
@@ -1057,7 +971,7 @@ def test_search_documents_keeps_first_reranked_chunk_as_document_representative(
     assert result["results"][0].chunk_id == "alpha-chunk-1"
 
 
-def test_search_documents_disables_query_rewrite_even_when_rewriter_is_configured(tmp_path):
+def test_search_documents_uses_same_deterministic_retrieval_contract(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
@@ -1069,18 +983,11 @@ def test_search_documents_disables_query_rewrite_even_when_rewriter_is_configure
         "Alpha chunk",
     )
 
-    class FailingRewriter:
-        async def rewrite_query(self, query, term_groups):
-            raise AssertionError("search_documents should not invoke query rewrite")
+    service = ContextSearchService(store)
+    observed_queries = []
 
-    service = ContextSearchService(
-        store,
-        query_rewriter=FailingRewriter(),
-    )
-    observed_flags = []
-
-    async def fake_retrieve_candidates(query, top_k, source_ids, allow_query_rewrite=True):
-        observed_flags.append(allow_query_rewrite)
+    async def fake_retrieve_candidates(query, top_k, source_ids):
+        observed_queries.append(query)
         return {
             "candidates": [
                 {"chunk_id": "alpha-chunk-1", "score": 0.9, "vector_score": 0.9, "metadata_priority": 0},
@@ -1088,14 +995,13 @@ def test_search_documents_disables_query_rewrite_even_when_rewriter_is_configure
             "effective_term_groups": [],
             "original_term_groups": [],
             "retrieval_queries": [query],
-            "rewritten_queries": [],
         }
 
     service._retrieve_candidates = fake_retrieve_candidates
 
     result = asyncio.run(service.search_documents("alpha", top_k=1))
 
-    assert observed_flags == [False]
+    assert observed_queries == ["alpha"]
     assert [item.document_id for item in result["results"]] == ["doc-alpha"]
 
 

@@ -137,17 +137,12 @@ class CitationAnswerService:
         search_debug = search_result.get("_debug") or search_result.get("debug", {})
         query_term_groups = self._effective_query_term_groups(question, grounding_state, search_debug)
         required_term_groups = self._required_query_term_groups(question, grounding_state, search_debug)
-        preserve_original_constraints = self._should_preserve_original_constraints(
-            grounding_state=grounding_state,
-            search_debug=search_debug,
-        )
         display_term_groups = self._display_query_term_groups(
             query_term_groups,
             search_debug=search_debug,
         )
         answer_intent = self._answer_intent(question, query_term_groups, search_debug=search_debug)
         query_terms = {term for group in query_term_groups for term in group}
-        relaxed_match = bool((search_debug.get("query_rewrite") or {}).get("applied"))
         evidence = [
             item
             for item in results
@@ -157,8 +152,6 @@ class CitationAnswerService:
                 query_terms,
                 query_term_groups,
                 required_term_groups=required_term_groups,
-                preserve_original_constraints=preserve_original_constraints,
-                relaxed_match=relaxed_match,
                 answer_intent=answer_intent,
             )
         ]
@@ -187,7 +180,6 @@ class CitationAnswerService:
                 display_term_groups,
                 search_debug=search_debug,
                 retrieval_queries=search_debug.get("retrieval_queries"),
-                rewritten_queries=search_debug.get("rewritten_queries"),
             )
             if include_debug
             else None
@@ -214,7 +206,6 @@ class CitationAnswerService:
                             "insufficient",
                             search_debug=search_debug,
                             retrieval_queries=search_debug.get("retrieval_queries"),
-                            rewritten_queries=search_debug.get("rewritten_queries"),
                         ),
                     }
                 )
@@ -242,7 +233,6 @@ class CitationAnswerService:
                         "grounded",
                         search_debug=search_debug,
                         retrieval_queries=search_debug.get("retrieval_queries"),
-                        rewritten_queries=search_debug.get("rewritten_queries"),
                     ),
                 }
             )
@@ -324,20 +314,6 @@ class CitationAnswerService:
         return query_term_groups
 
     @classmethod
-    def _should_preserve_original_constraints(
-        cls,
-        *,
-        grounding_state: dict | None = None,
-        search_debug: dict | None = None,
-    ) -> bool:
-        original_groups = cls._required_query_term_groups(
-            "",
-            grounding_state=grounding_state,
-            search_debug=search_debug,
-        )
-        return any(group.intersection(STRONG_ANCHOR_TERMS) for group in original_groups)
-
-    @classmethod
     def _append_query_term_group(cls, raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]):
         append_query_term_group(raw_term, groups, seen)
 
@@ -352,8 +328,6 @@ class CitationAnswerService:
         query_terms: set[str],
         query_term_groups: list[set[str]] | None = None,
         required_term_groups: list[set[str]] | None = None,
-        preserve_original_constraints: bool = False,
-        relaxed_match: bool = False,
         answer_intent: RetrievalIntent = RetrievalIntent.BROAD_TOPIC,
     ) -> bool:
         if not query_terms:
@@ -404,7 +378,7 @@ class CitationAnswerService:
             if term in STRONG_ANCHOR_TERMS
         }
         strong_anchors = strong_anchor_terms or query_terms.intersection(STRONG_ANCHOR_TERMS)
-        if strong_anchors and (preserve_original_constraints or not relaxed_match):
+        if strong_anchors:
             anchor_matched = any(term in metadata_haystack for term in strong_anchors)
             doc_intent_groups = [
                 term_group
@@ -438,11 +412,6 @@ class CitationAnswerService:
             term_group
             for term_group in required_groups_for_match
             if not term_group.intersection(BROAD_TOPIC_TERMS)
-            and not (
-                relaxed_match
-                and not preserve_original_constraints
-                and term_group.intersection(STRONG_ANCHOR_TERMS)
-            )
         ] or required_groups_for_match
         matched_required_groups = [
             term_group for term_group in required_groups if term_group in matched_groups
@@ -466,8 +435,6 @@ class CitationAnswerService:
             required_matches = 1 if required_groups else 0
         elif answer_intent is RetrievalIntent.BROAD_TOPIC:
             required_matches = max(1, math.ceil(len(required_groups) / 2)) if required_groups else 0
-        if relaxed_match and required_groups:
-            required_matches = max(1, math.ceil(len(required_groups) / 2))
         if answer_intent is RetrievalIntent.LIST and not matched_specific_groups:
             return False
         if answer_intent is RetrievalIntent.LIST and specific_groups:
@@ -655,21 +622,15 @@ class CitationAnswerService:
         *,
         search_debug: dict | None = None,
         retrieval_queries: list[str] | None = None,
-        rewritten_queries: list[str] | None = None,
     ) -> dict:
         variants = retrieval_queries or retrieval_query_variants(question, query_term_groups)
         return {
             "question": cls._redact_debug_query_text(question),
             "retrieval_queries": [cls._redact_debug_query_text(variant) for variant in variants],
-            "rewritten_queries": [
-                cls._redact_debug_query_text(variant)
-                for variant in (rewritten_queries or [])
-            ],
             "normalized_term_groups": [
                 [cls._redact_debug_text(term) for term in sorted(group)]
                 for group in query_term_groups
             ],
-            "query_rewrite": dict((search_debug or {}).get("query_rewrite", {})),
             "filters": dict((search_debug or {}).get("filters", {})),
             "retrieved_count": len(results),
             "grounded_count": len(evidence),
@@ -740,7 +701,6 @@ class CitationAnswerService:
         *,
         search_debug: dict | None = None,
         retrieval_queries: list[str] | None = None,
-        rewritten_queries: list[str] | None = None,
     ) -> str:
         lines = [
             "## Query",
@@ -752,15 +712,6 @@ class CitationAnswerService:
             lines.append(f"- retrieval queries: `{cls._redact_debug_query_text(retrieval_queries[0])}`")
             for variant in retrieval_queries[1:]:
                 lines.append(f"  - expanded: `{cls._redact_debug_query_text(variant)}`")
-        rewrite_applied = bool((search_debug or {}).get("query_rewrite", {}).get("applied"))
-        if rewritten_queries:
-            label = "rewritten queries used" if rewrite_applied else "rewritten queries tried"
-            lines.append(f"- {label}: `{cls._redact_debug_query_text(rewritten_queries[0])}`")
-            for variant in rewritten_queries[1:]:
-                lines.append(f"  - rewrite: `{cls._redact_debug_query_text(variant)}`")
-        rewrite_reason = str((search_debug or {}).get("query_rewrite", {}).get("reason", "")).strip()
-        if rewrite_reason:
-            lines.append(f"- rewrite reason: `{cls._redact_debug_text(rewrite_reason)}`")
         lines.extend(
             [
                 f"- evidence status: `{evidence_status}`",

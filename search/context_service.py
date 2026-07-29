@@ -1,4 +1,3 @@
-import os
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -8,7 +7,6 @@ from core.models import ChunkModel, ContextSearchResult, DocumentModel, Document
 from environments.config import AppConfig
 from search.intent import classify_intent
 from search import debug_redaction, ranking
-from search.query_rewrite import build_query_rewriter
 from search.ranking import ContextCandidateRanker
 from search.retrieval_pipeline import (
     ContextRetrievalPipeline,
@@ -27,7 +25,6 @@ class ContextSearchService:
         indexer=None,
         config: AppConfig | None = None,
         retriever: Callable | Iterable[DocumentModel] | None = None,
-        query_rewriter=None,
         vector_retriever_cls=None,
         default_source_ids: Iterable[str] | None = None,
     ):
@@ -38,8 +35,6 @@ class ContextSearchService:
         self.vector_retriever_cls = vector_retriever_cls or VectorIndexRetriever
         self.default_source_ids = self._normalize_default_source_ids(default_source_ids)
         self._default_source_id_set = set(self.default_source_ids or ())
-        api_key = os.getenv(self.config.search_llm_api_key_env_var, "").strip()
-        self.query_rewriter = query_rewriter or build_query_rewriter(self.config, api_key=api_key)
         self.ranker = ContextCandidateRanker(self.metadata_store, self.config)
 
     async def search_context(
@@ -58,8 +53,6 @@ class ContextSearchService:
                 source_ids=[],
                 include_debug=include_debug,
                 include_internal_metadata=include_internal_metadata,
-                rewrite_enabled=self.query_rewriter is not None,
-                rewrite_skipped_reason="no_matching_sources",
             )
         retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
         candidates = retrieval_debug["candidates"]
@@ -95,7 +88,6 @@ class ContextSearchService:
             query,
             retrieval_limit,
             source_ids,
-            allow_query_rewrite=False,
         )
         best_by_document = self._group_document_results(
             retrieval_debug["candidates"],
@@ -112,7 +104,6 @@ class ContextSearchService:
                 query,
                 retrieval_limit,
                 source_ids,
-                allow_query_rewrite=False,
             )
             best_by_document = self._group_document_results(
                 retrieval_debug["candidates"],
@@ -152,14 +143,7 @@ class ContextSearchService:
         source_ids: list[str] | None = None,
         include_debug: bool = False,
         include_internal_metadata: bool = False,
-        *,
-        rewrite_enabled: bool | None = None,
-        rewrite_skipped_reason: str | None = None,
     ) -> dict:
-        rewrite_enabled = self.query_rewriter is not None if rewrite_enabled is None else rewrite_enabled
-        rewrite_skipped_reason = rewrite_skipped_reason or (
-            "disabled" if not rewrite_enabled else ""
-        )
         payload = {
             "query": query,
             "results": [],
@@ -169,22 +153,10 @@ class ContextSearchService:
             source_ids=source_ids,
             retrieval_debug={
                 "retrieval_queries": [],
-                "rewritten_queries": [],
                 "original_term_groups": [],
                 "effective_term_groups": [],
-                "query_rewrite_reason": "",
-                "query_rewrite_attempted": False,
-                "query_rewrite_applied": False,
-                "rewrite_debug": {
-                    "rewrite_enabled": rewrite_enabled,
-                    "rewrite_attempted": False,
-                    "rewrite_applied": False,
-                    "rewrite_skipped_reason": rewrite_skipped_reason,
-                },
-                "rewrite_enabled": rewrite_enabled,
-                "rewrite_attempted": False,
-                "rewrite_applied": False,
-                "rewrite_skipped_reason": rewrite_skipped_reason,
+                "initial_top_vector_score": 0.0,
+                "final_top_score": 0.0,
             },
             effective_term_groups=[],
             results=[],
@@ -253,7 +225,6 @@ class ContextSearchService:
             config=self.config,
             indexer=self.indexer,
             retriever=self.retriever,
-            query_rewriter=self.query_rewriter,
             vector_retriever_cls=self.vector_retriever_cls,
             ranker=self.ranker,
         )
@@ -263,14 +234,11 @@ class ContextSearchService:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
-        *,
-        allow_query_rewrite: bool = True,
     ) -> dict[str, Any]:
         return await self._pipeline().retrieve_candidates(
             query,
             top_k,
             source_ids,
-            allow_query_rewrite=allow_query_rewrite,
         )
 
     def _retrieve_candidates_for_variants(
@@ -288,26 +256,6 @@ class ContextSearchService:
             term_groups,
             query_variants,
         )
-
-    async def _rewrite_queries(self, query: str, term_groups: list[set[str]]) -> list[str]:
-        return await self._pipeline().rewrite_queries(query, term_groups)
-
-    def _should_try_query_rewrite(
-        self,
-        query: str,
-        candidates: list[dict[str, Any]],
-        term_groups: list[set[str]],
-        top_k: int,
-    ) -> bool:
-        return self._pipeline().should_try_query_rewrite(query, candidates, term_groups, top_k)
-
-    @staticmethod
-    def _dedupe_queries(queries: list[str]) -> list[str]:
-        return ContextRetrievalPipeline.dedupe_queries(queries)
-
-    @staticmethod
-    def _merged_term_groups(*group_lists: list[set[str]]) -> list[set[str]]:
-        return ContextRetrievalPipeline.merged_term_groups(*group_lists)
 
     def _metadata_fallback_candidates(
         self,
@@ -651,15 +599,9 @@ class ContextSearchService:
             self._redact_debug_query_text(value)
             for value in retrieval_debug.get("retrieval_queries", [])
         ]
-        rewritten_queries = [
-            self._redact_debug_query_text(value)
-            for value in retrieval_debug.get("rewritten_queries", [])
-        ]
-        rewrite_debug = retrieval_debug.get("rewrite_debug", {})
         return {
             "intent": intent_decision.as_debug_payload(),
             "retrieval_queries": retrieval_queries,
-            "rewritten_queries": rewritten_queries,
             "effective_term_groups": [
                 [self._redact_debug_term(term) for term in sorted(group)]
                 for group in effective_term_groups
@@ -669,25 +611,14 @@ class ContextSearchService:
                 for group in retrieval_debug.get("original_term_groups", [])
             ],
             "filters": {"source_ids": list(source_ids or [])},
-            "query_rewrite": {
-                "attempted": bool(retrieval_debug.get("query_rewrite_attempted", False)),
-                "applied": bool(retrieval_debug.get("query_rewrite_applied", False)),
-                "reason": retrieval_debug.get("query_rewrite_reason", ""),
-                "initial_top_vector_score": round(
-                    float(retrieval_debug.get("initial_top_vector_score", 0.0) or 0.0),
-                    4,
-                ),
-                "final_top_score": round(
-                    float(retrieval_debug.get("final_top_score", 0.0) or 0.0),
-                    4,
-                ),
-                "original_query": self._redact_debug_query_text(query),
-                "rewritten_queries": rewritten_queries,
-            },
-            "rewrite_enabled": bool(rewrite_debug.get("rewrite_enabled", False)),
-            "rewrite_attempted": bool(rewrite_debug.get("rewrite_attempted", False)),
-            "rewrite_applied": bool(rewrite_debug.get("rewrite_applied", False)),
-            "rewrite_skipped_reason": str(rewrite_debug.get("rewrite_skipped_reason", "")),
+            "initial_top_vector_score": round(
+                float(retrieval_debug.get("initial_top_vector_score", 0.0) or 0.0),
+                4,
+            ),
+            "final_top_score": round(
+                float(retrieval_debug.get("final_top_score", 0.0) or 0.0),
+                4,
+            ),
             "selected_results": [
                 self._debug_result_payload(item, effective_term_groups)
                 for item in results
@@ -695,7 +626,6 @@ class ContextSearchService:
             "result_summary": {
                 "returned_chunks": len(results),
                 "retrieval_queries": len(retrieval_queries),
-                "rewritten_queries": len(rewritten_queries),
             },
         }
 
@@ -731,7 +661,8 @@ class ContextSearchService:
                 item.document_id or "",
                 item.url or "",
                 item.path or "",
-                item.preview or "",
+                getattr(item, "preview", "") or "",
+                getattr(item, "matched_context", "") or "",
                 getattr(item, "text", "") or "",
             ]
         ).lower()
@@ -795,7 +726,7 @@ class ContextSearchService:
             score=float(candidate.get("score", 0.0)),
             vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
             metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
-            preview=self._preview(chunk.text),
+            matched_context=chunk.text or "",
         )
 
     def _source_type_for_chunk(self, chunk: ChunkModel) -> str:

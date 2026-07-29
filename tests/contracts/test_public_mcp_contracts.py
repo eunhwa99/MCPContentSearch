@@ -167,41 +167,42 @@ class FakeIngestionService:
 
     async def sync_all(self):
         return {
-            "status": "completed",
+            "status": "accepted",
             "summary": {
                 "total_sources": 2,
-                "succeeded": 2,
+                "started": 2,
+                "already_running": 0,
                 "failed": 0,
-                "blocked": 0,
                 "skipped": 0,
+                "requested_at": "2026-06-15T00:00:00+00:00",
             },
             "results": [
                 {
                     "source_id": "source_github",
-                    "sync_outcome": "succeeded",
+                    "launch_outcome": "started",
                     "message": "",
                     "job": Dumpable(
                         {
                             "job_id": "job-source_github",
                             "source_id": "source_github",
-                            "status": "succeeded",
+                            "status": "running",
                             "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "2026-06-15T00:00:01+00:00",
+                            "finished_at": "",
                             "error_message": "",
                         }
                     ),
                 },
                 {
                     "source_id": "source_obsidian",
-                    "sync_outcome": "succeeded",
+                    "launch_outcome": "started",
                     "message": "",
                     "job": Dumpable(
                         {
                             "job_id": "job-source_obsidian",
                             "source_id": "source_obsidian",
-                            "status": "succeeded",
+                            "status": "running",
                             "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "2026-06-15T00:00:01+00:00",
+                            "finished_at": "",
                             "error_message": "",
                         }
                     ),
@@ -235,11 +236,7 @@ class FakeContextSearchService:
         debug_payload = {}
         if include_debug:
             debug_payload = {
-                "rewrite_enabled": False,
-                "rewrite_attempted": False,
-                "rewrite_applied": False,
-                "rewrite_skipped_reason": "disabled",
-                "rewritten_queries": [],
+                "retrieval_queries": ["ContextWiki contracts"],
                 "selected_results": ["chunk-1"],
             }
         return {
@@ -272,7 +269,7 @@ class FakeContextSearchService:
                     "url": "https://example.com/contracts",
                     "path": "docs/contracts.md",
                     "score": 0.98,
-                    "preview": "ContextWiki validates MCP contracts through real call_tool paths.",
+                    "matched_context": "ContextWiki validates MCP contracts through real call_tool paths.",
                 }
             ],
         }
@@ -333,6 +330,25 @@ def build_contract_mcp() -> FastMCP:
 def call_tool_json(mcp: FastMCP, name: str, arguments: dict | None = None) -> dict:
     blocks = asyncio.run(mcp.call_tool(name, arguments or {}))
     return json.loads(blocks[0].text)
+
+
+def test_search_tool_descriptions_explain_when_the_llm_should_select_each_tool():
+    tools = {
+        tool.name: tool
+        for tool in asyncio.run(build_contract_mcp().list_tools())
+    }
+
+    search_context_description = tools["search_context"].description.lower()
+    assert "focused" in search_context_description
+    assert "chunk evidence" in search_context_description
+
+    search_documents_description = tools["search_documents"].description.lower()
+    assert "one row per relevant document" in search_documents_description
+    assert "representative matched_context" in search_documents_description
+
+    fetch_context_description = tools["fetch_context"].description.lower()
+    assert "optionally drill" in fetch_context_description
+    assert "after its id is known" in fetch_context_description
 
 
 def test_list_sources_contract_uses_real_fastmcp_call_tool():
@@ -411,8 +427,9 @@ def test_sync_source_contract_returns_error_without_background_launcher():
 def test_sync_all_contract_uses_real_fastmcp_call_tool():
     payload = call_tool_json(build_contract_mcp(), "sync_all")
 
-    assert payload["status"] == "completed"
+    assert payload["status"] == "accepted"
     assert payload["summary"]["total_sources"] == 2
+    assert payload["summary"]["started"] == 2
     assert [item["source_id"] for item in payload["results"]] == [
         "source_github",
         "source_obsidian",
@@ -446,7 +463,7 @@ def test_search_context_contract_uses_real_fastmcp_call_tool():
     assert default_payload["debug"] == {}
     assert payload["query"] == "ContextWiki contracts"
     assert payload["results"][0]["chunk_id"] == "chunk-1"
-    assert payload["debug"]["rewrite_skipped_reason"] == "disabled"
+    assert payload["debug"]["retrieval_queries"] == ["ContextWiki contracts"]
 
 
 def test_search_context_no_matching_sources_keeps_public_debug_contract():
@@ -457,8 +474,10 @@ def test_search_context_no_matching_sources_keeps_public_debug_contract():
     )
 
     assert payload["results"] == []
-    assert payload["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
-    assert payload["debug"]["rewrite_attempted"] is False
+    assert payload["debug"] == {
+        "retrieval_queries": [],
+        "effective_term_groups": [],
+    }
 
 
 def test_search_documents_contract_uses_real_fastmcp_call_tool():
@@ -470,6 +489,10 @@ def test_search_documents_contract_uses_real_fastmcp_call_tool():
 
     assert payload["query"] == "ContextWiki contracts"
     assert payload["results"][0]["document_id"] == "doc-1"
+    assert payload["results"][0]["matched_context"] == (
+        "ContextWiki validates MCP contracts through real call_tool paths."
+    )
+    assert "preview" not in payload["results"][0]
 
 
 def test_fetch_context_contract_uses_real_fastmcp_call_tool():

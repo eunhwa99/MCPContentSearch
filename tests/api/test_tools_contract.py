@@ -1,9 +1,10 @@
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api.tools import register_tools
+from api.tools import _search_documents_result_payload, register_tools
 from core.models import (
     ChunkModel,
     ContextSearchResult,
@@ -96,20 +97,19 @@ class FakeLeakyJobIngestion:
 
     async def sync_all(self, source_ids=None):
         return {
-            "status": "completed",
+            "status": "failed",
             "summary": {
                 "total_sources": 1,
-                "succeeded": 0,
+                "started": 0,
+                "already_running": 0,
                 "failed": 1,
-                "blocked": 0,
                 "skipped": 0,
-                "started_at": "2026-06-12T00:00:00+00:00",
-                "finished_at": "2026-06-12T00:00:01+00:00",
+                "requested_at": "2026-06-12T00:00:00+00:00",
             },
             "results": [
                 {
                     "source_id": "source_github",
-                    "sync_outcome": "failed",
+                    "launch_outcome": "failed",
                     "job": Dumpable(
                         {
                             "job_id": "job-leaky",
@@ -172,25 +172,24 @@ class ObserverCancelledOnceConnector(SourceConnector):
 class FakeCompletedSkippedSyncAllIngestion:
     async def sync_all(self, source_ids=None):
         return {
-            "status": "completed",
+            "status": "accepted",
             "summary": {
                 "total_sources": 2,
-                "succeeded": 1,
+                "started": 1,
+                "already_running": 0,
                 "failed": 0,
-                "blocked": 0,
                 "skipped": 1,
-                "started_at": "2026-06-12T00:00:00+00:00",
-                "finished_at": "2026-06-12T00:00:01+00:00",
+                "requested_at": "2026-06-12T00:00:00+00:00",
             },
             "results": [
                 {
                     "source_id": "source_github",
-                    "sync_outcome": "succeeded",
+                    "launch_outcome": "started",
                     "job": Dumpable(
                         {
                             "job_id": "job-ok",
                             "source_id": "source_github",
-                            "status": "succeeded",
+                            "status": "running",
                             "error_message": "",
                         }
                     ),
@@ -198,7 +197,7 @@ class FakeCompletedSkippedSyncAllIngestion:
                 },
                 {
                     "source_id": "source_obsidian",
-                    "sync_outcome": "skipped",
+                    "launch_outcome": "skipped",
                     "job": Dumpable(
                         {
                             "job_id": "job-disabled",
@@ -219,22 +218,21 @@ class FakePartialSyncAllIngestion:
             "status": "partial",
             "summary": {
                 "total_sources": 2,
-                "succeeded": 1,
+                "started": 1,
+                "already_running": 0,
                 "failed": 1,
-                "blocked": 0,
                 "skipped": 0,
-                "started_at": "2026-06-12T00:00:00+00:00",
-                "finished_at": "2026-06-12T00:00:01+00:00",
+                "requested_at": "2026-06-12T00:00:00+00:00",
             },
             "results": [
                 {
                     "source_id": "source_github",
-                    "sync_outcome": "succeeded",
+                    "launch_outcome": "started",
                     "job": Dumpable(
                         {
                             "job_id": "job-ok",
                             "source_id": "source_github",
-                            "status": "succeeded",
+                            "status": "running",
                             "error_message": "",
                         }
                     ),
@@ -242,7 +240,7 @@ class FakePartialSyncAllIngestion:
                 },
                 {
                     "source_id": "source_obsidian",
-                    "sync_outcome": "failed",
+                    "launch_outcome": "failed",
                     "job": Dumpable(
                         {
                             "job_id": "job-failed",
@@ -263,17 +261,16 @@ class FakeFailedSyncAllIngestion:
             "status": "failed",
             "summary": {
                 "total_sources": 1,
-                "succeeded": 0,
+                "started": 0,
+                "already_running": 0,
                 "failed": 1,
-                "blocked": 0,
                 "skipped": 0,
-                "started_at": "2026-06-12T00:00:00+00:00",
-                "finished_at": "2026-06-12T00:00:01+00:00",
+                "requested_at": "2026-06-12T00:00:00+00:00",
             },
             "results": [
                 {
                     "source_id": "source_github",
-                    "sync_outcome": "failed",
+                    "launch_outcome": "failed",
                     "job": Dumpable(
                         {
                             "job_id": "job-failed",
@@ -537,19 +534,9 @@ class FakeContextSearch:
         debug_payload = {}
         if include_debug:
             debug_payload = {
-                "query_rewrite": {
-                    "attempted": True,
-                    "applied": True,
-                    "reason": "low_initial_vector_score",
-                    "initial_top_vector_score": 0.2,
-                    "final_top_score": 0.9,
-                    "original_query": query,
-                    "rewritten_queries": ["ContextWiki evidence"],
-                },
-                "rewrite_enabled": True,
-                "rewrite_attempted": True,
-                "rewrite_applied": True,
-                "rewrite_skipped_reason": "",
+                "retrieval_queries": [query],
+                "initial_top_vector_score": 0.2,
+                "final_top_score": 0.9,
             }
         return {
             "query": query,
@@ -581,7 +568,7 @@ class FakeContextSearch:
                     "score": 0.9,
                     "vector_score": 0.2,
                     "metadata_priority": 1,
-                    "preview": "ContextWiki evidence",
+                    "matched_context": "ContextWiki evidence",
                     "url": "https://example.com/contextwiki",
                     "path": "ContextWiki",
                 }
@@ -634,6 +621,48 @@ class FakeDictContextSearch:
         }
 
 
+class FakeInvalidMatchedContextSearch(FakeDictContextSearch):
+    async def search_documents(self, query, filters=None, top_k=10):
+        result = await super().search_documents(query, filters=filters, top_k=top_k)
+        result["results"][0]["matched_context"] = None
+        return result
+
+
+class FakeEmptyMatchedContextSearch(FakeDictContextSearch):
+    async def search_documents(self, query, filters=None, top_k=10):
+        result = await super().search_documents(query, filters=filters, top_k=top_k)
+        result["results"][0]["matched_context"] = ""
+        return result
+
+
+class PreviewOnlySearchResult:
+    preview = "dto-preview-secret"
+
+    def __repr__(self):
+        return "PreviewOnlySearchResult(dto-preview-secret)"
+
+
+class NonMappingDumpSearchResult:
+    def model_dump(self, mode="json", include=None):
+        return ["model-dump-secret"]
+
+
+class RaisingModelDumpSearchResult:
+    def model_dump(self, mode="json", include=None):
+        raise RuntimeError("raising-model-dump-secret")
+
+
+class RaisingItemsSearchResult(Mapping):
+    def __getitem__(self, key):
+        raise RuntimeError("raising-items-secret")
+
+    def __iter__(self):
+        raise RuntimeError("raising-items-secret")
+
+    def __len__(self):
+        return 1
+
+
 class FakeAnswerService:
     async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         payload = {
@@ -649,17 +678,9 @@ class FakeAnswerService:
                     "answer_mode": "contextwiki_debug",
                     "debug": {
                         "question": question,
-                        "query_rewrite": {
-                            "attempted": True,
-                            "applied": False,
-                            "reason": "low_initial_vector_score",
-                            "initial_top_vector_score": 0.2,
-                            "final_top_score": 0.9,
-                            "original_query": question,
-                            "rewritten_queries": ["ContextWiki evidence"],
-                        },
+                        "retrieval_queries": [question],
                     },
-                    "debug_markdown": "## Query\n- rewritten queries tried: `ContextWiki evidence`",
+                    "debug_markdown": f"## Query\n- retrieval queries: `{question}`",
                 }
             )
         return payload
@@ -898,7 +919,7 @@ def test_sync_all_redacts_public_error_paths_and_whitespace_secrets():
     result = asyncio.run(mcp.tools["sync_all"]())
     payload = _payload_text(result)
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "/Users/eunhwa/private/vault.md" not in payload
     assert "supersecretvalue123456" not in payload
     assert "token <redacted>" in result["message"]
@@ -910,20 +931,19 @@ def test_sync_all_skips_signature_introspection_when_public_filtering_is_not_nee
     class FakeInspectableIngestion:
         async def sync_all(self):
             return {
-                "status": "completed",
+                "status": "accepted",
                 "summary": {
                     "total_sources": 1,
-                    "succeeded": 1,
+                    "started": 1,
+                    "already_running": 0,
                     "failed": 0,
-                    "blocked": 0,
                     "skipped": 0,
-                    "started_at": "2026-06-12T00:00:00+00:00",
-                    "finished_at": "2026-06-12T00:00:01+00:00",
+                    "requested_at": "2026-06-12T00:00:00+00:00",
                 },
                 "results": [
                     {
                         "source_id": "source_github",
-                        "sync_outcome": "succeeded",
+                        "launch_outcome": "started",
                         "job": None,
                         "message": "",
                     }
@@ -943,8 +963,8 @@ def test_sync_all_skips_signature_introspection_when_public_filtering_is_not_nee
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "completed"
-    assert result["summary"]["succeeded"] == 1
+    assert result["status"] == "accepted"
+    assert result["summary"]["started"] == 1
 
 
 def test_sync_all_returns_structured_error_when_preflight_source_refresh_fails():
@@ -961,16 +981,15 @@ def test_sync_all_returns_structured_error_when_preflight_source_refresh_fails()
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "registry refresh failed" in result["message"]
     assert "super-secret-value" not in result["message"]
-    assert result["summary"] == {
-        "total_sources": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "skipped": 0,
-    }
+    assert result["summary"]["total_sources"] == 0
+    assert result["summary"]["started"] == 0
+    assert result["summary"]["already_running"] == 0
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["skipped"] == 0
+    assert result["summary"]["requested_at"]
     assert result["results"] == []
 
 
@@ -980,15 +999,10 @@ def test_sync_all_returns_structured_error_when_ingestion_service_is_missing():
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert result["message"] == "ingestion service is not configured"
-    assert result["summary"] == {
-        "total_sources": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "skipped": 0,
-    }
+    assert result["summary"]["total_sources"] == 0
+    assert result["summary"]["requested_at"]
     assert result["results"] == []
 
 
@@ -1019,15 +1033,10 @@ def test_sync_all_returns_structured_error_when_public_filtering_is_unsupported(
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "does not support public bulk sync filtering" in result["message"]
-    assert result["summary"] == {
-        "total_sources": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "skipped": 0,
-    }
+    assert result["summary"]["total_sources"] == 0
+    assert result["summary"]["requested_at"]
     assert result["results"] == []
 
 
@@ -1035,18 +1044,18 @@ def test_sync_all_returns_structured_error_when_public_result_formatting_fails()
     class FakeSyncAllIngestion:
         async def sync_all(self):
             return {
-                "status": "completed",
+                "status": "accepted",
                 "summary": {
                     "total_sources": 1,
-                    "succeeded": 1,
+                    "started": 1,
+                    "already_running": 0,
                     "failed": 0,
-                    "blocked": 0,
                     "skipped": 0,
                 },
                 "results": [
                     {
                         "source_id": "source_fake",
-                        "sync_outcome": "succeeded",
+                        "launch_outcome": "started",
                         "job": None,
                         "message": "",
                     }
@@ -1063,16 +1072,11 @@ def test_sync_all_returns_structured_error_when_public_result_formatting_fails()
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "sync_all formatting failed" in result["message"]
     assert "super-secret-value" not in result["message"]
-    assert result["summary"] == {
-        "total_sources": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "skipped": 0,
-    }
+    assert result["summary"]["total_sources"] == 0
+    assert result["summary"]["requested_at"]
     assert result["results"] == []
 
 
@@ -1082,7 +1086,7 @@ def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_pat
 
     class FakeEmptyErrorSyncAllIngestion:
         async def sync_all(self):
-            return {"status": "error", "summary": {}, "results": []}
+            return {"status": "failed", "summary": {}, "results": []}
 
     register_tools(
         mcp,
@@ -1093,13 +1097,13 @@ def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_pat
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert result["summary"] == {
         "total_sources": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
+        "started": 0,
+        "already_running": 0,
         "skipped": 0,
+        "failed": 0,
     }
     assert result["results"] == []
 
@@ -1116,9 +1120,9 @@ def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_repo
                 "status": "failed",
                 "summary": {
                     "total_sources": 1,
-                    "succeeded": 0,
+                    "started": 0,
+                    "already_running": 0,
                     "failed": 1,
-                    "blocked": 0,
                     "skipped": 0,
                 },
                 "results": [],
@@ -1136,9 +1140,9 @@ def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_repo
     assert result["status"] == "failed"
     assert result["summary"] == {
         "total_sources": 0,
-        "succeeded": 0,
+        "started": 0,
+        "already_running": 0,
         "failed": 0,
-        "blocked": 0,
         "skipped": 0,
     }
     assert result["results"] == []
@@ -1243,7 +1247,7 @@ def test_sync_all_redacts_returned_job_error_payload(tmp_path):
     payload = _payload_text(result)
 
     assert result["results"][0]["job"]["error_message"] == "Sync failed with token=<redacted>"
-    assert result["results"][0]["sync_outcome"] == "failed"
+    assert result["results"][0]["launch_outcome"] == "failed"
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
     assert "phase" not in result["results"][0]["job"]
@@ -1261,22 +1265,21 @@ def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
                 "status": "partial",
                 "summary": {
                     "total_sources": 2,
-                    "succeeded": 1,
+                    "started": 1,
+                    "already_running": 0,
                     "failed": 1,
-                    "blocked": 0,
                     "skipped": 0,
-                    "started_at": "2026-06-12T00:00:00+00:00",
-                    "finished_at": "2026-06-12T00:00:01+00:00",
+                    "requested_at": "2026-06-12T00:00:00+00:00",
                 },
                 "results": [
                     {
                         "source_id": "source_github",
-                        "sync_outcome": "succeeded",
+                        "launch_outcome": "started",
                         "job": Dumpable(
                             {
                                 "job_id": "job-public",
                                 "source_id": "source_github",
-                                "status": "succeeded",
+                                "status": "running",
                                 "error_message": "",
                             }
                         ),
@@ -1284,7 +1287,7 @@ def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
                     },
                     {
                         "source_id": "source_private",
-                        "sync_outcome": "failed",
+                        "launch_outcome": "failed",
                         "job": Dumpable(
                             {
                                 "job_id": "job-private",
@@ -1330,12 +1333,11 @@ def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
     result = asyncio.run(mcp.tools["sync_all"]())
 
     assert [item["source_id"] for item in result["results"]] == ["source_github"]
-    assert result["status"] == "completed"
+    assert result["status"] == "accepted"
     assert result["summary"]["total_sources"] == 1
-    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["started"] == 1
     assert result["summary"]["failed"] == 0
-    assert result["summary"]["started_at"] == "2026-06-12T00:00:00+00:00"
-    assert result["summary"]["finished_at"] == "2026-06-12T00:00:01+00:00"
+    assert result["summary"]["requested_at"] == "2026-06-12T00:00:00+00:00"
 
 
 def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
@@ -1346,17 +1348,16 @@ def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
                 "status": "failed",
                 "summary": {
                     "total_sources": 1,
-                    "succeeded": 0,
+                    "started": 0,
+                    "already_running": 0,
                     "failed": 1,
-                    "blocked": 0,
                     "skipped": 0,
-                    "started_at": "2026-06-12T00:00:00+00:00",
-                    "finished_at": "2026-06-12T00:00:01+00:00",
+                    "requested_at": "2026-06-12T00:00:00+00:00",
                 },
                 "results": [
                     {
                         "source_id": "source_hidden",
-                        "sync_outcome": "failed",
+                        "launch_outcome": "failed",
                         "job": None,
                         "message": "hidden failure",
                     }
@@ -1384,10 +1385,9 @@ def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "completed"
+    assert result["status"] == "accepted"
     assert result["summary"]["total_sources"] == 0
-    assert "started_at" not in result["summary"]
-    assert "finished_at" not in result["summary"]
+    assert result["summary"]["requested_at"] == "2026-06-12T00:00:00+00:00"
     assert result["results"] == []
 
 
@@ -1398,7 +1398,7 @@ def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_pat
 
         async def sync_all(self):
             self.called = True
-            return {"status": "completed", "summary": {}, "results": []}
+            return {"status": "accepted", "summary": {}, "results": []}
 
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -1422,7 +1422,7 @@ def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_pat
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "completed"
+    assert result["status"] == "accepted"
     assert result["results"] == []
     assert ingestion.called is True
 
@@ -1432,11 +1432,11 @@ def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(
         async def sync_all(self, source_ids=None):
             assert source_ids is None
             return {
-                "status": "completed",
+                "status": "accepted",
                 "summary": {},
                 "results": [
-                    {"source_id": "source_b", "sync_outcome": "succeeded", "job": None, "message": ""},
-                    {"source_id": "source_a", "sync_outcome": "succeeded", "job": None, "message": ""},
+                    {"source_id": "source_b", "launch_outcome": "started", "job": None, "message": ""},
+                    {"source_id": "source_a", "launch_outcome": "started", "job": None, "message": ""},
                 ],
             }
 
@@ -1465,7 +1465,7 @@ def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(
     assert [item["source_id"] for item in result["results"]] == ["source_b", "source_a"]
 
 
-def test_sync_all_passthrough_preserves_completed_and_skipped_outcomes(tmp_path):
+def test_sync_all_passthrough_preserves_accepted_and_skipped_outcomes(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(_succeeded_obsidian_source().model_copy(update={"source_id": "source_github"}))
     store.upsert_source(
@@ -1490,12 +1490,12 @@ def test_sync_all_passthrough_preserves_completed_and_skipped_outcomes(tmp_path)
 
     result = asyncio.run(mcp.tools["sync_all"]())
 
-    assert result["status"] == "completed"
+    assert result["status"] == "accepted"
     assert result["summary"]["skipped"] == 1
     assert {
-        (item["source_id"], item["sync_outcome"])
+        (item["source_id"], item["launch_outcome"])
         for item in result["results"]
-    } == {("source_github", "succeeded"), ("source_obsidian", "skipped")}
+    } == {("source_github", "started"), ("source_obsidian", "skipped")}
 
 
 def test_sync_all_passthrough_preserves_partial_status(tmp_path):
@@ -1525,9 +1525,9 @@ def test_sync_all_passthrough_preserves_partial_status(tmp_path):
     assert result["status"] == "partial"
     assert result["summary"]["failed"] == 1
     assert {
-        (item["source_id"], item["sync_outcome"])
+        (item["source_id"], item["launch_outcome"])
         for item in result["results"]
-    } == {("source_github", "succeeded"), ("source_obsidian", "failed")}
+    } == {("source_github", "started"), ("source_obsidian", "failed")}
 
 
 def test_sync_all_passthrough_preserves_failed_status(tmp_path):
@@ -1555,7 +1555,7 @@ def test_sync_all_passthrough_preserves_failed_status(tmp_path):
 
     assert result["status"] == "failed"
     assert result["summary"]["failed"] == 1
-    assert result["results"][0]["sync_outcome"] == "failed"
+    assert result["results"][0]["launch_outcome"] == "failed"
 
 
 def test_status_payloads_redact_persisted_secret_fields(tmp_path):
@@ -1865,10 +1865,13 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     assert "document_count" in status["sources"][0]["source"]
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
+    assert search["results"][0]["preview"] == "ContextWiki evidence"
     assert search["debug"] == {}
     assert "vector_score" not in search["results"][0]
     assert document_search["results"][0]["document_id"] == "doc-1"
     assert document_search["results"][0]["chunk_id"] == "chunk-1"
+    assert document_search["results"][0]["matched_context"] == "ContextWiki evidence"
+    assert "preview" not in document_search["results"][0]
     assert "vector_score" not in document_search["results"][0]
     assert "metadata_priority" not in document_search["results"][0]
     assert fetched["chunk"]["chunk_id"] == "chunk-1"
@@ -1884,11 +1887,9 @@ def test_search_context_can_include_structured_debug_payload():
     search = asyncio.run(mcp.tools["search_context"]("ContextWiki", include_debug=True))
 
     assert search["results"][0]["chunk_id"] == "chunk-1"
-    assert search["debug"]["query_rewrite"]["attempted"] is True
-    assert search["debug"]["query_rewrite"]["applied"] is True
-    assert search["debug"]["query_rewrite"]["reason"] == "low_initial_vector_score"
-    assert search["debug"]["query_rewrite"]["initial_top_vector_score"] == 0.2
-    assert search["debug"]["query_rewrite"]["final_top_score"] == 0.9
+    assert search["debug"]["retrieval_queries"] == ["ContextWiki"]
+    assert search["debug"]["initial_top_vector_score"] == 0.2
+    assert search["debug"]["final_top_score"] == 0.9
 
 
 def test_answer_with_citations_is_not_registered_as_public_mcp_tool():
@@ -1983,9 +1984,11 @@ def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_availab
     assert fetched_chunk["chunk"] is None
     assert fetched_document == {"document": None, "chunks": []}
     assert filtered_search["results"] == []
-    assert filtered_search["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
-    assert filtered_search["debug"]["rewrite_attempted"] is False
-    assert filtered_search_with_debug["debug"]["rewrite_skipped_reason"] == "no_matching_sources"
+    assert filtered_search["debug"] == {
+        "retrieval_queries": [],
+        "effective_term_groups": [],
+    }
+    assert filtered_search_with_debug["debug"] == filtered_search["debug"]
     assert filtered_document_search["results"] == []
 
 
@@ -2118,22 +2121,101 @@ def test_search_context_contract_strips_vector_score_from_dict_results():
     assert "vector_score" not in search["results"][0]
 
 
-def test_search_documents_contract_strips_chunk_only_fields_from_dict_results():
+def test_search_documents_contract_rejects_legacy_result_without_matched_context():
     mcp = FakeMCP()
     register_tools(
         mcp,
         context_search_service=FakeDictContextSearch(),
     )
 
+    with pytest.raises(
+        ValueError,
+        match="missing required field 'matched_context'",
+    ) as exc_info:
+        asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+
+    assert "ContextWiki evidence" not in str(exc_info.value)
+    assert "Chunk-level text should not leak" not in str(exc_info.value)
+
+
+def test_search_documents_contract_rejects_non_string_matched_context():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=FakeInvalidMatchedContextSearch(),
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="field 'matched_context' must be a string",
+    ):
+        asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+
+
+def test_search_documents_contract_accepts_explicit_empty_matched_context():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        context_search_service=FakeEmptyMatchedContextSearch(),
+    )
+
     search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
 
-    assert "vector_score" not in search["results"][0]
-    assert "metadata_priority" not in search["results"][0]
+    assert search["results"][0]["matched_context"] == ""
+    assert "preview" not in search["results"][0]
     assert "text" not in search["results"][0]
     assert "line_start" not in search["results"][0]
     assert "line_end" not in search["results"][0]
     assert "version_id" not in search["results"][0]
     assert "updated_at" not in search["results"][0]
+    assert "vector_score" not in search["results"][0]
+    assert "metadata_priority" not in search["results"][0]
+
+
+@pytest.mark.parametrize(
+    ("unsupported_result", "secret"),
+    [
+        ("raw-string-secret", "raw-string-secret"),
+        (["raw-list-secret"], "raw-list-secret"),
+        (PreviewOnlySearchResult(), "dto-preview-secret"),
+        (NonMappingDumpSearchResult(), "model-dump-secret"),
+    ],
+)
+def test_search_documents_payload_rejects_unsupported_result_types_without_leaking_content(
+    unsupported_result,
+    secret,
+):
+    with pytest.raises(
+        TypeError,
+        match="search_documents result must serialize to a mapping",
+    ) as exc_info:
+        _search_documents_result_payload(unsupported_result)
+
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("failing_result", "secret"),
+    [
+        (RaisingModelDumpSearchResult(), "raising-model-dump-secret"),
+        (RaisingItemsSearchResult(), "raising-items-secret"),
+    ],
+)
+def test_search_documents_payload_normalizes_serialization_failures_without_leaking_content(
+    failing_result,
+    secret,
+):
+    with pytest.raises(
+        TypeError,
+        match="search_documents result must serialize to a mapping",
+    ) as exc_info:
+        _search_documents_result_payload(failing_result)
+
+    error = exc_info.value
+    assert str(error) == "search_documents result must serialize to a mapping"
+    assert secret not in str(error)
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
 
 
 def test_get_sync_status_returns_source_after_status_recovery():

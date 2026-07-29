@@ -219,12 +219,7 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     assert not (output_dir / "runtime_metrics.json").exists()
 
 
-def test_contextwiki_eval_runner_disables_query_rewriter(monkeypatch):
-    def fail_build_query_rewriter(*args, **kwargs):
-        raise AssertionError("D1 eval runner should not build a live query rewriter")
-
-    monkeypatch.setattr("search.context_service.build_query_rewriter", fail_build_query_rewriter)
-
+def test_contextwiki_eval_runner_uses_deterministic_retrieval():
     summary = run_contextwiki_eval()
 
     assert summary["passed"]

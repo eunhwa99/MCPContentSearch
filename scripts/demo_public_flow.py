@@ -79,7 +79,6 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
         collection_name="contextwiki_demo",
         obsidian_vault_path=sample_vault,
         search_multiplier=4,
-        search_llm_enabled=False,
     )
     chroma_collection = setup_chroma(config)
     storage_context = StorageContext.from_defaults(

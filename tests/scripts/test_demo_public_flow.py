@@ -163,7 +163,6 @@ def test_demo_script_json_mode_runs_successfully():
     env["PYTHONPATH"] = (
         f"{existing_pythonpath}:{repo_root}" if existing_pythonpath else str(repo_root)
     )
-    env["CONTEXTWIKI_SEARCH_LLM_ENABLED"] = "true"
     completed = subprocess.run(
         ["./scripts/demo.sh", "--json"],
         cwd=repo_root,
@@ -194,8 +193,6 @@ def test_demo_script_default_text_mode_shows_local_workflow_scope():
     env["PYTHONPATH"] = (
         f"{existing_pythonpath}:{repo_root}" if existing_pythonpath else str(repo_root)
     )
-    env["CONTEXTWIKI_SEARCH_LLM_ENABLED"] = "true"
-
     completed = subprocess.run(
         ["./scripts/demo.sh"],
         cwd=repo_root,
@@ -225,8 +222,6 @@ def test_demo_script_text_mode_marks_separate_probes_when_inputs_differ():
     env["PYTHONPATH"] = (
         f"{existing_pythonpath}:{repo_root}" if existing_pythonpath else str(repo_root)
     )
-    env["CONTEXTWIKI_SEARCH_LLM_ENABLED"] = "true"
-
     completed = subprocess.run(
         [
             "./scripts/demo.sh",
@@ -396,15 +391,7 @@ def test_readme_keeps_demo_and_live_smoke_contract_intent():
     normalized_readme = " ".join(readme.split())
 
     assert "./scripts/demo.sh" in readme
-    assert "bundled sample vault" in normalized_readme
+    assert "bundled Obsidian sample vault" in normalized_readme
     assert "needs no credentials" in normalized_readme
-    assert "runs the local Obsidian" in normalized_readme
-    assert (
-        "**not** test the remote Notion, Tistory, or GitHub connectors"
-        in normalized_readme
-    )
-    assert "user-configured" in normalized_readme
-    assert (
-        "retrieval plus helper preview on the same input by default"
-        in normalized_readme
-    )
+    assert "temporary SQLite and Chroma storage" in normalized_readme
+    assert "mock embeddings" in normalized_readme

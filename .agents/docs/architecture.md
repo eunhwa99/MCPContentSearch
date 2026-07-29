@@ -13,7 +13,7 @@ maintained design reference beyond the README.
 
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
-- MCP tools: `api/tools.py` registers only retained ContextWiki retrieval tools:
+- MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
   `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
   `search_context`, `search_documents`, and `fetch_context`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
@@ -26,8 +26,7 @@ maintained design reference beyond the README.
 - Indexing: `indexing/` chunks documents, detects unchanged/reindexed content,
   writes vectors to Chroma/LlamaIndex, and coordinates lifecycle metadata.
 - Search: `search/` provides SQLite-gated chunk retrieval, grouped
-  document-browsing retrieval, ranking, direct context fetch, and citation
-  answer scaffolding.
+  document-browsing retrieval, ranking, and citation answer scaffolding.
 - Persistence: SQLite metadata via `storage/metadata_store.py` plus ChromaDB via
   `chromadb.PersistentClient`, defaulting to local user storage unless tests
   provide temporary paths.
@@ -64,13 +63,15 @@ Keep these design assumptions aligned with implementation:
   is still active or citeable.
 - `search_context` is the primary chunk-level evidence surface.
 - `search_documents` is the grouped browsing surface built from the same
-  validated retrieval path.
+  validated retrieval path. It returns one row per document and exposes the
+  selected best-matching chunk's full text as `matched_context`.
+- `search_context` remains a separate chunk-level contract; its preview
+  behavior is unchanged.
 - `CitationAnswerService.answer_with_citations(...)` is an internal helper
   answer surface built on top of validated evidence, not a separate retrieval
   stack.
-- Search query rewrite is optional, disabled by default, and any egress it
-  performs is limited to query rewriting rather than source fetching or data
-  mutation.
+- Search uses deterministic local query normalization and retrieval variants.
+  There is no LLM query-rewrite step.
 
 ## Data Flow
 
@@ -152,7 +153,7 @@ sync_source
   -> IngestionService.start_sync_source() for MCP callers
   -> SourceRegistry connector lookup
   -> MetadataStore source registration and sync job guard
-  -> immediate running-job payload returned to caller
+  -> normally return a running-job payload immediately
   -> background IngestionService worker fetch/index lifecycle
   -> Notion, Tistory, GitHub, or Obsidian connector fetch
   -> DocumentChunker
@@ -160,6 +161,11 @@ sync_source
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
   -> get_sync_status reads terminal completion
 ```
+
+If the source already has an active job, `sync_source` returns that existing
+running job instead of starting another one. A disabled source, background-task
+launch failure, or replayed terminal failure may return a failed terminal job
+without entering the normal background lifecycle.
 
 Retained sync safety rule:
 
@@ -172,37 +178,38 @@ Bulk source sync flow:
 ```text
 sync_all
   -> enumerate retained configured sources
-  -> start one sync_source task per source
+  -> launch or reuse selected source background jobs concurrently
   -> preserve per-source running-job guards in SQLite
-  -> aggregate per-source results as succeeded, failed, blocked, or skipped
-  -> return completed only when results are succeeded/skipped only
-  -> return partial for mixed success/skip/failure/block combinations
-  -> return failed when every source failed or was blocked by failure conditions
+  -> return before fetching and indexing finish
+  -> report each launch as started, already_running, skipped, or failed
+  -> aggregate launch acceptance as accepted, partial, or failed
+  -> get_sync_status(source_id) reads each source's terminal completion
 ```
 
 Retrieval and answer flow:
 
 ```text
 search_context
-  -> optional default-disabled LLM query rewrite
   -> ContextSearchService
+  -> deterministic query normalization and retrieval variants
   -> Chroma/LlamaIndex candidate retrieval
-  -> metadata fallback candidates when ranking decides they are needed
-  -> MetadataStore active chunk/document validation
+  -> SQLite active-hit validation and policy-driven metadata fallback
+  -> deterministic ranking and result selection
   -> chunk-level structured search result payload
 
 search_documents
   -> ContextSearchService
+  -> same deterministic validated retrieval path
   -> Chroma/LlamaIndex candidate retrieval
-  -> metadata fallback candidates when ranking decides they are needed
-  -> MetadataStore active chunk/document validation
+  -> SQLite active-hit validation and policy-driven metadata fallback
   -> group by document_id
   -> choose highest-ranked representative chunk per document
+  -> expose that chunk text as matched_context
   -> grouped document-browsing payload
 
 fetch_context
   -> MetadataStore direct document/chunk hydration
-  -> document or chunk payload
+  -> optional drill-down to stored document content and chunks, or one chunk
 
 internal helper answer flows
   -> CitationAnswerService
@@ -214,7 +221,9 @@ internal helper answer flows
 ## Module Responsibilities
 
 - `api`: MCP-facing tool contracts, parameter defaults, result formatting, and
-  caller-visible error messages. It delegates business behavior to services.
+  caller-visible error messages. It delegates sync and search orchestration to
+  services, while using `MetadataStore` directly for limited source/status
+  reads and `fetch_context` document/chunk hydration.
 - `fetching`: Notion, Tistory, GitHub, and Obsidian content retrieval plus
   source connector registration. It owns API-specific or filesystem-specific
   parsing, bounded fetch behavior, and partial failure handling. Internal
@@ -225,10 +234,10 @@ internal helper answer flows
 - `indexing`: document indexing lifecycle, deterministic chunking, content
   hash/chunk-id comparison, Chroma mutation, and index status updates.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
-  active-result validation, direct context fetch, and internal citation answer
-  support.
+  active-result validation, and internal citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones,
-  sync-job ownership, and active retrieval checks.
+  sync-job ownership, active retrieval checks, and direct stored
+  document/chunk hydration used by `fetch_context`.
 - `core`: stable shared data models, exception classes, and utility functions.
 - `environments`: configuration defaults, Chroma setup, API version constants,
   and environment-token access.
@@ -373,18 +382,23 @@ Contract intent:
 
 - `search_context` remains the chunk-level evidence and citation surface.
 - `sync_all` is an aggregate orchestration helper, not a separate ingestion
-  stack. It fans out retained-source `sync_source` runs concurrently, preserves
-  each source's existing running-job guard, and reports mixed source outcomes
-  truthfully instead of pretending the whole batch succeeded when one source was
-  blocked or failed. Disabled sources may surface as `skipped`, and the
-  top-level batch status remains `completed` only when the aggregate outcomes
-  are limited to `succeeded` and `skipped`.
-- `search_documents` is additive and document-oriented: it uses the same
-  retained-source retrieval path but returns one representative chunk-backed row
-  per document for browsing.
+  stack. It starts or reuses retained-source background jobs concurrently,
+  preserves each source's existing running-job guard, and returns after launch
+  decisions instead of waiting for ingestion to finish. Per-source
+  `launch_outcome` values are `started`, `already_running`, `skipped`, or
+  `failed`; the aggregate launch status is `accepted`, `partial`, or `failed`.
+  Callers must poll `get_sync_status(source_id)` for terminal completion.
+- `search_documents` is document-oriented: it uses the same retained-source
+  retrieval path but returns one representative chunk-backed row per document
+  for browsing. Its public result contract intentionally replaces the earlier
+  `preview` field with the representative chunk's full text in
+  `matched_context`.
+- `fetch_context(document_id)` remains an optional drill-down when the caller
+  needs the selected document's stored content and chunks. Direct
+  `fetch_context(chunk_id=...)` lookup remains supported.
 - Internal `CitationAnswerService.answer_with_citations(...)` reuses
-  `search_context_for_answer` / `search_context`, so query-rewrite egress and
-  retrieval semantics stay aligned across search and helper-answer flows.
+  `search_context_for_answer` / `search_context`, so deterministic retrieval
+  semantics stay aligned across search and helper-answer flows.
 - `search_context` returns a `debug` key on configured search-service paths.
   On the normal path, `include_debug=False` leaves that key as `{}`, while
   `include_debug=True` populates it with structured retrieval detail. The
@@ -395,38 +409,16 @@ Contract intent:
 - Internal helper-answer flows keep `include_debug` as a true opt-in debug
   surface, do not mirror the `no_matching_sources` exception path, and do not
   guarantee debug fields on default or service-unconfigured paths.
-- Retrieval policy keeps vector retrieval, metadata fallback, and rerank/debug
-  reporting as distinct concerns. Query rewrite, fallback candidate addition,
-  and final SQLite validation should stay inspectable without blurring them into
-  one opaque score.
-- When query rewrite debug is included, the caller-visible explanation should
-  keep the current public fields aligned with behavior: `rewrite_enabled`,
-  `rewrite_attempted`, `rewrite_applied`, and `rewrite_skipped_reason` explain
-  whether rewrite was disabled, skipped, attempted but unused, or actually
-  applied before retrieval.
-- The top-level `rewrite_skipped_reason` field should stay coarse and
-  reviewer-readable. Current values explain state such as `disabled`,
-  `not_needed`, `rewrite_failed`, `no_matching_sources`, `no_term_groups`, and
-  `not_better_than_original`.
-- The nested `debug.query_rewrite.reason` field is the retrieval-pipeline
-  explanation vocabulary. Current stable values include
-  `no_initial_candidates`, `missing_textual_match`, and
-  `low_initial_vector_score`.
-- `debug.query_rewrite.initial_top_vector_score` captures the prerank vector
-  score that triggered rewrite evaluation, while
-  `debug.query_rewrite.final_top_score` captures the selected final reranked top
-  score after the pipeline chooses between original and rewritten result sets.
-- A single strong exact-match candidate can also suppress rewrite even when the
-  caller asked for a larger `top_k`; that guardrail keeps clearly correct
-  direct hits from being rewritten unnecessarily.
+- Retrieval policy keeps vector retrieval, metadata fallback, SQLite
+  validation, and rerank/debug reporting as distinct, inspectable concerns.
 
 Retained debug-oriented answer inspection surfaces should stay documented and
 stable enough for local evaluation and reviewer use:
 
-- `search_context` debug explains retrieval/rewrite decisions.
+- `search_context` debug explains deterministic retrieval and ranking decisions.
 - Current reviewer-facing search debug commonly includes retrieval query and
-  result-selection surfaces such as `retrieval_queries`,
-  `rewritten_queries`, and `selected_results[]`.
+  result-selection surfaces such as `retrieval_queries` and
+  `selected_results[]`.
 - Deterministic intent policy should remain readable in debug output when
   present. The current retained intent vocabulary includes `strict_lookup`,
   `broad_topic`, `list`, and `comparison`, and that intent is reused by
@@ -435,9 +427,9 @@ stable enough for local evaluation and reviewer use:
   inspection surfaces such as `citations`, `used_chunks`, `debug`, and
   `debug_markdown` when the current implementation returns them.
 - Public debug payloads may also surface deterministic intent and retrieval
-  inspection sections such as `intent.*`, `retrieval_queries`,
-  `rewritten_queries`, and `selected_results[]` so reviewers can explain why a
-  grounded result set was chosen.
+  inspection sections such as `intent.*`, `retrieval_queries`, and
+  `selected_results[]` so reviewers can explain why a grounded result set was
+  chosen.
 - Eval and reviewer workflows should be able to explain why a retrieval or
   answer path was chosen without reading raw vector-store internals.
 
@@ -491,19 +483,17 @@ Current integrations and local configured sources:
   file count or file byte bound is exceeded, the sync fails as an incomplete
   snapshot before stale cleanup. Real vault validation requires explicit user
   approval; tests must use temporary vaults.
-- Optional search LLM query rewrite, disabled by default. When
-  `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`, `search_context` may send the user's
-  search query and normalized query terms to the configured provider before
-  local retrieval. Internal helper-answer flows inherit that same egress
-  because they reuse `search_context_for_answer` / `search_context`. This path
-  is external egress, is not dynamic web fallback, does not fetch source
-  content, and must not mutate SQLite or Chroma.
 - A disabled retained source blocks future sync attempts but does not
   automatically hide already indexed active documents. Those documents remain
   retrievable until later cleanup or metadata changes mark them inactive.
-- Embedding provider behavior comes from the configured LlamaIndex embedding
-  setup. Disabling search query rewrite only disables query-rewrite egress;
-  fully local operation also requires local or otherwise non-egress embeddings.
+- Embedding behavior is inherited from the LlamaIndex runtime/default
+  configuration, and the repository's default server setup resolves to OpenAI
+  embeddings. Unless the embedding settings are overridden, indexing may send
+  document chunks and search may send queries to that provider. The local demo
+  and embedding-dependent E2E tests explicitly inject `MockEmbedding` instead.
+  This project does not expose a separate embedding-provider switch in
+  `AppConfig`. Fully local operation requires local or otherwise non-egress
+  embeddings.
 
 Testing should prefer mocked external APIs and temporary local vaults. Live
 network or real-vault validation requires explicit user approval and must not
@@ -570,8 +560,8 @@ The maintained verification model is layered:
   retained internal helper-answer flows without browser, wiki, live API, or
   LLM dependencies.
 - Full wrapper: `./scripts/verify_all.sh`, which includes compile, lint, type,
-  non-live pytest, and the functional E2E gate when that broader default repo
-  verification is required.
+  non-live pytest, deterministic local evaluation, and the functional E2E gate
+  when that broader default repository verification is required.
 - Manual live smoke: `python scripts/live_query_smoke.py`, only with explicit
   approval because it can touch real configured sources or local user data.
 - Retained eval runner: `PYTHONPATH=. python scripts/run_contextwiki_eval.py`

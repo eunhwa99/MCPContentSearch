@@ -28,7 +28,7 @@ def test_live_query_smoke_help_runs_from_repo_root_script_path():
     assert "Run a live local retrieval and helper-answer smoke" in result.stdout
 
 
-def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
+def test_format_smoke_summary_includes_hits_and_citations():
     summary = format_smoke_summary(
         query="aws startup",
         question="aws startup",
@@ -44,13 +44,7 @@ def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
                     "score": 0.91,
                 }
             ],
-            "debug": {
-                "rewrite_enabled": True,
-                "rewrite_attempted": True,
-                "rewrite_applied": True,
-                "rewrite_skipped_reason": "",
-                "rewritten_queries": ["aws ec2 setup"],
-            },
+            "debug": {},
         },
         answer_payload={
             "evidence_status": "grounded",
@@ -65,8 +59,6 @@ def test_format_smoke_summary_includes_rewrite_decision_hits_and_citations():
 
     assert "search query: aws startup" in summary
     assert "answer question: aws startup" in summary
-    assert "rewrite: enabled=yes attempted=yes applied=yes reason=-" in summary
-    assert "rewrites: aws ec2 setup" in summary
     assert "hit 1: source_github | EC2 setup guide | chunk-1 | score=0.910" in summary
     assert "helper answer preview: grounded" in summary
     assert "citation 1: EC2 setup guide | chunk-1" in summary
@@ -88,13 +80,7 @@ def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections
         top_k=5,
         search_payload={
             "results": [],
-            "debug": {
-                "rewrite_enabled": False,
-                "rewrite_attempted": False,
-                "rewrite_applied": False,
-                "rewrite_skipped_reason": "disabled",
-                "rewritten_queries": [],
-            },
+            "debug": {},
         },
         answer_payload={
             "evidence_status": "insufficient",
@@ -103,8 +89,6 @@ def test_format_smoke_summary_uses_safe_placeholders_for_empty_optional_sections
     )
 
     assert "source filter: -" in summary
-    assert "rewrite: enabled=no attempted=no applied=no reason=disabled" in summary
-    assert "rewrites: -" in summary
     assert "hits: 0" in summary
     assert "citations: 0" in summary
     assert "helper answer preview: insufficient" in summary
@@ -119,13 +103,7 @@ def test_format_smoke_summary_warns_when_search_and_answer_are_separate_probes()
         top_k=3,
         search_payload={
             "results": [],
-            "debug": {
-                "rewrite_enabled": True,
-                "rewrite_attempted": True,
-                "rewrite_applied": False,
-                "rewrite_skipped_reason": "kept original",
-                "rewritten_queries": [],
-            },
+            "debug": {},
         },
         answer_payload={
             "evidence_status": "insufficient",
@@ -182,18 +160,16 @@ def test_parse_args_leaves_question_empty_until_main_derives_it(monkeypatch):
 def test_main_reuses_query_when_question_is_omitted(monkeypatch, capsys):
     captured: dict[str, object] = {}
 
-    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k):
         captured["query"] = query
         captured["question"] = question
         captured["source_id"] = source_id
         captured["top_k"] = top_k
-        captured["rewrite_mode"] = rewrite_mode
         return {
             "query": query,
             "question": question,
             "source_id": source_id,
             "top_k": top_k,
-            "rewrite_mode": rewrite_mode,
             "search": {"results": [], "debug": {}},
             "answer": {"evidence_status": "grounded", "citations": []},
         }
@@ -211,7 +187,7 @@ def test_main_reuses_query_when_question_is_omitted(monkeypatch, capsys):
 def test_main_marks_separate_probes_when_question_differs(monkeypatch, capsys):
     captured: dict[str, object] = {}
 
-    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k):
         captured["query"] = query
         captured["question"] = question
         return {
@@ -219,7 +195,6 @@ def test_main_marks_separate_probes_when_question_differs(monkeypatch, capsys):
             "question": question,
             "source_id": source_id,
             "top_k": top_k,
-            "rewrite_mode": rewrite_mode,
             "search": {"results": [], "debug": {}},
             "answer": {"evidence_status": "grounded", "citations": []},
         }
@@ -245,13 +220,12 @@ def test_main_marks_separate_probes_when_question_differs(monkeypatch, capsys):
 
 
 def test_main_json_reuses_query_when_question_is_omitted(monkeypatch, capsys):
-    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k):
         return {
             "query": query,
             "question": question,
             "source_id": source_id,
             "top_k": top_k,
-            "rewrite_mode": rewrite_mode,
             "search": {"results": [], "debug": {}},
             "answer": {"evidence_status": "grounded", "citations": []},
         }
@@ -272,13 +246,12 @@ def test_main_json_reuses_query_when_question_is_omitted(monkeypatch, capsys):
 
 
 def test_main_json_marks_separate_probes_when_question_differs(monkeypatch, capsys):
-    async def stub_run_live_query_smoke(*, query, question, source_id, top_k, rewrite_mode):
+    async def stub_run_live_query_smoke(*, query, question, source_id, top_k):
         return {
             "query": query,
             "question": question,
             "source_id": source_id,
             "top_k": top_k,
-            "rewrite_mode": rewrite_mode,
             "search": {"results": [], "debug": {}},
             "answer": {"evidence_status": "grounded", "citations": []},
         }
@@ -320,7 +293,7 @@ def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch)
             captured["filters"] = filters
             captured["search_top_k"] = top_k
             captured["search_include_debug"] = include_debug
-            return {"results": [], "debug": {"rewrite_enabled": True}}
+            return {"results": [], "debug": {"retrieval_queries": [query]}}
 
         async def answer_with_citations(
             self,
@@ -342,7 +315,7 @@ def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch)
                 "debug_markdown": "## Debug",
             }
 
-    monkeypatch.setattr("scripts.live_query_smoke.build_runtime_mcp", lambda rewrite_mode: StubMCP())
+    monkeypatch.setattr("scripts.live_query_smoke.build_runtime_mcp", lambda: StubMCP())
 
     result = asyncio.run(
         run_live_query_smoke(
@@ -350,11 +323,10 @@ def test_live_query_smoke_requests_search_and_answer_debug_payloads(monkeypatch)
             question="How do citations work?",
             source_id="source_obsidian",
             top_k=4,
-            rewrite_mode="auto",
         )
     )
 
-    assert result["search"]["debug"]["rewrite_enabled"] is True
+    assert result["search"]["debug"]["retrieval_queries"] == ["obsidian citation"]
     assert captured["search_include_debug"] is True
     assert captured["filters"] == {"source_id": "source_obsidian"}
     assert captured["search_top_k"] == 4
@@ -370,7 +342,6 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
             "question": "How do I start EC2?",
             "source_id": "source_github",
             "top_k": 3,
-            "rewrite_mode": "auto",
             "search": {
                 "results": [
                     {
@@ -386,11 +357,7 @@ def test_redact_live_query_result_omits_content_preview_and_path_fields():
                     }
                 ],
                 "debug": {
-                    "rewrite_enabled": True,
-                    "rewrite_attempted": True,
-                    "rewrite_applied": True,
-                    "rewrite_skipped_reason": "",
-                    "rewritten_queries": ["aws ec2 setup"],
+                    "retrieval_queries": ["aws startup"],
                     "selected_results": [
                         {
                             "chunk_id": "chunk-1",
@@ -451,7 +418,6 @@ def test_redact_live_query_result_keeps_same_input_marker_for_redaction_collisio
             "question": "token beta-secret",
             "source_id": None,
             "top_k": 5,
-            "rewrite_mode": "auto",
             "search": {"results": [], "debug": {}},
             "answer": {"evidence_status": "insufficient", "citations": []},
         }

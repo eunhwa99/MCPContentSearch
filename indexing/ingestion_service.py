@@ -47,14 +47,13 @@ def _stale_cleanup_reason_for_connector(connector, fallback_message: str = "") -
     return _redact_sensitive_error(fallback_message) if fallback_message else ""
 
 
-def _bulk_sync_outcome_for_job(job, *, source_enabled: bool) -> str:
-    if job.status == SyncJobStatus.SUCCEEDED:
-        return "succeeded"
-    if job.status == SyncJobStatus.RUNNING:
-        return "blocked"
-    if not source_enabled and job.status == SyncJobStatus.FAILED:
-        return "skipped"
-    return "failed"
+def _bulk_launch_status_from_results(results: list[dict]) -> str:
+    outcomes = {result["launch_outcome"] for result in results}
+    if not outcomes or outcomes.issubset({"started", "already_running", "skipped"}):
+        return "accepted"
+    if outcomes == {"failed"}:
+        return "failed"
+    return "partial"
 
 
 def _indexing_status_message(processed_documents: int, total_documents: int) -> str:
@@ -75,17 +74,6 @@ def _float_progress_value(value, default: float = 0.0) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return default
-
-
-def _bulk_sync_status_from_results(results: list[dict]) -> str:
-    outcomes = {result["sync_outcome"] for result in results}
-    if outcomes.issubset({"succeeded", "skipped"}):
-        return "completed"
-    if outcomes == {"blocked"}:
-        return "blocked"
-    if outcomes.intersection({"succeeded", "skipped"}):
-        return "partial"
-    return "failed"
 
 
 def _is_replayable_background_failure(job) -> bool:
@@ -135,73 +123,57 @@ class IngestionService:
         else:
             selected_source_ids = source_ids
         selected_source_ids = list(dict.fromkeys(selected_source_ids))
-        started_at = _now()
+        requested_at = _now()
 
-        async def _sync_one(selected_source_id: str) -> dict:
+        async def _launch_one(selected_source_id: str) -> dict:
             try:
-                existing_task = self._background_sync_tasks.get(selected_source_id)
-                if existing_task is not None and existing_task.done():
-                    await self._await_finished_background_handoff(selected_source_id)
-                else:
-                    self._reconcile_finished_background_task(selected_source_id)
-                recent_terminal_job = self._recent_terminal_background_jobs.pop(
-                    selected_source_id,
-                    None,
-                )
-                if recent_terminal_job is not None:
-                    latest_job = self.metadata_store.get_latest_sync_job(selected_source_id)
-                    if (
-                        latest_job is not None
-                        and latest_job.job_id == recent_terminal_job.job_id
-                        and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
-                    ):
-                        connector = self.source_registry.get_connector(selected_source_id)
-                        outcome = _bulk_sync_outcome_for_job(
-                            latest_job,
-                            source_enabled=connector.source.enabled,
-                        )
-                        return {
-                            "source_id": selected_source_id,
-                            "sync_outcome": outcome,
-                            "job": latest_job,
-                            "message": "",
-                        }
-                connector = self.source_registry.get_connector(selected_source_id)
-                job = await self._sync_source_internal(
-                    selected_source_id,
-                    join_existing_background=False,
+                job, launch_outcome = await self._start_sync_source_with_outcome(
+                    selected_source_id
                 )
             except Exception as exc:
                 message = _redact_sensitive_error(str(exc))
-                logger.error("Bulk sync failed for source %s: %s", selected_source_id, message)
+                logger.error(
+                    "Bulk sync launch failed for source %s: %s",
+                    selected_source_id,
+                    message,
+                )
                 return {
                     "source_id": selected_source_id,
-                    "sync_outcome": "failed",
+                    "launch_outcome": "failed",
                     "job": None,
                     "message": message,
                 }
 
-            outcome = _bulk_sync_outcome_for_job(job, source_enabled=connector.source.enabled)
             return {
                 "source_id": selected_source_id,
-                "sync_outcome": outcome,
+                "launch_outcome": launch_outcome,
                 "job": job,
                 "message": "",
             }
 
-        results = await asyncio.gather(*(_sync_one(source_id) for source_id in selected_source_ids))
-        finished_at = _now()
+        results = await asyncio.gather(
+            *(_launch_one(source_id) for source_id in selected_source_ids)
+        )
         summary = {
             "total_sources": len(results),
-            "succeeded": sum(1 for result in results if result["sync_outcome"] == "succeeded"),
-            "failed": sum(1 for result in results if result["sync_outcome"] == "failed"),
-            "blocked": sum(1 for result in results if result["sync_outcome"] == "blocked"),
-            "skipped": sum(1 for result in results if result["sync_outcome"] == "skipped"),
-            "started_at": started_at,
-            "finished_at": finished_at,
+            "started": sum(
+                1 for result in results if result["launch_outcome"] == "started"
+            ),
+            "already_running": sum(
+                1
+                for result in results
+                if result["launch_outcome"] == "already_running"
+            ),
+            "skipped": sum(
+                1 for result in results if result["launch_outcome"] == "skipped"
+            ),
+            "failed": sum(
+                1 for result in results if result["launch_outcome"] == "failed"
+            ),
+            "requested_at": requested_at,
         }
         return {
-            "status": _bulk_sync_status_from_results(results),
+            "status": _bulk_launch_status_from_results(results),
             "summary": summary,
             "results": results,
         }
@@ -244,6 +216,10 @@ class IngestionService:
         return await self._run_sync_source_job(job.job_id, source_id, connector)
 
     async def start_sync_source(self, source_id: str):
+        job, _ = await self._start_sync_source_with_outcome(source_id)
+        return job
+
+    async def _start_sync_source_with_outcome(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
         await self._await_finished_background_handoff(source_id)
         recent_terminal_job = self._recent_terminal_background_jobs.pop(source_id, None)
@@ -254,10 +230,14 @@ class IngestionService:
                 and latest_job.job_id == recent_terminal_job.job_id
                 and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
             ):
-                return latest_job
+                return latest_job, "failed"
         connector, job, should_run = self._begin_sync_source(source_id)
         if not should_run:
-            return job
+            if not connector.source.enabled:
+                return job, "skipped"
+            if job.status == SyncJobStatus.RUNNING:
+                return job, "already_running"
+            return job, "failed"
         try:
             task = asyncio.create_task(
                 self._run_sync_source_job(job.job_id, source_id, connector),
@@ -270,7 +250,7 @@ class IngestionService:
                 source_id,
                 error_message,
             )
-            return self.metadata_store.complete_failed_sync(
+            failed_job = self.metadata_store.complete_failed_sync(
                 job_id=job.job_id,
                 source_id=source_id,
                 error_message=error_message,
@@ -281,6 +261,7 @@ class IngestionService:
                     else ""
                 ),
             )
+            return failed_job, "failed"
         self._background_sync_tasks[source_id] = task
         setattr(task, "contextwiki_job_id", job.job_id)
         setattr(task, "contextwiki_connector", connector)
@@ -292,7 +273,7 @@ class IngestionService:
                 completed_task,
             )
         )
-        return job
+        return job, "started"
 
     def _begin_sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)

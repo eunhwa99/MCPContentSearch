@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
@@ -47,9 +49,12 @@ def register_tools(
 
     def _sync_all_error_payload(message: str) -> dict:
         return {
-            "status": "error",
+            "status": "failed",
             "message": message,
-            "summary": _public_bulk_sync_summary({}, []),
+            "summary": _public_bulk_sync_summary(
+                {"requested_at": datetime.now(timezone.utc).isoformat()},
+                [],
+            ),
             "results": [],
         }
 
@@ -115,7 +120,10 @@ def register_tools(
 
     @mcp.tool()
     async def sync_all() -> dict:
-        """retained source 전체 sync 실행"""
+        """Start or reuse all source syncs in the background and return launch outcomes immediately.
+
+        Poll get_sync_status(source_id) for each source before treating its sync as complete.
+        """
         if ingestion_service is None:
             return _sync_all_error_payload("ingestion service is not configured")
         try:
@@ -152,7 +160,7 @@ def register_tools(
                 sync_results.append(
                     {
                         "source_id": source_id,
-                        "sync_outcome": item.get("sync_outcome", ""),
+                        "launch_outcome": item.get("launch_outcome", ""),
                         "message": _redact_public_error_text(item.get("message", "")),
                         "source": (
                             _safe_source_payload(
@@ -170,7 +178,7 @@ def register_tools(
             return {
                 "status": _public_bulk_sync_status(
                     sync_results,
-                    result.get("status", "completed"),
+                    result.get("status", "accepted"),
                     upstream_result_count=len(result.get("results", [])),
                 ),
                 "summary": summary,
@@ -261,7 +269,7 @@ def register_tools(
         top_k: int = 10,
         include_debug: bool = False,
     ) -> dict:
-        """Citation 가능한 structured context 검색"""
+        """Find focused, citation-ready chunk evidence for answering a user's query."""
         if context_search_service is None:
             return {"query": _redact_public_query_text(query), "results": []}
         public_filters, has_no_public_source = _public_filters(
@@ -270,20 +278,12 @@ def register_tools(
             allowed_source_ids,
         )
         if has_no_public_source:
-            rewrite_enabled = bool(
-                getattr(context_search_service, "query_rewriter", None)
-            )
             return {
                 "query": _redact_public_query_text(query),
                 "results": [],
                 "debug": {
                     "retrieval_queries": [],
-                    "rewritten_queries": [],
                     "effective_term_groups": [],
-                    "rewrite_enabled": rewrite_enabled,
-                    "rewrite_attempted": False,
-                    "rewrite_applied": False,
-                    "rewrite_skipped_reason": "no_matching_sources",
                 },
             }
         public_filters = _with_default_public_source_filter(
@@ -315,7 +315,7 @@ def register_tools(
 
     @mcp.tool()
     async def search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict:
-        """문서 단위로 그룹화된 structured context 검색"""
+        """Find one row per relevant document with its representative matched_context."""
         if context_search_service is None:
             return {"query": _redact_public_query_text(query), "results": []}
         public_filters, has_no_public_source = _public_filters(
@@ -349,7 +349,7 @@ def register_tools(
 
     @mcp.tool()
     async def fetch_context(document_id: str = "", chunk_id: str = "") -> dict:
-        """문서 또는 chunk context 원문 조회"""
+        """Optionally drill into exact stored document or chunk content after its ID is known."""
         if metadata_store is None:
             return {"status": "error", "message": "metadata store is not configured"}
         if not document_id and not chunk_id:
@@ -517,33 +517,30 @@ def _public_bulk_sync_status(
     *,
     upstream_result_count: int = 0,
 ) -> str:
-    outcomes = {item.get("sync_outcome", "") for item in sync_results}
+    outcomes = {item.get("launch_outcome", "") for item in sync_results}
     if not outcomes:
         if upstream_result_count > 0:
-            return "completed"
-        return fallback_status or "completed"
-    if outcomes == {"blocked"}:
-        return "blocked"
-    if outcomes.issubset({"succeeded", "skipped"}):
-        return "completed"
-    if outcomes.intersection({"succeeded", "skipped"}):
-        return "partial"
-    return "failed"
+            return "accepted"
+        return fallback_status or "accepted"
+    if outcomes.issubset({"started", "already_running", "skipped"}):
+        return "accepted"
+    if outcomes == {"failed"}:
+        return "failed"
+    return "partial"
 
 
 def _public_bulk_sync_summary(upstream_summary: dict, sync_results: list[dict]) -> dict:
     summary = {
         "total_sources": len(sync_results),
-        "succeeded": sum(1 for item in sync_results if item.get("sync_outcome") == "succeeded"),
-        "failed": sum(1 for item in sync_results if item.get("sync_outcome") == "failed"),
-        "blocked": sum(1 for item in sync_results if item.get("sync_outcome") == "blocked"),
-        "skipped": sum(1 for item in sync_results if item.get("sync_outcome") == "skipped"),
+        "started": sum(1 for item in sync_results if item.get("launch_outcome") == "started"),
+        "already_running": sum(
+            1 for item in sync_results if item.get("launch_outcome") == "already_running"
+        ),
+        "skipped": sum(1 for item in sync_results if item.get("launch_outcome") == "skipped"),
+        "failed": sum(1 for item in sync_results if item.get("launch_outcome") == "failed"),
     }
-    if sync_results:
-        if "started_at" in upstream_summary:
-            summary["started_at"] = upstream_summary["started_at"]
-        if "finished_at" in upstream_summary:
-            summary["finished_at"] = upstream_summary["finished_at"]
+    if "requested_at" in upstream_summary:
+        summary["requested_at"] = upstream_summary["requested_at"]
     return summary
 
 
@@ -693,6 +690,7 @@ def _search_context_result_payload(item):
 
 
 def _search_documents_result_payload(item):
+    serialization_error = "search_documents result must serialize to a mapping"
     allowed_keys = {
         "document_id",
         "chunk_id",
@@ -702,17 +700,34 @@ def _search_documents_result_payload(item):
         "url",
         "path",
         "score",
-        "preview",
+        "matched_context",
     }
-    if hasattr(item, "model_dump"):
-        return item.model_dump(
-            mode="json",
-            include=allowed_keys,
-        )
-    if isinstance(item, dict):
-        return {
+    try:
+        model_dump = getattr(item, "model_dump", None)
+        if callable(model_dump):
+            raw_payload = model_dump(
+                mode="json",
+                include=allowed_keys,
+            )
+        elif isinstance(item, Mapping):
+            raw_payload = item
+        else:
+            raise TypeError(serialization_error)
+        if not isinstance(raw_payload, Mapping):
+            raise TypeError(serialization_error)
+        payload = {
             key: value
-            for key, value in item.items()
+            for key, value in raw_payload.items()
             if key in allowed_keys
         }
-    return item
+    except Exception:
+        raise TypeError(serialization_error) from None
+    if "matched_context" not in payload:
+        raise ValueError(
+            "search_documents result is missing required field 'matched_context'"
+        )
+    if not isinstance(payload["matched_context"], str):
+        raise TypeError(
+            "search_documents result field 'matched_context' must be a string"
+        )
+    return payload

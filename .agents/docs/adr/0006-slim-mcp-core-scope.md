@@ -4,6 +4,9 @@
 
 accepted
 
+Status note: ADR 0008 supersedes this ADR's optional search LLM query-rewrite
+decision. The remaining slim MCP core scope stays accepted.
+
 ## Date
 
 2026-06-10
@@ -101,10 +104,10 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
   documents remain visible until cleanup or metadata changes mark them inactive.
 - The optional query rewrite path remains in scope only as a default-disabled
   LLM-assistant aid. Documentation and tests must make clear that enabling
-  rewrite permits external egress of query text. Disabling rewrite only disables
-  query-rewrite egress; embeddings may still use external providers depending on
-  the configured LlamaIndex embedding setup. Fully local or otherwise
-  non-egress operation also requires local or non-egress embeddings.
+  rewrite permits external egress of query text. Disabling rewrite only
+  disables query-rewrite egress; embeddings may still use external providers
+  depending on the configured LlamaIndex embedding setup. Fully local or
+  otherwise non-egress operation also requires local or non-egress embeddings.
 - No local Chroma/SQLite data deletion, migration, reset, or inspection is part
   of this decision.
 - Reintroducing website/docs crawling, Auto Wiki, a browser UI, dynamic web
@@ -129,5 +132,6 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
 - `.agents/docs/adr/0003-contextwiki-phase-b0-identity-and-chunking.md`
 - `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
 - `.agents/docs/adr/0005-contextwiki-auto-wiki-llm-synthesis.md`
+- `.agents/docs/adr/0008-background-sync-all-and-deterministic-retrieval.md`
 - `docs/plan/2026-06-10-slim-mcp-core.md`
 - `docs/plan/2026-06-11-restore-obsidian-pr25.md`

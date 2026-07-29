@@ -36,13 +36,14 @@ File names should be numbered and descriptive:
 
 | ADR | Status | Topic |
 | --- | --- | --- |
-| [0001](0001-layered-mcp-content-search-architecture.md) | accepted | Layered MCP content search architecture |
+| [0001](0001-layered-mcp-content-search-architecture.md) | accepted, query-rewrite wording superseded by [0008](0008-background-sync-all-and-deterministic-retrieval.md) | Layered MCP content search architecture |
 | [0002](0002-contextwiki-metadata-and-citation-store.md) | accepted | ContextWiki metadata and citation store |
 | [0003](0003-contextwiki-phase-b0-identity-and-chunking.md) | accepted | ContextWiki Phase B-0 identity lifecycle and source-aware chunking |
 | [0004](0004-contextwiki-phase-b-connectors.md) | accepted, website/docs superseded by [0006](0006-slim-mcp-core-scope.md) | ContextWiki Phase B GitHub connector, retained Obsidian local-vault connector, and superseded website/docs connector |
 | [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | superseded by [0006](0006-slim-mcp-core-scope.md) for current scope | Historical ContextWiki Auto Wiki LLM synthesis boundary |
-| [0006](0006-slim-mcp-core-scope.md) | accepted | Slim MCP core scope |
+| [0006](0006-slim-mcp-core-scope.md) | accepted, query-rewrite wording superseded by [0008](0008-background-sync-all-and-deterministic-retrieval.md) | Slim MCP core scope |
 | [0007](0007-sync-source-background-launch-contract.md) | accepted | Public MCP `sync_source` background-launch contract and internal blocking execution split |
+| [0008](0008-background-sync-all-and-deterministic-retrieval.md) | accepted | Public `sync_all` background-launch aggregation and removal of LLM query rewrite |
 
 ## When to Add or Update ADRs
 

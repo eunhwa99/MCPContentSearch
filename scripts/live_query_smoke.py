@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -47,12 +46,8 @@ class SmokeMCP:
         return decorator
 
 
-def build_runtime_mcp(rewrite_mode: str):
+def build_runtime_mcp():
     config = AppConfig()
-    if rewrite_mode == "on":
-        config = replace(config, search_llm_enabled=True)
-    elif rewrite_mode == "off":
-        config = replace(config, search_llm_enabled=False)
 
     chroma_collection = setup_chroma(config)
     storage_context = StorageContext.from_defaults(
@@ -82,11 +77,6 @@ def build_runtime_mcp(rewrite_mode: str):
         default_source_ids=retained_source_ids,
     )
     answer_service = CitationAnswerService(context_search)
-    if rewrite_mode == "on" and context_search.query_rewriter is None:
-        raise RuntimeError(
-            "Rewrite override requested but no search query rewriter is configured. "
-            "Check CONTEXTWIKI_SEARCH_LLM_* settings and API key."
-        )
     mcp = SmokeMCP()
     register_tools(
         mcp,
@@ -106,9 +96,8 @@ async def run_live_query_smoke(
     question: str,
     source_id: str | None,
     top_k: int,
-    rewrite_mode: str,
 ) -> dict:
-    mcp = build_runtime_mcp(rewrite_mode)
+    mcp = build_runtime_mcp()
     filters = {"source_id": source_id} if source_id else None
     search_payload = await mcp.tools["search_context"](
         query,
@@ -127,7 +116,6 @@ async def run_live_query_smoke(
         "question": question,
         "source_id": source_id,
         "top_k": top_k,
-        "rewrite_mode": rewrite_mode,
         "search": search_payload,
         "answer": answer_payload,
     }
@@ -208,7 +196,6 @@ def redact_live_query_result(result: dict) -> dict:
         "same_input": str(result.get("query", "")) == str(result.get("question", "")),
         "source_id": result.get("source_id"),
         "top_k": result.get("top_k"),
-        "rewrite_mode": result.get("rewrite_mode"),
         "search": {
             "results": search_results,
             "debug": _redact_debug_value(dict(result.get("search", {}).get("debug", {}))),
@@ -229,9 +216,6 @@ def format_smoke_summary(
 ) -> str:
     redacted_query = debug_redaction.redact_debug_query_text(query)
     redacted_question = debug_redaction.redact_debug_query_text(question)
-    debug = search_payload.get("debug", {})
-    rewrite_reason = debug.get("rewrite_skipped_reason") or "-"
-    rewritten_queries = debug.get("rewritten_queries") or []
     result_lines = [
         "ContextWiki Live Query Smoke",
         "============================",
@@ -239,14 +223,6 @@ def format_smoke_summary(
         f"answer question: {redacted_question}",
         f"source filter: {source_id or '-'}",
         f"top_k: {top_k}",
-        (
-            "rewrite: "
-            f"enabled={'yes' if debug.get('rewrite_enabled') else 'no'} "
-            f"attempted={'yes' if debug.get('rewrite_attempted') else 'no'} "
-            f"applied={'yes' if debug.get('rewrite_applied') else 'no'} "
-            f"reason={rewrite_reason}"
-        ),
-        f"rewrites: {', '.join(rewritten_queries) if rewritten_queries else '-'}",
         f"hits: {len(search_payload.get('results', []))}",
     ]
     for index, item in enumerate(search_payload.get("results", []), start=1):
@@ -302,12 +278,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top-k", type=int, default=5, help="Top K for both search and answer calls.")
     parser.add_argument(
-        "--rewrite",
-        choices=("auto", "on", "off"),
-        default="auto",
-        help="Use current config, require rewrite to be configured, or force rewrite off.",
-    )
-    parser.add_argument(
         "--json",
         action="store_true",
         help="Print partially redacted JSON payloads for local debugging.",
@@ -324,7 +294,6 @@ def main() -> None:
             question=question,
             source_id=args.source_id,
             top_k=args.top_k,
-            rewrite_mode=args.rewrite,
         )
     )
     if args.json:
