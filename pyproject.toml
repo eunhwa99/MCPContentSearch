@@ -52,13 +52,11 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Start with high-signal correctness checks so the gate is stable on the
-# current codebase without burying portfolio reviewers in style churn.
+# Keep the gate correctness-focused while covering the complete Pyflakes family.
+# Import sorting and broad style normalization remain separate cleanup work.
 select = [
     "E9",
-    "F63",
-    "F7",
-    "F82",
+    "F",
 ]
 
 [tool.mypy]
@@ -68,6 +66,7 @@ files = [
     "search/debug_redaction.py",
     "search/ranking.py",
     "search/retrieval_pipeline.py",
+    "storage/metadata_store.py",
 ]
 explicit_package_bases = true
 follow_imports = "skip"

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
-from core.models import SourceType, SyncJobStatus, SyncStatus
+from core.models import SourceType, SyncStatus
 from indexing.background_tasks import safe_error_message
 from search import debug_redaction
 

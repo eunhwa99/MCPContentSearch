@@ -4,7 +4,7 @@ title: Demo Flow
 
 # Demo Flow
 
-The public demo should show a short reviewer workflow:
+The local demo runs a short workflow smoke for users:
 
 1. sync a bounded local Obsidian sample vault
 2. run a search query against indexed notes

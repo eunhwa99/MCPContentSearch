@@ -1,204 +1,104 @@
-# 🔍 ContextWiki
+# ContextWiki
 
-[![CI](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunhwa99/MCPContentSearch/actions/workflows/ci.yml)
+[![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
-**A private knowledge retrieval MCP server for LLM clients.**
-Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
+ContextWiki is a local-first MCP server that makes content from Notion,
+Tistory, GitHub, and Obsidian searchable from an LLM client. It syncs and
+chunks documents, retrieves relevant evidence, and returns citation-ready results.
 
----
-
-## 🏗️ Architecture
+## How it works
 
 ```text
-[ Sources ]
- Notion / Tistory / GitHub / Obsidian
-                |
-                v
-         [ Ingestion Service ]
-             /            \
-            v              v
-      [ Chroma ]      [ SQLite ]
-    semantic search   metadata gate
-            \              /
-             v            v
-         [ Verified Context ]
+Notion / Tistory / GitHub / Obsidian
+                  |
+            fetch and normalize
+                  |
+          deterministic chunks
+             /          \
+            v            v
+   Chroma candidates   SQLite lifecycle state
+             \          /
+              v        v
+       active, citation-ready results
+                  |
+              MCP client
 ```
 
----
+Chroma finds likely matches. SQLite tracks which documents and chunks are
+currently active, so stale vector results are filtered before they reach the
+client.
 
-## 🛠️ MCP Tools
+## Features
 
-| Tool | Description |
-|------|-------------|
-| `list_sources()` | List configured sources |
-| `sync_source(source_id)` | Sync a specific source |
-| `sync_all()` | Sync all sources at once |
-| `get_sync_status(source_id="")` | Get source and sync job status |
-| `search_context(query, ...)` | Semantic search with SQLite validation |
-| `search_documents(query, ...)` | Search results grouped by document |
-| `fetch_context(document_id="", chunk_id="")` | Fetch a specific document or chunk directly |
+- four source connectors: Notion, Tistory, GitHub, and Obsidian;
+- incremental sync with stable document identity and tombstone cleanup;
+- chunk-level and document-level retrieval with citation metadata;
+- observable source and sync-job status;
+- optional OpenAI query rewrite for low-confidence searches;
+- stdio MCP transport for clients such as Claude Desktop and Cursor;
+- deterministic local tests and a safe demo.
 
-> 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
+## Quick start
 
----
-
-## ⚡ Quick Start
-
-**Prerequisites:** Python `3.13`, [`uv`](https://docs.astral.sh/uv/)
+Requires Python 3.13 and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --locked
+git clone https://github.com/eunaverse/MCPContentSearch.git
+cd MCPContentSearch
+uv sync --locked --python 3.13 --dev
+./scripts/demo.sh
+```
+
+The bundled sample vault demo needs no credentials. It runs the local Obsidian
+connector against `sample_vault/`, uses temporary SQLite and Chroma storage,
+and uses `MockEmbedding` instead of an external model. It runs retrieval plus
+helper preview on the same input by default:
+
+```text
+sync_source -> get_sync_status -> search_context -> citation helper preview
+```
+
+This local workflow smoke shows that the bundled-vault Obsidian path, source
+sync, status reporting, search, and citation wiring work together. It does
+**not** test the remote Notion, Tistory, or GitHub connectors, user-configured
+sources, an external MCP client, or production embedding quality. Temporary
+demo data is deleted when the process exits.
+
+## Configure real sources
+
+Create a local environment file and enable only the sources you want to read:
+
+```bash
 cp .env.example .env
+# Edit .env
 uv run --locked python main.py
 ```
 
-**Docker:**
-
-```bash
-docker build -t contextwiki .
-cp .env.example .env
-docker run --rm -i \
-  --env-file .env \
-  -v contextwiki_data:/home/appuser/.mcp_content_search \
-  contextwiki
-```
-
-> For Obsidian in Docker, add `-v "/path/to/vault:/vault:ro"` and set `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
-
----
-
-## ⚙️ Configuration
-
-### Source Activation
-
-| Source | Source ID | Env var to enable |
-|--------|-----------|-------------------|
+| Source | Source ID | Configuration |
+| --- | --- | --- |
 | Notion | `source_notion` | `NOTION_API_KEY` |
 | Tistory | `source_tistory` | `TISTORY_BLOG_NAME` |
 | GitHub | `source_github` | `CONTEXTWIKI_GITHUB_REPOSITORIES` |
 | Obsidian | `source_obsidian` | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` |
 
-Set only the sources you plan to use. A source stays disabled when its enabling
-config is missing or empty. Bad credentials can still fail later during refresh
-or sync. Some invalid target values can fail earlier during startup or source
-refresh; for example, a malformed `CONTEXTWIKI_GITHUB_REPOSITORIES` value can
-prevent the server from starting cleanly.
+The default real indexing path also requires `OPENAI_API_KEY` for embeddings.
+GitHub repositories use `owner/repo` or `owner/repo@ref`. Obsidian requires an
+absolute vault path. Existing process environment values take precedence over
+the repository `.env`.
 
-Source-specific env vars only register and enable each source. With the default
-embedding setup, successful sync/indexing still also requires `OPENAI_API_KEY`
-unless you reconfigure embeddings.
+### Privacy checkpoint
 
-### `.env` Example
+Application data is stored locally under `~/.mcp_content_search` by default,
+but the default runtime is not fully local. Indexing and search can send source
+chunks and queries to the configured embedding provider. Optional OpenAI query
+rewrite is disabled by default and is a separate form of network egress.
 
-```bash
-OPENAI_API_KEY=...              # required for default embeddings/indexing; also used by optional rewrite
+Do not sync sensitive content until you understand these boundaries.
 
-NOTION_API_KEY=...
-TISTORY_BLOG_NAME=devlog        # subdomain only, not the full URL
+## Connect an MCP client
 
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch@main
-GITHUB_TOKEN=...                # needed for private repos or higher rate limits
-
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
-```
-
-Important GitHub notes:
-
-- Use `owner/repo` or `owner/repo@ref`.
-- Do not wrap `CONTEXTWIKI_GITHUB_REPOSITORIES` in quotes in `.env`.
-- `GITHUB_TOKEN` is optional, but private repositories and higher rate limits
-  usually need it.
-
-**Notion example**
-
-```bash
-NOTION_API_KEY=...
-```
-
-Set this only if you want to enable the Notion source.
-
-**Tistory example**
-
-```bash
-TISTORY_BLOG_NAME=devlog
-```
-
-Use the blog subdomain only, not the full URL. For example, use `devlog`, not
-`https://devlog.tistory.com`.
-
-**Obsidian example**
-
-```bash
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
-CONTEXTWIKI_OBSIDIAN_MAX_FILES=2000
-CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES=512000
-```
-
-Use the vault root path, not an individual `.md` file path.
-
-### Search Query Rewrite (Optional)
-
-```bash
-CONTEXTWIKI_SEARCH_LLM_ENABLED=true
-CONTEXTWIKI_SEARCH_LLM_PROVIDER=openai
-CONTEXTWIKI_SEARCH_LLM_MODEL=gpt-4.1-mini
-```
-
----
-
-## 🚀 Usage
-
-### Claude Desktop — local uv (Recommended)
-
-This is the easiest setup path on macOS because:
-
-- Claude Desktop can spawn the server directly.
-- ContextWiki loads the repository-local `.env` at startup, so Claude Desktop
-  does not need plaintext env entries in `claude_desktop_config.json`.
-- Obsidian can use your real host vault path directly.
-- You do not need Docker mounts for the vault.
-
-Important:
-
-- Repository `.env` values do not override env vars already set by Claude
-  Desktop or your shell.
-- If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or
-  other source env vars in `claude_desktop_config.json` or a parent shell, clear
-  the stale values there too.
-
-Do this in order:
-
-1. Create `.env` in your repo root.
-2. Put your real values there.
-3. Add the MCP entry below to Claude Desktop.
-4. Fully restart Claude Desktop.
-5. In a fresh Claude Desktop chat, ask it to call `list_sources()`.
-
-Example `.env`:
-
-```bash
-# Required for default sync/indexing because embeddings use OpenAI by default
-OPENAI_API_KEY=...
-
-# Optional: enable Notion source
-NOTION_API_KEY=...
-
-# Optional: enable Tistory source
-TISTORY_BLOG_NAME=devlog
-
-# Optional: enable GitHub source
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunhwa99/MCPContentSearch
-CONTEXTWIKI_GITHUB_DEFAULT_REF=main
-
-# Optional for private repos or higher GitHub API limits
-GITHUB_TOKEN=...
-
-# Optional: enable Obsidian source
-CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault
-```
-
-On macOS, add this to
-`~/Library/Application Support/Claude/claude_desktop_config.json`:
+ContextWiki uses FastMCP's stdio transport. For Claude Desktop on macOS, add a
+server entry like this after creating `.env`:
 
 ```json
 {
@@ -214,85 +114,58 @@ On macOS, add this to
 }
 ```
 
-> Run `which uv` to find the path. **Fully restart Claude Desktop** after any config change.
+Run `which uv` to find the executable path. Use the same server entry in
+`.cursor/mcp.json` for Cursor, and fully restart the client after changing its
+configuration.
 
-### Claude Desktop — Docker
+## MCP tools
 
-```json
-{
-  "mcpServers": {
-    "content-search-server": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "--env-file", "/absolute/path/to/MCPContentSearch/.env",
-        "-v", "contextwiki_data:/home/appuser/.mcp_content_search",
-        "contextwiki:latest"
-      ]
-    }
-  }
-}
-```
+| Tool | Purpose |
+| --- | --- |
+| `list_sources()` | List configured sources and their current state. |
+| `sync_source(source_id)` | Start or reuse a sync job for one source. |
+| `sync_all()` | Start sync for all configured sources. |
+| `get_sync_status(source_id="")` | Read source and sync-job status. |
+| `search_context(query, ...)` | Return active chunk-level evidence. |
+| `search_documents(query, ...)` | Return one representative result per document. |
+| `fetch_context(document_id="", chunk_id="")` | Fetch a known active document or chunk. |
 
-### Cursor
+Use `search_context` or `search_documents` to retrieve evidence, then let the
+MCP client or another downstream LLM compose the final answer.
 
-Add the same local uv config above to `.cursor/mcp.json`.
-
-### After Connecting
-
-1. Call `sync_all()` or `sync_source("source_notion")`
-2. Search with `search_context()` or `search_documents()`
-
-**Example prompt:**
-```text
-find my projects about DynamoDB and organize it with STAR method. Answer in English
-```
-
-![Claude Desktop using ContextWiki MCP as a retrieval backend before Claude composes the final STAR-style response](docs/images/claude-desktop-dynamodb-star-example.png)
-
----
-
-## 🔧 Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| MCP server not discovered | Recheck config path and fully restart the client |
-| Only works after manual start | Run `command` + `args` directly in terminal to see errors |
-| `Invalid GitHub repository spec` | Remove quotes from `.env`; use `owner/repo`, not a full URL |
-| Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
-| Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
-| `sync_all()` too slow | Sync individually: `sync_source("source_github")`, etc. |
-
----
-
-## ✅ Verification
+## Docker
 
 ```bash
-./scripts/demo.sh                           # Quick flow check with sample vault (no credentials needed)
-./scripts/verify_all.sh                     # Full verification after code changes
-./scripts/demo.sh --query "your question"   # Custom query
+docker build -t contextwiki .
+docker run --rm -i \
+  --env-file /absolute/path/to/MCPContentSearch/.env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  contextwiki
 ```
 
-- `./scripts/demo.sh` is the default reviewer path. It uses the bundled sample vault, needs no credentials, and keeps retrieval plus helper preview on the same input by default.
+For Obsidian, also mount the vault read-only at `/vault` and set
+`CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
 
----
+## Verification
 
-## 📁 Project Structure
+```bash
+# Full local gate
+./scripts/verify_all.sh
 
-```text
-main.py          FastMCP server entry point
-api/             MCP tool handlers
-core/            Shared models, exceptions, utilities
-environments/    Env var and secret loading
-fetching/        Source connectors (Notion, Tistory, GitHub, Obsidian)
-indexing/        Chunking, deduplication, Chroma indexing
-search/          Search, ranking, metadata gate, citation answer support
-storage/         SQLite lifecycle management
-tests/, scripts/ Verification harnesses and utilities
+# MCP, sync, search, citation, indexing, and storage flows with temp data
+./scripts/verify_functional_e2e.sh
 ```
 
----
+## Current limitations
 
-## 📖 Additional Docs
+- The default embedding path can use an external provider; a fully local
+  embedding model is not an environment-only option today.
+- The server assumes a trusted, single-user stdio client. It does not provide
+  HTTP authentication, multi-tenancy, quotas, or rate limiting.
+- SQLite and Chroma data are not encrypted by the application.
+- Automated connector tests use mocks; live provider checks are opt-in.
+- No software license has been selected.
+
+More detail:
 
 - [Architecture](.agents/docs/architecture.md)

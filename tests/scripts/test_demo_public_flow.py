@@ -12,7 +12,7 @@ from llama_index.core import Settings
 from scripts.demo_public_flow import main, parse_args, render_demo_text, run_demo
 
 
-def test_run_demo_returns_grounded_public_flow():
+def test_run_demo_returns_grounded_local_flow():
     result = asyncio.run(
         run_demo(
             question="How does ContextWiki prevent stale citations?",
@@ -118,14 +118,20 @@ def test_render_demo_text_includes_sync_search_and_answer_sections():
         question="How does ContextWiki prevent stale citations?",
     )
 
+    assert "ContextWiki Local Demo" in text
     assert "1. Sync retained source" in text
-    assert (
-        "Canonical portfolio path: the same question is used for retrieval and helper answer preview."
-        in text
-    )
+    assert "Retrieval and helper preview use the same input." in text
     assert "3. Search query: How does ContextWiki prevent stale citations?" in text
     assert (
         "4. Helper answer preview question: How does ContextWiki prevent stale citations?"
+        in text
+    )
+    assert "bundled vault through the local Obsidian connector" in text
+    assert "Checks: local Obsidian sync, status, search, and citation wiring." in text
+    assert (
+        "Does not validate: remote Notion/Tistory/GitHub connectors, "
+        "user-configured sources, real MCP-client transport, or production "
+        "semantic embedding quality."
         in text
     )
     assert "Downstream LLMs usually turn this evidence into the final answer." in text
@@ -147,10 +153,7 @@ def test_render_demo_text_warns_when_search_and_answer_inputs_diverge():
         question="How does ContextWiki prevent stale citations?",
     )
 
-    assert (
-        "This transcript uses separate retrieval and answer probes, so do not read it as one validated end-to-end chain."
-        in text
-    )
+    assert "Retrieval and helper preview use different inputs; treat them as separate probes." in text
 
 
 def test_demo_script_json_mode_runs_successfully():
@@ -184,7 +187,7 @@ def test_demo_script_json_mode_runs_successfully():
     assert completed.stdout.lstrip().startswith("{")
 
 
-def test_demo_script_default_text_mode_shows_canonical_portfolio_path():
+def test_demo_script_default_text_mode_shows_local_workflow_scope():
     repo_root = Path(__file__).resolve().parents[2]
     env = dict(os.environ)
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -202,8 +205,16 @@ def test_demo_script_default_text_mode_shows_canonical_portfolio_path():
         env=env,
     )
 
-    assert "ContextWiki Public Demo" in completed.stdout
-    assert "Canonical portfolio path" in completed.stdout
+    assert "ContextWiki Local Demo" in completed.stdout
+    assert "Local workflow smoke" in completed.stdout
+    assert "local Obsidian connector" in completed.stdout
+    assert "Retrieval and helper preview use the same input." in completed.stdout
+    assert "Does not validate: remote Notion/Tistory/GitHub connectors" in (
+        completed.stdout
+    )
+    assert "user-configured sources" in completed.stdout
+    assert "public demo" not in completed.stdout.lower()
+    assert "reviewer workflow" not in completed.stdout.lower()
     assert "3. Search query: How does ContextWiki prevent stale citations?" in completed.stdout
 
 
@@ -231,7 +242,7 @@ def test_demo_script_text_mode_marks_separate_probes_when_inputs_differ():
         env=env,
     )
 
-    assert "This transcript uses separate retrieval and answer probes" in completed.stdout
+    assert "Retrieval and helper preview use different inputs" in completed.stdout
     assert "3. Search query: sqlite active evidence gate" in completed.stdout
     assert "4. Helper answer preview question: Why does ContextWiki validate citations through SQLite?" in completed.stdout
 
@@ -287,7 +298,7 @@ def test_main_reuses_query_when_demo_question_is_omitted(monkeypatch, capsys):
 
     assert captured["query"] == "Why does ContextWiki validate citations through SQLite?"
     assert captured["question"] == "Why does ContextWiki validate citations through SQLite?"
-    assert "Canonical portfolio path" in capsys.readouterr().out
+    assert "Retrieval and helper preview use the same input." in capsys.readouterr().out
 
 
 def test_main_json_mode_marks_separate_probes_when_inputs_differ(monkeypatch, capsys):
@@ -354,7 +365,7 @@ def test_main_text_mode_marks_separate_probes_when_inputs_differ(monkeypatch, ca
     main()
 
     output = capsys.readouterr().out
-    assert "This transcript uses separate retrieval and answer probes" in output
+    assert "Retrieval and helper preview use different inputs" in output
     assert "3. Search query: stale citations" in output
     assert "4. Helper answer preview question: How does ContextWiki prevent stale citations?" in output
 
@@ -371,14 +382,29 @@ def test_demo_help_mentions_question_defaults_to_query():
     )
 
     assert result.returncode == 0, result.stderr
+    assert "safe local ContextWiki workflow smoke" in result.stdout
+    assert "checks the local obsidian connector" in result.stdout.lower()
+    assert "does not validate remote" in result.stdout
+    assert "Notion/Tistory/GitHub connectors" in result.stdout
+    assert "user-configured sources" in result.stdout
     assert "Defaults to the same text as --query." in result.stdout
 
 
 def test_readme_keeps_demo_and_live_smoke_contract_intent():
     repo_root = Path(__file__).resolve().parents[2]
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
 
     assert "./scripts/demo.sh" in readme
-    assert "bundled sample vault" in readme
-    assert "needs no credentials" in readme
-    assert "retrieval plus helper preview on the same input by default" in readme
+    assert "bundled sample vault" in normalized_readme
+    assert "needs no credentials" in normalized_readme
+    assert "runs the local Obsidian" in normalized_readme
+    assert (
+        "**not** test the remote Notion, Tistory, or GitHub connectors"
+        in normalized_readme
+    )
+    assert "user-configured" in normalized_readme
+    assert (
+        "retrieval plus helper preview on the same input by default"
+        in normalized_readme
+    )

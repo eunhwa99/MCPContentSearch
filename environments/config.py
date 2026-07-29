@@ -171,7 +171,7 @@ class AppConfig:
     github_user_agent: str = field(
         default_factory=lambda: os.getenv(
             "CONTEXTWIKI_GITHUB_USER_AGENT",
-            "ContextWikiBot/0.1 (+https://github.com/eunhwa99/MCPContentSearch)",
+            "ContextWikiBot/0.1 (+https://github.com/eunaverse/MCPContentSearch)",
         )
     )
 

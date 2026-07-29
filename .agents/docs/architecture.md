@@ -32,6 +32,12 @@ maintained design reference beyond the README.
   `chromadb.PersistentClient`, defaulting to local user storage unless tests
   provide temporary paths.
 
+SQLite access is operation-scoped. Each metadata operation owns a short-lived
+connection, uses the connection transaction boundary for commit or rollback,
+and closes the connection deterministically before returning. Long-running MCP
+processes must not rely on Python garbage collection to release SQLite file
+descriptors.
+
 The current architecture does not include a production Web Console, Auto Wiki
 generation, generic website/docs crawling, dynamic web fallback, or legacy
 live-search/indexing MCP tools.
@@ -231,6 +237,30 @@ internal helper answer flows
 New behavior should start in the module that owns the relevant responsibility.
 Avoid adding cross-module shortcuts in `api/tools.py` when a service boundary is
 more appropriate.
+
+## MetadataStore Maintainability Boundary
+
+`storage/metadata_store.py` currently centralizes several SQLite concerns in one
+large class. That is a known maintainability risk, but it is not permission to
+replace the store, alter its public methods, or change the database schema in a
+single redesign. A safe future extraction should preserve these responsibility
+boundaries:
+
+- connection setup plus operation-scoped transaction, commit/rollback, and
+  deterministic close behavior
+- source registration/status plus sync-job ownership, heartbeat, recovery, and
+  terminal lifecycle
+- document and chunk lifecycle reads/writes, including tombstones and the
+  active-document/active-chunk gates used before retrieval evidence is returned
+
+Move one boundary at a time behind the existing `MetadataStore` interface.
+Each stage must preserve current method signatures, transaction semantics,
+exception behavior, SQL schema, and caller-visible MCP payloads. Verify every
+stage first with focused storage tests against temporary SQLite databases, then
+with the affected sync/retrieval contract and functional E2E tests. Do not
+inspect or migrate user databases as part of an internal extraction; any later
+schema or user-data migration requires a separate explicit plan with rollback
+and compatibility coverage.
 
 ## Incremental Indexing and Tombstone Safety
 

@@ -1,5 +1,9 @@
 FROM python:3.13.9-slim
 
+LABEL org.opencontainers.image.title="ContextWiki" \
+    org.opencontainers.image.description="Evidence-first MCP retrieval backend" \
+    org.opencontainers.image.source="https://github.com/eunaverse/MCPContentSearch"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
