@@ -551,7 +551,12 @@ def register_tools(
                 metadata_store,
                 allowed_source_ids,
             )
-            if has_no_public_source:
+            if has_no_public_source or (
+                allowed_source_ids is not None and not allowed_source_ids
+            ):
+                # Empty registry must not browse unrestricted rows: store treats
+                # source_ids=[] as "no source filter", which would leave a stale
+                # next_cursor after the public post-filter drops every document.
                 return {"documents": [], "next_cursor": None}
             public_filters = _with_default_public_source_filter(
                 public_filters,
