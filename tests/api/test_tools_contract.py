@@ -1841,6 +1841,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "list_sources",
         "sync_source",
         "sync_all",
+        "wait_for_sync_all",
         "get_sync_status",
         "search_context",
         "search_documents",

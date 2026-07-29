@@ -14,8 +14,9 @@ maintained design reference beyond the README.
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
 - MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
-  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
-  `search_context`, `search_documents`, and `fetch_context`.
+  `list_sources`, `sync_source`, `sync_all`, `wait_for_sync_all`,
+  `get_sync_status`, `search_context`, `search_documents`, and
+  `fetch_context`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
 - Secrets/environment loading: `environments/token.py` and runtime environment
@@ -186,6 +187,20 @@ sync_all
   -> get_sync_status(source_id) reads each source's terminal completion
 ```
 
+Completion-waiting bulk sync flow:
+
+```text
+wait_for_sync_all
+  -> enumerate public retained configured sources
+  -> launch new jobs or reuse already-running jobs
+  -> retain the exact job ids returned by that launch operation
+  -> observe those jobs through SQLite within a bounded wait
+  -> return final per-source success or failure, plus any skipped launch or
+     timeout outcome
+  -> leave timed-out background jobs running
+  -> get_sync_status(source_id) can observe their later completion
+```
+
 Retrieval and answer flow:
 
 ```text
@@ -232,7 +247,8 @@ internal helper answer flows
   Obsidian is a configured local-vault Markdown source, not a live Obsidian app
   or plugin integration.
 - `indexing`: document indexing lifecycle, deterministic chunking, content
-  hash/chunk-id comparison, Chroma mutation, and index status updates.
+  hash/chunk-id comparison, Chroma mutation, index status updates, and bounded
+  observation of exact bulk-sync job completion.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
   active-result validation, and internal citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones,
@@ -373,6 +389,7 @@ Current tools:
 - `list_sources() -> dict`
 - `sync_source(source_id: str) -> dict`
 - `sync_all() -> dict`
+- `wait_for_sync_all(...) -> dict`
 - `get_sync_status(source_id: str = "") -> dict`
 - `search_context(query: str, filters: dict = None, top_k: int = 10, include_debug: bool = False) -> dict`
 - `search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict`
@@ -388,6 +405,13 @@ Contract intent:
   `launch_outcome` values are `started`, `already_running`, `skipped`, or
   `failed`; the aggregate launch status is `accepted`, `partial`, or `failed`.
   Callers must poll `get_sync_status(source_id)` for terminal completion.
+- `wait_for_sync_all` is the completion-oriented companion to `sync_all`. It
+  starts or reuses every public retained configured-source job, tracks the
+  exact jobs returned by that launch operation, and observes their SQLite
+  lifecycle within a bounded wait. One result may contain per-source success,
+  failure, skipped launch, and timeout outcomes. A timeout is an observation
+  boundary, not cancellation: background jobs continue and remain observable
+  through `get_sync_status(source_id)`.
 - `search_documents` is document-oriented: it uses the same retained-source
   retrieval path but returns one representative chunk-backed row per document
   for browsing. Its public result contract intentionally replaces the earlier

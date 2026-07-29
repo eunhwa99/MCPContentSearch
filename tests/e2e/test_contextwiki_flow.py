@@ -371,6 +371,410 @@ def test_contextwiki_fastmcp_sync_all_returns_before_connectors_finish(tmp_path)
     assert second_terminal["latest_job"]["status"] == "succeeded"
 
 
+def test_contextwiki_fastmcp_wait_for_sync_all_returns_exact_terminal_jobs(tmp_path):
+    async def run_flow():
+        registry = SourceRegistry([FakeConnector(), OtherSourceConnector()])
+        store = MetadataStore(tmp_path / "wait-for-sync-all-success.sqlite3")
+        ingestion = IngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        mcp = FastMCP("wait-for-sync-all-success-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        result = await _call_tool_json_async(
+            mcp,
+            "wait_for_sync_all",
+            {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+        )
+        status_by_source = {
+            source_id: await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": source_id},
+            )
+            for source_id in ("source_fake_docs", "source_other")
+        }
+        return result, status_by_source
+
+    result, status_by_source = asyncio.run(run_flow())
+
+    assert result["status"] == "completed"
+    assert result["summary"]["total_sources"] == 2
+    assert result["summary"]["succeeded"] == 2
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["timed_out"] == 0
+    assert {
+        (
+            item["source_id"],
+            item["launch_outcome"],
+            item["completion_outcome"],
+            item["job"]["status"],
+        )
+        for item in result["results"]
+    } == {
+        ("source_fake_docs", "started", "succeeded", "succeeded"),
+        ("source_other", "started", "succeeded", "succeeded"),
+    }
+    for item in result["results"]:
+        latest_job = status_by_source[item["source_id"]]["latest_job"]
+        assert item["job"]["job_id"] == latest_job["job_id"]
+        assert latest_job["status"] == "succeeded"
+
+
+def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_path):
+    class ReusableBlockingConnector(SourceConnector):
+        def __init__(self, entered: asyncio.Event, release: asyncio.Event):
+            self.source = SourceModel(
+                source_id="source_wait_reused",
+                source_type=SourceType.NOTION,
+                name="Reusable Wait Source",
+                enabled=True,
+                auth_ref="env:FAKE",
+                sync_status=SyncStatus.IDLE,
+            )
+            self.entered = entered
+            self.release = release
+
+        async def fetch_documents(self):
+            self.entered.set()
+            await self.release.wait()
+            return []
+
+    class ReuseObservingIngestionService(IngestionService):
+        def __init__(self, *args, reused: asyncio.Event, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.reused = reused
+
+        async def _start_sync_source_with_outcome(self, source_id: str):
+            job, launch_outcome = await super()._start_sync_source_with_outcome(source_id)
+            if launch_outcome == "already_running":
+                self.reused.set()
+            return job, launch_outcome
+
+    async def run_flow():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        reused = asyncio.Event()
+        registry = SourceRegistry([ReusableBlockingConnector(entered, release)])
+        store = MetadataStore(tmp_path / "wait-for-sync-all-reuse.sqlite3")
+        ingestion = ReuseObservingIngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+            reused=reused,
+        )
+        mcp = FastMCP("wait-for-sync-all-reuse-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        try:
+            launched = await _call_tool_json_async(
+                mcp,
+                "sync_source",
+                {"source_id": "source_wait_reused"},
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            wait_call = asyncio.create_task(
+                _call_tool_json_async(
+                    mcp,
+                    "wait_for_sync_all",
+                    {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+                )
+            )
+            await asyncio.wait_for(reused.wait(), timeout=1)
+            release.set()
+            completed = await asyncio.wait_for(wait_call, timeout=1)
+            return launched, completed
+        finally:
+            release.set()
+            if ingestion._background_sync_tasks:
+                await asyncio.gather(
+                    *ingestion._background_sync_tasks.values(),
+                    return_exceptions=True,
+                )
+
+    launched, completed = asyncio.run(run_flow())
+    completed_item = completed["results"][0]
+
+    assert completed["status"] == "completed"
+    assert completed_item["launch_outcome"] == "already_running"
+    assert completed_item["completion_outcome"] == "succeeded"
+    assert completed_item["job"]["status"] == "succeeded"
+    assert completed_item["job"]["job_id"] == launched["job_id"]
+
+
+def test_contextwiki_wait_for_sync_all_does_not_skip_running_job_after_source_is_disabled(
+    tmp_path,
+):
+    class DisabledAfterLaunchConnector(SourceConnector):
+        def __init__(self, entered: asyncio.Event, release: asyncio.Event):
+            self.source = SourceModel(
+                source_id="source_disabled_after_launch",
+                source_type=SourceType.NOTION,
+                name="Disabled After Launch",
+                enabled=True,
+                auth_ref="env:FAKE",
+                sync_status=SyncStatus.IDLE,
+            )
+            self.entered = entered
+            self.release = release
+
+        async def fetch_documents(self):
+            self.entered.set()
+            await self.release.wait()
+            return []
+
+    async def run_flow():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        connector = DisabledAfterLaunchConnector(entered, release)
+        registry = SourceRegistry([connector])
+        store = MetadataStore(tmp_path / "wait-for-disabled-running.sqlite3")
+        ingestion = IngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        mcp = FastMCP("wait-for-disabled-running-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        try:
+            launched = await _call_tool_json_async(
+                mcp,
+                "sync_source",
+                {"source_id": connector.source.source_id},
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            connector.source = connector.source.model_copy(update={"enabled": False})
+
+            wait_call = asyncio.create_task(
+                _call_tool_json_async(
+                    mcp,
+                    "wait_for_sync_all",
+                    {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+                )
+            )
+            await asyncio.sleep(0.15)
+            assert not wait_call.done()
+
+            release.set()
+            completed = await asyncio.wait_for(wait_call, timeout=1)
+            return launched, completed
+        finally:
+            release.set()
+            if ingestion._background_sync_tasks:
+                await asyncio.gather(
+                    *ingestion._background_sync_tasks.values(),
+                    return_exceptions=True,
+                )
+
+    launched, completed = asyncio.run(run_flow())
+    completed_item = completed["results"][0]
+
+    assert completed["status"] == "completed"
+    assert completed["summary"]["succeeded"] == 1
+    assert completed["summary"]["skipped"] == 0
+    assert completed_item["launch_outcome"] == "already_running"
+    assert completed_item["completion_outcome"] == "succeeded"
+    assert completed_item["job"]["status"] == "succeeded"
+    assert completed_item["job"]["job_id"] == launched["job_id"]
+
+
+def test_contextwiki_fastmcp_wait_for_sync_all_reports_failure_and_disabled_skip(tmp_path):
+    class FailingE2EConnector(SourceConnector):
+        source = SourceModel(
+            source_id="source_wait_failing",
+            source_type=SourceType.GITHUB,
+            name="Failing Source",
+            enabled=True,
+            auth_ref="env:FAKE",
+            sync_status=SyncStatus.IDLE,
+        )
+
+        async def fetch_documents(self):
+            raise RuntimeError("token=do-not-expose")
+
+    class DisabledE2EConnector(SourceConnector):
+        source = SourceModel(
+            source_id="source_wait_disabled",
+            source_type=SourceType.OBSIDIAN,
+            name="Disabled Source",
+            enabled=False,
+            auth_ref="env:FAKE",
+            sync_status=SyncStatus.IDLE,
+        )
+        disabled_reason = "credential=do-not-expose"
+
+        async def fetch_documents(self):
+            raise AssertionError("disabled source must not be fetched")
+
+    async def run_flow():
+        registry = SourceRegistry(
+            [FakeConnector(), FailingE2EConnector(), DisabledE2EConnector()]
+        )
+        store = MetadataStore(tmp_path / "wait-for-sync-all-mixed.sqlite3")
+        ingestion = IngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        mcp = FastMCP("wait-for-sync-all-mixed-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        return await _call_tool_json_async(
+            mcp,
+            "wait_for_sync_all",
+            {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+        )
+
+    result = asyncio.run(run_flow())
+    outcomes = {
+        item["source_id"]: (
+            item["launch_outcome"],
+            item["completion_outcome"],
+            item["job"]["status"],
+        )
+        for item in result["results"]
+    }
+
+    assert result["status"] == "partial"
+    assert result["summary"]["succeeded"] == 1
+    assert result["summary"]["failed"] == 1
+    assert result["summary"]["skipped"] == 1
+    assert result["summary"]["timed_out"] == 0
+    assert outcomes == {
+        "source_fake_docs": ("started", "succeeded", "succeeded"),
+        "source_wait_failing": ("started", "failed", "failed"),
+        "source_wait_disabled": ("skipped", "skipped", "failed"),
+    }
+    serialized_result = json.dumps(result)
+    assert "do-not-expose" not in serialized_result
+    assert "<redacted>" in serialized_result
+
+
+def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_path):
+    class BlockingWaitConnector(SourceConnector):
+        def __init__(self, entered: asyncio.Event, release: asyncio.Event):
+            self.source = SourceModel(
+                source_id="source_wait_blocking",
+                source_type=SourceType.NOTION,
+                name="Blocking Wait Source",
+                enabled=True,
+                auth_ref="env:FAKE",
+                sync_status=SyncStatus.IDLE,
+            )
+            self.entered = entered
+            self.release = release
+
+        async def fetch_documents(self):
+            self.entered.set()
+            await self.release.wait()
+            return [
+                DocumentModel(
+                    id="doc_wait_blocking",
+                    source_id=self.source.source_id,
+                    title="Wait completion",
+                    content="The background sync survives an observer timeout.",
+                    url="https://example.com/wait",
+                    platform="Notion",
+                    path="wait.md",
+                    updated_at="2026-07-29T00:00:00Z",
+                )
+            ]
+
+    async def run_flow():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        registry = SourceRegistry([BlockingWaitConnector(entered, release)])
+        store = MetadataStore(tmp_path / "wait-for-sync-all-timeout.sqlite3")
+        ingestion = IngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        mcp = FastMCP("wait-for-sync-all-timeout-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        try:
+            wait_call = asyncio.create_task(
+                _call_tool_json_async(
+                    mcp,
+                    "wait_for_sync_all",
+                    {"timeout_seconds": 0.05, "poll_interval_seconds": 0.1},
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            result = await asyncio.wait_for(wait_call, timeout=1)
+            running_status = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": "source_wait_blocking"},
+            )
+            background_task = ingestion._background_sync_tasks["source_wait_blocking"]
+
+            assert result["status"] == "timed_out"
+            assert result["summary"]["timed_out"] == 1
+            assert result["results"][0]["completion_outcome"] == "timed_out"
+            assert result["results"][0]["job"]["status"] == "running"
+            assert result["results"][0]["job"]["job_id"] == (
+                running_status["latest_job"]["job_id"]
+            )
+            assert running_status["latest_job"]["status"] == "running"
+            assert not background_task.cancelled()
+            assert not background_task.done()
+
+            release.set()
+            terminal_status = await _wait_for_sync_completion(
+                mcp,
+                "source_wait_blocking",
+            )
+            return result, terminal_status
+        finally:
+            release.set()
+            if ingestion._background_sync_tasks:
+                await asyncio.gather(
+                    *ingestion._background_sync_tasks.values(),
+                    return_exceptions=True,
+                )
+
+    result, terminal_status = asyncio.run(run_flow())
+
+    assert result["results"][0]["job"]["status"] == "running"
+    assert terminal_status["latest_job"]["status"] == "succeeded"
+    assert terminal_status["source"]["sync_status"] == "succeeded"
+
+
 def test_context_search_applies_source_filter_before_result_limit(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     indexer = RecordingIndexer()

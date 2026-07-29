@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import math
 from datetime import datetime, timezone
 
 from core.models import DocumentModel, SyncJobStatus
@@ -18,6 +19,11 @@ FETCHING_PAGE_CONTENT_PHASE = "fetching_page_content"
 INDEXING_DOCUMENTS_PHASE = "indexing_documents"
 FETCH_PROGRESS_STOP_SIGNAL = object()
 OBSERVER_CANCELLED_SYNC_ERROR = "Sync request was cancelled by a progress observer before completion."
+DEFAULT_SYNC_WAIT_TIMEOUT_SECONDS = 300.0
+MAX_SYNC_WAIT_TIMEOUT_SECONDS = 600.0
+DEFAULT_SYNC_WAIT_POLL_INTERVAL_SECONDS = 0.25
+MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS = 0.1
+MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS = 5.0
 
 
 class _InactiveJobStop(Exception):
@@ -54,6 +60,52 @@ def _bulk_launch_status_from_results(results: list[dict]) -> str:
     if outcomes == {"failed"}:
         return "failed"
     return "partial"
+
+
+def _bulk_completion_status_from_results(results: list[dict]) -> str:
+    outcomes = {result["completion_outcome"] for result in results}
+    if not outcomes or outcomes.issubset({"succeeded", "skipped"}):
+        return "completed"
+    if "failed" in outcomes and outcomes.issubset({"failed", "skipped"}):
+        return "failed"
+    if "timed_out" in outcomes and outcomes.issubset({"timed_out", "skipped"}):
+        return "timed_out"
+    return "partial"
+
+
+def _validate_sync_wait_options(
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> tuple[float, float]:
+    if isinstance(timeout_seconds, bool) or isinstance(poll_interval_seconds, bool):
+        raise ValueError(
+            "timeout_seconds and poll_interval_seconds must be numeric"
+        )
+    try:
+        normalized_timeout = float(timeout_seconds)
+        normalized_poll_interval = float(poll_interval_seconds)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "timeout_seconds and poll_interval_seconds must be numeric"
+        ) from None
+    if not math.isfinite(normalized_timeout) or not (
+        0 < normalized_timeout <= MAX_SYNC_WAIT_TIMEOUT_SECONDS
+    ):
+        raise ValueError(
+            f"timeout_seconds must be greater than 0 and at most "
+            f"{MAX_SYNC_WAIT_TIMEOUT_SECONDS:g}"
+        )
+    if not math.isfinite(normalized_poll_interval) or not (
+        MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS
+        <= normalized_poll_interval
+        <= MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS
+    ):
+        raise ValueError(
+            f"poll_interval_seconds must be between "
+            f"{MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS:g} and "
+            f"{MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS:g}"
+        )
+    return normalized_timeout, normalized_poll_interval
 
 
 def _indexing_status_message(processed_documents: int, total_documents: int) -> str:
@@ -178,6 +230,92 @@ class IngestionService:
             "results": results,
         }
 
+    async def wait_for_sync_all(
+        self,
+        source_ids: list[str] | None = None,
+        timeout_seconds: float = DEFAULT_SYNC_WAIT_TIMEOUT_SECONDS,
+        poll_interval_seconds: float = DEFAULT_SYNC_WAIT_POLL_INTERVAL_SECONDS,
+    ) -> dict:
+        """Launch or reuse source syncs and observe their exact jobs until completion."""
+        timeout_seconds, poll_interval_seconds = _validate_sync_wait_options(
+            timeout_seconds,
+            poll_interval_seconds,
+        )
+        launch_result = await self.sync_all(source_ids=source_ids)
+        results = [dict(item) for item in launch_result.get("results", [])]
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+
+        while True:
+            pending_results = []
+            for result in results:
+                launch_outcome = result.get("launch_outcome", "")
+                if launch_outcome == "skipped":
+                    result["completion_outcome"] = "skipped"
+                    continue
+                if launch_outcome == "failed" and not result.get("job"):
+                    result["completion_outcome"] = "failed"
+                    continue
+
+                launched_job = result.get("job")
+                job_id = getattr(launched_job, "job_id", "")
+                if not job_id:
+                    result["completion_outcome"] = "failed"
+                    result["message"] = "Sync launch did not return a job identifier."
+                    continue
+
+                current_job = self.metadata_store.get_sync_job(job_id)
+                if current_job is None:
+                    result["completion_outcome"] = "failed"
+                    result["message"] = "Sync job is no longer available."
+                    result["job"] = launched_job
+                    continue
+
+                result["job"] = current_job
+                if current_job.status == SyncJobStatus.SUCCEEDED:
+                    result["completion_outcome"] = "succeeded"
+                elif current_job.status == SyncJobStatus.FAILED:
+                    result["completion_outcome"] = "failed"
+                    result["message"] = current_job.error_message
+                else:
+                    result.pop("completion_outcome", None)
+                    pending_results.append(result)
+
+            if not pending_results:
+                break
+            remaining_seconds = deadline - asyncio.get_running_loop().time()
+            if remaining_seconds <= 0:
+                for result in pending_results:
+                    result["completion_outcome"] = "timed_out"
+                    result["message"] = (
+                        f"Sync is still running after {timeout_seconds:g} seconds."
+                    )
+                break
+            await asyncio.sleep(min(poll_interval_seconds, remaining_seconds))
+
+        completed_at = _now()
+        summary = {
+            "total_sources": len(results),
+            "succeeded": sum(
+                1 for result in results if result["completion_outcome"] == "succeeded"
+            ),
+            "failed": sum(
+                1 for result in results if result["completion_outcome"] == "failed"
+            ),
+            "skipped": sum(
+                1 for result in results if result["completion_outcome"] == "skipped"
+            ),
+            "timed_out": sum(
+                1 for result in results if result["completion_outcome"] == "timed_out"
+            ),
+            "requested_at": launch_result.get("summary", {}).get("requested_at", ""),
+            "completed_at": completed_at,
+        }
+        return {
+            "status": _bulk_completion_status_from_results(results),
+            "summary": summary,
+            "results": results,
+        }
+
     async def sync_source(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
         await self._await_finished_background_handoff(source_id)
@@ -233,10 +371,10 @@ class IngestionService:
                 return latest_job, "failed"
         connector, job, should_run = self._begin_sync_source(source_id)
         if not should_run:
-            if not connector.source.enabled:
-                return job, "skipped"
             if job.status == SyncJobStatus.RUNNING:
                 return job, "already_running"
+            if not connector.source.enabled:
+                return job, "skipped"
             return job, "failed"
         try:
             task = asyncio.create_task(
