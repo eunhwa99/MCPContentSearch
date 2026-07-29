@@ -36,6 +36,7 @@ For detailed data flows and design constraints, see
 | `list_sources()` | Lists configured sources and their current state | When the user asks which sources are connected or available |
 | `sync_source(source_id)` | Starts a sync for one source, or returns its already-running sync job | When the user asks to import or refresh one specific source |
 | `sync_all()` | Starts all configured source syncs in the background and immediately reports each launch result | When the user asks to import or refresh every source |
+| `wait_for_sync_all()` | Starts or reuses all public configured-source syncs and waits for their final results within a bounded wait | When the user wants one final all-source report without polling each source |
 | `get_sync_status(source_id="")` | Shows source and sync-job status for one source, or all sources when `source_id` is omitted | When the user asks whether a sync has finished or why it failed |
 | `search_context(query, ...)` | Finds relevant chunks and returns citation-ready context after SQLite validation | When the LLM needs focused evidence to answer the user's question |
 | `search_documents(query, ...)` | Returns one result per document with the full best-matching chunk text in `matched_context` | When the user asks for relevant documents and the LLM needs one representative passage from each document |
@@ -59,7 +60,8 @@ behavior of `search_context` is unchanged.
 |--------------|-----------------------|
 | “Which sources are connected?” | `list_sources()` |
 | “Refresh my Notion content.” | `sync_source("source_notion")` |
-| “Refresh all of my connected sources.” | `sync_all()` |
+| “Start refreshing all of my connected sources in the background.” | `sync_all()` |
+| “Refresh all of my connected sources and tell me their final results.” | `wait_for_sync_all()` |
 | “Has the Notion sync finished?” | `get_sync_status("source_notion")` |
 | “Find evidence about how this project prevents stale citations.” | `search_context(...)` |
 | “Show me each relevant document about SQLite with its most relevant passage.” | `search_documents(...)` |
@@ -216,12 +218,19 @@ Add the same local uv config above to `.cursor/mcp.json`.
      `failed` response uses `error_message`, while an `error` response uses
      `message`; after polling ends in `failed`, inspect
      `latest_job.error_message` or `source.latest_failure_reason`.
-   - For all sources, call `sync_all()`. It returns after launch decisions,
-     without waiting for the syncs to finish. Check each
-     `results[].launch_outcome`: `started` means a new job was launched,
-     `already_running` means the existing job was reused, and `skipped` or
-     `failed` means that source did not start. For every started or already
-     running source, poll `get_sync_status(source_id)` until
+   - For one completion report covering all public configured sources, call
+     `wait_for_sync_all()`. It starts new jobs or reuses already-running jobs,
+     then waits within a bounded request for their final per-source results.
+     The result can contain a mix of success, failure, skipped launch, and
+     timeout outcomes. A timeout ends only this wait; it does not cancel the
+     background sync. Call `get_sync_status(source_id)` later to observe a
+     timed-out job's eventual completion.
+   - To launch all sources without waiting, call `sync_all()`. It remains
+     launch-only and returns after launch decisions, without waiting for the
+     syncs to finish. Check each `results[].launch_outcome`: `started` means a
+     new job was launched, `already_running` means the existing job was reused,
+     and `skipped` or `failed` means that source did not start. For every
+     started or already running source, poll `get_sync_status(source_id)` until
      `latest_job.status` becomes `succeeded` or `failed`. The top-level status
      summarizes launch acceptance: `accepted`, `partial`, or `failed`.
 2. Search successfully refreshed sources with `search_context()` or

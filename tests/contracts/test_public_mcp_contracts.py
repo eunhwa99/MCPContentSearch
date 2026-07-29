@@ -3,6 +3,7 @@ import json
 
 import pytest
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from api.tools import register_tools
 from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
@@ -145,6 +146,7 @@ class FakeIngestionService:
         self.metadata_store = metadata_store
         self.calls: dict[str, int] = {}
         self.job_numbers: dict[str, int] = {}
+        self.wait_calls: list[dict] = []
 
     async def start_sync_source(self, source_id):
         self.calls[source_id] = self.calls.get(source_id, 0) + 1
@@ -204,6 +206,113 @@ class FakeIngestionService:
                             "started_at": "2026-06-15T00:00:00+00:00",
                             "finished_at": "",
                             "error_message": "",
+                        }
+                    ),
+                },
+            ],
+        }
+
+    async def wait_for_sync_all(
+        self,
+        source_ids=None,
+        timeout_seconds=300.0,
+        poll_interval_seconds=0.25,
+    ):
+        self.wait_calls.append(
+            {
+                "source_ids": source_ids,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            }
+        )
+        return {
+            "status": "completed",
+            "summary": {
+                "total_sources": 2,
+                "succeeded": 2,
+                "failed": 0,
+                "skipped": 0,
+                "timed_out": 0,
+                "requested_at": "2026-06-15T00:00:00+00:00",
+                "completed_at": "2026-06-15T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": source_id,
+                    "launch_outcome": "started",
+                    "completion_outcome": "succeeded",
+                    "message": "",
+                    "job": Dumpable(
+                        {
+                            "job_id": f"job-{source_id}",
+                            "source_id": source_id,
+                            "status": "succeeded",
+                            "started_at": "2026-06-15T00:00:00+00:00",
+                            "finished_at": "2026-06-15T00:00:01+00:00",
+                            "error_message": "",
+                        }
+                    ),
+                }
+                for source_id in ("source_github", "source_obsidian")
+            ],
+        }
+
+
+class FakeMixedWaitIngestionService(FakeIngestionService):
+    async def wait_for_sync_all(
+        self,
+        source_ids=None,
+        timeout_seconds=300.0,
+        poll_interval_seconds=0.25,
+    ):
+        self.wait_calls.append(
+            {
+                "source_ids": source_ids,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            }
+        )
+        return {
+            "status": "failed",
+            "summary": {
+                "total_sources": 2,
+                "succeeded": 0,
+                "failed": 1,
+                "skipped": 1,
+                "timed_out": 0,
+                "requested_at": "2026-06-15T00:00:00+00:00",
+                "completed_at": "2026-06-15T00:00:01+00:00",
+            },
+            "results": [
+                {
+                    "source_id": "source_github",
+                    "launch_outcome": "started",
+                    "completion_outcome": "failed",
+                    "message": "Sync failed. See server logs for details.",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-source_github",
+                            "source_id": "source_github",
+                            "status": "failed",
+                            "started_at": "2026-06-15T00:00:00+00:00",
+                            "finished_at": "2026-06-15T00:00:01+00:00",
+                            "error_message": "Sync failed. See server logs for details.",
+                        }
+                    ),
+                },
+                {
+                    "source_id": "source_obsidian",
+                    "launch_outcome": "skipped",
+                    "completion_outcome": "skipped",
+                    "message": "Source is disabled.",
+                    "job": Dumpable(
+                        {
+                            "job_id": "job-source_obsidian",
+                            "source_id": "source_obsidian",
+                            "status": "failed",
+                            "started_at": "2026-06-15T00:00:00+00:00",
+                            "finished_at": "2026-06-15T00:00:01+00:00",
+                            "error_message": "Source is disabled.",
                         }
                     ),
                 },
@@ -434,6 +543,139 @@ def test_sync_all_contract_uses_real_fastmcp_call_tool():
         "source_github",
         "source_obsidian",
     ]
+
+
+def test_wait_for_sync_all_contract_returns_terminal_results_through_real_fastmcp():
+    harness = build_contract_harness()
+
+    payload = call_tool_json(
+        harness["mcp"],
+        "wait_for_sync_all",
+        {"timeout_seconds": 12.5, "poll_interval_seconds": 0.1},
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["summary"] == {
+        "total_sources": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "skipped": 0,
+        "timed_out": 0,
+        "requested_at": "2026-06-15T00:00:00+00:00",
+        "completed_at": "2026-06-15T00:00:01+00:00",
+    }
+    assert [
+        (
+            item["source_id"],
+            item["launch_outcome"],
+            item["completion_outcome"],
+            item["job"]["status"],
+        )
+        for item in payload["results"]
+    ] == [
+        ("source_github", "started", "succeeded", "succeeded"),
+        ("source_obsidian", "started", "succeeded", "succeeded"),
+    ]
+    assert harness["ingestion_service"].wait_calls == [
+        {
+            "source_ids": None,
+            "timeout_seconds": 12.5,
+            "poll_interval_seconds": 0.1,
+        }
+    ]
+
+
+def test_wait_for_sync_all_contract_preserves_failed_and_skipped_outcomes():
+    source_registry = FakeSourceRegistry()
+    metadata_store = FakeMetadataStore(source_registry)
+    ingestion_service = FakeMixedWaitIngestionService(metadata_store)
+    mcp = FastMCP("public-mixed-wait-contract-test")
+    register_tools(
+        mcp,
+        ingestion_service=ingestion_service,
+        metadata_store=metadata_store,
+        source_registry=source_registry,
+    )
+
+    payload = call_tool_json(mcp, "wait_for_sync_all")
+
+    assert payload["status"] == "failed"
+    assert payload["summary"]["failed"] == 1
+    assert payload["summary"]["skipped"] == 1
+    assert [
+        (
+            item["source_id"],
+            item["launch_outcome"],
+            item["completion_outcome"],
+            item["job"]["status"],
+        )
+        for item in payload["results"]
+    ] == [
+        ("source_github", "started", "failed", "failed"),
+        ("source_obsidian", "skipped", "skipped", "failed"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_fragment"),
+    [
+        ({"timeout_seconds": 0}, "timeout_seconds"),
+        ({"timeout_seconds": 601}, "timeout_seconds"),
+        ({"poll_interval_seconds": 0.099}, "poll_interval_seconds"),
+        ({"poll_interval_seconds": 6}, "poll_interval_seconds"),
+    ],
+)
+def test_wait_for_sync_all_contract_rejects_unbounded_wait_parameters(
+    arguments,
+    expected_fragment,
+):
+    harness = build_contract_harness()
+
+    payload = call_tool_json(harness["mcp"], "wait_for_sync_all", arguments)
+
+    assert payload["status"] == "error"
+    assert expected_fragment in payload["message"]
+    assert payload["summary"]["total_sources"] == 0
+    assert payload["results"] == []
+    assert harness["ingestion_service"].wait_calls == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "field_name"),
+    [
+        ({"timeout_seconds": True}, "timeout_seconds"),
+        ({"poll_interval_seconds": True}, "poll_interval_seconds"),
+    ],
+)
+def test_wait_for_sync_all_contract_rejects_booleans_before_any_launch_side_effect(
+    arguments,
+    field_name,
+):
+    harness = build_contract_harness()
+    metadata_store = harness["metadata_store"]
+    ingestion_service = harness["ingestion_service"]
+    jobs_before = {
+        source_id: job.model_dump()
+        for source_id, job in metadata_store.jobs.items()
+    }
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            harness["mcp"].call_tool(
+                "wait_for_sync_all",
+                arguments,
+            )
+        )
+
+    assert field_name in str(exc_info.value)
+    assert "valid number" in str(exc_info.value)
+    assert ingestion_service.wait_calls == []
+    assert ingestion_service.calls == {}
+    assert ingestion_service.job_numbers == {}
+    assert {
+        source_id: job.model_dump()
+        for source_id, job in metadata_store.jobs.items()
+    } == jobs_before
 
 
 def test_get_sync_status_contract_uses_real_fastmcp_call_tool():
