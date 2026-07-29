@@ -17,6 +17,7 @@ class RetrievalQualityCase:
     expected_source_id: str = ""
     required_chunk_ids: tuple[str, ...] = ()
     forbidden_chunk_ids: tuple[str, ...] = ()
+    filters: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "RetrievalQualityCase":
@@ -30,6 +31,7 @@ class RetrievalQualityCase:
             expected_source_id=str(value.get("expected_source_id", "")),
             required_chunk_ids=tuple(value.get("required_chunk_ids", ())),
             forbidden_chunk_ids=tuple(value.get("forbidden_chunk_ids", ())),
+            filters=dict(value.get("filters", {})),
         )
 
 

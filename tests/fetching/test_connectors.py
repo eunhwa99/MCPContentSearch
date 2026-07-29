@@ -232,6 +232,25 @@ def test_obsidian_connector_is_enabled_for_temp_vault(tmp_path):
     assert connector.supports_stale_cleanup is True
 
 
+def test_obsidian_connector_normalizes_filesystem_modified_time(tmp_path):
+    note = tmp_path / "dated.md"
+    note.write_text("# Dated\n\nfilesystem timestamp", encoding="utf-8")
+    expected_modified_at = obsidian_module.datetime.fromtimestamp(
+        note.stat().st_mtime,
+        tz=obsidian_module.timezone.utc,
+    ).isoformat()
+
+    document = asyncio.run(
+        ObsidianSourceConnector(
+            AppConfig(obsidian_vault_path=tmp_path)
+        ).fetch_documents()
+    )[0]
+
+    assert document.modified_at == expected_modified_at
+    assert document.date_provenance == "filesystem"
+    assert document.published_at == ""
+
+
 def test_obsidian_connector_is_disabled_for_relative_vault_path():
     connector = ObsidianSourceConnector(
         AppConfig(obsidian_vault_path=Path("relative-vault"))

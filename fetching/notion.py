@@ -406,6 +406,9 @@ class NotionPageProcessor:
             canonical_url=page.get("url", ""),
             date=page.get("created_time", ""),
             updated_at=page.get("last_edited_time", page.get("created_time", "")),
+            published_at=page.get("created_time", ""),
+            modified_at=page.get("last_edited_time", page.get("created_time", "")),
+            date_provenance="notion",
         )
 
 

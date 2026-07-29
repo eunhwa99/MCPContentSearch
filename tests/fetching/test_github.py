@@ -878,6 +878,9 @@ def test_github_connector_fetches_text_files_with_stable_identity_and_citations(
     )
     assert tools_doc.url == tools_doc.canonical_url
     assert tools_doc.version_id == _sha("blob-tools")
+    assert tools_doc.published_at == ""
+    assert tools_doc.modified_at == ""
+    assert tools_doc.date_provenance == ""
     assert tools_doc.platform == "GitHub"
     assert "register_tools" in tools_doc.content
 

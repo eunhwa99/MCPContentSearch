@@ -1,0 +1,34 @@
+[
+  {
+    "case_id": "published-desc-tie-and-null-last",
+    "query": "document ordering sentinel",
+    "sort_by": "published_at",
+    "sort_order": "desc",
+    "top_k": 4,
+    "filters": {
+      "source_ids": ["source_notion"]
+    },
+    "expected_document_ids": [
+      "notion:document-sort-new",
+      "notion:document-sort-tie-a",
+      "notion:document-sort-tie-b",
+      "notion:document-sort-null"
+    ]
+  },
+  {
+    "case_id": "published-asc-tie-and-null-last",
+    "query": "document ordering sentinel",
+    "sort_by": "published_at",
+    "sort_order": "asc",
+    "top_k": 4,
+    "filters": {
+      "source_ids": ["source_notion"]
+    },
+    "expected_document_ids": [
+      "notion:document-sort-tie-a",
+      "notion:document-sort-tie-b",
+      "notion:document-sort-new",
+      "notion:document-sort-null"
+    ]
+  }
+]

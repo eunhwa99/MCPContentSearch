@@ -6,8 +6,19 @@ import tempfile
 import time
 from pathlib import Path
 
-from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
+from core.models import (
+    ChunkModel,
+    DocumentModel,
+    SearchFilters,
+    SourceModel,
+    SourceType,
+    SyncStatus,
+)
 from evals.answer_quality import evaluate_answer_suite, load_cases as load_answer_cases
+from evals.document_sort_quality import (
+    evaluate_document_sort_suite,
+    load_cases as load_document_sort_cases,
+)
 from evals.retrieval_quality import (
     evaluate_search_suite,
     load_cases as load_retrieval_cases,
@@ -21,6 +32,7 @@ from storage.metadata_store import MetadataStore
 FIXTURE_DOCUMENTS_PATH = Path("evals/contextwiki_fixture_documents.json")
 RETRIEVAL_CASES_PATH = Path("evals/retrieval_quality_cases.json")
 ANSWER_CASES_PATH = Path("evals/contextwiki_answer_quality_cases.json")
+DOCUMENT_SORT_CASES_PATH = Path("evals/document_sort_quality_cases.json")
 
 
 class FixtureIndexer:
@@ -110,12 +122,14 @@ def run_contextwiki_eval(
     fixture_documents_path: str | Path = FIXTURE_DOCUMENTS_PATH,
     retrieval_cases_path: str | Path = RETRIEVAL_CASES_PATH,
     answer_cases_path: str | Path = ANSWER_CASES_PATH,
+    document_sort_cases_path: str | Path = DOCUMENT_SORT_CASES_PATH,
     output_dir: str | Path | None = None,
     include_latency: bool = False,
 ) -> dict:
     documents = json.loads(Path(fixture_documents_path).read_text(encoding="utf-8"))
     retrieval_cases = load_retrieval_cases(retrieval_cases_path)
     answer_cases = load_answer_cases(answer_cases_path)
+    document_sort_cases = load_document_sort_cases(document_sort_cases_path)
 
     with tempfile.TemporaryDirectory(prefix="contextwiki-eval-") as temp_dir:
         store = MetadataStore(Path(temp_dir) / "contextwiki.sqlite3")
@@ -131,6 +145,10 @@ def run_contextwiki_eval(
         retrieval_payloads, retrieval_latency_ms = _run_retrieval_cases(
             search_service, retrieval_cases
         )
+        document_sort_payloads, document_sort_latency_ms = _run_document_sort_cases(
+            search_service,
+            document_sort_cases,
+        )
         answer_payloads, answer_latency_ms = _run_answer_cases(
             answer_service, answer_cases
         )
@@ -143,16 +161,30 @@ def run_contextwiki_eval(
         answer_payloads,
         answer_cases,
     )
+    document_sort_suite = evaluate_document_sort_suite(
+        document_sort_payloads,
+        document_sort_cases,
+    )
     summary = {
-        "passed": retrieval_suite["passed"] and answer_suite["passed"],
+        "passed": (
+            retrieval_suite["passed"]
+            and document_sort_suite["passed"]
+            and answer_suite["passed"]
+        ),
         "artifact_dir": str(Path(output_dir)) if output_dir is not None else "",
         "retrieval_suite": retrieval_suite,
+        "document_sort_suite": document_sort_suite,
         "answer_suite": answer_suite,
     }
     if include_latency:
         summary["runtime_metrics"] = {
             "retrieval_suite": {
                 "latency_ms": _latency_summary(list(retrieval_latency_ms.values()))
+            },
+            "document_sort_suite": {
+                "latency_ms": _latency_summary(
+                    list(document_sort_latency_ms.values())
+                )
             },
             "answer_suite": {
                 "latency_ms": _latency_summary(list(answer_latency_ms.values()))
@@ -199,6 +231,10 @@ def _seed_fixture_documents(store: MetadataStore, documents: list[dict]) -> None
                 platform=source_type.value,
                 path=path,
                 chunk_id=chunk_id,
+                published_at=str(item.get("published_at", "")),
+                modified_at=str(item.get("modified_at", "")),
+                indexed_at=str(item.get("indexed_at", "")),
+                date_provenance=str(item.get("date_provenance", "")),
             ),
             [
                 ChunkModel(
@@ -224,8 +260,13 @@ def _run_retrieval_cases(
     latency_ms: dict[str, float] = {}
     for case in retrieval_cases:
         started = time.perf_counter()
+        filters = SearchFilters.model_validate(case.filters) if case.filters else None
         payloads[case.case_id] = asyncio.run(
-            search_service.search_context(case.query, top_k=case.top_k)
+            search_service.search_context(
+                case.query,
+                filters=filters,
+                top_k=case.top_k,
+            )
         )
         latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
     return payloads, latency_ms
@@ -246,12 +287,35 @@ def _run_answer_cases(
     return payloads, latency_ms
 
 
+def _run_document_sort_cases(
+    search_service: ContextSearchService,
+    document_sort_cases,
+) -> tuple[dict[str, dict], dict[str, float]]:
+    payloads: dict[str, dict] = {}
+    latency_ms: dict[str, float] = {}
+    for case in document_sort_cases:
+        started = time.perf_counter()
+        filters = SearchFilters.model_validate(case.filters) if case.filters else None
+        payloads[case.case_id] = asyncio.run(
+            search_service.search_documents(
+                case.query,
+                filters=filters,
+                sort_by=case.sort_by,
+                sort_order=case.sort_order,
+                top_k=case.top_k,
+            )
+        )
+        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+    return payloads, latency_ms
+
+
 def _write_artifacts(output_dir: Path, summary: dict) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     runtime_metrics_path = output_dir / "runtime_metrics.json"
     stable_summary = {
         "passed": summary["passed"],
         "retrieval_suite": summary["retrieval_suite"],
+        "document_sort_suite": summary["document_sort_suite"],
         "answer_suite": summary["answer_suite"],
     }
     (output_dir / "summary.json").write_text(
@@ -265,6 +329,15 @@ def _write_artifacts(output_dir: Path, summary: dict) -> None:
     )
     (output_dir / "answer_suite.json").write_text(
         json.dumps(stable_summary["answer_suite"], ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "document_sort_suite.json").write_text(
+        json.dumps(
+            stable_summary["document_sort_suite"],
+            ensure_ascii=False,
+            indent=2,
+        )
         + "\n",
         encoding="utf-8",
     )

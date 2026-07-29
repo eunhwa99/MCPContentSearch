@@ -1,5 +1,7 @@
+import asyncio
 import json
 
+from core.models import ChunkModel, DocumentModel, SearchFilters
 from evals.contextwiki_eval import run_contextwiki_eval
 from evals.retrieval_quality import (
     RetrievalQualityCase,
@@ -8,6 +10,8 @@ from evals.retrieval_quality import (
     load_cases,
 )
 from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
+from search.context_service import ContextSearchService
+from storage.metadata_store import MetadataStore
 
 
 def test_retrieval_payload_passes_when_expected_top_chunk_and_source_match():
@@ -29,6 +33,57 @@ def test_retrieval_payload_passes_when_expected_top_chunk_and_source_match():
 
     assert result.passed
     assert result.score == 1.0
+
+
+def test_retained_retrieval_eval_selects_only_documents_inside_date_filter(tmp_path):
+    store = MetadataStore(tmp_path / "date-filter-eval.sqlite3")
+    retriever_documents = []
+    for document_id, published_at in [
+        ("outside", "2026-06-30T23:59:59Z"),
+        ("inside", "2026-07-01T00:00:00Z"),
+    ]:
+        document = DocumentModel(
+            id=document_id,
+            document_id=document_id,
+            source_id="source_notion",
+            title=f"ContextWiki {document_id}",
+            content="ContextWiki retained date-filter evidence.",
+            url=f"https://example.com/{document_id}",
+            platform="Notion",
+            published_at=published_at,
+            modified_at=published_at,
+            indexed_at=published_at,
+            date_provenance="notion",
+        )
+        chunk = ChunkModel(
+            chunk_id=f"{document_id}-chunk",
+            document_id=document_id,
+            source_id="source_notion",
+            title=document.title,
+            text=document.content,
+            url=document.url,
+            chunk_index=0,
+            content_hash=document_id,
+        )
+        store.upsert_document_and_replace_chunks(document, [chunk])
+        retriever_documents.append(chunk.to_document_model(platform="Notion"))
+
+    payload = asyncio.run(
+        ContextSearchService(
+            store,
+            retriever=retriever_documents,
+        ).search_context(
+            "ContextWiki",
+            filters=SearchFilters(
+                source_ids=["source_notion"],
+                published_from="2026-07-01T00:00:00Z",
+                published_to="2026-07-01T00:00:00Z",
+            ),
+            top_k=2,
+        )
+    )
+
+    assert [result.document_id for result in payload["results"]] == ["inside"]
 
 
 def test_retrieval_payload_fails_when_expected_chunk_is_not_ranked_first():
@@ -111,13 +166,21 @@ def test_retrieval_fixture_cases_load_and_suite_summarizes_results():
             ]
         },
         "compound-expansion-collision-awslambda": {"results": []},
+        "published-date-window": {
+            "results": [
+                {
+                    "chunk_id": "release-date-inside-chunk",
+                    "source_id": "source_notion",
+                }
+            ]
+        },
     }
 
     summary = evaluate_search_suite(payloads, cases)
 
     assert summary["passed"]
-    assert summary["total"] == 13
-    assert summary["passed_count"] == 13
+    assert summary["total"] == 14
+    assert summary["passed_count"] == 14
 
 
 def test_retrieval_fixture_cases_cover_mixed_query_groups():
@@ -131,6 +194,7 @@ def test_retrieval_fixture_cases_cover_mixed_query_groups():
     assert "markdown-format" in groups
     assert "obsidian-format" in groups
     assert "mixed-language" in groups
+    assert "date-filter" in groups
 
 
 def test_retrieval_suite_fails_when_case_list_is_empty():
@@ -145,10 +209,19 @@ def test_contextwiki_eval_runner_passes_fixture_suites():
 
     assert summary["passed"]
     assert summary["retrieval_suite"]["passed"]
+    assert summary["document_sort_suite"]["passed"]
     assert summary["answer_suite"]["passed"]
     assert "group_breakdown" in summary["retrieval_suite"]
     assert "group_breakdown" in summary["answer_suite"]
     assert "runtime_metrics" not in summary
+    assert summary["retrieval_suite"]["total"] == 14
+    date_result = next(
+        result
+        for result in summary["retrieval_suite"]["results"]
+        if result["case_id"] == "published-date-window"
+    )
+    assert date_result["passed"]
+    assert date_result["details"]["chunk_ids"] == ["release-date-inside-chunk"]
 
 
 def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
@@ -170,7 +243,7 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     assert answer_groups["obsidian-format"]["total"] >= 1
     assert answer_groups["mixed-language"]["total"] >= 1
 
-    for suite_name in ("retrieval_suite", "answer_suite"):
+    for suite_name in ("retrieval_suite", "document_sort_suite", "answer_suite"):
         latency = summary["runtime_metrics"][suite_name]["latency_ms"]
         assert latency["total"] > 0
         assert latency["max"] >= latency["min"] >= 0
@@ -178,6 +251,7 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
 
     assert (output_dir / "summary.json").is_file()
     assert (output_dir / "retrieval_suite.json").is_file()
+    assert (output_dir / "document_sort_suite.json").is_file()
     assert (output_dir / "answer_suite.json").is_file()
     assert (output_dir / "runtime_metrics.json").is_file()
 

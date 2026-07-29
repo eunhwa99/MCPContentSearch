@@ -39,11 +39,60 @@ For detailed data flows and design constraints, see
 | `wait_for_sync_all()` | Starts or reuses all public configured-source syncs and waits for their final results within a bounded wait | When the user wants one final all-source report without polling each source |
 | `get_sync_status(source_id="")` | Shows source and sync-job status for one source, or all sources when `source_id` is omitted | When the user asks whether a sync has finished or why it failed |
 | `search_context(query, ...)` | Finds relevant chunks and returns citation-ready context after SQLite validation | When the LLM needs focused evidence to answer the user's question |
-| `search_documents(query, ...)` | Returns one result per document with the full best-matching chunk text in `matched_context` | When the user asks for relevant documents and the LLM needs one representative passage from each document |
+| `search_documents(query, ...)` | Returns one result per matching document and can sort the semantic candidates by relevance or normalized dates | When the user asks for relevant documents and the LLM needs one representative passage from each document |
+| `list_documents(...)` | Browses all active public documents without a semantic query, with deterministic date sorting and cursor pagination | When the user asks for recent, oldest, or date-bounded documents rather than topic matches |
 | `fetch_context(document_id="", chunk_id="")` | Fetches stored document content and its chunks, or one known chunk, directly by ID | As an optional drill-down when the LLM already has an ID and needs more stored content than the search result provides |
 
 `matched_context` is specific to `search_documents`. The separate preview
 behavior of `search_context` is unchanged.
+
+### Date filters and sorting
+
+`search_context`, `search_documents`, and `list_documents` accept a typed
+`filters` object with these fields:
+
+```json
+{
+  "source_ids": ["source_notion", "source_tistory"],
+  "published_from": "2026-07-01T00:00:00Z",
+  "published_to": "2026-07-31T23:59:59Z",
+  "modified_from": "",
+  "modified_to": "",
+  "indexed_from": "",
+  "indexed_to": ""
+}
+```
+
+Use `source_id` for one source or `source_ids` for several sources. They are
+alternatives in normal calls. If both are supplied, ContextWiki uses the
+deduplicated union of `source_id` and `source_ids`; it does not intersect them.
+Unknown filter keys are rejected by the MCP input schema.
+
+All date bounds are inclusive and normalized to UTC. ISO 8601 timestamps
+without an offset are treated as UTC; a date-only value starts at midnight UTC.
+An empty field means that bound is not applied. Results include
+`published_at`, `modified_at`, `indexed_at`, and `date_provenance` when known.
+
+- `search_context(query, filters=..., top_k=10)` keeps relevance ordering while
+  applying source and normalized-date filters through SQLite before truncation.
+- `search_documents(query, filters=..., sort_by="relevance",
+  sort_order="desc", top_k=10)` supports `relevance`, `published_at`,
+  `modified_at`, or `indexed_at`. Date sorting orders only documents found in
+  the bounded semantic candidate set; use `list_documents` for a global date
+  view.
+- `list_documents(filters=..., sort_by="indexed_at", sort_order="desc",
+  page_size=20, cursor=null)` supports the three normalized date fields,
+  requires no query, and returns `{"documents": [...], "next_cursor": ...}`.
+  `page_size` must be between 1 and 50. Pass the opaque `next_cursor` back
+  unchanged with the same filters and sort settings; null dates sort last.
+
+Normalized date provenance is source-aware: Notion supplies creation and edit
+times, Tistory supplies publication time when present, and Obsidian supplies
+filesystem modification time. A GitHub blob SHA remains revision metadata
+(`version_id`) and is never interpreted as a modification timestamp.
+`indexed_at` records when SQLite stores the document. The additive SQLite
+columns are populated by normal future sync/indexing; existing Chroma vectors
+do not need to be rebuilt.
 
 ### `source_id` values
 
@@ -65,9 +114,12 @@ behavior of `search_context` is unchanged.
 | “Has the Notion sync finished?” | `get_sync_status("source_notion")` |
 | “Find evidence about how this project prevents stale citations.” | `search_context(...)` |
 | “Show me each relevant document about SQLite with its most relevant passage.” | `search_documents(...)` |
+| “Show my newest documents from July, regardless of topic.” | `list_documents(filters={"indexed_from": "2026-07-01"}, sort_by="indexed_at", sort_order="desc")` |
 | “Retrieve the stored content and chunks for the document you just found.” | `fetch_context(document_id="...")` |
 
-> 💡 In production, use `search_context` / `search_documents` to gather grounded evidence, then let a downstream LLM generate the final answer.
+> 💡 In production, use `search_context` / `search_documents` to gather grounded
+> evidence, `list_documents` for query-less date browsing, then let a downstream
+> LLM generate the final answer.
 
 ---
 
@@ -246,7 +298,8 @@ Add the same local uv config above to `.cursor/mcp.json`.
      `latest_job.status` becomes `succeeded` or `failed`. The top-level status
      summarizes launch acceptance: `accepted`, `partial`, or `failed`.
 2. Search successfully refreshed sources with `search_context()` or
-   `search_documents()`.
+   `search_documents()`, or browse them without a query using
+   `list_documents()`.
 
 **Example prompt:**
 ```text

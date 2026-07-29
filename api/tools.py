@@ -6,12 +6,20 @@ import math
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import StrictFloat
+from mcp.types import ToolAnnotations
+from pydantic import Field, StrictFloat
 
-from core.models import SourceType, SyncStatus
+from core.models import (
+    DocumentSortBy,
+    SearchFilters,
+    SearchSortBy,
+    SortOrder,
+    SourceType,
+    SyncStatus,
+)
 from indexing.background_tasks import safe_error_message
 from indexing.ingestion_service import (
     DEFAULT_SYNC_WAIT_POLL_INTERVAL_SECONDS,
@@ -43,6 +51,58 @@ REGISTERABLE_SOURCE_ATTRS = (
     "created_at",
     "updated_at",
 )
+MAX_DOCUMENT_PAGE_SIZE = 50
+SearchFiltersInput = Annotated[
+    SearchFilters | None,
+    Field(
+        description=(
+            "Inclusive UTC filters: source_id, source_ids, published_from, "
+            "published_to, modified_from, modified_to, indexed_from, indexed_to."
+        )
+    ),
+]
+
+
+def _metadata_read_tool(mcp, *, open_world: bool = False):
+    """Annotate reads that can persist SQLite schema or owner-heartbeat metadata."""
+    try:
+        if "annotations" in inspect.signature(mcp.tool).parameters:
+            decorator = mcp.tool(
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=open_world,
+                )
+            )
+        else:
+            decorator = mcp.tool()
+    except (TypeError, ValueError):
+        decorator = mcp.tool()
+
+    def register(func):
+        registered = decorator(func)
+        _hide_fastmcp_tool_validation_inputs(mcp, func.__name__)
+        return registered
+
+    return register
+
+
+def _hide_fastmcp_tool_validation_inputs(mcp, tool_name: str) -> None:
+    """Prevent generated outer argument models from echoing rejected nested inputs."""
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    get_tool = getattr(tool_manager, "get_tool", None)
+    if not callable(get_tool):
+        return
+    tool = get_tool(tool_name)
+    fn_metadata = getattr(tool, "fn_metadata", None)
+    arg_model = getattr(fn_metadata, "arg_model", None)
+    model_config = getattr(arg_model, "model_config", None)
+    model_rebuild = getattr(arg_model, "model_rebuild", None)
+    if not isinstance(model_config, dict) or not callable(model_rebuild):
+        return
+    model_config["hide_input_in_errors"] = True
+    model_rebuild(force=True)
 
 
 def register_tools(
@@ -367,10 +427,10 @@ def register_tools(
                 }
             return {"status": "error", "message": message, "sources": []}
 
-    @mcp.tool()
+    @_metadata_read_tool(mcp, open_world=True)
     async def search_context(
         query: str,
-        filters: dict = None,
+        filters: SearchFiltersInput = None,
         top_k: int = 10,
         include_debug: bool = False,
     ) -> dict:
@@ -418,8 +478,14 @@ def register_tools(
             payload["debug"] = result["debug"]
         return payload
 
-    @mcp.tool()
-    async def search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict:
+    @_metadata_read_tool(mcp, open_world=True)
+    async def search_documents(
+        query: str,
+        filters: SearchFiltersInput = None,
+        sort_by: SearchSortBy = SearchSortBy.RELEVANCE,
+        sort_order: SortOrder = SortOrder.DESC,
+        top_k: int = 10,
+    ) -> dict:
         """Find one row per relevant document with its representative matched_context."""
         if context_search_service is None:
             return {"query": _redact_public_query_text(query), "results": []}
@@ -434,11 +500,22 @@ def register_tools(
             public_filters,
             allowed_source_ids,
         )
-        result = await context_search_service.search_documents(
-            query,
-            filters=public_filters,
-            top_k=top_k,
-        )
+        search_documents_callable = context_search_service.search_documents
+        search_parameters = inspect.signature(search_documents_callable).parameters
+        if {"sort_by", "sort_order"} <= set(search_parameters):
+            result = await search_documents_callable(
+                query,
+                filters=public_filters,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                top_k=top_k,
+            )
+        else:
+            result = await search_documents_callable(
+                query,
+                filters=public_filters,
+                top_k=top_k,
+            )
         results = [
             payload
             for payload in (
@@ -452,7 +529,78 @@ def register_tools(
             "results": results,
         }
 
-    @mcp.tool()
+    @_metadata_read_tool(mcp)
+    async def list_documents(
+        filters: SearchFiltersInput = None,
+        sort_by: DocumentSortBy = DocumentSortBy.INDEXED_AT,
+        sort_order: SortOrder = SortOrder.DESC,
+        page_size: Annotated[int, Field(ge=1, le=MAX_DOCUMENT_PAGE_SIZE)] = 20,
+        cursor: str | None = None,
+    ) -> dict:
+        """Browse active documents without a semantic query, ordered by normalized timestamps."""
+        if metadata_store is None:
+            return {
+                "status": "error",
+                "message": "metadata store is not configured",
+                "documents": [],
+                "next_cursor": None,
+            }
+        try:
+            public_filters, has_no_public_source = _public_filters(
+                filters,
+                metadata_store,
+                allowed_source_ids,
+            )
+            if has_no_public_source or (
+                allowed_source_ids is not None and not allowed_source_ids
+            ):
+                # Empty registry must not browse unrestricted rows: store treats
+                # source_ids=[] as "no source filter", which would leave a stale
+                # next_cursor after the public post-filter drops every document.
+                return {"documents": [], "next_cursor": None}
+            public_filters = _with_default_public_source_filter(
+                public_filters,
+                allowed_source_ids,
+            )
+            result = metadata_store.list_documents(
+                filters=public_filters,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                page_size=page_size,
+                cursor=cursor,
+            )
+            documents = [
+                payload
+                for payload in (
+                    _document_list_result_payload(document)
+                    for document in result.get("documents", [])
+                )
+                if _payload_source_is_public(
+                    payload,
+                    metadata_store,
+                    allowed_source_ids,
+                )
+            ]
+            return {
+                "documents": documents,
+                "next_cursor": result.get("next_cursor"),
+            }
+        except ValueError as exc:
+            message = safe_error_message(exc)
+            if message == "Invalid document cursor":
+                raise ValueError(message) from None
+            logger.error("List documents error: %s", message)
+        except Exception as exc:
+            message = safe_error_message(exc)
+            logger.error("List documents error: %s", message)
+        return {
+            "status": "error",
+            "message": message,
+            "documents": [],
+            "next_cursor": None,
+        }
+
+    @_metadata_read_tool(mcp)
     async def fetch_context(document_id: str = "", chunk_id: str = "") -> dict:
         """Optionally drill into exact stored document or chunk content after its ID is known."""
         if metadata_store is None:
@@ -472,7 +620,7 @@ def register_tools(
         if (
             not document
             or not _model_source_is_public(document, metadata_store, allowed_source_ids)
-            or getattr(document, "deleted_at", "")
+            or document.deleted_at
         ):
             return {
                 "document": None,
@@ -780,15 +928,16 @@ def _payload_source_is_public(
 
 
 def _public_filters(
-    filters: dict | None,
+    filters: SearchFilters | Mapping | None,
     metadata_store,
     allowed_source_ids: frozenset[str] | None,
 ) -> tuple[dict | None, bool]:
     if not filters:
-        return filters, False
-    source_ids = _filter_source_ids(filters or {})
+        return None, False
+    filter_payload = _filter_payload(filters)
+    source_ids = _filter_source_ids(filter_payload)
     if source_ids is None:
-        return filters, False
+        return filter_payload, False
     public_source_ids = [
         source_id
         for source_id in source_ids
@@ -796,7 +945,7 @@ def _public_filters(
     ]
     if not public_source_ids:
         return None, True
-    sanitized = dict(filters)
+    sanitized = dict(filter_payload)
     sanitized.pop("source_id", None)
     sanitized["source_ids"] = public_source_ids
     return sanitized, False
@@ -829,6 +978,15 @@ def _filter_source_ids(filters: dict) -> list[str] | None:
             if source_id and source_id not in normalized:
                 normalized.append(str(source_id))
     return normalized or None
+
+
+def _filter_payload(filters: SearchFilters | Mapping) -> dict:
+    if isinstance(filters, Mapping):
+        return dict(filters)
+    model_dump = getattr(filters, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json", exclude_none=True)
+    raise TypeError("filters must serialize to a mapping")
 
 
 def _source_id_is_public(
@@ -883,6 +1041,10 @@ def _search_documents_result_payload(item):
         "path",
         "score",
         "matched_context",
+        "published_at",
+        "modified_at",
+        "indexed_at",
+        "date_provenance",
     }
     try:
         model_dump = getattr(item, "model_dump", None)
@@ -913,3 +1075,25 @@ def _search_documents_result_payload(item):
             "search_documents result field 'matched_context' must be a string"
         )
     return payload
+
+
+def _document_list_result_payload(item) -> dict:
+    """Serialize only browse-safe metadata; stored full content and local paths stay private."""
+    allowed_keys = {
+        "document_id",
+        "source_id",
+        "title",
+        "url",
+        "canonical_url",
+        "platform",
+        "published_at",
+        "modified_at",
+        "indexed_at",
+        "date_provenance",
+    }
+    raw_payload = _model_payload(item)
+    return {
+        key: value
+        for key, value in raw_payload.items()
+        if key in allowed_keys
+    }

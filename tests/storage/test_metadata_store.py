@@ -1,15 +1,18 @@
 import gc
 import sqlite3
 import warnings
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
 
 import pytest
+from pydantic import ValidationError
 
 from core.models import (
     ChunkModel,
     DocumentModel,
+    SearchFilters,
     SourceModel,
     SourceType,
     SyncJobStatus,
@@ -1716,6 +1719,752 @@ def test_metadata_store_persists_identity_lifecycle_fields(tmp_path):
     assert persisted.version_id == "blob-sha-1"
 
 
+@pytest.mark.parametrize("prefix", ["published", "modified", "indexed"])
+def test_search_filters_compare_fractional_ranges_as_datetimes(prefix):
+    filters = SearchFilters(
+        **{
+            f"{prefix}_from": "2026-07-01T00:00:00Z",
+            f"{prefix}_to": "2026-07-01T00:00:00.1Z",
+        }
+    )
+
+    assert getattr(filters, f"{prefix}_from") == "2026-07-01T00:00:00Z"
+    assert getattr(filters, f"{prefix}_to") == "2026-07-01T00:00:00.100000Z"
+
+    with pytest.raises(ValueError, match=f"{prefix}_from must be before or equal"):
+        SearchFilters(
+            **{
+                f"{prefix}_from": "2026-07-01T00:00:00.1Z",
+                f"{prefix}_to": "2026-07-01T00:00:00Z",
+            }
+        )
+
+
+@pytest.mark.parametrize("prefix", ["published", "modified", "indexed"])
+def test_search_filters_compare_offset_and_equal_ranges_as_utc_datetimes(prefix):
+    filters = SearchFilters(
+        **{
+            f"{prefix}_from": "2026-07-01T09:00:00+09:00",
+            f"{prefix}_to": "2026-07-01T00:00:00Z",
+        }
+    )
+
+    assert getattr(filters, f"{prefix}_from") == "2026-07-01T00:00:00Z"
+    assert getattr(filters, f"{prefix}_to") == "2026-07-01T00:00:00Z"
+
+    with pytest.raises(ValueError, match=f"{prefix}_from must be before or equal"):
+        SearchFilters(
+            **{
+                f"{prefix}_from": "2026-07-01T00:00:01+00:00",
+                f"{prefix}_to": "2026-07-01T09:00:00+09:00",
+            }
+        )
+
+
+def test_search_filters_reject_unknown_fields():
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        SearchFilters(unknown_date_filter="2026-07-01T00:00:00Z")
+
+
+def test_search_filters_normalize_null_and_scalar_source_aliases():
+    null_filters = SearchFilters(source_id=None, source_ids=None)
+    scalar_filters = SearchFilters(source_ids="source_a")
+
+    assert null_filters.source_id == ""
+    assert null_filters.source_ids == []
+    assert null_filters.effective_source_ids == ()
+    assert scalar_filters.source_ids == ["source_a"]
+    assert scalar_filters.effective_source_ids == ("source_a",)
+
+
+def test_search_filters_accept_tuple_sources_and_skip_blank_entries():
+    filters = SearchFilters(
+        source_id="source_b",
+        source_ids=(" source_a ", "", " ", "source_b", "source_a"),
+    )
+    all_blank = SearchFilters(source_ids=(" ", ""))
+
+    assert filters.source_ids == ["source_a", "source_b"]
+    assert filters.effective_source_ids == ("source_a", "source_b")
+    assert all_blank.source_ids == []
+    assert all_blank.effective_source_ids == ()
+
+
+def test_search_filter_validation_errors_hide_secret_like_input():
+    secret_like_timestamp = "sk-secret-token-/private/contextwiki/token"
+
+    with pytest.raises(ValidationError) as error:
+        SearchFilters(published_from=secret_like_timestamp)
+
+    rendered_error = str(error.value)
+    assert secret_like_timestamp not in rendered_error
+    assert "sk-secret-token" not in rendered_error
+    assert "/private/contextwiki/token" not in rendered_error
+
+
+@pytest.mark.parametrize("prefix", ["published", "modified", "indexed"])
+def test_search_filters_reject_utc_conversion_overflow_deterministically(prefix):
+    with pytest.raises(
+        ValueError,
+        match="Date filters must be valid ISO 8601 timestamps",
+    ):
+        SearchFilters(
+            **{f"{prefix}_from": "0001-01-01T00:00:00+14:00"}
+        )
+
+
+def test_metadata_store_persists_normalized_document_times_and_adds_legacy_columns(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    document = DocumentModel(
+        id="dated-doc",
+        source_id="source_notion",
+        title="Dated document",
+        content="normalized timestamps",
+        url="https://example.com/dated",
+        platform="Notion",
+        published_at="2026-07-01T00:00:00Z",
+        modified_at="2026-07-02T00:00:00Z",
+        indexed_at="2026-07-03T00:00:00Z",
+        date_provenance="notion",
+    )
+
+    store.upsert_document(document)
+
+    persisted = store.get_document("dated-doc")
+    assert persisted.published_at == "2026-07-01T00:00:00Z"
+    assert persisted.modified_at == "2026-07-02T00:00:00Z"
+    assert persisted.indexed_at == "2026-07-03T00:00:00Z"
+    assert persisted.date_provenance == "notion"
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    assert {"published_at", "modified_at", "indexed_at", "date_provenance"} <= columns
+
+
+def test_metadata_store_canonicalizes_document_times_before_sql_keyset_pagination(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, published_at, modified_at, indexed_at, provenance in (
+        (
+            "zulu",
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            "test",
+        ),
+        (
+            "basic",
+            "20260701T120000+0900",
+            "20260701T120000+0900",
+            "20260701T120000+0900",
+            "test",
+        ),
+        ("blank", "", "", "", ""),
+        ("null", None, "not-a-time", None, "upstream"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at=published_at,
+                modified_at=modified_at,
+                indexed_at=indexed_at,
+                date_provenance=provenance,
+            )
+        )
+
+    document_ids = []
+    cursor = None
+    while True:
+        page = store.list_documents(
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=2,
+            cursor=cursor,
+        )
+        document_ids.extend(document.document_id for document in page["documents"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+
+    assert document_ids == ["zulu", "basic", "blank", "null"]
+    assert len(document_ids) == len(set(document_ids))
+    basic = store.get_document("basic")
+    assert basic.published_at == "2026-07-01T03:00:00Z"
+    assert basic.modified_at == "2026-07-01T03:00:00Z"
+    assert basic.indexed_at == "2026-07-01T03:00:00Z"
+    invalid = store.get_document("null")
+    assert invalid.published_at == ""
+    assert invalid.modified_at == ""
+    assert invalid.indexed_at.endswith("Z")
+    assert invalid.date_provenance == ""
+
+    for prefix in ("published", "modified"):
+        filters = SearchFilters(
+            **{
+                f"{prefix}_from": "2026-07-01T02:00:00Z",
+                f"{prefix}_to": "2026-07-01T04:00:00Z",
+            }
+        )
+        sql_matches = {
+            document.document_id
+            for document in store.list_documents(
+                filters=filters,
+                sort_by=f"{prefix}_at",
+            )["documents"]
+        }
+        python_matches = {
+            document_id
+            for document_id in ("zulu", "basic", "blank", "null")
+            if store.document_matches_filters(
+                store.get_document(document_id),
+                filters,
+            )
+        }
+        assert sql_matches == python_matches == {"basic"}
+
+
+def test_metadata_store_canonicalizes_python_date_only_timestamp(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    stored = store.upsert_document(
+        DocumentModel(
+            id="date-only",
+            source_id="source_notion",
+            title="date-only",
+            content="date-only",
+            url="https://example.com/date-only",
+            platform="Notion",
+            published_at="20260701",
+            date_provenance="test",
+        )
+    )
+
+    assert stored.published_at == "2026-07-01T00:00:00Z"
+
+
+def test_metadata_store_blanks_utc_conversion_overflow_without_failing_sync(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    stored = store.upsert_document(
+        DocumentModel(
+            id="overflow",
+            source_id="source_notion",
+            title="overflow",
+            content="overflow",
+            url="https://example.com/overflow",
+            platform="Notion",
+            published_at="0001-01-01T00:00:00+14:00",
+            modified_at="9999-12-31T23:59:59-14:00",
+            indexed_at="0001-01-01T00:00:00+14:00",
+            date_provenance="upstream",
+        )
+    )
+
+    assert stored.published_at == ""
+    assert stored.modified_at == ""
+    assert stored.indexed_at.endswith("Z")
+    assert stored.date_provenance == ""
+
+
+def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, published_at in (
+        ("z-earlier", "2026-07-01T00:00:00.000100Z"),
+        ("a-later", "2026-07-01T00:00:00.000200Z"),
+        ("m-next", "2026-07-01T00:00:00.001100Z"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at=published_at,
+                date_provenance="test",
+            )
+        )
+
+    ordered_ids = []
+    cursor = None
+    while True:
+        page = store.list_documents(
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=1,
+            cursor=cursor,
+        )
+        ordered_ids.extend(document.document_id for document in page["documents"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+
+    filters = SearchFilters(
+        published_from="2026-07-01T00:00:00.000150Z",
+        published_to="2026-07-01T00:00:00.000250Z",
+    )
+    sql_matches = {
+        document.document_id
+        for document in store.list_documents(
+            filters=filters,
+            sort_by="published_at",
+        )["documents"]
+    }
+    python_matches = {
+        document_id
+        for document_id in ("z-earlier", "a-later", "m-next")
+        if store.document_matches_filters(store.get_document(document_id), filters)
+    }
+
+    assert ordered_ids == ["z-earlier", "a-later", "m-next"]
+    assert len(ordered_ids) == len(set(ordered_ids))
+    assert sql_matches == python_matches == {"a-later"}
+
+
+def test_list_documents_filters_active_rows_sorts_dates_and_paginates_with_cursor(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, published_at, deleted_at in [
+        ("newest", "2026-07-03T00:00:00Z", ""),
+        ("middle", "2026-07-02T00:00:00Z", ""),
+        ("oldest", "2026-07-01T00:00:00Z", ""),
+        ("deleted", "2026-07-04T00:00:00Z", "2026-07-05T00:00:00Z"),
+    ]:
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at=published_at,
+                modified_at=published_at,
+                indexed_at=published_at,
+                date_provenance="notion",
+                deleted_at=deleted_at,
+            )
+        )
+
+    filters = SearchFilters(
+        source_ids=["source_notion"],
+        published_from="2026-07-01T00:00:00Z",
+        published_to="2026-07-03T00:00:00Z",
+    )
+    first_page = store.list_documents(
+        filters=filters,
+        sort_by="published_at",
+        sort_order="desc",
+        page_size=2,
+    )
+    second_page = store.list_documents(
+        filters=filters,
+        sort_by="published_at",
+        sort_order="desc",
+        page_size=2,
+        cursor=first_page["next_cursor"],
+    )
+
+    assert [document.document_id for document in first_page["documents"]] == [
+        "newest",
+        "middle",
+    ]
+    assert first_page["next_cursor"]
+    assert [document.document_id for document in second_page["documents"]] == ["oldest"]
+    assert second_page["next_cursor"] is None
+
+
+def test_document_filter_source_aliases_form_one_effective_union(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    documents = []
+    for source_id in ("source_a", "source_b", "source_c"):
+        document = DocumentModel(
+            id=source_id,
+            source_id=source_id,
+            title=source_id,
+            content=source_id,
+            url=f"https://example.com/{source_id}",
+            platform="Test",
+        )
+        documents.append(store.upsert_document(document))
+
+    filters = SearchFilters(source_id="source_b", source_ids=["source_a", "source_b"])
+
+    assert [
+        store.document_matches_filters(document, filters)
+        for document in documents
+    ] == [True, True, False]
+    assert {
+        document.source_id
+        for document in store.list_documents(filters=filters)["documents"]
+    } == {"source_a", "source_b"}
+
+
+def test_list_documents_cursor_binds_to_canonical_source_alias_union(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, source_id in (
+        ("a-1", "source_a"),
+        ("a-2", "source_a"),
+        ("b-1", "source_b"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id=source_id,
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Test",
+            )
+        )
+
+    first_page = store.list_documents(
+        filters=SearchFilters(source_id="source_a", source_ids=["source_b"]),
+        page_size=1,
+    )
+    second_page = store.list_documents(
+        filters=SearchFilters(source_id="source_b", source_ids=["source_a"]),
+        page_size=1,
+        cursor=first_page["next_cursor"],
+    )
+
+    assert first_page["documents"]
+    assert second_page["documents"]
+
+
+@pytest.mark.parametrize(
+    ("sort_order", "expected"),
+    [
+        ("asc", ["a", "b", "c", "null-a", "null-b"]),
+        ("desc", ["c", "a", "b", "null-a", "null-b"]),
+    ],
+)
+def test_list_documents_keyset_keeps_ties_and_nulls_last(tmp_path, sort_order, expected):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, published_at in (
+        ("a", "2026-07-01T00:00:00Z"),
+        ("b", "2026-07-01T00:00:00+00:00"),
+        ("c", "2026-07-02T00:00:00Z"),
+        ("null-a", ""),
+        ("null-b", "not-a-date"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at=published_at,
+            )
+        )
+
+    document_ids = []
+    cursor = None
+    while True:
+        page = store.list_documents(
+            sort_by="published_at",
+            sort_order=sort_order,
+            page_size=2,
+            cursor=cursor,
+        )
+        document_ids.extend(
+            document.document_id for document in page["documents"]
+        )
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+
+    assert document_ids == expected
+
+
+def test_list_documents_limits_browse_safe_sql_rows(tmp_path, monkeypatch):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for index in range(5):
+        store.upsert_document(
+            DocumentModel(
+                id=f"doc-{index}",
+                source_id="source_notion",
+                title=f"doc-{index}",
+                content="private full content",
+                url=f"https://example.com/{index}",
+                platform="Notion",
+            )
+        )
+    statements = []
+    original_connect = store._connect
+
+    @contextmanager
+    def traced_connect():
+        with original_connect() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+
+    page = store.list_documents(page_size=1)
+
+    browse_select = next(
+        statement
+        for statement in statements
+        if "SELECT" in statement and "FROM documents" in statement
+    )
+    assert "content" not in browse_select.lower()
+    assert "LIMIT 2" in browse_select
+    assert len(page["documents"]) == 1
+    assert page["documents"][0].content == ""
+
+
+def test_list_documents_rejects_noncanonical_cursor_characters(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id in ("first", "second"):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                indexed_at="2026-07-01T00:00:00Z",
+            )
+        )
+    first_page = store.list_documents(page_size=1)
+    cursor = first_page["next_cursor"]
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(page_size=1, cursor=f"{cursor}*")
+
+
+@pytest.mark.parametrize(
+    "forged_timestamp",
+    [
+        "2026-07-01T01:00:00.100000+01:00",
+        "2026-07-01T00:00:00.100000",
+        "2026-07-01T00:00:00.1Z",
+    ],
+)
+def test_list_documents_rejects_noncanonical_cursor_timestamp_spellings(
+    tmp_path,
+    forged_timestamp,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, published_at in (
+        ("first", "2026-07-01T00:00:00.100000Z"),
+        ("second", "2026-07-01T00:00:00.200000Z"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at=published_at,
+            )
+        )
+    first_page = store.list_documents(
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+    )
+    valid_cursor = first_page["next_cursor"]
+    payload = store._decode_document_cursor(valid_cursor)
+    forged_cursor = store._encode_document_cursor(
+        {**payload, "timestamp": forged_timestamp}
+    )
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=1,
+            cursor=forged_cursor,
+        )
+
+    valid_next_page = store.list_documents(
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+        cursor=valid_cursor,
+    )
+    assert [item.document_id for item in first_page["documents"]] == ["first"]
+    assert [item.document_id for item in valid_next_page["documents"]] == ["second"]
+
+
+@pytest.mark.parametrize(
+    "payload_override",
+    [
+        {"document_id": "bb-forged-anchor"},
+        {"timestamp": "2026-07-01T00:00:01Z"},
+        {"is_null": True, "timestamp": ""},
+    ],
+)
+def test_list_documents_rejects_cursor_when_anchor_does_not_match_filtered_row(
+    tmp_path,
+    payload_override,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id in ("a", "b", "c"):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at="2026-07-01T00:00:00Z",
+            )
+        )
+
+    first_page = store.list_documents(
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+    )
+    valid_cursor = first_page["next_cursor"]
+    payload = store._decode_document_cursor(valid_cursor)
+    forged_cursor = store._encode_document_cursor(
+        {**payload, **payload_override}
+    )
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=1,
+            cursor=forged_cursor,
+        )
+
+    valid_next_page = store.list_documents(
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+        cursor=valid_cursor,
+    )
+    assert [item.document_id for item in first_page["documents"]] == ["a"]
+    assert [item.document_id for item in valid_next_page["documents"]] == ["b"]
+
+
+def test_list_documents_rejects_cursor_anchor_outside_current_filter_scope(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id, source_id in (
+        ("a", "source_notion"),
+        ("b", "source_notion"),
+        ("z-existing-other-source", "source_other"),
+    ):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id=source_id,
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Test",
+                published_at="2026-07-01T00:00:00Z",
+            )
+        )
+    filters = SearchFilters(source_ids=["source_notion"])
+    first_page = store.list_documents(
+        filters=filters,
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+    )
+    payload = store._decode_document_cursor(first_page["next_cursor"])
+    forged_cursor = store._encode_document_cursor(
+        {**payload, "document_id": "z-existing-other-source"}
+    )
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(
+            filters=filters,
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=1,
+            cursor=forged_cursor,
+        )
+
+
+def test_list_documents_rejects_cursor_anchor_that_is_no_longer_active(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id in ("a", "b"):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at="2026-07-01T00:00:00Z",
+            )
+        )
+    first_page = store.list_documents(
+        sort_by="published_at",
+        sort_order="asc",
+        page_size=1,
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE documents SET deleted_at = ? WHERE document_id = ?",
+            ("2026-07-02T00:00:00Z", "a"),
+        )
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(
+            sort_by="published_at",
+            sort_order="asc",
+            page_size=1,
+            cursor=first_page["next_cursor"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("changed_kwargs"),
+    [
+        {"filters": SearchFilters(source_ids=["other-source"])},
+        {"sort_by": "published_at"},
+        {"sort_order": "asc"},
+    ],
+)
+def test_list_documents_rejects_cursor_query_shape_mismatch(tmp_path, changed_kwargs):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id in ("first", "second"):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+            )
+        )
+    first_page = store.list_documents(page_size=1)
+
+    with pytest.raises(ValueError, match="Invalid document cursor"):
+        store.list_documents(
+            page_size=1,
+            cursor=first_page["next_cursor"],
+            **changed_kwargs,
+        )
+
+
+@pytest.mark.parametrize("page_size", [0, -1, 101, True, 1.5])
+def test_list_documents_rejects_unsafe_internal_page_sizes(tmp_path, page_size):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    with pytest.raises(ValueError, match="page_size must be between 1 and 100"):
+        store.list_documents(page_size=page_size)
+
+
 def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1752,7 +2501,8 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
         row = conn.execute(
             """
             SELECT document_id, external_id, canonical_url, last_seen_at,
-                last_seen_sync_id, deleted_at, version_id
+                last_seen_sync_id, deleted_at, version_id, published_at,
+                modified_at, indexed_at, date_provenance
             FROM documents
             """
         ).fetchone()
@@ -1764,6 +2514,10 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
         "last_seen_sync_id",
         "deleted_at",
         "version_id",
+        "published_at",
+        "modified_at",
+        "indexed_at",
+        "date_provenance",
     }.issubset(columns)
     assert row["document_id"] == "legacy-doc"
     assert row["external_id"] == ""
@@ -1772,6 +2526,10 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
     assert row["last_seen_sync_id"] == ""
     assert row["deleted_at"] == ""
     assert row["version_id"] == ""
+    assert row["published_at"] == ""
+    assert row["modified_at"] == ""
+    assert row["indexed_at"] == ""
+    assert row["date_provenance"] == ""
 
 
 def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):

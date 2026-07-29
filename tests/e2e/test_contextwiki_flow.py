@@ -8,7 +8,7 @@ from llama_index.core.embeddings import MockEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from api.tools import register_tools
-from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
+from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig, setup_chroma
 from fetching.connectors import SourceConnector, SourceRegistry
 from indexing.chunker import DocumentChunker
@@ -799,6 +799,197 @@ def test_context_search_applies_source_filter_before_result_limit(tmp_path):
 
     assert len(result["results"]) == 1
     assert result["results"][0].source_id == "source_fake_docs"
+
+
+def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    registry = SourceRegistry([FakeConnector()])
+    documents = []
+    for document_id, published_at in [
+        ("dated-old", "2026-07-01T00:00:00Z"),
+        ("dated-new", "2026-07-03T00:00:00Z"),
+    ]:
+        document = DocumentModel(
+            id=document_id,
+            source_id="source_fake_docs",
+            title=document_id,
+            content="ContextWiki dated evidence",
+            url=f"https://example.com/{document_id}",
+            platform="Notion",
+            published_at=published_at,
+            modified_at=published_at,
+            indexed_at=published_at,
+            date_provenance="test",
+        )
+        chunk = ChunkModel(
+            chunk_id=f"{document_id}:chunk:0",
+            document_id=document_id,
+            source_id="source_fake_docs",
+            title=document_id,
+            text="ContextWiki dated evidence",
+            url=document.url,
+            chunk_index=0,
+            content_hash=document_id,
+        )
+        store.upsert_document_and_replace_chunks(document, [chunk])
+        documents.append(chunk.to_document_model(platform="Notion"))
+
+    mcp = FastMCP("date-filter-e2e")
+    register_tools(
+        mcp,
+        context_search_service=ContextSearchService(store, retriever=documents),
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    filtered = _call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "ContextWiki",
+            "filters": {
+                "source_ids": ["source_fake_docs"],
+                "published_from": "2026-07-03T00:00:00Z",
+                "published_to": "2026-07-03T00:00:00Z",
+            },
+            "top_k": 2,
+        },
+    )
+    sorted_documents = _call_tool_json(
+        mcp,
+        "search_documents",
+        {
+            "query": "ContextWiki",
+            "filters": {"source_ids": ["source_fake_docs"]},
+            "sort_by": "published_at",
+            "sort_order": "desc",
+            "top_k": 2,
+        },
+    )
+    first_page = _call_tool_json(
+        mcp,
+        "list_documents",
+        {
+            "filters": {"source_ids": ["source_fake_docs"]},
+            "sort_by": "published_at",
+            "sort_order": "desc",
+            "page_size": 1,
+        },
+    )
+    second_page = _call_tool_json(
+        mcp,
+        "list_documents",
+        {
+            "filters": {"source_ids": ["source_fake_docs"]},
+            "sort_by": "published_at",
+            "sort_order": "desc",
+            "page_size": 1,
+            "cursor": first_page["next_cursor"],
+        },
+    )
+
+    assert [row["document_id"] for row in filtered["results"]] == ["dated-new"]
+    assert [row["document_id"] for row in sorted_documents["results"]] == [
+        "dated-new",
+        "dated-old",
+    ]
+    assert [row["document_id"] for row in first_page["documents"]] == ["dated-new"]
+    assert [row["document_id"] for row in second_page["documents"]] == ["dated-old"]
+    assert second_page["next_cursor"] is None
+
+
+def test_contextwiki_fastmcp_e2e_search_documents_preserves_date_microseconds(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    registry = SourceRegistry([FakeConnector()])
+    documents = []
+    for document_id, published_at, search_term in [
+        (
+            "a-asc-newer",
+            "9999-12-31T23:59:59.999999Z",
+            "AscendingPrecision",
+        ),
+        (
+            "z-asc-older",
+            "9999-12-31T23:59:59.999998Z",
+            "AscendingPrecision",
+        ),
+        (
+            "a-desc-older",
+            "9999-12-31T23:59:59.999998Z",
+            "DescendingPrecision",
+        ),
+        (
+            "z-desc-newer",
+            "9999-12-31T23:59:59.999999Z",
+            "DescendingPrecision",
+        ),
+    ]:
+        document = DocumentModel(
+            id=document_id,
+            source_id="source_fake_docs",
+            title=document_id,
+            content=f"{search_term} ContextWiki evidence",
+            url=f"https://example.com/{document_id}",
+            platform="Notion",
+            published_at=published_at,
+            modified_at=published_at,
+            indexed_at=published_at,
+            date_provenance="test",
+        )
+        chunk = ChunkModel(
+            chunk_id=f"{document_id}:chunk:0",
+            document_id=document_id,
+            source_id="source_fake_docs",
+            title=document_id,
+            text=document.content,
+            url=document.url,
+            chunk_index=0,
+            content_hash=document_id,
+        )
+        store.upsert_document_and_replace_chunks(document, [chunk])
+        documents.append(chunk.to_document_model(platform="Notion"))
+
+    mcp = FastMCP("date-precision-e2e")
+    register_tools(
+        mcp,
+        context_search_service=ContextSearchService(store, retriever=documents),
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    ascending = _call_tool_json(
+        mcp,
+        "search_documents",
+        {
+            "query": "AscendingPrecision",
+            "filters": {"source_ids": ["source_fake_docs"]},
+            "sort_by": "published_at",
+            "sort_order": "asc",
+            "top_k": 2,
+        },
+    )
+    descending = _call_tool_json(
+        mcp,
+        "search_documents",
+        {
+            "query": "DescendingPrecision",
+            "filters": {"source_ids": ["source_fake_docs"]},
+            "sort_by": "published_at",
+            "sort_order": "desc",
+            "top_k": 2,
+        },
+    )
+
+    assert [row["document_id"] for row in ascending["results"]] == [
+        "z-asc-older",
+        "a-asc-newer",
+    ]
+    assert [row["document_id"] for row in descending["results"]] == [
+        "z-desc-newer",
+        "a-desc-older",
+    ]
 
 
 def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
