@@ -20,11 +20,14 @@
   plan-exempt. A docs/instruction change stops being exempt only when it
   authorizes or initiates live API access, user-data/destructive action, or a
   substantive runtime security, public-contract, or maintained-architecture
-  change; process/testing/review documentation alone remains exempt. A trivial
-  atomic change must be localized, low risk, easy to revert, and must not add a
-  feature or change a public/MCP contract, persistence/schema behavior,
-  dependency, security boundary, user-data handling, or maintained
-  architecture. If any criterion is uncertain, write a plan.
+  change (including a substantive update to `.agents/docs/architecture.md`);
+  process/testing/review documentation alone remains exempt. Non-substantive
+  corrections to that architecture document (typos, links, or non-design
+  wording) remain plan-exempt. A trivial atomic change must be localized, low
+  risk, easy to revert, and must not add a feature or change a public/MCP
+  contract, persistence/schema behavior, dependency, security boundary,
+  user-data handling, or maintained architecture. If any criterion is
+  uncertain, write a plan.
 - Plan-exempt work skips both the plan document and `harness-plan` phase; record the exemption reason in the task update, review context, and final handoff. All other branch, TDD, verification, functional-smoke, review, and delivery gates still apply when relevant.
 - For planned work, the main agent is the CEO/orchestrator for file-changing harness work, not the default implementer. Before non-plan target edits, discover available subagent/delegation tools unless an equivalent callable subagent tool is already available in the active tool list.
 - For any work that is not truly atomic, spawn role-specific implementation, testing, documentation, or integration workers before implementation begins. Assign each worker a bounded ownership area, expected files or modules, acceptance criteria, verification expectations, and an instruction to preserve other user/agent changes instead of reverting them.

@@ -13,8 +13,11 @@ Plan-exempt work includes:
 
 - Docs- or instruction-only changes that do not authorize or initiate live API
   access, user-data/destructive action, or a substantive runtime security,
-  public-contract, or maintained-architecture change. Process/testing/review
-  documentation alone remains exempt.
+  public-contract, or maintained-architecture change (including a substantive
+  update to `.agents/docs/architecture.md`). Process/testing/review
+  documentation alone remains exempt. Non-substantive corrections to that
+  architecture document (typos, links, or non-design wording) remain
+  plan-exempt.
 - Truly trivial atomic changes that are localized, low risk, easy to revert,
   and do not add a feature or change a public/MCP contract,
   persistence/schema behavior, dependency, security boundary, user-data
@@ -30,8 +33,12 @@ the exemption reason in task updates, reviewer context, and the final handoff.
 Feature work, non-trivial bug fixes, non-trivial refactoring or test work, MCP
 contract changes, indexing/search behavior changes, non-trivial or
 runtime-affecting configuration changes, and production/runtime architecture
-changes require a plan. A documentation-only correction to the architecture
-document remains plan-exempt.
+changes require a plan. A docs-only edit to `.agents/docs/architecture.md`
+remains plan-exempt only when it is a non-substantive correction (for example
+typos, broken links, or wording that does not change maintained design
+assumptions). A substantive update to that maintained architecture document is
+a maintained-architecture change and requires a plan, matching the
+docs/instruction exemption criteria above.
 
 ## File Naming
 
