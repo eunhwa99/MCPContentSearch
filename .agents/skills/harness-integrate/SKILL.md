@@ -33,15 +33,19 @@ Python code integration first validates that the recorded post-refactor
 the expensive full suite when no code, configuration, tests, or verification
 inputs changed and the evidence is current. If integration or review changes
 one of those inputs, the earlier evidence is stale: return to the applicable
-TDD/focused gate, then rerun the post-refactor full-suite gate and refresh the
-evidence.
+TDD/focused gate, then rerun the post-refactor full-suite gate, satisfy any
+matching eval gate required by feature scope only after that full-suite gate
+(record full-suite quality-eval evidence when already covered; otherwise run
+the focused matching eval command), and refresh the evidence.
 
 Focused unit, integration, and deterministic E2E checks must already be green.
 For feature/behavior changes, integration evidence must also show the
 pre-production RED command, layers/tests, non-zero exit code, expected failure
 signature, and ordering. Pure refactor, test-only, or other non-behavior work
 records RED as `n/a` with a rationale. Post-refactor affected checks and the
-full wrapper must pass; partial fallbacks are diagnostic only.
+full wrapper must pass; partial fallbacks are diagnostic only. When feature
+scope requires it, matching eval gate evidence must also be current after the
+full-suite gate.
 
 MCP contract changes should include a startup/import or tool-registration smoke when it can run without live credentials and without mutating user Chroma data or SQLite metadata.
 
@@ -65,12 +69,17 @@ scope, or mark live/user-data checks as blocked/gated with a local substitute.
 If integration verification and the functional smoke matrix pass, run the final
 three-reviewer harness gate before PR delivery. If review findings require a
 behavior-changing code/config edit, return to RED before production changes,
-then rerun GREEN, refactor, affected checks, the full-suite gate, and smoke. For
-a non-behavior code/config/test edit, record RED as `n/a` without manufacturing
-a failure, then rerun affected focused tests, the full-suite gate, and affected
-smoke. For a docs-only edit, rerun lightweight docs verification without fake
-RED. Refresh integration evidence, then start a fresh three-reviewer pass with
-the required distinct lenses.
+then rerun GREEN, refactor, affected checks, the full-suite gate, any matching
+eval gate required by feature scope only after that full-suite gate (record
+full-suite eval evidence when already covered; otherwise rerun the matching
+eval), and smoke. For a non-behavior code/config/test edit, record RED as
+`n/a` without manufacturing a failure, then rerun affected focused tests, the
+full-suite gate, any matching eval gate required by feature scope only after
+that full-suite gate (record full-suite eval evidence when already covered;
+otherwise rerun the matching eval), and affected smoke. For a docs-only edit,
+rerun lightweight docs verification without fake RED. Refresh integration
+evidence, then start a fresh three-reviewer pass with the required distinct
+lenses.
 
 After the final clean three-reviewer pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
@@ -81,6 +90,8 @@ Final response should include:
 - TDD RED evidence and confirmation that it predates production edits for
   feature/behavior changes, or the non-behavior/docs-only `n/a` rationale.
 - Verification commands and results.
+- Matching eval gate evidence when required by feature scope (recorded
+  full-suite quality-eval evidence or focused matching command result).
 - Functional smoke matrix results, including blocked/gated checks.
 - Three-reviewer harness status, including whether the newest fresh
   bugs/correctness, security/data-safety, and performance/reliability reviewers

@@ -42,12 +42,14 @@ gate into a partial fallback.
 If the feature changes retrieval quality, ranking,
 grounding, citation selection, answer quality, or another quality-sensitive
 output already modeled by retained local evaluations, it must also add or
-update eval coverage and run the matching eval command after
-`./scripts/verify_all.sh` succeeds and before functional smoke or review. If
-the feature falls within retained local eval coverage but no exact retained
-eval surface exists yet, it must extend an existing retained eval surface and
-run the matching eval command only after that full-suite gate. Do not run
-matching eval commands during focused GREEN; that lane stops so refactor can
+update eval coverage and satisfy the matching eval gate after
+`./scripts/verify_all.sh` succeeds and before functional smoke or review. Prefer
+recording the full-suite deterministic quality eval layer evidence when that
+layer already executed the matching surface; otherwise run the focused matching
+eval command. If the feature falls within retained local eval coverage but no
+exact retained eval surface exists yet, it must extend an existing retained
+eval surface and satisfy the eval gate only after that full-suite gate. Do not
+run matching eval commands during focused GREEN; that lane stops so refactor can
 run next.
 
 0. Branch preflight: follow `.agents/docs/github-workflow.md`.
@@ -72,9 +74,11 @@ run next.
    while the focused tests remain green.
 7. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Eval gate when required by feature scope: run any matching retained eval
-   command only after `./scripts/verify_all.sh` succeeds; never during focused
-   GREEN.
+8. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
+   succeeds, confirm the matching retained eval surface. Prefer recording the
+   full-suite deterministic quality eval layer evidence when that layer already
+   executed the matching surface; otherwise run the focused matching eval
+   command. Never run matching eval during focused GREEN.
 9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    which exercises the task-relevant feature inventory once through the safest
    real caller surfaces or records a safety-gated skip.
@@ -247,7 +251,9 @@ else:
   run refactor phase while focused tests remain GREEN
   rerun affected focused tests
   run ./scripts/verify_all.sh for the current diff and require the full suite to pass
-  run any matching eval command required by the current feature scope only after verify_all
+  satisfy any matching eval required by feature scope only after verify_all
+  (record full-suite eval-layer evidence when it already covered the matching
+  surface; otherwise run the focused matching eval command)
   run functional smoke gate using harness-functional-smoke
   repeat:
     run middle three-reviewer harness gate
@@ -259,12 +265,14 @@ else:
       return to unit/integration/E2E RED before production edits
       record auditable RED evidence
       implement GREEN, refactor, rerun affected tests, and run verify_all
-      run any matching eval command required by feature scope only after verify_all
+      satisfy any matching eval required by feature scope only after verify_all
+      (record full-suite eval evidence when already covered; else rerun matching eval)
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
-      run any matching eval command required by feature scope only after verify_all
+      satisfy any matching eval required by feature scope only after verify_all
+      (record full-suite eval evidence when already covered; else rerun matching eval)
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -284,12 +292,14 @@ else:
       return to unit/integration/E2E RED before production edits
       record auditable RED evidence
       implement GREEN, refactor, rerun affected tests, and run verify_all
-      run any matching eval command required by feature scope only after verify_all
+      satisfy any matching eval required by feature scope only after verify_all
+      (record full-suite eval evidence when already covered; else rerun matching eval)
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
-      run any matching eval command required by feature scope only after verify_all
+      satisfy any matching eval required by feature scope only after verify_all
+      (record full-suite eval evidence when already covered; else rerun matching eval)
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -400,8 +410,10 @@ must pass after implementation.
 When the added feature changes retrieval quality, ranking, grounding, citation
 selection, answer quality, or another quality-sensitive output that is already
 modeled by retained local evaluations, they must add or update eval coverage
-and run the relevant eval command only after `./scripts/verify_all.sh`
+and satisfy the matching eval gate only after `./scripts/verify_all.sh`
 succeeds and before functional smoke or review, never during focused GREEN.
+Prefer recording full-suite eval-layer evidence when already covered; otherwise
+run the focused matching eval command.
 
 Before review for code-changing work, run the repo-wide functional E2E
 regression gate that exercises retained end-to-end feature workflows
@@ -433,15 +445,17 @@ the all-tests-pass gate.
 
 Current local eval paths include deterministic eval tests under
 `tests/evals` such as `uv run pytest -q tests/evals` plus the fixture runner at
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Run those matching eval
-commands only after `./scripts/verify_all.sh` succeeds and before functional
-smoke or review; do not run them during focused GREEN. If a feature falls
-within the repo's retained local eval coverage but no matching retained eval
-surface exists yet, treat that as missing required coverage: extend an existing
-retained eval surface such as `tests/evals` or the fixture runner during
-coverage work and execute the matching eval command only after the full-suite
-gate. Features outside the current retained local eval coverage are not subject
-to this eval requirement until the retained eval scope changes.
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
+eval gate only after `./scripts/verify_all.sh` succeeds and before functional
+smoke or review; do not run matching eval during focused GREEN. Prefer
+recording the full-suite deterministic quality eval layer evidence when that
+layer already executed the matching surface; otherwise run the focused matching
+eval command. If a feature falls within the repo's retained local eval coverage
+but no matching retained eval surface exists yet, treat that as missing required
+coverage: extend an existing retained eval surface such as `tests/evals` or the
+fixture runner during coverage work and satisfy the eval gate only after the
+full-suite gate. Features outside the current retained local eval coverage are
+not subject to this eval requirement until the retained eval scope changes.
 
 MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
@@ -450,8 +464,9 @@ explicit user approval and a plan. Plan-exempt work must be reclassified before
 the live check or keep it `blocked/gated` and use a fake/temp substitute.
 
 After focused GREEN, refactoring, affected-test reruns, a successful
-`./scripts/verify_all.sh`, and any matching eval command required by feature
-scope, run the functional smoke gate in
+`./scripts/verify_all.sh`, and any matching eval gate required by feature
+scope (record full-suite quality-eval evidence when already covered; otherwise
+run the focused matching eval command), run the functional smoke gate in
 `.agents/skills/harness-functional-smoke/SKILL.md` before any review gate. The
 smoke matrix must start from the task-relevant inventory of retained MCP tools,
 source-sync paths, status surfaces, search, citation answers, and other
@@ -462,9 +477,12 @@ considering live external checks. A skipped live check is acceptable only when
 the matrix records the safety reason, needed user approval, and nearest local
 substitute.
 
-Verification and functional smoke must precede the harness review loop. If
-review findings require changes, rerun the affected verification and affected
-smoke entries before starting the next fresh three-reviewer pass.
+Verification, any matching eval gate required by feature scope (only after
+`./scripts/verify_all.sh`, prefer recording full-suite quality-eval evidence
+when already covered), and functional smoke must precede the harness review
+loop. If review findings require changes, rerun the affected verification,
+matching eval gate when in scope, and affected smoke entries before starting
+the next fresh three-reviewer pass.
 
 ## Delivery
 
@@ -473,6 +491,8 @@ Final reports include:
 - Plan document path, or plan-exempt reason
 - Changed files
 - Verification commands and results
+- Matching eval gate evidence when required by feature scope (recorded
+  full-suite quality-eval evidence or focused matching command result)
 - Functional smoke matrix results, including blocked/gated checks and local substitutes
 - Review status and any subagent-review limitation
 - Known blockers or skipped checks

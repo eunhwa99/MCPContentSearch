@@ -48,12 +48,15 @@ explicit user approval and remains main-agent-only. Do not expose secrets.
 
 ## Output
 
-Leave changes ready for the TDD green test lane, full-suite gate, functional
-smoke gate, and review gate. If returning from a failure, record the first
-actionable failure and the changed code path in the plan progress log, or in
-the task evidence for plan-exempt work.
+Leave changes ready for the TDD green test lane, full-suite gate, matching
+eval gate when required by feature scope (only after `./scripts/verify_all.sh`;
+prefer recording full-suite quality-eval evidence when already covered),
+functional smoke gate, and review gate. If returning from a failure, record the
+first actionable failure and the changed code path in the plan progress log, or
+in the task evidence for plan-exempt work.
 
 Do not commit from the implementation lane. Final commit, push, and PR delivery
-happen only after verification, the functional smoke matrix, integration, and
-the final clean three-reviewer harness pass unless the user explicitly asks for
-local-only work or a safety blocker prevents delivery.
+happen only after verification, any matching eval gate when in scope, the
+functional smoke matrix, integration, and the final clean three-reviewer
+harness pass unless the user explicitly asks for local-only work or a safety
+blocker prevents delivery.

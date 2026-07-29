@@ -16,18 +16,23 @@ Run this gate with the repository-local three-reviewer harness loop:
 
 Before starting this gate, feature/behavior code changes must have auditable
 pre-production RED evidence, focused unit/integration/E2E GREEN results,
-post-refactor affected-test results, and a successful
-`./scripts/verify_all.sh`. Pure refactor, test-only, or other non-behavior code
-work records TDD chronology as `n/a` with a rationale, then provides applicable
-focused GREEN and full-suite evidence. Relevant verification and the functional
+post-refactor affected-test results, a successful `./scripts/verify_all.sh`,
+and any matching eval gate required by feature scope satisfied only after that
+full-suite gate (record full-suite quality-eval evidence when already covered;
+otherwise run the focused matching eval command). Pure refactor, test-only, or
+other non-behavior code work records TDD chronology as `n/a` with a rationale,
+then provides applicable focused GREEN, full-suite, and matching-eval evidence.
+Relevant verification, matching eval evidence when in scope, and the functional
 smoke matrix, or an explicit docs-only `n/a`, must be recorded in the plan or
 in reviewer/final evidence for plan-exempt work. If actionable findings exist,
 update the plan
 when one is required, route each issue to the responsible implementation, test,
 docs, refactor, or integration worker persona or a fresh replacement with the
-same ownership boundary, rerun the affected verification and affected
-functional smoke entries, then start a new fresh three-reviewer pass. Stop only
-when all three reviewers in the newest pass report no actionable findings.
+same ownership boundary, rerun the affected verification, any matching eval
+gate required by feature scope only after `./scripts/verify_all.sh`, and
+affected functional smoke entries, then start a new fresh three-reviewer pass.
+Stop only when all three reviewers in the newest pass report no actionable
+findings.
 
 ## Input
 
@@ -40,15 +45,18 @@ verification history, functional smoke matrix/results, and changed files.
 
 Use this loop exactly:
 
-1. Finish the local change, run relevant verification, and complete the
-   functional smoke matrix first; docs/instruction-only work records the matrix
-   as `n/a`.
+1. Finish the local change, run relevant verification, satisfy any matching
+   eval gate required by feature scope only after `./scripts/verify_all.sh`
+   (prefer recording full-suite quality-eval evidence when already covered),
+   and complete the functional smoke matrix first; docs/instruction-only work
+   records the matrix as `n/a`.
 2. Spawn exactly three fresh read-only reviewer subagents for the pass.
 3. Give each reviewer task-local context: requirements, changed files, relevant
    docs, the RED command/test layers/non-zero exit/failure signature/order
    evidence for feature/behavior work or a non-behavior `n/a` rationale,
-   focused and full-suite GREEN output, and functional smoke matrix/results or
-   docs-only `n/a` from the plan or plan-exempt evidence.
+   focused and full-suite GREEN output, matching eval gate evidence when in
+   scope, and functional smoke matrix/results or docs-only `n/a` from the plan
+   or plan-exempt evidence.
 4. Give each reviewer a different primary prompt:
    - Reviewer 1 — bugs and correctness: regressions, API/MCP contracts, error
      handling, architecture correctness, TDD chronology, and
@@ -66,16 +74,21 @@ Use this loop exactly:
    replacement when delegation is available and safe. For a behavior-changing
    code/config fix, return first to the unit/integration/E2E RED gate and record
    fresh auditable pre-edit failure evidence; then implement GREEN, refactor,
-   rerun affected tests, run `./scripts/verify_all.sh`, and refresh affected
-   smoke entries. For a non-behavior code/config/test fix, record RED as `n/a`
-   without manufacturing a failure, then rerun affected focused tests,
-   `./scripts/verify_all.sh`, and affected smoke entries. For a docs-only fix,
+   rerun affected tests, run `./scripts/verify_all.sh`, satisfy any matching
+   eval gate required by feature scope only after that full-suite gate (record
+   full-suite eval evidence when already covered; otherwise rerun the matching
+   eval), and refresh affected smoke entries. For a non-behavior
+   code/config/test fix, record RED as `n/a` without manufacturing a failure,
+   then rerun affected focused tests, `./scripts/verify_all.sh`, any matching
+   eval gate required by feature scope only after that full-suite gate (record
+   full-suite eval evidence when already covered; otherwise rerun the matching
+   eval), and affected smoke entries. For a docs-only fix,
    rerun the lightweight docs checks without manufacturing a fake RED. If the
    main agent fixes directly
    because delegation is unavailable or unsafe, record that reason in the plan
    or plan-exempt task evidence.
-7. Confirm all affected verification and functional smoke evidence matches the
-   current diff.
+7. Confirm all affected verification, matching eval evidence when in scope, and
+   functional smoke evidence matches the current diff.
 8. Spawn another fresh three-reviewer pass with the same three distinct lenses.
 9. Repeat until all three reviewers in the newest pass report no actionable
    findings.
@@ -108,7 +121,7 @@ Produce a checklist:
 | Architecture compliance | pass/fail/n/a | Relevant violation or n/a reason |
 | Acceptance criteria | pass/fail/n/a | Missing behavior |
 | TDD chronology | pass/fail/n/a | Pre-production RED command, layers/tests, non-zero exit, expected signature, and ordering |
-| Tests/verification | pass/fail/n/a | Focused unit/integration/E2E, post-refactor reruns, and `verify_all.sh` |
+| Tests/verification | pass/fail/n/a | Focused unit/integration/E2E, post-refactor reruns, `verify_all.sh`, and matching eval gate when in scope |
 | Functional smoke matrix | pass/fail/n/a | Rows covered, blocked/gated checks, substitutes, and evidence |
 | Security/data/API risk | pass/fail/n/a | Secrets, Chroma, SQLite metadata, MCP contract, external API |
 | Performance/reliability | pass/fail/n/a | Complexity, latency, resource use, async/concurrency, retries, cleanup, observability |
@@ -120,8 +133,8 @@ review pass, proceed to integration; after the clean final review pass, proceed
 directly to PR delivery instead of stopping at local completion. The final
 handoff for feature/behavior code changes must state the
 RED evidence summary; other work states the TDD `n/a` rationale. It must also
-state focused and full-suite GREEN commands, functional smoke matrix result
-summary, that the final fresh bugs/correctness, security/data-safety, and
-performance/reliability reviewers all reported no actionable findings, and the
-PR URL or PR delivery blocker. If the loop was explicitly bypassed by user
-approval, state that instead.
+state focused and full-suite GREEN commands, matching eval gate evidence when
+in scope, functional smoke matrix result summary, that the final fresh
+bugs/correctness, security/data-safety, and performance/reliability reviewers
+all reported no actionable findings, and the PR URL or PR delivery blocker. If
+the loop was explicitly bypassed by user approval, state that instead.

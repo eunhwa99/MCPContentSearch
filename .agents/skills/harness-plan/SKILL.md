@@ -41,6 +41,10 @@ The plan must include:
   `n/a` rationale instead of a manufactured missing-behavior failure.
 - Focused GREEN and post-refactor verification commands.
 - Full-suite `./scripts/verify_all.sh` command and result field.
+- Matching eval gate when required by feature scope: after
+  `./scripts/verify_all.sh` and before functional smoke; prefer recording
+  full-suite quality-eval evidence when already covered, otherwise the focused
+  matching eval command.
 - Functional smoke matrix plan: rows to cover, caller surfaces, safe data modes,
   and approval-gated rows before review.
 - Integration or additional smoke scenario when needed.
