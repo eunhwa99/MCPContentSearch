@@ -7,7 +7,10 @@ description: Refactor phase for safe simplification and local-pattern alignment 
 
 ## Input
 
-Read the current plan, changed files, `.agents/docs/harness-engineering.md`, `.agents/docs/github-workflow.md`, architecture docs, and surrounding code patterns.
+Read the current plan when one is required, the recorded plan-exempt reason
+otherwise, changed files, `.agents/docs/harness-engineering.md`,
+`.agents/docs/github-workflow.md`, architecture docs, and surrounding code
+patterns.
 
 ## Work
 
@@ -24,4 +27,8 @@ Apply only refactors that reduce real complexity or align with local patterns. A
 
 ## Verification
 
-Rerun the focused check that passed before refactoring. If it fails, classify the failure, update the plan, and return to implementation/test.
+Rerun the affected focused checks that passed before refactoring. Do not run
+`./scripts/verify_all.sh` inside this phase; the next explicit post-refactor
+full-suite gate owns the mandatory run for the current diff. If focused verification fails,
+classify the failure, update the plan when one is required, and return to
+implementation/test.

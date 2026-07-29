@@ -7,7 +7,10 @@ description: Multi-task orchestration phase for splitting independent MCPContent
 
 ## Input
 
-Read the user request, current plan document, `.agents/docs/harness-engineering.md`, `.agents/docs/github-workflow.md`, branch preflight result, and relevant architecture docs.
+Read the user request, current plan document when one is required, the recorded
+plan-exempt reason otherwise, `.agents/docs/harness-engineering.md`,
+`.agents/docs/github-workflow.md`, branch preflight result, and relevant
+architecture docs.
 
 ## Task Split
 
@@ -38,8 +41,10 @@ When delegation is allowed:
   disjoint and the main agent owns integration.
 - Tell workers they are not alone in the codebase, must not revert others' changes, and must adapt to concurrent changes.
 - Do not let workers commit, push, or open PRs unless the user explicitly delegated that.
-- Tell workers not to inspect secrets, mutate local Chroma/SQLite data, or make
-  destructive changes unless the plan and user authorization explicitly allow it.
+- Workers must never inspect secret values, inspect or mutate user
+  Chroma/SQLite data, or perform destructive actions. Secret values and
+  user-data operations are not delegable. If an approved planned operation is
+  necessary, the main agent retains it; otherwise keep it blocked/gated.
 
 ## Integration
 

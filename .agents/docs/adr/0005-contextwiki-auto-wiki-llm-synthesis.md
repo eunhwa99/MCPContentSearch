@@ -45,9 +45,9 @@ Before prompt construction, secret-like strings in evidence metadata and text ar
 redacted. This redaction is a defense-in-depth guard and does not make it safe to
 send arbitrary private content without user opt-in.
 
-Smoke tests and deterministic validation keep LLM synthesis disabled by default.
-Live LLM validation requires explicit user approval beyond ordinary fake or
-GitHub live smoke.
+Smoke tests and deterministic validation keep LLM synthesis disabled by
+default. Live LLM validation requires both explicit user approval and a plan
+that records provider, source-data, cost, and rollback scope.
 
 ## Consequences
 

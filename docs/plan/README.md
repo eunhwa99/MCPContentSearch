@@ -1,14 +1,37 @@
 # Plan Documents
 
-`docs/plan/` contains implementation plan documents that must be written before running harness phases for file-changing work.
+`docs/plan/` contains implementation plan documents for non-exempt
+file-changing work.
 
 ## When to Write a Plan
 
-Create a plan document after branch preflight and before `harness-plan`, `harness-implement`, `harness-test`, or any non-plan target file edit.
+Create a plan document after branch preflight and before `harness-plan`,
+`harness-implement`, `harness-test`, or any non-plan target file edit unless
+the task is plan-exempt.
 
-This applies to feature work, bug fixes, refactoring, test work, MCP contract changes, indexing/search behavior changes, configuration changes, and instruction/docs-only harness changes.
+Plan-exempt work includes:
 
-Simple read-only questions, code review requests, command-output checks, and explanations do not need a plan unless they turn into file changes.
+- Docs- or instruction-only changes that do not authorize or initiate live API
+  access, user-data/destructive action, or a substantive runtime security,
+  public-contract, or maintained-architecture change. Process/testing/review
+  documentation alone remains exempt.
+- Truly trivial atomic changes that are localized, low risk, easy to revert,
+  and do not add a feature or change a public/MCP contract,
+  persistence/schema behavior, dependency, security boundary, user-data
+  handling, or maintained architecture.
+- Read-only questions, code review requests, command-output checks, and
+  explanations.
+
+If any exemption criterion is uncertain, write a plan. Plan-exempt work skips
+the plan document and `harness-plan` phase, but it does not skip applicable
+branch, TDD, verification, functional-smoke, review, or delivery gates. Record
+the exemption reason in task updates, reviewer context, and the final handoff.
+
+Feature work, non-trivial bug fixes, non-trivial refactoring or test work, MCP
+contract changes, indexing/search behavior changes, non-trivial or
+runtime-affecting configuration changes, and production/runtime architecture
+changes require a plan. A documentation-only correction to the architecture
+document remains plan-exempt.
 
 ## File Naming
 
@@ -22,7 +45,7 @@ Keep the name stable for the work item. If the plan changes during retry loops o
 
 ## Required Sections
 
-Each plan document should include:
+Each plan document must include:
 
 - User request
 - Branch preflight result
@@ -30,8 +53,17 @@ Each plan document should include:
 - Acceptance criteria
 - Step breakdown, if the work needs multiple ordered steps
 - Files likely to change
-- Test and verification plan
+- For feature/behavior changes, TDD RED evidence fields: command,
+  unit/integration/E2E test names or layers, non-zero exit code, expected
+  failure signature, missing-behavior explanation, and confirmation that the
+  evidence predates production edits
+- For pure refactor, test-only, or other non-behavior code work, a TDD RED
+  `n/a` rationale instead of a manufactured missing-behavior failure
+- TDD GREEN evidence fields: focused unit, integration, and E2E commands/results
+- Full-suite evidence for `./scripts/verify_all.sh`
 - Functional smoke matrix or planned matrix rows before review
+- Three-reviewer evidence rows for bugs/correctness, security/data safety, and
+  performance/reliability
 - Architecture constraints
 - Risks and rollback notes
 - Progress log
@@ -55,7 +87,11 @@ Use this shape unless a smaller log is clearly enough:
 | Phase | Status | Summary | Evidence |
 | --- | --- | --- | --- |
 | Branch preflight | completed | Created `feature/example`. | `git status --short` |
-| Focused verification | pending | Run compile or focused test. | Pending |
+| TDD RED | pending | Run the smallest new/changed test before production edits, or record non-behavior `n/a`. | Command, test/layer, non-zero exit, expected signature, or `n/a` rationale |
+| Focused unit GREEN | pending | Run focused unit coverage. | Pending |
+| Focused integration GREEN | pending | Run focused integration coverage. | Pending |
+| Focused E2E GREEN | pending | Run retained deterministic E2E coverage. | Pending |
+| Full suite GREEN | pending | Run `./scripts/verify_all.sh`. | Pending |
 ```
 
 Status values:

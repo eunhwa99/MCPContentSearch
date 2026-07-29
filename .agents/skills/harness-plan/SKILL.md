@@ -7,6 +7,10 @@ description: Planning phase for MCPContentSearch harness work; converts a reques
 
 ## Input
 
+Run this phase only for non-exempt work. Docs/instruction-only changes and
+truly trivial atomic low-risk changes skip both the plan document and this
+phase under `.agents/docs/harness-engineering.md`.
+
 Read:
 
 - User request
@@ -28,8 +32,15 @@ The plan must include:
 - Step breakdown when the work has ordered parts.
 - For multi-task requests, independent task split, owner modules/files, and parallel-worker suitability.
 - Likely changed files and module boundaries.
-- Tests or verification to add or run.
-- Focused verification commands.
+- For feature/behavior changes, unit, integration, and deterministic E2E
+  coverage to add or update before production code.
+- For feature/behavior changes, TDD RED evidence fields for the exact command,
+  tests/layers, non-zero exit code, expected failure signature,
+  missing-behavior explanation, and pre-production ordering.
+- For pure refactor, test-only, or other non-behavior code work, a TDD RED
+  `n/a` rationale instead of a manufactured missing-behavior failure.
+- Focused GREEN and post-refactor verification commands.
+- Full-suite `./scripts/verify_all.sh` command and result field.
 - Functional smoke matrix plan: rows to cover, caller surfaces, safe data modes,
   and approval-gated rows before review.
 - Integration or additional smoke scenario when needed.
@@ -46,7 +57,8 @@ The plan must include:
 
 ## Rules
 
-If `docs/plan/...` does not exist for file-changing work, stop and create it first.
+If `docs/plan/...` does not exist for non-exempt file-changing work, stop and
+create it first. Do not create a plan merely to process plan-exempt work.
 
 Use conservative assumptions when safe and record them. Ask one short question
 only when a wrong assumption could cause data loss, expose secrets, change MCP

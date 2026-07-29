@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Review"
-  short_description: "$subagent-review-loop gate for bugs, contracts, and functional smoke evidence"
-  default_prompt: "$harness-review를 사용해 중간 또는 최종 review gate에서 $subagent-review-loop를 실행하고 MCP contract, Chroma/vector data, SQLite lifecycle/tombstone metadata, external connectors, secrets, async, tests, functional smoke matrix/results를 검토하세요. Reviewers must check blocked/gated rows, local substitutes, plan evidence, and whether review fixes rerun affected verification plus affected smoke entries."
+  short_description: "Three-reviewer gate with distinct correctness, security, and reliability lenses"
+  default_prompt: "$harness-review를 사용해 정확히 3명의 fresh read-only reviewer를 띄우세요. Reviewer 1은 bugs/correctness/API contracts/tests, Reviewer 2는 security/privacy/data safety/secrets, Reviewer 3은 performance/reliability/async/concurrency/operability를 중점 검토합니다. 모두 feature/behavior 작업의 RED chronology 또는 non-behavior RED n/a 사유, focused unit/integration/E2E GREEN, post-refactor reruns, ./scripts/verify_all.sh GREEN, smoke와 plan 또는 plan-exempt evidence를 확인하며, 최신 pass의 3명 모두 actionable finding이 없어야 종료합니다."

@@ -1,52 +1,92 @@
 ---
 name: harness-review
-description: Middle and final $subagent-review-loop gate for MCPContentSearch changes, focused on bugs, regressions, tests, contracts, data safety, secrets, and architecture compliance.
+description: Middle and final three-reviewer gate for MCPContentSearch changes with distinct correctness, security/data-safety, and performance/reliability lenses.
 ---
 
 # Harness Review
 
 ## Location
 
-Run this gate with `$subagent-review-loop`:
+Run this gate with the repository-local three-reviewer harness loop:
 
 - After implementation, test lanes, and the functional smoke gate are merged.
+- For docs/instruction-only work, after docs-only verification with functional
+  smoke recorded as `n/a`.
 - After integration verification and before final response.
 
-Before starting this gate, relevant verification and the functional smoke matrix
-must already have run and be recorded in the plan. If actionable findings exist,
-update the plan, route each issue to the responsible implementation, test, docs,
-refactor, or integration worker persona or a fresh replacement with the same
-ownership boundary, rerun the affected verification and affected functional
-smoke entries, then start a new fresh five-reviewer subagent review pass. Stop
-only when all five reviewers in the newest pass report no actionable findings.
+Before starting this gate, feature/behavior code changes must have auditable
+pre-production RED evidence, focused unit/integration/E2E GREEN results,
+post-refactor affected-test results, and a successful
+`./scripts/verify_all.sh`. Pure refactor, test-only, or other non-behavior code
+work records TDD chronology as `n/a` with a rationale, then provides applicable
+focused GREEN and full-suite evidence. Relevant verification and the functional
+smoke matrix, or an explicit docs-only `n/a`, must be recorded in the plan or
+in reviewer/final evidence for plan-exempt work. If actionable findings exist,
+update the plan
+when one is required, route each issue to the responsible implementation, test,
+docs, refactor, or integration worker persona or a fresh replacement with the
+same ownership boundary, rerun the affected verification and affected
+functional smoke entries, then start a new fresh three-reviewer pass. Stop only
+when all three reviewers in the newest pass report no actionable findings.
 
 ## Input
 
-Read the plan, local diff, `.agents/docs/harness-engineering.md`, `.agents/docs/architecture.md`, `.agents/docs/functional-smoke-matrix.md`, verification history, functional smoke matrix/results, and changed files.
+Read the plan when one is required, the recorded plan-exempt reason otherwise,
+local diff, `.agents/docs/harness-engineering.md`,
+`.agents/docs/architecture.md`, `.agents/docs/functional-smoke-matrix.md`,
+verification history, functional smoke matrix/results, and changed files.
 
-## Subagent Review Loop
+## Three-Reviewer Loop
 
-Use `$subagent-review-loop` exactly:
+Use this loop exactly:
 
 1. Finish the local change, run relevant verification, and complete the
-   functional smoke matrix first.
-2. Spawn exactly five new reviewer subagents for the pass.
+   functional smoke matrix first; docs/instruction-only work records the matrix
+   as `n/a`.
+2. Spawn exactly three fresh read-only reviewer subagents for the pass.
 3. Give each reviewer task-local context: requirements, changed files, relevant
-   docs, verification output, and functional smoke matrix/results from the plan.
-4. Ask each reviewer for findings first, ordered by severity, with file and line references.
-5. Fix every actionable finding. When delegation is available and safe, assign
-   it back to the responsible worker persona or a fresh replacement; if the main
-   agent fixes it directly because delegation is unavailable or unsafe, record
-   that reason in the plan.
-6. Rerun affected verification and affected functional smoke entries.
-7. Spawn another fresh five-reviewer pass.
-8. Repeat until all five reviewers in the newest pass report no actionable findings.
+   docs, the RED command/test layers/non-zero exit/failure signature/order
+   evidence for feature/behavior work or a non-behavior `n/a` rationale,
+   focused and full-suite GREEN output, and functional smoke matrix/results or
+   docs-only `n/a` from the plan or plan-exempt evidence.
+4. Give each reviewer a different primary prompt:
+   - Reviewer 1 — bugs and correctness: regressions, API/MCP contracts, error
+     handling, architecture correctness, TDD chronology, and
+     unit/integration/E2E quality.
+   - Reviewer 2 — security and data safety: secrets, privacy,
+     authentication/authorization, input validation, dependency risk, external
+     service exposure, destructive behavior, and local Chroma/SQLite safety.
+   - Reviewer 3 — performance and reliability: latency/complexity regressions,
+     resource use, async/concurrency, timeouts/retries, lifecycle cleanup,
+     scalability, observability, and operational failure modes.
+5. Tell all reviewers they may report issues outside the primary lens, must
+   report findings first in severity order with file/line references, and must
+   not edit files.
+6. Route every actionable finding to the responsible worker persona or a fresh
+   replacement when delegation is available and safe. For a behavior-changing
+   code/config fix, return first to the unit/integration/E2E RED gate and record
+   fresh auditable pre-edit failure evidence; then implement GREEN, refactor,
+   rerun affected tests, run `./scripts/verify_all.sh`, and refresh affected
+   smoke entries. For a non-behavior code/config/test fix, record RED as `n/a`
+   without manufacturing a failure, then rerun affected focused tests,
+   `./scripts/verify_all.sh`, and affected smoke entries. For a docs-only fix,
+   rerun the lightweight docs checks without manufacturing a fake RED. If the
+   main agent fixes directly
+   because delegation is unavailable or unsafe, record that reason in the plan
+   or plan-exempt task evidence.
+7. Confirm all affected verification and functional smoke evidence matches the
+   current diff.
+8. Spawn another fresh three-reviewer pass with the same three distinct lenses.
+9. Repeat until all three reviewers in the newest pass report no actionable
+   findings.
 
-If subagent review is unavailable or unauthorized, do not replace it silently. Stop and report the blocker. Continue with self-review only after explicit user approval to bypass `$subagent-review-loop`.
+If subagent review is unavailable or unauthorized, do not replace it silently.
+Stop and report the blocker. Continue with self-review only after explicit user
+approval to bypass the three-reviewer harness loop.
 
 ## Review Lenses
 
-Apply relevant lenses:
+The three assigned primary lenses cover these task-relevant checks:
 
 - MCP contract: tool names, parameters, return types, error messages, README/client docs.
 - Indexing/vector-store/storage: Chroma mutation, SQLite lifecycle/tombstone metadata, content hash, dedup/update, status, local data safety.
@@ -67,10 +107,21 @@ Produce a checklist:
 | --- | --- | --- |
 | Architecture compliance | pass/fail/n/a | Relevant violation or n/a reason |
 | Acceptance criteria | pass/fail/n/a | Missing behavior |
-| Tests/verification | pass/fail/n/a | Commands run or gaps |
+| TDD chronology | pass/fail/n/a | Pre-production RED command, layers/tests, non-zero exit, expected signature, and ordering |
+| Tests/verification | pass/fail/n/a | Focused unit/integration/E2E, post-refactor reruns, and `verify_all.sh` |
 | Functional smoke matrix | pass/fail/n/a | Rows covered, blocked/gated checks, substitutes, and evidence |
 | Security/data/API risk | pass/fail/n/a | Secrets, Chroma, SQLite metadata, MCP contract, external API |
+| Performance/reliability | pass/fail/n/a | Complexity, latency, resource use, async/concurrency, retries, cleanup, observability |
 | Change size/staging | pass/fail/n/a | Split or stacked PR need |
 | Docs-only policy | pass/fail/n/a | Path listing, status, unstaged/staged diff checks |
 
-Findings must include file path, reason, and suggested fix. After the final clean review pass, return to integration/PR delivery instead of stopping at local completion. The final handoff must state the verification command, functional smoke matrix result summary, that the final fresh five-reviewer `$subagent-review-loop` pass had no actionable findings, and the PR URL or PR delivery blocker. If the loop was explicitly bypassed by user approval, state that instead.
+Findings must include file path, reason, and suggested fix. After a clean middle
+review pass, proceed to integration; after the clean final review pass, proceed
+directly to PR delivery instead of stopping at local completion. The final
+handoff for feature/behavior code changes must state the
+RED evidence summary; other work states the TDD `n/a` rationale. It must also
+state focused and full-suite GREEN commands, functional smoke matrix result
+summary, that the final fresh bugs/correctness, security/data-safety, and
+performance/reliability reviewers all reported no actionable findings, and the
+PR URL or PR delivery blocker. If the loop was explicitly bypassed by user
+approval, state that instead.

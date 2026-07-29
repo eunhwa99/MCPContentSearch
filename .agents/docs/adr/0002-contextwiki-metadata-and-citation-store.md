@@ -23,7 +23,10 @@ Add a SQLite metadata store beside Chroma:
 - Source auth is stored as an environment-variable reference such as `env:NOTION_API_KEY`, never as a raw token.
 - Chunk ids are deterministic from document id, chunk index, and chunk content hash.
 - Answer-generation paths may only cite chunks that exist in the metadata store.
-- Required verification uses fake sources and temporary persistence. Live external API smoke tests are opt-in only.
+- Required verification uses fake sources and temporary persistence. Live external
+  API smoke tests are blocked unless the task has a plan and the user explicitly
+  approves the bounded check; plan-exempt work must be reclassified as planned
+  work or keep using fake/temporary substitutes.
 
 ## Consequences
 

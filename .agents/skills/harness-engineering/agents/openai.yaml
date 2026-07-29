@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Engineering"
   short_description: "Orchestrate MCPContentSearch harness phases"
-  default_prompt: "$harness-engineering를 사용해 MCPContentSearch 변경을 plan-first, review-gated 방식으로 진행하세요."
+  default_prompt: "$harness-engineering를 사용해 먼저 plan-exempt 여부를 결정하고, feature/behavior 변경이면 unit/integration/deterministic E2E RED 증거를 production edit 전에 기록한 뒤 GREEN, refactor, ./scripts/verify_all.sh, smoke 순서로 진행하세요. Pure refactor/test-only/non-behavior 변경은 RED n/a 사유를 기록합니다. Review gate는 정확히 3명의 fresh read-only reviewer를 bugs/correctness, security/data safety, performance/reliability 렌즈로 각각 다르게 프롬프팅합니다."

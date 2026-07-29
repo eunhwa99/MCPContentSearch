@@ -61,7 +61,9 @@ Retain:
   `CONTEXTWIKI_OBSIDIAN_MAX_FILES` and
   `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. It does not require a live Obsidian
   app, plugin, or API server, and verification should use temporary vaults
-  unless a user explicitly approves a real vault path.
+  unless the task has a plan and the user explicitly approves the bounded real
+  vault check. Plan-exempt work must be reclassified as planned work or keep
+  using a temporary vault.
 - Optional search LLM query rewrite behind `search_context`, disabled by
   default. If explicitly enabled through `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`
   and a configured provider API key, the server may send the user's search
