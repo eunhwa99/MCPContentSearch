@@ -224,6 +224,356 @@ def test_search_context_defaults_to_non_debug_payload(tmp_path):
     assert "_grounding" not in result
 
 
+def test_search_context_refills_candidates_before_applying_inclusive_date_filter(
+    monkeypatch,
+    tmp_path,
+):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    for index, published_at in enumerate(
+        [
+            "2026-06-01T00:00:00Z",
+            "2026-06-02T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+        ]
+    ):
+        seed_document_chunks(
+            store,
+            f"doc-{index}",
+            f"chunk-{index}",
+            "source_target",
+            f"ContextWiki {index}",
+            "ContextWiki date filtering evidence.",
+            published_at=published_at,
+        )
+    lookup_counts = {
+        "chunks": {},
+        "documents": {},
+        "sources": {},
+    }
+    original_get_chunk = store.get_chunk
+    original_get_document = store.get_document
+    original_get_source = store.get_source
+
+    def counted_get_chunk(chunk_id):
+        lookup_counts["chunks"][chunk_id] = (
+            lookup_counts["chunks"].get(chunk_id, 0) + 1
+        )
+        return original_get_chunk(chunk_id)
+
+    def counted_get_document(document_id):
+        lookup_counts["documents"][document_id] = (
+            lookup_counts["documents"].get(document_id, 0) + 1
+        )
+        return original_get_document(document_id)
+
+    def counted_get_source(source_id):
+        lookup_counts["sources"][source_id] = (
+            lookup_counts["sources"].get(source_id, 0) + 1
+        )
+        return original_get_source(source_id)
+
+    monkeypatch.setattr(store, "get_chunk", counted_get_chunk)
+    monkeypatch.setattr(store, "get_document", counted_get_document)
+    monkeypatch.setattr(store, "get_source", counted_get_source)
+    requested_limits = []
+
+    def retriever(_query, limit, _source_ids):
+        requested_limits.append(limit)
+        return [
+            {"chunk_id": f"chunk-{index}", "score": 1.0 - index / 10}
+            for index in range(3)
+        ][:limit]
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=retriever).search_context(
+            "ContextWiki",
+            filters=SearchFilters(
+                source_ids=["source_target"],
+                published_from="2026-07-01T00:00:00Z",
+                published_to="2026-07-01T00:00:00Z",
+            ),
+            top_k=1,
+        )
+    )
+
+    assert requested_limits == [1, 2, 4]
+    assert [item.document_id for item in result["results"]] == ["doc-2"]
+    assert lookup_counts["chunks"] == {
+        "chunk-0": 1,
+        "chunk-1": 1,
+        "chunk-2": 1,
+    }
+    assert lookup_counts["documents"] == {
+        "doc-0": 1,
+        "doc-1": 1,
+        "doc-2": 1,
+    }
+    assert lookup_counts["sources"] == {"source_target": 1}
+
+
+def test_search_documents_sorts_matching_documents_by_normalized_date(tmp_path):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    for document_id, published_at in [
+        ("older", "2026-07-01T00:00:00Z"),
+        ("newer", "2026-07-03T00:00:00Z"),
+    ]:
+        seed_document_chunks(
+            store,
+            document_id,
+            f"{document_id}-chunk",
+            "source_target",
+            f"ContextWiki {document_id}",
+            "ContextWiki sorted evidence.",
+            published_at=published_at,
+        )
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            retriever=list_search_documents(store),
+        ).search_documents(
+            "ContextWiki",
+            filters=SearchFilters(source_ids=["source_target"]),
+            sort_by="published_at",
+            sort_order="desc",
+            top_k=2,
+        )
+    )
+
+    assert [item.document_id for item in result["results"]] == ["newer", "older"]
+    assert result["results"][0].published_at == "2026-07-03T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("sort_order", "expected_document_ids"),
+    [
+        ("asc", ["offset-aware", "date-only", "utc-aware"]),
+        ("desc", ["utc-aware", "date-only", "offset-aware"]),
+    ],
+)
+def test_search_documents_normalizes_date_only_and_offset_aware_sort_values(
+    tmp_path,
+    sort_order,
+    expected_document_ids,
+):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    for document_id, published_at in [
+        ("date-only", "2026-07-02"),
+        ("offset-aware", "2026-07-02T08:00:00+09:00"),
+        ("utc-aware", "2026-07-02T01:00:00Z"),
+    ]:
+        seed_document_chunks(
+            store,
+            document_id,
+            f"{document_id}-chunk",
+            "source_target",
+            f"ContextWiki {document_id}",
+            "ContextWiki mixed timestamp sorting evidence.",
+            published_at=published_at,
+        )
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            retriever=list_search_documents(store),
+        ).search_documents(
+            "ContextWiki",
+            filters=SearchFilters(source_ids=["source_target"]),
+            sort_by="published_at",
+            sort_order=sort_order,
+            top_k=3,
+        )
+    )
+
+    assert [item.document_id for item in result["results"]] == expected_document_ids
+
+
+@pytest.mark.parametrize(
+    ("sort_order", "documents", "expected_document_ids"),
+    [
+        (
+            "asc",
+            [
+                ("a-newer", "9999-12-31T23:59:59.999999Z"),
+                ("z-older", "9999-12-31T23:59:59.999998Z"),
+            ],
+            ["z-older", "a-newer"],
+        ),
+        (
+            "desc",
+            [
+                ("a-older", "9999-12-31T23:59:59.999998Z"),
+                ("z-newer", "9999-12-31T23:59:59.999999Z"),
+            ],
+            ["z-newer", "a-older"],
+        ),
+    ],
+)
+def test_search_documents_preserves_microsecond_precision_for_date_sort(
+    tmp_path,
+    sort_order,
+    documents,
+    expected_document_ids,
+):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    for document_id, published_at in documents:
+        seed_document_chunks(
+            store,
+            document_id,
+            f"{document_id}-chunk",
+            "source_target",
+            f"ContextWiki {document_id}",
+            "ContextWiki precision sorting evidence.",
+            published_at=published_at,
+        )
+
+    result = asyncio.run(
+        ContextSearchService(
+            store,
+            retriever=list_search_documents(store),
+        ).search_documents(
+            "ContextWiki",
+            filters=SearchFilters(source_ids=["source_target"]),
+            sort_by="published_at",
+            sort_order=sort_order,
+            top_k=2,
+        )
+    )
+
+    assert [item.document_id for item in result["results"]] == expected_document_ids
+
+
+def test_search_documents_refill_hydrates_each_unique_candidate_once(
+    monkeypatch,
+    tmp_path,
+):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    old_document = DocumentModel(
+        id="doc-old-multi",
+        source_id="source_target",
+        title="Old multi-chunk document",
+        content="ContextWiki old multi chunk evidence",
+        url="https://example.com/doc-old-multi",
+        platform="Notion",
+        published_at="2026-06-01T00:00:00Z",
+    )
+    old_chunks = [
+        ChunkModel(
+            chunk_id=f"chunk-old-{index}",
+            document_id="doc-old-multi",
+            source_id="source_target",
+            title=old_document.title,
+            text=f"ContextWiki old multi chunk evidence {index}",
+            url=old_document.url,
+            chunk_index=index,
+            content_hash=f"old-{index}",
+        )
+        for index in range(2)
+    ]
+    store.upsert_document_and_replace_chunks(old_document, old_chunks)
+    seed_document_chunks(
+        store,
+        "doc-other-old",
+        "chunk-other-old",
+        "source_target",
+        "Other old document",
+        "ContextWiki other old evidence",
+        published_at="2026-06-02T00:00:00Z",
+    )
+    seed_document_chunks(
+        store,
+        "doc-match",
+        "chunk-match",
+        "source_target",
+        "Matching document",
+        "ContextWiki matching date evidence",
+        published_at="2026-07-01T00:00:00Z",
+    )
+    lookup_counts = {
+        "chunks": {},
+        "documents": {},
+        "sources": {},
+    }
+    original_get_chunk = store.get_chunk
+    original_get_document = store.get_document
+    original_get_source = store.get_source
+
+    def counted_get_chunk(chunk_id):
+        lookup_counts["chunks"][chunk_id] = (
+            lookup_counts["chunks"].get(chunk_id, 0) + 1
+        )
+        return original_get_chunk(chunk_id)
+
+    def counted_get_document(document_id):
+        lookup_counts["documents"][document_id] = (
+            lookup_counts["documents"].get(document_id, 0) + 1
+        )
+        return original_get_document(document_id)
+
+    def counted_get_source(source_id):
+        lookup_counts["sources"][source_id] = (
+            lookup_counts["sources"].get(source_id, 0) + 1
+        )
+        return original_get_source(source_id)
+
+    monkeypatch.setattr(store, "get_chunk", counted_get_chunk)
+    monkeypatch.setattr(store, "get_document", counted_get_document)
+    monkeypatch.setattr(store, "get_source", counted_get_source)
+    requested_limits = []
+
+    def retriever(_query, limit, _source_ids):
+        requested_limits.append(limit)
+        return [
+            {"chunk_id": "chunk-old-0", "score": 1.0},
+            {"chunk_id": "chunk-old-1", "score": 0.9},
+            {"chunk_id": "chunk-other-old", "score": 0.8},
+            {"chunk_id": "chunk-match", "score": 0.7},
+        ][:limit]
+
+    service = ContextSearchService(store, retriever=retriever)
+    monkeypatch.setattr(service, "_document_search_candidate_limit", lambda _top_k: 2)
+    result = asyncio.run(
+        service.search_documents(
+            "ContextWiki",
+            filters=SearchFilters(
+                source_ids=["source_target"],
+                published_from="2026-07-01T00:00:00Z",
+            ),
+            top_k=1,
+        )
+    )
+
+    assert requested_limits == [2, 4]
+    assert [item.document_id for item in result["results"]] == ["doc-match"]
+    assert lookup_counts["chunks"] == {
+        "chunk-old-0": 1,
+        "chunk-old-1": 1,
+        "chunk-other-old": 1,
+        "chunk-match": 1,
+    }
+    assert lookup_counts["documents"] == {
+        "doc-old-multi": 1,
+        "doc-other-old": 1,
+        "doc-match": 1,
+    }
+    assert lookup_counts["sources"] == {"source_target": 1}
+
+
 def test_vector_search_debug_contains_no_query_rewrite_fields(
     monkeypatch,
     tmp_path,
@@ -2046,6 +2396,43 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
 
     assert len(result["results"]) == 1
     assert result["results"][0].source_id == "source_target"
+
+
+def test_search_context_unions_singular_and_plural_source_filters(tmp_path):
+    from core.models import SearchFilters
+
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_source(store, "source_other", SourceType.TISTORY, "Other")
+    for source_id in ("source_target", "source_other"):
+        seed_document_chunks(
+            store,
+            f"doc-{source_id}",
+            f"chunk-{source_id}",
+            source_id,
+            source_id,
+            "ContextWiki source union evidence",
+        )
+    documents = [
+        store.get_chunk(f"chunk-{source_id}").to_document_model()
+        for source_id in ("source_target", "source_other")
+    ]
+
+    result = asyncio.run(
+        ContextSearchService(store, retriever=documents).search_context(
+            "ContextWiki source union",
+            filters=SearchFilters(
+                source_id="source_target",
+                source_ids=["source_other"],
+            ),
+            top_k=2,
+        )
+    )
+
+    assert {item.source_id for item in result["results"]} == {
+        "source_target",
+        "source_other",
+    }
 
 
 def test_search_context_returns_chunk_version_id(tmp_path):
@@ -6701,6 +7088,7 @@ def seed_document_chunks(
     version_id="",
     path="",
     url="",
+    published_at="",
 ):
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -6713,6 +7101,10 @@ def seed_document_chunks(
             platform="Test",
             path=path or title,
             version_id=version_id,
+            published_at=published_at,
+            modified_at=published_at,
+            indexed_at=published_at,
+            date_provenance="test" if published_at else "",
         ),
         [
             ChunkModel(

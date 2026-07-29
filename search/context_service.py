@@ -1,9 +1,20 @@
 from collections.abc import Callable, Iterable
-from typing import Any
+from datetime import datetime, timezone
+import inspect
+from typing import Any, cast
 
 from llama_index.core.retrievers import VectorIndexRetriever
 
-from core.models import ChunkModel, ContextSearchResult, DocumentModel, DocumentSearchResult
+from core.models import (
+    ChunkModel,
+    ContextSearchResult,
+    DocumentModel,
+    DocumentSearchResult,
+    DocumentSortBy,
+    SearchFilters,
+    SearchSortBy,
+    SortOrder,
+)
 from environments.config import AppConfig
 from search.intent import classify_intent
 from search import debug_redaction, ranking
@@ -14,6 +25,34 @@ from search.retrieval_pipeline import (
     metadata_filters,
 )
 from storage.metadata_store import MetadataStore
+
+
+class _HydrationCachedMetadataStore:
+    """Per-search facade that avoids repeated hydration across refill rounds."""
+
+    def __init__(self, metadata_store: MetadataStore):
+        self._metadata_store = metadata_store
+        self.chunks: dict[str, ChunkModel | None] = {}
+        self.documents: dict[str, DocumentModel | None] = {}
+        self.sources: dict[str, Any | None] = {}
+
+    def get_chunk(self, chunk_id: str) -> ChunkModel | None:
+        if chunk_id not in self.chunks:
+            self.chunks[chunk_id] = self._metadata_store.get_chunk(chunk_id)
+        return self.chunks[chunk_id]
+
+    def get_document(self, document_id: str) -> DocumentModel | None:
+        if document_id not in self.documents:
+            self.documents[document_id] = self._metadata_store.get_document(document_id)
+        return self.documents[document_id]
+
+    def get_source(self, source_id: str):
+        if source_id not in self.sources:
+            self.sources[source_id] = self._metadata_store.get_source(source_id)
+        return self.sources[source_id]
+
+    def __getattr__(self, name: str):
+        return getattr(self._metadata_store, name)
 
 
 class ContextSearchService:
@@ -40,13 +79,13 @@ class ContextSearchService:
     async def search_context(
         self,
         query: str,
-        filters: dict | None = None,
+        filters: SearchFilters | dict | None = None,
         top_k: int = 10,
         include_debug: bool = False,
         include_internal_metadata: bool = False,
     ) -> dict:
-        filters = filters or {}
-        source_ids = self._effective_source_ids(filters)
+        filter_payload = self._filter_payload(filters)
+        source_ids = self._effective_source_ids(filter_payload)
         if source_ids == []:
             return self._empty_search_result(
                 query,
@@ -54,19 +93,52 @@ class ContextSearchService:
                 include_debug=include_debug,
                 include_internal_metadata=include_internal_metadata,
             )
-        retrieval_debug = await self._retrieve_candidates(query, top_k, source_ids)
-        candidates = retrieval_debug["candidates"]
-        effective_term_groups = retrieval_debug["effective_term_groups"]
-        results = []
+        normalized_filters = self._normalized_filters(filter_payload)
+        retrieval_limit = top_k
+        max_limit = self._max_retrieval_limit(retrieval_limit)
+        hydration_store = _HydrationCachedMetadataStore(self.metadata_store)
+        has_date_filters = self._has_date_filters(filter_payload)
+        cached_pipeline = (
+            self._pipeline(
+                metadata_store=cast(MetadataStore, hydration_store),
+            )
+            if has_date_filters
+            else None
+        )
 
-        for candidate in candidates:
-            chunk = self._candidate_chunk(candidate, source_ids)
-            if not chunk:
-                continue
-            results.append(self._context_search_result(chunk, candidate))
-            if len(results) >= top_k:
+        while True:
+            retrieval_debug = (
+                await cached_pipeline.retrieve_candidates(
+                    query,
+                    retrieval_limit,
+                    source_ids,
+                )
+                if cached_pipeline is not None
+                else await self._retrieve_candidates(
+                    query,
+                    retrieval_limit,
+                    source_ids,
+                )
+            )
+            results = self._context_results(
+                retrieval_debug["candidates"],
+                source_ids,
+                normalized_filters,
+                top_k,
+                chunk_cache=hydration_store.chunks,
+                document_cache=hydration_store.documents,
+                source_cache=hydration_store.sources,
+            )
+            if (
+                len(results) >= top_k
+                or not has_date_filters
+                or len(retrieval_debug["candidates"]) < retrieval_limit
+                or retrieval_limit >= max_limit
+            ):
                 break
+            retrieval_limit = min(retrieval_limit * 2, max_limit)
 
+        effective_term_groups = retrieval_debug["effective_term_groups"]
         return self._search_response(
             query,
             results,
@@ -77,21 +149,37 @@ class ContextSearchService:
             include_internal_metadata=include_internal_metadata,
         )
 
-    async def search_documents(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
-        filters = filters or {}
-        source_ids = self._effective_source_ids(filters)
+    async def search_documents(
+        self,
+        query: str,
+        filters: SearchFilters | dict | None = None,
+        sort_by: SearchSortBy | str = SearchSortBy.RELEVANCE,
+        sort_order: SortOrder | str = SortOrder.DESC,
+        top_k: int = 10,
+    ) -> dict:
+        normalized_sort_by = self._normalize_document_sort(sort_by)
+        normalized_sort_order = self._normalize_sort_order(sort_order)
+        filter_payload = self._filter_payload(filters)
+        source_ids = self._effective_source_ids(filter_payload)
         if source_ids == []:
             return self._empty_search_result(query, source_ids=[])
+        normalized_filters = self._normalized_filters(filter_payload)
+        hydration_store = _HydrationCachedMetadataStore(self.metadata_store)
         retrieval_limit = self._document_search_candidate_limit(top_k)
         max_limit = self._max_retrieval_limit(retrieval_limit)
-        retrieval_debug = await self._retrieve_candidates(
+        retrieval_debug = await self._retrieve_candidates_with_hydration_cache(
             query,
             retrieval_limit,
             source_ids,
+            hydration_store,
         )
         best_by_document = self._group_document_results(
             retrieval_debug["candidates"],
             source_ids,
+            normalized_filters,
+            chunk_cache=hydration_store.chunks,
+            document_cache=hydration_store.documents,
+            source_cache=hydration_store.sources,
         )
 
         while (
@@ -100,17 +188,29 @@ class ContextSearchService:
             and retrieval_limit < max_limit
         ):
             retrieval_limit = min(retrieval_limit * 2, max_limit)
-            retrieval_debug = await self._retrieve_candidates(
+            retrieval_debug = await self._retrieve_candidates_with_hydration_cache(
                 query,
                 retrieval_limit,
                 source_ids,
+                hydration_store,
             )
             best_by_document = self._group_document_results(
                 retrieval_debug["candidates"],
                 source_ids,
+                normalized_filters,
+                chunk_cache=hydration_store.chunks,
+                document_cache=hydration_store.documents,
+                source_cache=hydration_store.sources,
             )
 
-        results = list(best_by_document.values())[:top_k]
+        results = list(best_by_document.values())
+        if normalized_sort_by != "relevance":
+            results = self._sort_document_results(
+                results,
+                normalized_sort_by,
+                normalized_sort_order,
+            )
+        results = results[:top_k]
         effective_term_groups = retrieval_debug["effective_term_groups"]
         return self._search_response(
             query,
@@ -123,7 +223,7 @@ class ContextSearchService:
     async def search_context_for_answer(
         self,
         query: str,
-        filters: dict | None = None,
+        filters: SearchFilters | dict | None = None,
         top_k: int = 10,
         *,
         include_debug: bool = False,
@@ -144,7 +244,7 @@ class ContextSearchService:
         include_debug: bool = False,
         include_internal_metadata: bool = False,
     ) -> dict:
-        payload = {
+        payload: dict[str, Any] = {
             "query": query,
             "results": [],
         }
@@ -219,14 +319,51 @@ class ContextSearchService:
 
         return normalized or None
 
-    def _pipeline(self) -> ContextRetrievalPipeline:
+    @staticmethod
+    def _filter_payload(filters: SearchFilters | dict | None) -> dict[str, Any]:
+        if filters is None:
+            return {}
+        if isinstance(filters, dict):
+            return dict(filters)
+        model_dump = getattr(filters, "model_dump", None)
+        if callable(model_dump):
+            return model_dump(mode="json", exclude_none=True)
+        raise TypeError("filters must be SearchFilters, a mapping, or None")
+
+    @staticmethod
+    def _normalized_filters(filters: dict[str, Any]) -> SearchFilters:
+        return SearchFilters.model_validate(filters)
+
+    @staticmethod
+    def _has_date_filters(filters: dict[str, Any]) -> bool:
+        return any(
+            filters.get(field)
+            for field in (
+                "published_from",
+                "published_to",
+                "modified_from",
+                "modified_to",
+                "indexed_from",
+                "indexed_to",
+            )
+        )
+
+    def _pipeline(
+        self,
+        metadata_store: MetadataStore | None = None,
+    ) -> ContextRetrievalPipeline:
+        active_store = metadata_store or self.metadata_store
         return ContextRetrievalPipeline(
-            metadata_store=self.metadata_store,
+            metadata_store=active_store,
             config=self.config,
             indexer=self.indexer,
             retriever=self.retriever,
             vector_retriever_cls=self.vector_retriever_cls,
-            ranker=self.ranker,
+            ranker=(
+                self.ranker
+                if metadata_store is None
+                else ContextCandidateRanker(active_store, self.config)
+            ),
         )
 
     async def _retrieve_candidates(
@@ -234,12 +371,30 @@ class ContextSearchService:
         query: str,
         top_k: int,
         source_ids: list[str] | None,
+        metadata_store: MetadataStore | None = None,
     ) -> dict[str, Any]:
-        return await self._pipeline().retrieve_candidates(
+        return await self._pipeline(metadata_store=metadata_store).retrieve_candidates(
             query,
             top_k,
             source_ids,
         )
+
+    async def _retrieve_candidates_with_hydration_cache(
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str] | None,
+        hydration_store: _HydrationCachedMetadataStore,
+    ) -> dict[str, Any]:
+        retrieve_candidates = self._retrieve_candidates
+        if "metadata_store" in inspect.signature(retrieve_candidates).parameters:
+            return await retrieve_candidates(
+                query,
+                top_k,
+                source_ids,
+                metadata_store=cast(MetadataStore, hydration_store),
+            )
+        return await retrieve_candidates(query, top_k, source_ids)
 
     def _retrieve_candidates_for_variants(
         self,
@@ -678,24 +833,94 @@ class ContextSearchService:
         self,
         candidate: dict[str, Any],
         source_ids: list[str] | None,
+        chunk_cache: dict[str, ChunkModel | None] | None = None,
     ) -> ChunkModel | None:
-        chunk = self.metadata_store.get_chunk(candidate["chunk_id"])
+        chunk_id = candidate["chunk_id"]
+        if chunk_cache is not None and chunk_id in chunk_cache:
+            chunk = chunk_cache[chunk_id]
+        else:
+            chunk = self.metadata_store.get_chunk(chunk_id)
+            if chunk_cache is not None:
+                chunk_cache[chunk_id] = chunk
         if not chunk:
             return None
         if source_ids and chunk.source_id not in source_ids:
             return None
         return chunk
 
+    def _candidate_document(
+        self,
+        chunk: ChunkModel,
+        filters: SearchFilters,
+        document_cache: dict[str, DocumentModel | None] | None = None,
+    ) -> DocumentModel | None:
+        if document_cache is not None and chunk.document_id in document_cache:
+            document = document_cache[chunk.document_id]
+        else:
+            document = self.metadata_store.get_document(chunk.document_id)
+            if document_cache is not None:
+                document_cache[chunk.document_id] = document
+        if document is None:
+            return None
+        matches_filters = getattr(self.metadata_store, "document_matches_filters", None)
+        if callable(matches_filters) and not matches_filters(document, filters):
+            return None
+        return document
+
+    def _context_results(
+        self,
+        candidates: list[dict[str, Any]],
+        source_ids: list[str] | None,
+        filters: SearchFilters,
+        top_k: int,
+        *,
+        chunk_cache: dict[str, ChunkModel | None] | None = None,
+        document_cache: dict[str, DocumentModel | None] | None = None,
+        source_cache: dict[str, Any | None] | None = None,
+    ) -> list[ContextSearchResult]:
+        results = []
+        for candidate in candidates:
+            chunk = self._candidate_chunk(
+                candidate,
+                source_ids,
+                chunk_cache=chunk_cache,
+            )
+            if not chunk:
+                continue
+            document = self._candidate_document(
+                chunk,
+                filters,
+                document_cache=document_cache,
+            )
+            if not document:
+                continue
+            results.append(
+                self._context_search_result(
+                    chunk,
+                    candidate,
+                    document,
+                    source_cache=source_cache,
+                )
+            )
+            if len(results) >= top_k:
+                break
+        return results
+
     def _context_search_result(
         self,
         chunk: ChunkModel,
         candidate: dict[str, Any],
+        document: DocumentModel,
+        source_cache: dict[str, Any | None] | None = None,
     ) -> ContextSearchResult:
         return ContextSearchResult(
             chunk_id=chunk.chunk_id,
             document_id=chunk.document_id,
             source_id=chunk.source_id,
-            source_type=self._source_type_for_chunk(chunk),
+            source_type=self._source_type_for_chunk(
+                chunk,
+                source_cache=source_cache,
+            ),
             title=chunk.title,
             url=chunk.url,
             path=chunk.path,
@@ -708,18 +933,27 @@ class ContextSearchService:
             line_end=chunk.line_end,
             version_id=chunk.version_id,
             updated_at=chunk.updated_at,
+            published_at=document.published_at,
+            modified_at=document.modified_at,
+            indexed_at=document.indexed_at,
+            date_provenance=document.date_provenance,
         )
 
     def _document_search_result(
         self,
         chunk: ChunkModel,
         candidate: dict[str, Any],
+        document: DocumentModel,
+        source_cache: dict[str, Any | None] | None = None,
     ) -> DocumentSearchResult:
         return DocumentSearchResult(
             document_id=chunk.document_id,
             chunk_id=chunk.chunk_id,
             source_id=chunk.source_id,
-            source_type=self._source_type_for_chunk(chunk),
+            source_type=self._source_type_for_chunk(
+                chunk,
+                source_cache=source_cache,
+            ),
             title=chunk.title,
             url=chunk.url,
             path=chunk.path,
@@ -727,26 +961,115 @@ class ContextSearchService:
             vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
             metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
             matched_context=chunk.text or "",
+            published_at=document.published_at,
+            modified_at=document.modified_at,
+            indexed_at=document.indexed_at,
+            date_provenance=document.date_provenance,
         )
 
-    def _source_type_for_chunk(self, chunk: ChunkModel) -> str:
-        source = self.metadata_store.get_source(chunk.source_id)
+    def _source_type_for_chunk(
+        self,
+        chunk: ChunkModel,
+        source_cache: dict[str, Any | None] | None = None,
+    ) -> str:
+        if source_cache is not None and chunk.source_id in source_cache:
+            source = source_cache[chunk.source_id]
+        else:
+            source = self.metadata_store.get_source(chunk.source_id)
+            if source_cache is not None:
+                source_cache[chunk.source_id] = source
         return source.source_type.value if source else ""
 
     def _group_document_results(
         self,
         candidates: list[dict[str, Any]],
         source_ids: list[str] | None,
+        filters: SearchFilters,
+        *,
+        chunk_cache: dict[str, ChunkModel | None] | None = None,
+        document_cache: dict[str, DocumentModel | None] | None = None,
+        source_cache: dict[str, Any | None] | None = None,
     ) -> dict[str, DocumentSearchResult]:
         best_by_document: dict[str, DocumentSearchResult] = {}
         for candidate in candidates:
-            chunk = self._candidate_chunk(candidate, source_ids)
+            chunk = self._candidate_chunk(
+                candidate,
+                source_ids,
+                chunk_cache=chunk_cache,
+            )
             if not chunk:
                 continue
             if chunk.document_id in best_by_document:
                 continue
-            best_by_document[chunk.document_id] = self._document_search_result(chunk, candidate)
+            document = self._candidate_document(
+                chunk,
+                filters,
+                document_cache=document_cache,
+            )
+            if not document:
+                continue
+            best_by_document[chunk.document_id] = self._document_search_result(
+                chunk,
+                candidate,
+                document,
+                source_cache=source_cache,
+            )
         return best_by_document
+
+    @staticmethod
+    def _normalize_document_sort(sort_by: SearchSortBy | str) -> str:
+        value = getattr(sort_by, "value", sort_by)
+        normalized = str(value)
+        if normalized not in {
+            SearchSortBy.RELEVANCE.value,
+            DocumentSortBy.PUBLISHED_AT.value,
+            DocumentSortBy.MODIFIED_AT.value,
+            DocumentSortBy.INDEXED_AT.value,
+        }:
+            raise ValueError(f"Unsupported sort_by: {normalized}")
+        return normalized
+
+    @staticmethod
+    def _normalize_sort_order(sort_order: SortOrder | str) -> str:
+        value = getattr(sort_order, "value", sort_order)
+        normalized = str(value)
+        if normalized not in {SortOrder.ASC.value, SortOrder.DESC.value}:
+            raise ValueError(f"Unsupported sort_order: {normalized}")
+        return normalized
+
+    @staticmethod
+    def _sort_timestamp(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _sort_document_results(
+        cls,
+        results: list[DocumentSearchResult],
+        sort_by: str,
+        sort_order: str,
+    ) -> list[DocumentSearchResult]:
+        dated = [
+            item
+            for item in results
+            if cls._sort_timestamp(getattr(item, sort_by, "")) is not None
+        ]
+        undated = [item for item in results if item not in dated]
+        dated.sort(key=lambda item: item.document_id)
+        dated.sort(
+            key=lambda item: cls._sort_timestamp(getattr(item, sort_by))
+            or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=sort_order == SortOrder.DESC.value,
+        )
+        undated.sort(key=lambda item: item.document_id)
+        return dated + undated
 
     def _document_search_candidate_limit(self, top_k: int) -> int:
         return max(
@@ -766,7 +1089,7 @@ class ContextSearchService:
         include_debug: bool = False,
         include_internal_metadata: bool = False,
     ) -> dict:
-        payload = {
+        payload: dict[str, Any] = {
             "query": query,
             "results": results,
         }

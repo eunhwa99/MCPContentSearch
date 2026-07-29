@@ -7,6 +7,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from api.tools import register_tools
 from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
+from search.context_service import ContextSearchService
+from storage.metadata_store import MetadataStore
 
 
 pytestmark = pytest.mark.integration
@@ -101,6 +103,10 @@ class FakeMetadataStore:
             platform="GitHub",
             path="docs/contracts.md",
             chunk_id="chunk-1",
+            published_at="2026-06-01T00:00:00Z",
+            modified_at="2026-06-02T00:00:00Z",
+            indexed_at="2026-06-03T00:00:00Z",
+            date_provenance="test",
         )
 
     def set_job(self, source_id, job_payload):
@@ -139,6 +145,16 @@ class FakeMetadataStore:
     def list_chunks_for_document(self, document_id):
         assert document_id == "doc-1"
         return [self.chunk]
+
+    def list_documents(
+        self,
+        filters=None,
+        sort_by="indexed_at",
+        sort_order="desc",
+        page_size=20,
+        cursor=None,
+    ):
+        return {"documents": [self.document][:page_size], "next_cursor": None}
 
 
 class FakeIngestionService:
@@ -365,7 +381,14 @@ class FakeContextSearchService:
             "debug": debug_payload,
         }
 
-    async def search_documents(self, query, filters=None, top_k=10):
+    async def search_documents(
+        self,
+        query,
+        filters=None,
+        sort_by="relevance",
+        sort_order="desc",
+        top_k=10,
+    ):
         return {
             "query": query,
             "results": [
@@ -458,6 +481,464 @@ def test_search_tool_descriptions_explain_when_the_llm_should_select_each_tool()
     fetch_context_description = tools["fetch_context"].description.lower()
     assert "optionally drill" in fetch_context_description
     assert "after its id is known" in fetch_context_description
+
+
+def test_date_filters_and_document_listing_have_typed_real_fastmcp_schemas():
+    tools = {tool.name: tool for tool in asyncio.run(build_contract_mcp().list_tools())}
+
+    assert "list_documents" in tools
+    search_schema = tools["search_context"].inputSchema
+    filter_schema = json.dumps(
+        search_schema["properties"]["filters"],
+        sort_keys=True,
+    )
+    assert "published_from" in filter_schema
+    assert "published_to" in filter_schema
+    assert "modified_from" in filter_schema
+    assert "indexed_to" in filter_schema
+    list_properties = tools["list_documents"].inputSchema["properties"]
+    assert {"filters", "sort_by", "sort_order", "page_size", "cursor"} <= set(
+        list_properties
+    )
+    assert search_schema["$defs"]["SearchFilters"]["additionalProperties"] is False
+
+
+def test_real_fastmcp_annotations_match_metadata_store_write_behavior(tmp_path):
+    source_registry = FakeSourceRegistry()
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    mcp = FastMCP("tool-annotation-contract")
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=source_registry,
+    )
+
+    source_payload = call_tool_json(mcp, "list_sources")
+    status_payload = call_tool_json(mcp, "get_sync_status")
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert {source["source_id"] for source in source_payload["sources"]} == {
+        "source_github",
+        "source_obsidian",
+    }
+    assert {item["source"]["source_id"] for item in status_payload["sources"]} == {
+        "source_github",
+        "source_obsidian",
+    }
+    assert store.get_source("source_github") is not None
+    for name in ("list_sources", "get_sync_status"):
+        annotations = tools[name].annotations
+        assert annotations is None or annotations.readOnlyHint is not True
+        assert annotations is None or annotations.idempotentHint is not True
+
+    for name in ("search_context", "search_documents"):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.readOnlyHint is False
+        assert annotations.destructiveHint is False
+        assert annotations.idempotentHint is False
+        assert annotations.openWorldHint is True
+    for name in ("list_documents", "fetch_context"):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.readOnlyHint is False
+        assert annotations.destructiveHint is False
+        assert annotations.idempotentHint is False
+        assert annotations.openWorldHint is False
+
+
+def test_typed_date_filters_and_list_documents_use_real_fastmcp_calls():
+    mcp = build_contract_mcp()
+    search_payload = call_tool_json(
+        mcp,
+        "search_documents",
+        {
+            "query": "ContextWiki contracts",
+            "filters": {
+                "source_ids": ["source_github"],
+                "published_from": "2026-06-01T00:00:00Z",
+            },
+            "sort_by": "published_at",
+            "sort_order": "desc",
+            "top_k": 3,
+        },
+    )
+    list_payload = call_tool_json(
+        mcp,
+        "list_documents",
+        {
+            "filters": {"source_ids": ["source_github"]},
+            "sort_by": "indexed_at",
+            "sort_order": "desc",
+            "page_size": 1,
+        },
+    )
+
+    assert search_payload["results"][0]["document_id"] == "doc-1"
+    assert list_payload["documents"][0]["document_id"] == "doc-1"
+    assert "next_cursor" in list_payload
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected_source_ids"),
+    [
+        ({"source_ids": None}, {"source_github", "source_obsidian"}),
+        ({"source_id": None}, {"source_github", "source_obsidian"}),
+        ({"source_ids": "source_github"}, {"source_github"}),
+        ({"source_ids": ["", "  ", "source_github"]}, {"source_github"}),
+        ({"source_ids": ["", "  "]}, {"source_github", "source_obsidian"}),
+    ],
+)
+def test_real_fastmcp_normalizes_compatible_source_filter_shapes(
+    filters,
+    expected_source_ids,
+):
+    class CapturingContextSearch(FakeContextSearchService):
+        def __init__(self):
+            self.filters = None
+
+        async def search_context(
+            self,
+            query,
+            filters=None,
+            top_k=10,
+            include_debug=False,
+        ):
+            self.filters = filters
+            return await super().search_context(
+                query,
+                filters=filters,
+                top_k=top_k,
+                include_debug=include_debug,
+            )
+
+    source_registry = FakeSourceRegistry()
+    metadata_store = FakeMetadataStore(source_registry)
+    context_search = CapturingContextSearch()
+    mcp = FastMCP("nullable-scalar-source-filter-contract")
+    register_tools(
+        mcp,
+        context_search_service=context_search,
+        metadata_store=metadata_store,
+        source_registry=source_registry,
+    )
+
+    payload = call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "ContextWiki contracts",
+            "filters": filters,
+            "top_k": 3,
+        },
+    )
+
+    assert payload["results"][0]["source_id"] == "source_github"
+    assert set(context_search.filters["source_ids"]) == expected_source_ids
+    assert set(context_search.filters["source_ids"]) <= {
+        "source_github",
+        "source_obsidian",
+    }
+
+
+def test_real_fastmcp_rejects_unknown_filter_keys():
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "search_context",
+                {
+                    "query": "ContextWiki contracts",
+                    "filters": {"tag": "docs"},
+                },
+            )
+        )
+
+    assert "filters.tag" in str(exc_info.value)
+    assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_real_fastmcp_rejects_utc_overflow_filter_without_raw_backend_error():
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "search_context",
+                {
+                    "query": "ContextWiki contracts",
+                    "filters": {
+                        "published_from": "9999-12-31T23:59:59-01:00",
+                    },
+                },
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "Date filters must be valid ISO 8601 timestamps" in message
+    assert "OverflowError" not in message
+    assert "/Users/" not in message
+    assert "token=" not in message
+
+
+def test_real_fastmcp_hides_secret_like_invalid_filter_input():
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "search_context",
+                {
+                    "query": "ContextWiki contracts",
+                    "filters": {
+                        "published_from": (
+                            "/Users/eunhwa/private/contextwiki.sqlite3"
+                            "?token=super-secret-value"
+                        ),
+                    },
+                },
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "filters.published_from" in message
+    assert "Date filters must be valid ISO 8601 timestamps" in message
+    assert "/Users/eunhwa/private" not in message
+    assert "super-secret-value" not in message
+    assert "input_value" not in message
+
+
+def test_real_fastmcp_unions_singular_and_plural_source_filters(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    source_registry = FakeSourceRegistry()
+    documents = []
+    for source in source_registry.list_sources():
+        store.register_source(source)
+        document_id = f"doc-{source.source_id}"
+        document = DocumentModel(
+            id=document_id,
+            source_id=source.source_id,
+            title=f"ContextWiki {source.name}",
+            content="ContextWiki union source filtering evidence.",
+            url=f"https://example.com/{document_id}",
+            platform=source.source_type.value,
+        )
+        chunk = ChunkModel(
+            chunk_id=f"{document_id}:chunk:0",
+            document_id=document_id,
+            source_id=source.source_id,
+            title=document.title,
+            text=document.content,
+            url=document.url,
+            chunk_index=0,
+            content_hash=document_id,
+        )
+        store.upsert_document_and_replace_chunks(document, [chunk])
+        documents.append(chunk.to_document_model(platform=source.source_type.value))
+
+    mcp = FastMCP("source-filter-union-contract")
+    register_tools(
+        mcp,
+        context_search_service=ContextSearchService(store, retriever=documents),
+        metadata_store=store,
+        source_registry=source_registry,
+    )
+    filters = {
+        "source_id": "source_github",
+        "source_ids": ["source_obsidian"],
+    }
+
+    search_payload = call_tool_json(
+        mcp,
+        "search_context",
+        {"query": "ContextWiki", "filters": filters, "top_k": 5},
+    )
+    list_payload = call_tool_json(
+        mcp,
+        "list_documents",
+        {"filters": filters, "page_size": 5},
+    )
+
+    assert {item["source_id"] for item in search_payload["results"]} == {
+        "source_github",
+        "source_obsidian",
+    }
+    assert {item["source_id"] for item in list_payload["documents"]} == {
+        "source_github",
+        "source_obsidian",
+    }
+
+
+@pytest.mark.parametrize("prefix", ["published", "modified", "indexed"])
+def test_real_fastmcp_rejects_reversed_date_filter_ranges(prefix):
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "search_context",
+                {
+                    "query": "ContextWiki contracts",
+                    "filters": {
+                        f"{prefix}_from": "2026-07-02T00:00:00Z",
+                        f"{prefix}_to": "2026-07-01T00:00:00Z",
+                    },
+                },
+            )
+        )
+
+    assert f"{prefix}_from must be before or equal to {prefix}_to" in str(
+        exc_info.value
+    )
+
+
+def test_real_fastmcp_rejects_unsupported_document_search_sort():
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "search_documents",
+                {
+                    "query": "ContextWiki contracts",
+                    "sort_by": "created_at",
+                },
+            )
+        )
+
+    assert "sort_by" in str(exc_info.value)
+    assert "published_at" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("page_size", [0, 51])
+def test_real_fastmcp_rejects_unsafe_document_page_sizes(page_size):
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "list_documents",
+                {"page_size": page_size},
+            )
+        )
+
+    assert "page_size" in str(exc_info.value)
+    assert "greater than or equal to 1" in str(exc_info.value) or (
+        "less than or equal to 50" in str(exc_info.value)
+    )
+
+
+def test_real_fastmcp_rejects_invalid_document_cursor_safely(tmp_path):
+    mcp = FastMCP("invalid-document-cursor-contract")
+    register_tools(
+        mcp,
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            mcp.call_tool(
+                "list_documents",
+                {"cursor": "definitely-not-valid"},
+            )
+        )
+
+    assert str(exc_info.value).endswith("Invalid document cursor")
+    assert "definitely-not-valid" not in str(exc_info.value)
+
+
+def test_real_fastmcp_rejects_structurally_valid_forged_cursor_anchor(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for document_id in ("a", "b", "c"):
+        store.upsert_document(
+            DocumentModel(
+                id=document_id,
+                source_id="source_notion",
+                title=document_id,
+                content=document_id,
+                url=f"https://example.com/{document_id}",
+                platform="Notion",
+                published_at="2026-07-01T00:00:00Z",
+            )
+        )
+    mcp = FastMCP("forged-document-cursor-contract")
+    register_tools(mcp, metadata_store=store)
+    first_page = call_tool_json(
+        mcp,
+        "list_documents",
+        {
+            "sort_by": "published_at",
+            "sort_order": "asc",
+            "page_size": 1,
+        },
+    )
+    payload = store._decode_document_cursor(first_page["next_cursor"])
+    forged_cursor = store._encode_document_cursor(
+        {**payload, "document_id": "bb-forged-anchor"}
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            mcp.call_tool(
+                "list_documents",
+                {
+                    "sort_by": "published_at",
+                    "sort_order": "asc",
+                    "page_size": 1,
+                    "cursor": forged_cursor,
+                },
+            )
+        )
+
+    assert str(exc_info.value).endswith("Invalid document cursor")
+    assert forged_cursor not in str(exc_info.value)
+
+
+def test_real_fastmcp_redacts_unexpected_list_documents_backend_errors():
+    source_registry = FakeSourceRegistry()
+
+    class FailingListMetadataStore(FakeMetadataStore):
+        def list_documents(self, **_kwargs):
+            raise RuntimeError(
+                "backend failed at /Users/eunhwa/private/contextwiki.sqlite3 "
+                "with token=super-secret-value"
+            )
+
+    mcp = FastMCP("safe-list-documents-error-contract")
+    register_tools(
+        mcp,
+        metadata_store=FailingListMetadataStore(source_registry),
+        source_registry=source_registry,
+    )
+
+    payload = call_tool_json(mcp, "list_documents")
+
+    assert payload["status"] == "error"
+    assert payload["documents"] == []
+    assert payload["next_cursor"] is None
+    assert "<redacted>" in payload["message"]
+    assert "/Users/eunhwa/private" not in payload["message"]
+    assert "super-secret-value" not in payload["message"]
+
+
+def test_real_fastmcp_redacts_list_documents_source_filter_lookup_errors():
+    class FailingSourceLookupMetadataStore:
+        def get_source(self, _source_id):
+            raise RuntimeError(
+                "source lookup failed at /Users/eunhwa/private/contextwiki.sqlite3 "
+                "with token=super-secret-value"
+            )
+
+        def list_documents(self, **_kwargs):
+            raise AssertionError("listing must not run after source-filter lookup fails")
+
+    mcp = FastMCP("safe-list-documents-filter-error-contract")
+    register_tools(
+        mcp,
+        metadata_store=FailingSourceLookupMetadataStore(),
+    )
+
+    payload = call_tool_json(
+        mcp,
+        "list_documents",
+        {"filters": {"source_id": "source_private"}},
+    )
+
+    assert payload["status"] == "error"
+    assert payload["documents"] == []
+    assert payload["next_cursor"] is None
+    assert "<redacted>" in payload["message"]
+    assert "/Users/eunhwa/private" not in payload["message"]
+    assert "super-secret-value" not in payload["message"]
 
 
 def test_list_sources_contract_uses_real_fastmcp_call_tool():

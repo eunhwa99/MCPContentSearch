@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import ssl
+from datetime import datetime
 from typing import Dict, List, Optional
 import aiohttp
 import certifi
@@ -44,6 +45,22 @@ class TistoryPostExtractor:
     def extract_date(self) -> str:
         date_tag = self.soup.find("span", class_="date") or self.soup.find("time")
         return date_tag.get_text(strip=True) if date_tag else ""
+
+    def extract_published_at(self, display_date: str) -> str:
+        time_tag = self.soup.find("time")
+        candidates = [
+            time_tag.get("datetime", "") if time_tag else "",
+            display_date,
+        ]
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            try:
+                datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            return candidate
+        return ""
     
     def extract_content(self) -> str:
         for selector in CONTENT_SELECTORS:
@@ -86,6 +103,7 @@ async def fetch_post(
             
             title = extractor.extract_title(post_id)
             date = extractor.extract_date()
+            published_at = extractor.extract_published_at(date)
             content = extractor.extract_content()
             
             if not content:
@@ -99,6 +117,8 @@ async def fetch_post(
                 "url": url,
                 "canonical_url": url,
                 "date": date,
+                "published_at": published_at,
+                "date_provenance": "tistory" if published_at else "",
                 "content": content,
                 "platform": "Tistory"
             }

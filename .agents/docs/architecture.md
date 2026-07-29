@@ -15,8 +15,8 @@ maintained design reference beyond the README.
   `content-search-server`.
 - MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
   `list_sources`, `sync_source`, `sync_all`, `wait_for_sync_all`,
-  `get_sync_status`, `search_context`, `search_documents`, and
-  `fetch_context`.
+  `get_sync_status`, `search_context`, `search_documents`, `list_documents`,
+  and `fetch_context`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
 - Secrets/environment loading: `environments/token.py` and runtime environment
@@ -66,6 +66,9 @@ Keep these design assumptions aligned with implementation:
 - `search_documents` is the grouped browsing surface built from the same
   validated retrieval path. It returns one row per document and exposes the
   selected best-matching chunk's full text as `matched_context`.
+- `list_documents` is the query-less browsing surface over all active public
+  SQLite documents. It uses deterministic normalized-date ordering and opaque
+  keyset pagination rather than Chroma retrieval.
 - `search_context` remains a separate chunk-level contract; its preview
   behavior is unchanged.
 - `CitationAnswerService.answer_with_citations(...)` is an internal helper
@@ -208,7 +211,7 @@ search_context
   -> ContextSearchService
   -> deterministic query normalization and retrieval variants
   -> Chroma/LlamaIndex candidate retrieval
-  -> SQLite active-hit validation and policy-driven metadata fallback
+  -> SQLite active-hit and inclusive normalized-date validation
   -> deterministic ranking and result selection
   -> chunk-level structured search result payload
 
@@ -216,11 +219,19 @@ search_documents
   -> ContextSearchService
   -> same deterministic validated retrieval path
   -> Chroma/LlamaIndex candidate retrieval
-  -> SQLite active-hit validation and policy-driven metadata fallback
+  -> SQLite active-hit and inclusive normalized-date validation
   -> group by document_id
   -> choose highest-ranked representative chunk per document
+  -> optionally sort the bounded semantic matches by normalized document time
   -> expose that chunk text as matched_context
   -> grouped document-browsing payload
+
+list_documents
+  -> MetadataStore active public document listing
+  -> inclusive normalized-date and source filtering
+  -> deterministic normalized-date ordering with nulls last
+  -> opaque keyset cursor pagination
+  -> browse-safe metadata payload without content or local paths
 
 fetch_context
   -> MetadataStore direct document/chunk hydration
@@ -238,7 +249,7 @@ internal helper answer flows
 - `api`: MCP-facing tool contracts, parameter defaults, result formatting, and
   caller-visible error messages. It delegates sync and search orchestration to
   services, while using `MetadataStore` directly for limited source/status
-  reads and `fetch_context` document/chunk hydration.
+  reads, `list_documents`, and `fetch_context` document/chunk hydration.
 - `fetching`: Notion, Tistory, GitHub, and Obsidian content retrieval plus
   source connector registration. It owns API-specific or filesystem-specific
   parsing, bounded fetch behavior, and partial failure handling. Internal
@@ -251,9 +262,10 @@ internal helper answer flows
   observation of exact bulk-sync job completion.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
   active-result validation, and internal citation answer support.
-- `storage`: SQLite source/job/document/chunk lifecycle metadata, tombstones,
-  sync-job ownership, active retrieval checks, and direct stored
-  document/chunk hydration used by `fetch_context`.
+- `storage`: SQLite source/job/document/chunk lifecycle metadata, normalized
+  document times, tombstones, sync-job ownership, active retrieval/date checks,
+  deterministic document listing, and direct stored document/chunk hydration
+  used by `fetch_context`.
 - `core`: stable shared data models, exception classes, and utility functions.
 - `environments`: configuration defaults, Chroma setup, API version constants,
   and environment-token access.
@@ -316,12 +328,15 @@ retrieval:
 
 Stable identity and version expectations stay source-aware:
 
-- Notion: page id drives stable identity.
-- Tistory: `blog_name:post_id` drives stable identity.
+- Notion: page id drives stable identity; creation/edit times become
+  `published_at`/`modified_at` with `date_provenance="notion"`.
+- Tistory: `blog_name:post_id` drives stable identity; the upstream publication
+  time becomes `published_at` with `date_provenance="tistory"` when present.
 - GitHub: repository path drives stable identity, while blob SHA is revision
-  metadata.
+  metadata in `version_id`, never a normalized modification timestamp.
 - Obsidian: relative note path drives stable identity, while the
-  `obsidian://open` URL stays the citation-friendly canonical URL.
+  `obsidian://open` URL stays the citation-friendly canonical URL and filesystem
+  mtime becomes `modified_at` with `date_provenance="filesystem"`.
 
 The lifecycle fields that matter for reviewer understanding are:
 
@@ -330,6 +345,10 @@ external_id
 document_id
 canonical_url
 version_id
+published_at
+modified_at
+indexed_at
+date_provenance
 last_seen_at
 last_seen_sync_id
 deleted_at
@@ -357,6 +376,10 @@ line_end
 content_hash
 version_id
 updated_at
+published_at
+modified_at
+indexed_at
+date_provenance
 ```
 
 That deterministic chunking plus stable identity is what makes unchanged-doc
@@ -391,13 +414,24 @@ Current tools:
 - `sync_all() -> dict`
 - `wait_for_sync_all(...) -> dict`
 - `get_sync_status(source_id: str = "") -> dict`
-- `search_context(query: str, filters: dict = None, top_k: int = 10, include_debug: bool = False) -> dict`
-- `search_documents(query: str, filters: dict = None, top_k: int = 10) -> dict`
+- `search_context(query: str, filters: SearchFilters | None = None, top_k: int = 10, include_debug: bool = False) -> dict`
+- `search_documents(query: str, filters: SearchFilters | None = None, sort_by: SearchSortBy = "relevance", sort_order: SortOrder = "desc", top_k: int = 10) -> dict`
+- `list_documents(filters: SearchFilters | None = None, sort_by: DocumentSortBy = "indexed_at", sort_order: SortOrder = "desc", page_size: int = 20, cursor: str | None = None) -> dict`
 - `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
 
 Contract intent:
 
-- `search_context` remains the chunk-level evidence and citation surface.
+- `SearchFilters` exposes `source_id`, `source_ids`, `published_from`,
+  `published_to`, `modified_from`, `modified_to`, `indexed_from`, and
+  `indexed_to`. Date/time bounds are inclusive, normalized to UTC, and
+  validated as ordered ranges. Offset-free timestamps are treated as UTC and
+  date-only values start at midnight UTC. `source_id` and `source_ids` are
+  single-source and multi-source alternatives; if both are supplied, all
+  nonblank ids form one deduplicated union. Unknown filter fields are rejected.
+- `search_context` remains the relevance-ordered chunk-level evidence and
+  citation surface. Date filtering is part of the SQLite-authoritative
+  candidate gate, and bounded candidate expansion happens before final
+  `top_k` truncation when early semantic candidates are out of range.
 - `sync_all` is an aggregate orchestration helper, not a separate ingestion
   stack. It starts or reuses retained-source background jobs concurrently,
   preserves each source's existing running-job guard, and returns after launch
@@ -416,7 +450,22 @@ Contract intent:
   retrieval path but returns one representative chunk-backed row per document
   for browsing. Its public result contract intentionally replaces the earlier
   `preview` field with the representative chunk's full text in
-  `matched_context`.
+  `matched_context`. It defaults to relevance and can sort its bounded semantic
+  matches by `published_at`, `modified_at`, or `indexed_at`, ascending or
+  descending, with document-id tie breaking and null timestamps last. It does
+  not promise a global date ordering over documents outside the retrieved
+  semantic candidate set.
+- `list_documents` is the global active-document date-browsing contract. It
+  takes no semantic query, supports the same source/date filters, sorts by
+  `published_at`, `modified_at`, or `indexed_at`, and returns `documents` plus
+  an opaque `next_cursor`. MCP `page_size` is bounded to 1 through 50; cursors
+  must be reused unchanged with the same filters and sort settings. Its public
+  document rows include only `document_id`, `source_id`, `title`, `url`,
+  `canonical_url`, `platform`, the three normalized timestamps, and
+  `date_provenance`.
+- Public `search_context` and `search_documents` results also expose the three
+  normalized timestamp fields plus `date_provenance`; they do not reinterpret
+  legacy `date` or `updated_at`.
 - `fetch_context(document_id)` remains an optional drill-down when the caller
   needs the selected document's stored content and chunks. Direct
   `fetch_context(chunk_id=...)` lookup remains supported.
@@ -435,6 +484,19 @@ Contract intent:
   guarantee debug fields on default or service-unconfigured paths.
 - Retrieval policy keeps vector retrieval, metadata fallback, SQLite
   validation, and rerank/debug reporting as distinct, inspectable concerns.
+- When the active FastMCP-compatible decorator supports annotations,
+  `search_context`, `search_documents`, `list_documents`, and `fetch_context`
+  advertise `readOnlyHint=False`, `destructiveHint=False`, and
+  `idempotentHint=False`. Their caller-visible purpose is retrieval, but the
+  shared metadata-store path can initialize additive SQLite schema and refresh
+  sync-owner heartbeat metadata, so read-only or idempotent hints would be
+  inaccurate.
+  `search_context` and `search_documents` advertise `openWorldHint=True`
+  because default embeddings may send queries to an external provider;
+  `list_documents` and `fetch_context` advertise `openWorldHint=False`.
+  `list_sources` and `get_sync_status` do not advertise read-only/idempotent
+  hints because their registration refresh can persist configured source
+  metadata. Sync tools also remain mutating operations.
 
 Retained debug-oriented answer inspection surfaces should stay documented and
 stable enough for local evaluation and reviewer use:
@@ -482,7 +544,14 @@ ContextWiki source/job/document/chunk lifecycle and citation metadata.
   user-data impact and rollback/mitigation notes.
 
 SQLite is the authoritative active-document gate. Stale Chroma hits must be
-filtered through SQLite metadata before being returned as evidence.
+filtered through SQLite metadata before being returned as evidence. It is also
+the authoritative normalized-date filter and query-less listing store.
+
+The `published_at`, `modified_at`, `indexed_at`, and `date_provenance` columns
+are added through the existing additive-column schema initialization. Normal
+future sync/indexing populates them, legacy `date`/`updated_at` remain intact,
+and existing Chroma vectors do not require reindexing. Existing rows can keep
+empty normalized source timestamps until later normal ingestion updates them.
 
 GitHub stale cleanup remains repository-prefix scoped under the shared
 `source_github` source id. GitHub targets are resolved during each sync, and

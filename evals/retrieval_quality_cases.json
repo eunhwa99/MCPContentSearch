@@ -129,5 +129,21 @@
     "top_k": 3,
     "min_result_count": 0,
     "forbidden_chunk_ids": ["aws-guide-chunk", "aws-runtime-chunk", "adr-markdown-chunk"]
+  },
+  {
+    "case_id": "published-date-window",
+    "group": "date-filter",
+    "query": "release chronology evidence",
+    "top_k": 3,
+    "min_result_count": 1,
+    "expected_top_chunk_id": "release-date-inside-chunk",
+    "expected_source_id": "source_notion",
+    "required_chunk_ids": ["release-date-inside-chunk"],
+    "forbidden_chunk_ids": ["release-date-outside-chunk"],
+    "filters": {
+      "source_ids": ["source_notion"],
+      "published_from": "2026-07-01T00:00:00Z",
+      "published_to": "2026-07-01T00:00:00Z"
+    }
   }
 ]

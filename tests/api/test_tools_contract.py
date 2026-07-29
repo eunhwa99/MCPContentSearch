@@ -1845,6 +1845,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "get_sync_status",
         "search_context",
         "search_documents",
+        "list_documents",
         "fetch_context",
     } == set(mcp.tools)
 

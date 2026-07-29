@@ -128,5 +128,79 @@
     "text": "옵시디언 daily planning note with 회고 bullets, next actions, and project follow-ups.",
     "url": "obsidian://open?vault=team-vault&file=daily%2Fplanning.md",
     "path": "daily/planning.md"
+  },
+  {
+    "chunk_id": "release-date-outside-chunk",
+    "document_id": "notion:release-date-outside",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Release chronology evidence outside window",
+    "text": "Release chronology evidence for deterministic date filter evaluation.",
+    "url": "https://www.notion.so/release-date-outside",
+    "path": "Release chronology outside",
+    "published_at": "2026-06-30T23:59:59Z",
+    "modified_at": "2026-06-30T23:59:59Z",
+    "indexed_at": "2026-06-30T23:59:59Z",
+    "date_provenance": "notion"
+  },
+  {
+    "chunk_id": "release-date-inside-chunk",
+    "document_id": "notion:release-date-inside",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Release chronology evidence inside window",
+    "text": "Release chronology evidence for deterministic date filter evaluation.",
+    "url": "https://www.notion.so/release-date-inside",
+    "path": "Release chronology inside",
+    "published_at": "2026-07-01T00:00:00Z",
+    "modified_at": "2026-07-01T00:00:00Z",
+    "indexed_at": "2026-07-01T00:00:00Z",
+    "date_provenance": "notion"
+  },
+  {
+    "chunk_id": "document-sort-z-new-chunk",
+    "document_id": "notion:document-sort-new",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Document ordering sentinel newest",
+    "text": "Document ordering sentinel for retained sort evaluation.",
+    "url": "https://www.notion.so/document-sort-new",
+    "path": "Document sort newest",
+    "published_at": "2026-07-03T00:00:00Z",
+    "date_provenance": "notion"
+  },
+  {
+    "chunk_id": "document-sort-b-tie-a-chunk",
+    "document_id": "notion:document-sort-tie-a",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Document ordering sentinel tie A",
+    "text": "Document ordering sentinel for retained sort evaluation.",
+    "url": "https://www.notion.so/document-sort-tie-a",
+    "path": "Document sort tie A",
+    "published_at": "2026-07-02T00:00:00Z",
+    "date_provenance": "notion"
+  },
+  {
+    "chunk_id": "document-sort-c-tie-b-chunk",
+    "document_id": "notion:document-sort-tie-b",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Document ordering sentinel tie B",
+    "text": "Document ordering sentinel for retained sort evaluation.",
+    "url": "https://www.notion.so/document-sort-tie-b",
+    "path": "Document sort tie B",
+    "published_at": "2026-07-02T00:00:00Z",
+    "date_provenance": "notion"
+  },
+  {
+    "chunk_id": "document-sort-a-null-chunk",
+    "document_id": "notion:document-sort-null",
+    "source_id": "source_notion",
+    "source_type": "notion",
+    "title": "Document ordering sentinel null date",
+    "text": "Document ordering sentinel for retained sort evaluation.",
+    "url": "https://www.notion.so/document-sort-null",
+    "path": "Document sort null date"
   }
 ]

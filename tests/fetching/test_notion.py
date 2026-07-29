@@ -1034,6 +1034,9 @@ def test_notion_page_processor_populates_native_external_id():
     assert document.external_id == "page-123"
     assert document.canonical_url == "https://notion.so/page-123"
     assert document.updated_at == "2026-05-22T00:00:00Z"
+    assert document.published_at == "2026-05-21T00:00:00Z"
+    assert document.modified_at == "2026-05-22T00:00:00Z"
+    assert document.date_provenance == "notion"
 
 
 def test_parse_notion_object_id_from_page_url_and_bare_uuid():

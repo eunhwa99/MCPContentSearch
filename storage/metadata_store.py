@@ -1,3 +1,6 @@
+import base64
+import binascii
+import json
 import sqlite3
 import os
 import uuid
@@ -9,7 +12,10 @@ from typing import Iterable, Iterator, Optional
 
 from core.models import (
     ChunkModel,
+    DocumentSortBy,
     DocumentModel,
+    SearchFilters,
+    SortOrder,
     SourceModel,
     SourceType,
     SyncJobModel,
@@ -112,6 +118,10 @@ class MetadataStore:
                     date TEXT NOT NULL,
                     path TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL DEFAULT '',
+                    modified_at TEXT NOT NULL DEFAULT '',
+                    indexed_at TEXT NOT NULL DEFAULT '',
+                    date_provenance TEXT NOT NULL DEFAULT '',
                     last_seen_at TEXT NOT NULL DEFAULT '',
                     last_seen_sync_id TEXT NOT NULL DEFAULT '',
                     deleted_at TEXT NOT NULL DEFAULT '',
@@ -163,6 +173,10 @@ class MetadataStore:
                 {
                     "external_id": "TEXT NOT NULL DEFAULT ''",
                     "canonical_url": "TEXT NOT NULL DEFAULT ''",
+                    "published_at": "TEXT NOT NULL DEFAULT ''",
+                    "modified_at": "TEXT NOT NULL DEFAULT ''",
+                    "indexed_at": "TEXT NOT NULL DEFAULT ''",
+                    "date_provenance": "TEXT NOT NULL DEFAULT ''",
                     "last_seen_at": "TEXT NOT NULL DEFAULT ''",
                     "last_seen_sync_id": "TEXT NOT NULL DEFAULT ''",
                     "deleted_at": "TEXT NOT NULL DEFAULT ''",
@@ -942,6 +956,193 @@ class MetadataStore:
             ).fetchone()
         return self._document_from_row(row) if row else None
 
+    def document_matches_filters(
+        self,
+        document: DocumentModel,
+        filters: SearchFilters | None = None,
+    ) -> bool:
+        """Apply the authoritative active/source/date gate to a hydrated document."""
+        normalized_filters = self._normalize_search_filters(filters)
+        if document.deleted_at:
+            return False
+        effective_source_ids = normalized_filters.effective_source_ids
+        if effective_source_ids and document.source_id not in effective_source_ids:
+            return False
+
+        for field_name, prefix in (
+            ("published_at", "published"),
+            ("modified_at", "modified"),
+            ("indexed_at", "indexed"),
+        ):
+            lower = self._parse_timestamp(getattr(normalized_filters, f"{prefix}_from"))
+            upper = self._parse_timestamp(getattr(normalized_filters, f"{prefix}_to"))
+            if lower is None and upper is None:
+                continue
+            value = self._parse_timestamp(getattr(document, field_name))
+            if value is None:
+                return False
+            if lower is not None and value < lower:
+                return False
+            if upper is not None and value > upper:
+                return False
+        return True
+
+    def list_documents(
+        self,
+        *,
+        filters: SearchFilters | None = None,
+        sort_by: DocumentSortBy | str = DocumentSortBy.INDEXED_AT,
+        sort_order: SortOrder | str = SortOrder.DESC,
+        page_size: int = 20,
+        cursor: str | None = None,
+    ) -> dict[str, object]:
+        """List active documents with deterministic normalized-date keyset pagination."""
+        normalized_filters = self._normalize_search_filters(filters)
+        try:
+            normalized_sort_by = DocumentSortBy(sort_by)
+            normalized_sort_order = SortOrder(sort_order)
+        except ValueError as exc:
+            raise ValueError("Unsupported document sort") from exc
+        if (
+            isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or not 1 <= page_size <= 100
+        ):
+            raise ValueError("page_size must be between 1 and 100")
+
+        query_shape = {
+            "filters": self._document_filter_cursor_payload(normalized_filters),
+            "sort_by": normalized_sort_by.value,
+            "sort_order": normalized_sort_order.value,
+        }
+        cursor_payload = None
+        validated_cursor_key = None
+        if cursor:
+            cursor_payload = self._decode_document_cursor(cursor)
+            if cursor_payload.get("query") != query_shape:
+                raise ValueError("Invalid document cursor")
+            validated_cursor_key = self._validated_cursor_timestamp_key(
+                cursor_payload
+            )
+
+        self.ensure_schema()
+        sort_column = normalized_sort_by.value
+        sort_value_sql = self._canonical_timestamp_sql(sort_column)
+        where_clauses = ["COALESCE(deleted_at, '') = ''"]
+        query_params: list[object] = []
+
+        effective_source_ids = normalized_filters.effective_source_ids
+        if effective_source_ids:
+            placeholders = ",".join("?" for _ in effective_source_ids)
+            where_clauses.append(f"source_id IN ({placeholders})")
+            query_params.extend(effective_source_ids)
+
+        for field_name, prefix in (
+            ("published_at", "published"),
+            ("modified_at", "modified"),
+            ("indexed_at", "indexed"),
+        ):
+            value_sql = self._canonical_timestamp_sql(field_name)
+            lower = getattr(normalized_filters, f"{prefix}_from")
+            upper = getattr(normalized_filters, f"{prefix}_to")
+            if lower:
+                where_clauses.append(f"{value_sql} >= ?")
+                query_params.append(self._canonical_timestamp_key(lower))
+            if upper:
+                where_clauses.append(f"{value_sql} <= ?")
+                query_params.append(self._canonical_timestamp_key(upper))
+
+        anchor_query = None
+        anchor_params: list[object] = []
+        if cursor_payload is not None:
+            cursor_document_id = str(cursor_payload["document_id"])
+            anchor_clauses = [*where_clauses, "document_id = ?"]
+            anchor_params = [*query_params, cursor_document_id]
+            if cursor_payload["is_null"]:
+                anchor_clauses.append(f"{sort_value_sql} IS NULL")
+                where_clauses.append(
+                    f"({sort_value_sql} IS NULL AND document_id > ?)"
+                )
+                query_params.append(cursor_document_id)
+            else:
+                if validated_cursor_key is None:
+                    raise ValueError("Invalid document cursor")
+                anchor_clauses.append(f"{sort_value_sql} = ?")
+                anchor_params.append(validated_cursor_key)
+                comparison = ">" if normalized_sort_order == SortOrder.ASC else "<"
+                where_clauses.append(
+                    "("
+                    f"{sort_value_sql} {comparison} ?"
+                    f" OR ({sort_value_sql} = ? AND document_id > ?)"
+                    f" OR {sort_value_sql} IS NULL"
+                    ")"
+                )
+                query_params.extend(
+                    (
+                        validated_cursor_key,
+                        validated_cursor_key,
+                        cursor_document_id,
+                    )
+                )
+            anchor_where_sql = " AND ".join(anchor_clauses)
+            # SQL fragments come only from enum-selected columns and internal clauses.
+            anchor_query = f"""
+                SELECT 1
+                FROM documents
+                WHERE {anchor_where_sql}
+                LIMIT 1
+            """  # nosec B608
+
+        order_direction = (
+            "ASC" if normalized_sort_order == SortOrder.ASC else "DESC"
+        )
+        where_sql = " AND ".join(where_clauses)
+        query_params.append(page_size + 1)
+        # Only enum/internal SQL fragments are interpolated; caller values stay parameterized.
+        browse_query = f"""
+            SELECT
+                document_id, source_id, title, url, canonical_url, platform,
+                published_at, modified_at, indexed_at, date_provenance
+            FROM documents
+            WHERE {where_sql}
+            ORDER BY
+                CASE WHEN {sort_value_sql} IS NULL THEN 1 ELSE 0 END ASC,
+                {sort_value_sql} {order_direction},
+                document_id ASC
+            LIMIT ?
+        """  # nosec B608
+        with self._connect() as conn:
+            if (
+                anchor_query is not None
+                and conn.execute(anchor_query, tuple(anchor_params)).fetchone() is None
+            ):
+                raise ValueError("Invalid document cursor")
+            rows = conn.execute(
+                browse_query,
+                tuple(query_params),
+            ).fetchall()
+
+        page = [self._browse_document_from_row(row) for row in rows]
+        has_more = len(page) > page_size
+        page = page[:page_size]
+        next_cursor = None
+        if has_more and page:
+            last_document = page[-1]
+            last_timestamp = getattr(last_document, normalized_sort_by.value)
+            parsed = self._parse_timestamp(last_timestamp)
+            next_cursor = self._encode_document_cursor(
+                {
+                    "version": 1,
+                    "query": query_shape,
+                    "is_null": parsed is None,
+                    "timestamp": (
+                        parsed.isoformat().replace("+00:00", "Z") if parsed else ""
+                    ),
+                    "document_id": last_document.document_id or last_document.id,
+                }
+            )
+        return {"documents": page, "next_cursor": next_cursor}
+
     def get_document_content_hash(self, document_id: str) -> str:
         document = self.get_document(document_id)
         if not document or document.deleted_at:
@@ -1563,7 +1764,121 @@ class MetadataStore:
             return None
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        try:
+            return parsed.astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_search_filters(
+        filters: SearchFilters | None,
+    ) -> SearchFilters:
+        if filters is None:
+            return SearchFilters()
+        if isinstance(filters, SearchFilters):
+            return filters
+        return SearchFilters.model_validate(filters)
+
+    @staticmethod
+    def _document_filter_cursor_payload(filters: SearchFilters) -> dict[str, object]:
+        return {
+            "source_ids": list(filters.effective_source_ids),
+            "published_from": filters.published_from,
+            "published_to": filters.published_to,
+            "modified_from": filters.modified_from,
+            "modified_to": filters.modified_to,
+            "indexed_from": filters.indexed_from,
+            "indexed_to": filters.indexed_to,
+        }
+
+    @staticmethod
+    def _canonical_timestamp_sql(column_name: str) -> str:
+        return (
+            f"(CASE WHEN NULLIF({column_name}, '') IS NULL THEN NULL "
+            f"WHEN instr({column_name}, '.') = 0 "
+            f"THEN substr({column_name}, 1, 19) || '.000000Z' "
+            f"ELSE {column_name} END)"
+        )
+
+    @staticmethod
+    def _canonical_timestamp_key(value: str) -> str:
+        if "." in value:
+            return value
+        return f"{value[:-1]}.000000Z"
+
+    @staticmethod
+    def _encode_document_cursor(payload: dict[str, object]) -> str:
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_document_cursor(cursor: str) -> dict[str, object]:
+        try:
+            if not cursor or len(cursor) > 4096:
+                raise ValueError
+            raw_cursor = cursor.encode("ascii")
+            padding = b"=" * (-len(raw_cursor) % 4)
+            decoded = base64.b64decode(
+                raw_cursor + padding,
+                altchars=b"-_",
+                validate=True,
+            )
+            canonical_cursor = (
+                base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+            )
+            if canonical_cursor != cursor:
+                raise ValueError
+            payload = json.loads(decoded.decode("utf-8"))
+            query = payload.get("query") if isinstance(payload, dict) else None
+            if (
+                not isinstance(payload, dict)
+                or set(payload)
+                != {
+                    "version",
+                    "query",
+                    "is_null",
+                    "timestamp",
+                    "document_id",
+                }
+                or payload.get("version") != 1
+                or not isinstance(query, dict)
+                or set(query) != {"filters", "sort_by", "sort_order"}
+                or not isinstance(query.get("filters"), dict)
+                or not isinstance(query.get("sort_by"), str)
+                or not isinstance(query.get("sort_order"), str)
+                or not isinstance(payload.get("is_null"), bool)
+                or not isinstance(payload.get("timestamp"), str)
+                or not isinstance(payload.get("document_id"), str)
+            ):
+                raise ValueError
+            return payload
+        except (
+            ValueError,
+            TypeError,
+            UnicodeDecodeError,
+            UnicodeEncodeError,
+            json.JSONDecodeError,
+            binascii.Error,
+        ) as exc:
+            raise ValueError("Invalid document cursor") from exc
+
+    @classmethod
+    def _validated_cursor_timestamp_key(
+        cls,
+        payload: dict[str, object],
+    ) -> Optional[str]:
+        if payload["is_null"]:
+            if payload["timestamp"]:
+                raise ValueError("Invalid document cursor")
+            return None
+        raw_timestamp = str(payload["timestamp"])
+        parsed = cls._parse_timestamp(raw_timestamp)
+        if parsed is None:
+            raise ValueError("Invalid document cursor")
+        canonical_timestamp = parsed.isoformat().replace("+00:00", "Z")
+        if raw_timestamp != canonical_timestamp:
+            raise ValueError("Invalid document cursor")
+        return cls._canonical_timestamp_key(canonical_timestamp)
 
     @staticmethod
     def _ensure_columns(conn, table_name: str, columns: dict[str, str]):
@@ -1581,6 +1896,18 @@ class MetadataStore:
     def _normalize_document(document: DocumentModel) -> DocumentModel:
         content_hash = document.content_hash or ContentHasher.hash_content(document.content)
         document_id = document.external_id or document.document_id or document.id
+        published_at = MetadataStore._canonical_document_timestamp(
+            document.published_at
+        )
+        modified_at = MetadataStore._canonical_document_timestamp(
+            document.modified_at
+        )
+        indexed_at = MetadataStore._canonical_document_timestamp(
+            document.indexed_at
+        ) or MetadataStore._canonical_document_timestamp(_now())
+        date_provenance = (
+            document.date_provenance if published_at or modified_at else ""
+        )
         return document.model_copy(
             update={
                 "document_id": document_id,
@@ -1588,11 +1915,22 @@ class MetadataStore:
                 "canonical_url": document.canonical_url or document.url,
                 "path": document.path or document.title,
                 "updated_at": document.updated_at or document.date,
+                "published_at": published_at,
+                "modified_at": modified_at,
+                "indexed_at": indexed_at,
+                "date_provenance": date_provenance,
                 "last_seen_sync_id": document.last_seen_sync_id,
                 "deleted_at": document.deleted_at,
                 "content_hash": content_hash,
             }
         )
+
+    @classmethod
+    def _canonical_document_timestamp(cls, value: str) -> str:
+        parsed = cls._parse_timestamp(value)
+        if parsed is None:
+            return ""
+        return parsed.isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _upsert_document(conn, document: DocumentModel):
@@ -1602,9 +1940,10 @@ class MetadataStore:
             """
             INSERT INTO documents (
                 document_id, source_id, external_id, title, content, url,
-                canonical_url, platform, date, path, updated_at, last_seen_at,
+                canonical_url, platform, date, path, updated_at, published_at,
+                modified_at, indexed_at, date_provenance, last_seen_at,
                 last_seen_sync_id, deleted_at, version_id, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(document_id) DO UPDATE SET
                 source_id = excluded.source_id,
                 external_id = excluded.external_id,
@@ -1616,6 +1955,10 @@ class MetadataStore:
                 date = excluded.date,
                 path = excluded.path,
                 updated_at = excluded.updated_at,
+                published_at = excluded.published_at,
+                modified_at = excluded.modified_at,
+                indexed_at = excluded.indexed_at,
+                date_provenance = excluded.date_provenance,
                 last_seen_at = excluded.last_seen_at,
                 last_seen_sync_id = excluded.last_seen_sync_id,
                 deleted_at = excluded.deleted_at,
@@ -1635,6 +1978,10 @@ class MetadataStore:
                 document.date,
                 document.path,
                 document.updated_at,
+                document.published_at,
+                document.modified_at,
+                document.indexed_at,
+                document.date_provenance,
                 document.last_seen_at,
                 document.last_seen_sync_id,
                 document.deleted_at,
@@ -1853,11 +2200,32 @@ class MetadataStore:
             date=row["date"],
             path=row["path"],
             updated_at=row["updated_at"],
+            published_at=row["published_at"],
+            modified_at=row["modified_at"],
+            indexed_at=row["indexed_at"],
+            date_provenance=row["date_provenance"],
             last_seen_at=row["last_seen_at"],
             last_seen_sync_id=row["last_seen_sync_id"],
             deleted_at=row["deleted_at"],
             version_id=row["version_id"],
             content_hash=row["content_hash"],
+        )
+
+    @staticmethod
+    def _browse_document_from_row(row) -> DocumentModel:
+        return DocumentModel(
+            id=row["document_id"],
+            document_id=row["document_id"],
+            source_id=row["source_id"],
+            title=row["title"],
+            content="",
+            url=row["url"],
+            canonical_url=row["canonical_url"],
+            platform=row["platform"],
+            published_at=row["published_at"],
+            modified_at=row["modified_at"],
+            indexed_at=row["indexed_at"],
+            date_provenance=row["date_provenance"],
         )
 
     @staticmethod

@@ -384,6 +384,8 @@ async def fetch_obsidian_documents(
                     path=relative_path,
                     line_start=body_line_start,
                     updated_at=updated_at,
+                    modified_at=updated_at,
+                    date_provenance="filesystem",
                     content_hash=_content_hash(indexed_content),
                 )
             )

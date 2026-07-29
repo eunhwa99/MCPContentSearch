@@ -144,6 +144,7 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "get_sync_status",
         "search_context",
         "search_documents",
+        "list_documents",
         "fetch_context",
     }
     registered_tools = {tool.name for tool in asyncio.run(app.list_tools())}
