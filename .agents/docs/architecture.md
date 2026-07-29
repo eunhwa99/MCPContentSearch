@@ -485,8 +485,16 @@ SQLite is the authoritative active-document gate. Stale Chroma hits must be
 filtered through SQLite metadata before being returned as evidence.
 
 GitHub stale cleanup remains repository-prefix scoped under the shared
-`source_github` source id. A sync for one configured repository must not
-tombstone documents that belong to another repository prefix.
+`source_github` source id. GitHub targets are resolved during each sync, and
+cleanup prefixes are derived only from the exact repositories successfully
+resolved for that snapshot. A sync for one configured repository must not
+tombstone documents that belong to another repository prefix. Owner discovery
+must never enable broad owner-prefix cleanup: a historical or private
+repository absent from the current token-visible result remains outside the
+cleanup scope. A repository confirmed empty by GitHub metadata is a complete
+zero-document scope whose exact prefix can tombstone its previous documents
+after a complete sync; missing or ambiguous empty metadata is not assumed
+complete and cannot enable cleanup for that apparent empty state.
 
 Soft-delete provenance matters here: SQLite tombstone metadata must remain able
 to suppress stale managed vector hits even when best-effort vector cleanup
@@ -498,8 +506,22 @@ Current integrations and local configured sources:
 
 - Notion API, configured by environment token and API version.
 - Tistory, configured by blog name and bounded post fetching.
-- GitHub repositories, configured by repository specs and optional
-  `GITHUB_TOKEN`.
+- GitHub repositories, configured by comma- or newline-separated targets and
+  optional `GITHUB_TOKEN`. A bare owner target discovers all repositories owned
+  by that account and visible to the token at each sync, using each
+  repository's GitHub API-reported default branch. An `owner/repo` target
+  bypasses owner discovery and uses `CONTEXTWIKI_GITHUB_DEFAULT_REF`, while
+  `owner/repo@ref` uses the explicit ref. Mixed targets resolve to exact
+  repository identities before fetching and must not overlap; an exact target
+  does not override the ref of the same repository discovered by an owner
+  target, and the duplicate identity fails the sync. The fetcher considers
+  supported text/code files only and defaults to 200 eligible files per
+  repository and 512000 bytes per file; bound-driven omissions make the
+  snapshot incomplete and disable stale cleanup.
+  Each owner-listing endpoint is also bounded to 100 pages of 100 returned
+  items, up to 10,000 per endpoint. A full page 100 leaves completion unproven,
+  so the sync fails before repository indexing rather than accepting a partial
+  list, and stale cleanup remains disabled.
 - Obsidian local vaults, configured by `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`,
   `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, and
   `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. Obsidian sync reads bounded Markdown
@@ -522,6 +544,12 @@ Current integrations and local configured sources:
 Testing should prefer mocked external APIs and temporary local vaults. Live
 network or real-vault validation requires explicit user approval and must not
 print credentials or local path details.
+
+Owner-wide GitHub sync is intentionally an explicit configuration choice. It
+can increase GitHub API requests, sync duration, indexed volume, and embedding
+provider cost in proportion to the repositories and bounded files discovered.
+Automated verification uses fake GitHub responses and temporary stores; it does
+not perform live owner discovery or mutate configured user stores.
 
 ## Configuration and Secrets
 

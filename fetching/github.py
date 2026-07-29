@@ -1,6 +1,6 @@
 import base64
 import binascii
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 import re
@@ -143,6 +143,7 @@ class GitHubRepositorySpec:
     owner: str
     repo: str
     ref: str
+    is_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,29 +203,61 @@ class GitHubRepositoryFetcher:
         token: str = "",
         http_client=None,
     ):
-        self.repository_specs = [
-            parse_repository_spec(repository, config.github_default_ref)
-            for repository in repositories
-        ]
-        _ensure_unique_repository_specs(self.repository_specs)
+        self.repository_targets = tuple(repositories)
         self.config = config
         self.token = token
         self.http_client = http_client or GitHubHTTPClient(config.request_timeout)
+        self.discovery = GitHubRepositoryDiscovery(
+            config,
+            token=token,
+            http_client=self.http_client,
+        )
+        self.repository_specs = self._configured_exact_repository_specs()
+        _ensure_unique_repository_specs(self.repository_specs)
         self.snapshot_complete = True
 
     async def fetch_documents(self) -> list[DocumentModel]:
         self.snapshot_complete = True
+        self.repository_specs = []
         documents: list[DocumentModel] = []
-        for spec in self.repository_specs:
-            snapshot = await self._resolve_snapshot(spec)
-            tree = await self._fetch_tree(spec, snapshot)
-            for entry in self._select_entries(tree):
-                content = await self._fetch_blob_text(spec, entry["sha"], entry["size"])
-                if content is None:
-                    self.snapshot_complete = False
+        try:
+            repository_specs = await self._resolve_repository_specs()
+            self.repository_specs = repository_specs
+            for spec in repository_specs:
+                if spec.is_empty:
                     continue
-                documents.append(self._to_document(spec, snapshot, entry, content))
+                snapshot = await self._resolve_snapshot(spec)
+                tree = await self._fetch_tree(spec, snapshot)
+                for entry in self._select_entries(tree):
+                    content = await self._fetch_blob_text(spec, entry["sha"], entry["size"])
+                    if content is None:
+                        self.snapshot_complete = False
+                        continue
+                    documents.append(self._to_document(spec, snapshot, entry, content))
+        except Exception:
+            self.snapshot_complete = False
+            raise
         return documents
+
+    def _configured_exact_repository_specs(self) -> list[GitHubRepositorySpec]:
+        specs = []
+        for target in self.repository_targets:
+            owner, repo, ref = parse_repository_or_owner_target(
+                target,
+                self.config.github_default_ref,
+            )
+            if repo:
+                specs.append(GitHubRepositorySpec(owner=owner, repo=repo, ref=ref))
+        return specs
+
+    async def _resolve_repository_specs(self) -> list[GitHubRepositorySpec]:
+        specs = []
+        for target in self.repository_targets:
+            specs.extend(
+                await self.discovery.discover_repository_specs_with_metadata(target)
+            )
+        _ensure_unique_repository_specs(specs)
+        return specs
 
     async def _resolve_snapshot(
         self,
@@ -471,29 +504,85 @@ class GitHubRepositoryDiscovery:
         self.http_client = http_client or GitHubHTTPClient(config.request_timeout)
 
     async def discover_repository_specs(self, target: str) -> list[str]:
+        specs = await self.discover_repository_specs_with_metadata(target)
+        return [f"{spec.owner}/{spec.repo}@{spec.ref}" for spec in specs]
+
+    async def discover_repository_specs_with_metadata(
+        self,
+        target: str,
+    ) -> list[GitHubRepositorySpec]:
         owner, repo, ref = parse_repository_or_owner_target(
             target,
             self.config.github_default_ref,
         )
         if repo:
-            return [f"{owner}/{repo}@{ref}"]
+            return [GitHubRepositorySpec(owner=owner, repo=repo, ref=ref)]
 
         repositories = await self._fetch_owner_repositories(owner)
-        specs = []
-        seen = set()
+        specs: list[GitHubRepositorySpec] = []
+        seen: dict[tuple[str, str], int] = {}
         for repository in repositories:
-            repo_owner = _repository_owner_login(repository) or owner
+            repo_owner = _repository_owner_login(repository)
             repo_name = repository.get("name")
-            default_branch = repository.get("default_branch") or self.config.github_default_ref
-            if not isinstance(repo_name, str) or not isinstance(default_branch, str):
-                continue
-            if not _valid_owner_repo_ref(repo_owner, repo_name, default_branch):
-                continue
+            if repo_owner.lower() != owner.lower():
+                raise RuntimeError("GitHub repository list response was invalid")
+            if not isinstance(repo_name, str) or not _valid_owner_repo_ref(
+                repo_owner,
+                repo_name,
+                "main",
+            ):
+                raise RuntimeError("GitHub repository list response was invalid")
             key = (repo_owner.lower(), repo_name.lower())
-            if key in seen:
+            is_empty = _repository_is_confirmed_empty(repository)
+            api_default_branch = repository.get("default_branch")
+            if is_empty:
+                default_branch = (
+                    api_default_branch
+                    if isinstance(api_default_branch, str)
+                    and _valid_git_ref(api_default_branch)
+                    else self.config.github_default_ref
+                )
+                if not isinstance(default_branch, str) or not _valid_git_ref(
+                    default_branch
+                ):
+                    default_branch = "main"
+            else:
+                if not isinstance(api_default_branch, str) or not _valid_git_ref(
+                    api_default_branch
+                ):
+                    raise RuntimeError(
+                        "GitHub repository metadata for "
+                        f"{key[0]}/{key[1]} had invalid default branch"
+                    )
+                default_branch = api_default_branch
+            existing_index = seen.get(key)
+            if existing_index is not None:
+                existing = specs[existing_index]
+                if existing.is_empty and not is_empty:
+                    specs[existing_index] = replace(
+                        existing,
+                        ref=default_branch,
+                        is_empty=False,
+                    )
+                elif (
+                    not existing.is_empty
+                    and not is_empty
+                    and existing.ref != default_branch
+                ):
+                    raise RuntimeError(
+                        "GitHub repository metadata for "
+                        f"{key[0]}/{key[1]} reported conflicting default branches"
+                    )
                 continue
-            seen.add(key)
-            specs.append(f"{repo_owner}/{repo_name}@{default_branch}")
+            seen[key] = len(specs)
+            specs.append(
+                GitHubRepositorySpec(
+                    owner=repo_owner,
+                    repo=repo_name,
+                    ref=default_branch,
+                    is_empty=is_empty,
+                )
+            )
         return specs
 
     async def _fetch_owner_repositories(self, owner: str) -> list[dict[str, Any]]:
@@ -501,17 +590,22 @@ class GitHubRepositoryDiscovery:
             f"https://api.github.com/users/{quote(owner, safe='')}/repos",
             {"type": "owner", "sort": "full_name"},
         )
+        if any(
+            _repository_owner_login(repository).lower() != owner.lower()
+            for repository in public_repositories
+        ):
+            raise RuntimeError("GitHub repository list response was invalid")
         if not self.token:
             return public_repositories
 
-        owned_repositories = await self._fetch_paginated_repositories(
+        accessible_repositories = await self._fetch_paginated_repositories(
             "https://api.github.com/user/repos",
-            {"visibility": "all", "affiliation": "owner", "sort": "full_name"},
+            {"visibility": "all", "sort": "full_name"},
         )
         return [
             repository
-            for repository in [*public_repositories, *owned_repositories]
-            if (_repository_owner_login(repository) or "").lower() == owner.lower()
+            for repository in [*public_repositories, *accessible_repositories]
+            if _repository_owner_login(repository).lower() == owner.lower()
         ]
 
     async def _fetch_paginated_repositories(
@@ -532,10 +626,23 @@ class GitHubRepositoryDiscovery:
             )
             if not isinstance(payload, list):
                 raise RuntimeError("GitHub repository list response was invalid")
-            repositories.extend(item for item in payload if isinstance(item, dict))
+            if len(payload) > 100:
+                raise RuntimeError("GitHub repository list response was invalid")
+            if any(not isinstance(item, dict) for item in payload):
+                raise RuntimeError("GitHub repository list response was invalid")
+            for repository in payload:
+                repo_owner = _repository_owner_login(repository)
+                repo_name = repository.get("name")
+                if not isinstance(repo_name, str) or not _valid_owner_repo_ref(
+                    repo_owner,
+                    repo_name,
+                    "main",
+                ):
+                    raise RuntimeError("GitHub repository list response was invalid")
+            repositories.extend(payload)
             if len(payload) < 100:
-                break
-        return repositories
+                return repositories
+        raise RuntimeError("GitHub repository list exceeded pagination limit")
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -646,6 +753,17 @@ def _repository_owner_login(repository: dict[str, Any]) -> str:
     return login if isinstance(login, str) else ""
 
 
+def _repository_is_confirmed_empty(repository: dict[str, Any]) -> bool:
+    size = repository.get("size")
+    return (
+        "pushed_at" in repository
+        and repository["pushed_at"] is None
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and size == 0
+    )
+
+
 def _valid_owner(owner: str) -> bool:
     return (
         bool(SAFE_OWNER_RE.match(owner))
@@ -659,7 +777,7 @@ def _ensure_unique_repository_specs(specs: list[GitHubRepositorySpec]) -> None:
     for spec in specs:
         key = (spec.owner.lower(), spec.repo.lower())
         if key in seen:
-            raise ValueError(f"Duplicate GitHub repository spec: {spec.owner}/{spec.repo}")
+            raise ValueError(f"Duplicate GitHub repository spec: {key[0]}/{key[1]}")
         seen.add(key)
 
 

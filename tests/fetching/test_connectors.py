@@ -179,6 +179,22 @@ def test_build_source_registry_disables_tistory_until_blog_is_configured():
     assert sources["source_tistory"].auth_ref == "env:TISTORY_BLOG_NAME"
 
 
+def test_build_source_registry_accepts_github_owner_target_for_runtime_discovery():
+    registry = build_source_registry(
+        config=AppConfig(github_repositories=("eunaverse",)),
+        notion_api_key="",
+        tistory_blog_name="",
+        github_http_client=object(),
+    )
+
+    connector = registry.get_connector("source_github")
+
+    assert isinstance(connector, GitHubSourceConnector)
+    assert connector.source.enabled is True
+    assert connector.repositories == ("eunaverse",)
+    assert connector.cleanup_document_id_prefixes == ()
+
+
 def test_github_connector_uses_validated_custom_token_env_ref():
     connector = GitHubSourceConnector(
         repositories=("eunhwa99/MCPContentSearch@main",),

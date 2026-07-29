@@ -176,21 +176,46 @@ class GitHubSourceConnector(SourceConnector):
 
     async def fetch_documents(self) -> list[DocumentModel]:
         if not self.source.enabled:
+            self.supports_stale_cleanup = False
+            self.cleanup_document_id_prefixes = ()
             return []
+        self.supports_stale_cleanup = False
+        self.cleanup_document_id_prefixes = ()
         try:
             documents = await self.fetcher.fetch_documents()
         except Exception:
-            self.supports_stale_cleanup = False
+            self.stale_cleanup_disabled_reason = (
+                "Stale cleanup is disabled because the latest GitHub fetch did not complete."
+            )
+            self.source = self.source.model_copy(
+                update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
+            )
             raise
         else:
+            self.cleanup_document_id_prefixes = tuple(
+                repository_document_id_prefix(spec)
+                for spec in self.fetcher.repository_specs
+            )
             self.supports_stale_cleanup = (
-                self.allow_stale_cleanup and self.fetcher.snapshot_complete
+                self.allow_stale_cleanup
+                and self.fetcher.snapshot_complete
+                and bool(self.cleanup_document_id_prefixes)
             )
-            self.stale_cleanup_disabled_reason = (
-                ""
-                if self.supports_stale_cleanup
-                else "Stale cleanup is disabled because the latest GitHub snapshot was incomplete."
-            )
+            if self.supports_stale_cleanup:
+                self.stale_cleanup_disabled_reason = ""
+            elif not self.fetcher.snapshot_complete:
+                self.stale_cleanup_disabled_reason = (
+                    "Stale cleanup is disabled because the latest GitHub snapshot was incomplete."
+                )
+            elif not self.cleanup_document_id_prefixes:
+                self.stale_cleanup_disabled_reason = (
+                    "Stale cleanup is disabled because the latest GitHub fetch resolved "
+                    "no repository cleanup scope."
+                )
+            else:
+                self.stale_cleanup_disabled_reason = (
+                    "Stale cleanup is disabled for this GitHub connector."
+                )
             self.source = self.source.model_copy(
                 update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
             )

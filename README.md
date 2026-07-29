@@ -130,12 +130,61 @@ NOTION_API_KEY=...
 # For example, use devlog, not https://devlog.tistory.com.
 TISTORY_BLOG_NAME=devlog
 
-# Use owner/repo or owner/repo@ref.
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch@main
+# Use a bare owner to discover all owned repositories visible to GITHUB_TOKEN.
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse
+# Or sync only exact repositories; separate targets with commas or newlines.
+# CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch,eunaverse/website@main
 GITHUB_TOKEN=...                # needed for private repos or higher rate limits
 
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
 ```
+
+GitHub targets are resolved when each GitHub sync runs:
+
+- A bare owner such as `eunaverse` discovers all repositories owned by that
+  account and visible to the optional `GITHUB_TOKEN`. Each discovered
+  repository uses the default branch reported by the GitHub API.
+  Each GitHub listing endpoint is bounded to 100 pages of 100 returned items
+  (up to 10,000 items per endpoint). If page 100 is still full, ContextWiki
+  cannot prove the listing is complete, so the sync fails before repository
+  indexing instead of using a partial list, and stale cleanup remains disabled.
+- `owner/repo` syncs only that repository using
+  `CONTEXTWIKI_GITHUB_DEFAULT_REF` (default: `main`), while
+  `owner/repo@ref` uses the explicit ref.
+- Multiple owner and exact-repository targets may be comma- or
+  newline-separated, but their repository identities must not overlap. For
+  example, `eunaverse,eunaverse/website@release` fails as a duplicate if owner
+  discovery includes `eunaverse/website`; the exact target does not override
+  the discovered repository's ref.
+
+Within each resolved repository, ContextWiki considers supported text/code
+files only: Markdown and plain-text formats; common Python, JavaScript,
+TypeScript, JVM, Go, Rust, Ruby, PHP, C/C++, C#, Swift, Scala, SQL, and shell
+files; plus YAML, TOML, JSON, XML, HTML, and CSS. Other file types are
+intentionally ignored. The default bounds are:
+
+- `CONTEXTWIKI_GITHUB_MAX_FILES=200` eligible files per repository.
+- `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES=512000` bytes per file.
+
+When an eligible repository has more files than the file limit, or a supported
+file is skipped because it exceeds the byte limit, the snapshot is marked
+incomplete and stale cleanup is disabled. Do not assume every repository file
+was reflected: call `get_sync_status("source_github")` and inspect
+`source.stale_cleanup_disabled_reason`.
+
+Owner-wide sync can make many GitHub requests and increase indexing time and
+embedding-provider cost. Stale cleanup remains conservative: after a complete
+successful snapshot, it considers only the exact repository prefixes resolved
+for that sync. Repositories no longer visible to the current token, including
+historical private repositories, are not removed by a broad owner-wide cleanup.
+A repository confirmed empty by GitHub metadata is a complete zero-document
+scope, so its exact repository prefix participates in cleanup and previously
+indexed documents for that repository may be tombstoned after a complete sync.
+Missing or ambiguous empty-repository metadata is not accepted as a complete
+zero-document scope and cannot enable cleanup for that apparent empty state.
+After changing this setting for Claude Desktop, fully quit and restart Claude
+Desktop before syncing; refreshing the chat alone does not reload the process
+environment.
 
 ---
 
@@ -251,7 +300,9 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 |---------|-----|
 | MCP server not discovered | Recheck config path and fully restart the client |
 | Only works after manual start | Run `command` + `args` directly in terminal to see errors |
-| `Invalid GitHub repository spec` | Use `owner/repo` or `owner/repo@ref`; separate multiple repositories with commas |
+| `Invalid GitHub target` or `Invalid GitHub repository spec` | Use a bare `owner`, `owner/repo`, or `owner/repo@ref`; separate multiple targets with commas or newlines |
+| `Duplicate GitHub repository spec` | Remove overlapping targets. Do not combine an owner with an exact target for a repository that owner discovery returns; an exact ref does not override the discovered ref |
+| GitHub target changes are not reflected in Claude Desktop | Fully quit and restart Claude Desktop after editing its environment or `.env`, then run `sync_source("source_github")` and poll `get_sync_status("source_github")` |
 | Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
 | Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
 | A sync failed | Call `get_sync_status("source_notion")`, replacing `source_notion` with the failed source ID shown above |
@@ -268,7 +319,8 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 
 `demo.sh` needs no credentials. It uses the bundled Obsidian sample vault,
 temporary SQLite and Chroma storage, and mock embeddings. `verify_all.sh` runs
-the full checks used after code changes.
+the full checks used after code changes. Automated verification does not run a
+live GitHub owner sync; it uses fake GitHub responses and temporary stores.
 
 ---
 
