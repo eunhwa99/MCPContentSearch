@@ -115,10 +115,13 @@ the plan when one is required, assign each issue back to the responsible worker
 persona or a fresh replacement with the same ownership boundary, and continue
 directly to the next fresh review pass rather than restarting the
 already-completed initial RED phase.
-Every review pass must run relevant verification and functional smoke first,
-then spawn exactly three fresh read-only reviewers with distinct primary
-lenses: bugs/correctness/contracts/tests; security/privacy/data safety/secrets;
-and performance/reliability/async/concurrency/operability. Continue until all
+Every review pass must run relevant verification, any matching eval gate
+required by feature scope only after `./scripts/verify_all.sh` (prefer
+recording full-suite quality-eval evidence when already covered), and
+functional smoke first, then spawn exactly three fresh read-only reviewers with
+distinct primary lenses: bugs/correctness/contracts/tests;
+security/privacy/data safety/secrets; and
+performance/reliability/async/concurrency/operability. Continue until all
 three in the newest pass report no actionable findings. For code changes,
 review-fix verification must include affected unit/integration/E2E tests and
 `./scripts/verify_all.sh`, plus any matching eval gate only after that

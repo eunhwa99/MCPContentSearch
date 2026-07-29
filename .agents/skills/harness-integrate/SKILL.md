@@ -75,9 +75,11 @@ full-suite eval evidence when already covered; otherwise rerun the matching
 eval), and smoke. For a non-behavior code/config/test edit, record RED as
 `n/a` without manufacturing a failure, then rerun affected focused tests, the
 full-suite gate, any matching eval gate required by feature scope only after
-that full-suite gate, and affected smoke. For a docs-only edit, rerun
-lightweight docs verification without fake RED. Refresh integration evidence,
-then start a fresh three-reviewer pass with the required distinct lenses.
+that full-suite gate (record full-suite eval evidence when already covered;
+otherwise rerun the matching eval), and affected smoke. For a docs-only edit,
+rerun lightweight docs verification without fake RED. Refresh integration
+evidence, then start a fresh three-reviewer pass with the required distinct
+lenses.
 
 After the final clean three-reviewer pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
