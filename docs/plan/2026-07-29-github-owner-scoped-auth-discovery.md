@@ -121,7 +121,7 @@ Affected area: `fetching/github.py` `_fetch_owner_repositories` (approx.
 
 | Feature / path | Caller surface | Safe data mode | Result | Evidence |
 | --- | --- | --- | --- | --- |
-| GitHub owner discovery (public) | `tests/fetching/test_github.py` | Fake HTTP | passed | Focused suite 119 passed |
+| GitHub owner discovery (public) | `tests/fetching/test_github.py` | Fake HTTP | passed | Focused suite 121 passed |
 | GitHub owner discovery (org private) | Fake HTTP unit/connector | Fake `/orgs/{owner}/repos` | passed | Org path tests + merge connector test |
 | GitHub owner discovery (self private) | Fake HTTP unit | Fake `/user` + affiliation=owner | passed | `test_authenticated_self_owned_personal_discovery_uses_affiliation_owner` |
 | GitHub owner discovery (other user + token) | Fake HTTP unit | Org 404 + non-matching `/user` | passed | `test_authenticated_non_org_other_user_discovery_stays_on_public_users_list` |
