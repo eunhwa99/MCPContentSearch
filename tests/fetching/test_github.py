@@ -42,6 +42,20 @@ def _blob_payload(content: bytes) -> dict:
     }
 
 
+def _http_status_error(url: str, status_code: int, message: str | None = None) -> None:
+    request = httpx.Request("GET", url)
+    response = httpx.Response(status_code, request=request)
+    raise httpx.HTTPStatusError(
+        message or f"HTTP {status_code}",
+        request=request,
+        response=response,
+    )
+
+
+def _http_404(url: str) -> None:
+    _http_status_error(url, 404, "Not Found")
+
+
 def test_github_http_client_streams_blob_json_with_byte_limit():
     payload = _blob_payload(b"hello")
 
@@ -1303,7 +1317,7 @@ class TokenVisibleOwnerRepositoryListHTTP:
                     "owner": {"login": "eunaverse"},
                 }
             ]
-        if "/user/repos?" in url:
+        if "/orgs/eunaverse/repos?" in url:
             return [
                 {
                     "name": "private-org-repo",
@@ -1353,7 +1367,7 @@ class TokenOtherOwnerMergedGitHubHTTP:
                     "pushed_at": "2026-07-29T00:00:00Z",
                 },
             ]
-        if "/user/repos?" in url:
+        if "/orgs/public-org/repos?" in url:
             return [
                 {
                     "name": "shared",
@@ -1423,7 +1437,7 @@ class ConflictingOwnerBranchGitHubHTTP:
                     "pushed_at": "2026-07-29T00:00:00Z",
                 }
             ]
-        if "/user/repos?" in url:
+        if "/orgs/eunaverse/repos?" in url:
             return [
                 {
                     "name": "conflict",
@@ -1433,6 +1447,102 @@ class ConflictingOwnerBranchGitHubHTTP:
                     "pushed_at": "2026-07-29T00:00:00Z",
                 }
             ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class NonOrgOtherUserOwnerDiscoveryHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/other-user/repos?" in url:
+            return [
+                {
+                    "name": "public-only",
+                    "default_branch": "main",
+                    "owner": {"login": "other-user"},
+                }
+            ]
+        if "/orgs/other-user/repos?" in url:
+            _http_404(url)
+        if url.rstrip("/").endswith("/user"):
+            return {"login": "token-user"}
+        if "/user/repos?" in url:
+            raise AssertionError(f"must not page global user repos: {url}")
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class SelfOwnedPersonalOwnerDiscoveryHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/self-owner/repos?" in url:
+            return [
+                {
+                    "name": "public-repo",
+                    "default_branch": "main",
+                    "owner": {"login": "self-owner"},
+                }
+            ]
+        if "/orgs/self-owner/repos?" in url:
+            _http_404(url)
+        if url.rstrip("/").endswith("/user"):
+            return {"login": "self-owner"}
+        if "/user/repos?" in url:
+            if "affiliation=owner" not in url:
+                raise AssertionError(
+                    f"must not page unfiltered user repos without affiliation=owner: {url}"
+                )
+            return [
+                {
+                    "name": "private-self-repo",
+                    "default_branch": "stable",
+                    "owner": {"login": "self-owner"},
+                    "private": True,
+                },
+                {
+                    "name": "collaborator-other-owner",
+                    "default_branch": "main",
+                    "owner": {"login": "someone-else"},
+                    "private": True,
+                },
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class Non404OrgOwnerDiscoveryHTTP:
+    def __init__(self, token, status_code):
+        self.token = token
+        self.status_code = status_code
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/blocked-org/repos?" in url:
+            return [
+                {
+                    "name": "public-only",
+                    "default_branch": "main",
+                    "owner": {"login": "blocked-org"},
+                }
+            ]
+        if "/orgs/blocked-org/repos?" in url:
+            _http_status_error(url, self.status_code)
+        if url.rstrip("/").endswith("/user") or "/user/repos?" in url:
+            raise AssertionError(
+                f"must not fall through to authenticated user discovery after org error: {url}"
+            )
         raise AssertionError(f"unexpected GitHub API URL: {url}")
 
 
@@ -1771,10 +1881,11 @@ def test_authenticated_owner_discovery_includes_token_visible_organization_repos
         "eunaverse/private-org-repo@stable",
     ]
     authenticated_url = next(
-        url for url in http.urls if url.startswith("https://api.github.com/user/repos?")
+        url for url in http.urls if url.startswith("https://api.github.com/orgs/eunaverse/repos?")
     )
-    assert "visibility=all" in authenticated_url
+    assert "type=all" in authenticated_url
     assert "affiliation=" not in authenticated_url
+    assert not any("/user/repos?" in url for url in http.urls)
     assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
     assert token not in " ".join(http.urls)
     assert token not in repr(specs)
@@ -1816,13 +1927,120 @@ def test_token_owner_sync_merges_public_and_private_results_conservatively():
     )
     assert any("/users/public-org/repos?" in url for url in http.urls)
     authenticated_url = next(
-        url for url in http.urls if url.startswith("https://api.github.com/user/repos?")
+        url for url in http.urls if url.startswith("https://api.github.com/orgs/public-org/repos?")
     )
-    assert "visibility=all" in authenticated_url
+    assert "type=all" in authenticated_url
     assert "affiliation=" not in authenticated_url
+    assert not any("/user/repos?" in url for url in http.urls)
     assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
     assert token not in " ".join(http.urls)
     assert token not in repr(documents)
+
+
+def test_authenticated_org_owner_discovery_uses_orgs_endpoint_not_user_repos():
+    token = "header-only-org-discovery-credential"
+    http = TokenVisibleOwnerRepositoryListHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("eunaverse"))
+
+    assert "eunaverse/private-org-repo@stable" in specs
+    assert any(
+        url.startswith("https://api.github.com/orgs/eunaverse/repos?")
+        and "type=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert not any(
+        url.startswith("https://api.github.com/user/repos?")
+        and "visibility=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+def test_authenticated_non_org_other_user_discovery_stays_on_public_users_list():
+    token = "header-only-other-user-credential"
+    http = NonOrgOtherUserOwnerDiscoveryHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("other-user"))
+
+    assert specs == ["other-user/public-only@main"]
+    assert any("/users/other-user/repos?" in url for url in http.urls)
+    assert any("/orgs/other-user/repos?" in url for url in http.urls)
+    assert any(url.rstrip("/").endswith("/user") for url in http.urls)
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+def test_authenticated_self_owned_personal_discovery_uses_affiliation_owner():
+    token = "header-only-self-owner-credential"
+    http = SelfOwnedPersonalOwnerDiscoveryHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("self-owner"))
+
+    assert specs == [
+        "self-owner/public-repo@main",
+        "self-owner/private-self-repo@stable",
+    ]
+    assert any("/orgs/self-owner/repos?" in url for url in http.urls)
+    assert any(url.rstrip("/").endswith("/user") for url in http.urls)
+    authenticated_url = next(
+        url for url in http.urls if url.startswith("https://api.github.com/user/repos?")
+    )
+    assert "affiliation=owner" in authenticated_url
+    assert "visibility=all" in authenticated_url
+    assert not any(
+        url.startswith("https://api.github.com/user/repos?")
+        and "visibility=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+@pytest.mark.parametrize("status_code", [403, 500])
+def test_authenticated_org_discovery_propagates_non_404_org_http_errors(status_code):
+    token = "header-only-org-error-credential"
+    http = Non404OrgOwnerDiscoveryHTTP(token, status_code)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        asyncio.run(discovery.discover_repository_specs("blocked-org"))
+
+    assert raised.value.response.status_code == status_code
+    assert any("/users/blocked-org/repos?" in url for url in http.urls)
+    assert any("/orgs/blocked-org/repos?" in url for url in http.urls)
+    assert not any(url.rstrip("/").endswith("/user") for url in http.urls)
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
 
 
 def test_conflicting_non_empty_owner_default_branches_fail_without_cleanup():

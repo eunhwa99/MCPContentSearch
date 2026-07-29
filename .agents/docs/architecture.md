@@ -507,18 +507,24 @@ Current integrations and local configured sources:
 - Notion API, configured by environment token and API version.
 - Tistory, configured by blog name and bounded post fetching.
 - GitHub repositories, configured by comma- or newline-separated targets and
-  optional `GITHUB_TOKEN`. A bare owner target discovers all repositories owned
-  by that account and visible to the token at each sync, using each
-  repository's GitHub API-reported default branch. An `owner/repo` target
-  bypasses owner discovery and uses `CONTEXTWIKI_GITHUB_DEFAULT_REF`, while
-  `owner/repo@ref` uses the explicit ref. Mixed targets resolve to exact
-  repository identities before fetching and must not overlap; an exact target
-  does not override the ref of the same repository discovered by an owner
-  target, and the duplicate identity fails the sync. The fetcher considers
-  supported text/code files only and defaults to 200 eligible files per
-  repository and 512000 bytes per file; bound-driven omissions make the
-  snapshot incomplete and disable stale cleanup.
-  Each owner-listing endpoint is also bounded to 100 pages of 100 returned
+  optional `GITHUB_TOKEN`. A bare owner target discovers repositories owned by
+  that account at each sync: public repositories via `/users/{owner}/repos`,
+  and when a token is set, authenticated extras via owner-scoped
+  `/orgs/{owner}/repos` for organizations or, when the authenticated login
+  matches a personal owner, `/user/repos?affiliation=owner` (with
+  `visibility=all`). Discovery does not paginate the token's global
+  `/user/repos?visibility=all` set. Each discovered repository uses its GitHub
+  API-reported default branch. An `owner/repo` target bypasses owner discovery
+  and uses `CONTEXTWIKI_GITHUB_DEFAULT_REF`, while `owner/repo@ref` uses the
+  explicit ref. Mixed targets resolve to exact repository identities before
+  fetching and must not overlap; an exact target does not override the ref of
+  the same repository discovered by an owner target, and the duplicate identity
+  fails the sync. The fetcher considers supported text/code files only and
+  defaults to 200 eligible files per repository and 512000 bytes per file;
+  bound-driven omissions make the snapshot incomplete and disable stale
+  cleanup.
+  Each owner-listing endpoint (`/users/{owner}/repos`, `/orgs/{owner}/repos`,
+  and affiliation-scoped `/user/repos`) is bounded to 100 pages of 100 returned
   items, up to 10,000 per endpoint. A full page 100 leaves completion unproven,
   so the sync fails before repository indexing rather than accepting a partial
   list, and stale cleanup remains disabled.

@@ -598,15 +598,61 @@ class GitHubRepositoryDiscovery:
         if not self.token:
             return public_repositories
 
-        accessible_repositories = await self._fetch_paginated_repositories(
-            "https://api.github.com/user/repos",
-            {"visibility": "all", "sort": "full_name"},
+        authenticated_repositories = (
+            await self._fetch_authenticated_owner_repositories(owner)
         )
         return [
             repository
-            for repository in [*public_repositories, *accessible_repositories]
+            for repository in [*public_repositories, *authenticated_repositories]
             if _repository_owner_login(repository).lower() == owner.lower()
         ]
+
+    async def _fetch_authenticated_owner_repositories(
+        self,
+        owner: str,
+    ) -> list[dict[str, Any]]:
+        org_repositories = await self._try_fetch_org_repositories(owner)
+        if org_repositories is not None:
+            return org_repositories
+
+        login = await self._fetch_authenticated_login()
+        if login.lower() != owner.lower():
+            return []
+
+        return await self._fetch_paginated_repositories(
+            "https://api.github.com/user/repos",
+            {
+                "affiliation": "owner",
+                "visibility": "all",
+                "sort": "full_name",
+            },
+        )
+
+    async def _try_fetch_org_repositories(
+        self,
+        owner: str,
+    ) -> list[dict[str, Any]] | None:
+        try:
+            return await self._fetch_paginated_repositories(
+                f"https://api.github.com/orgs/{quote(owner, safe='')}/repos",
+                {"type": "all", "sort": "full_name"},
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return None
+            raise
+
+    async def _fetch_authenticated_login(self) -> str:
+        payload = await self.http_client.get_json(
+            "https://api.github.com/user",
+            headers=self._headers(),
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("GitHub authenticated user response was invalid")
+        login = payload.get("login")
+        if not isinstance(login, str) or not login:
+            raise RuntimeError("GitHub authenticated user response was invalid")
+        return login
 
     async def _fetch_paginated_repositories(
         self,
