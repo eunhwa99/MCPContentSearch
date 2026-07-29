@@ -983,8 +983,15 @@ class MetadataStore:
                 return False
             if lower is not None and value < lower:
                 return False
-            if upper is not None and value > upper:
-                return False
+            if upper is not None:
+                # Second-precision inclusive upper bounds cover the whole second.
+                effective_upper = (
+                    upper.replace(microsecond=999999)
+                    if upper.microsecond == 0
+                    else upper
+                )
+                if value > effective_upper:
+                    return False
         return True
 
     def list_documents(
@@ -1050,7 +1057,7 @@ class MetadataStore:
                 query_params.append(self._canonical_timestamp_key(lower))
             if upper:
                 where_clauses.append(f"{value_sql} <= ?")
-                query_params.append(self._canonical_timestamp_key(upper))
+                query_params.append(self._canonical_upper_timestamp_key(upper))
 
         anchor_query = None
         anchor_params: list[object] = []
@@ -1807,6 +1814,13 @@ class MetadataStore:
         return f"{value[:-1]}.000000Z"
 
     @staticmethod
+    def _canonical_upper_timestamp_key(value: str) -> str:
+        """Inclusive upper bound key; second-precision covers the whole second."""
+        if "." in value:
+            return value
+        return f"{value[:-1]}.999999Z"
+
+    @staticmethod
     def _encode_document_cursor(payload: dict[str, object]) -> str:
         encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
@@ -1957,7 +1971,12 @@ class MetadataStore:
                 updated_at = excluded.updated_at,
                 published_at = excluded.published_at,
                 modified_at = excluded.modified_at,
-                indexed_at = excluded.indexed_at,
+                indexed_at = CASE
+                    WHEN documents.content_hash = excluded.content_hash
+                         AND COALESCE(documents.indexed_at, '') != ''
+                    THEN documents.indexed_at
+                    ELSE excluded.indexed_at
+                END,
                 date_provenance = excluded.date_provenance,
                 last_seen_at = excluded.last_seen_at,
                 last_seen_sync_id = excluded.last_seen_sync_id,
