@@ -142,4 +142,4 @@ Affected area: `fetching/github.py` `_fetch_owner_repositories` (approx.
 | Review pass 2 | completed/clean | All five fresh reviewers reported no actionable findings. | Reviewers: fetching, test, security, architecture, smoke |
 | Refactor | completed | No additional refactor reduced complexity without weakening explicit discovery-path coverage. | Inspected `fetching/github.py` helpers and tests |
 | Integration | completed | Reconfirmed focused GitHub suite, compileall, and functional E2E after clean review. | `121 passed`; E2E `34 passed`; `git diff --check` |
-| Delivery | in_progress | Commit, push, update PR #84. | Pending |
+| Delivery | completed | Pushed `feature/github-owner-targets`; PR #84 updated on `main` base (body left unchanged — not agent-managed). | `https://github.com/eunaverse/MCPContentSearch/pull/84`; commits `53bc61f`, `6ccb770` |
