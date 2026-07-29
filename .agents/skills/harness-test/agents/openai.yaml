@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Test"
   short_description: "Run focused tests and classify failures"
-  default_prompt: "$harness-test를 사용해 focused verification을 추가/실행하고 실패를 분류하세요."
+  default_prompt: "$harness-test를 사용해 feature/behavior 변경의 production edit 전에 unit/integration/deterministic E2E coverage와 auditable RED 증거를 만들고, 구현 후 focused GREEN을 검증하세요. Pure refactor/test-only/non-behavior 변경은 RED n/a 사유를 기록합니다. Refactor 다음의 별도 orchestrator gate가 현재 diff의 affected tests와 ./scripts/verify_all.sh를 전담합니다."

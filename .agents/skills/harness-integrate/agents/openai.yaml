@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Integrate"
-  short_description: "Final verification and $subagent-review-loop"
-  default_prompt: "$harness-integrate를 사용해 최종 검증, 최종 5인 $subagent-review-loop gate, PR delivery를 준비하세요."
+  short_description: "Final verification and three-reviewer harness gate"
+  default_prompt: "$harness-integrate를 사용해 feature/behavior RED chronology 또는 non-behavior RED n/a 사유, focused/post-refactor GREEN, 현재 diff와 일치하는 ./scripts/verify_all.sh 증거를 검증하세요. Integration이 code/config/tests를 바꾼 경우에만 full-suite gate를 다시 실행하고, 서로 다른 렌즈의 최종 3인 review와 PR delivery를 준비하세요."

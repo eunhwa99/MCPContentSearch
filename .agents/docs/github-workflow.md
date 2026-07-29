@@ -14,7 +14,11 @@ This document defines branch, commit, push, PR, and PR-watch policy for `MCPCont
 - If the current worktree is dirty, do not switch branches, pull, or delete branches there. If network is available, fetch `origin/main`, then protect user changes by creating an isolated worktree with a fresh `feature/...` branch from `origin/main`. If network is restricted, record the freshness blocker and ask before creating an isolated branch from a possibly stale `origin/main`.
 - If the current worktree is clean, switch to `main`, fetch `origin/main`, and fast-forward local `main` before creating the task branch. If network is restricted, record that freshness was not checked.
 - For clean worktrees, delete only safe existing local non-`main` work branches before creating the new task branch. For dirty-start isolated worktrees, run cleanup only from the isolated worktree after its fresh task branch exists, never from the original dirty worktree. This cleanup deletes only local branch refs, never remote branches.
-- Do not force-delete a local branch with local-only commits unless the user explicitly approves discarding that work. If a branch is checked out in another worktree, inspect `git worktree list` and detach/remove that worktree only with user approval; otherwise report the blocker.
+- Do not force-delete a local branch with local-only commits unless both a plan
+  and explicit user approval authorize discarding that work. If a branch is
+  checked out in another worktree, inspect `git worktree list` and
+  detach/remove that worktree only with both a plan and explicit user approval;
+  otherwise report the blocker.
 - Create a fresh `feature/...` branch from updated `main` for each task. Reusing an existing `feature/...` branch is allowed only when the user explicitly asks to continue that branch.
 
 Example:
@@ -38,18 +42,21 @@ git branch -d feature/merged-local-branch
 git switch -c feature/short-description
 ```
 
-Do not run destructive commands or delete local data without explicit user approval. The branch cleanup above applies only to local Git branch refs for new task setup.
+Do not run destructive commands or delete local data without both a plan and
+explicit user approval. Plan-exempt work must reclassify or keep the action
+blocked. The safe `git branch -d` cleanup above applies only to fully merged
+local Git branch refs for new task setup.
 
 ## Commit Policy
 
 - Use Conventional Commit style: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`.
 - Keep commits small and focused.
 - Do not commit before required verification, functional smoke matrix, and final
-  clean `$subagent-review-loop` pass.
-- After final clean `$subagent-review-loop` verification for file-changing
-  harness work, with the functional smoke matrix recorded in the plan, commit
-  relevant staged files by default as part of PR delivery unless the user
-  explicitly asks for local-only work.
+  clean three-reviewer harness pass.
+- After final clean three-reviewer harness verification for file-changing
+  harness work, with the functional smoke matrix recorded in the plan or
+  plan-exempt review evidence, commit relevant staged files by default as part
+  of PR delivery unless the user explicitly asks for local-only work.
 - If the user asks to commit, never commit directly to `main`. Move to a `feature/...` branch first.
 - Do not revert user or other-agent changes unless the user explicitly requests it.
 
@@ -70,15 +77,18 @@ untracked docs and plan files are not checked by the cached diff until staged.
 Python/runtime changes:
 
 ```bash
-python -m compileall api core environments fetching indexing search storage main.py
-uv run pytest
+./scripts/verify_all.sh
 ```
 
-If `uv run ...` is not available because dependencies or workspace metadata are not installed, report it and run a dependency-free fallback when useful.
+Focused TDD checks must run before the full wrapper, and
+`./scripts/verify_all.sh` must pass before review, commit, push, or PR delivery.
+If dependencies or workspace metadata prevent the full wrapper from running,
+report a blocker. A dependency-free fallback may provide diagnostic evidence
+but does not satisfy the all-tests-pass gate.
 
 ## Push and PR Policy
 
-- Final clean `$subagent-review-loop` verification plus recorded functional
+- Final clean three-reviewer harness verification plus recorded functional
   smoke matrix results flow into push and PR creation by default. Do not stop at
   a local diff unless the user explicitly asks for local-only work or a safety
   blocker prevents delivery.

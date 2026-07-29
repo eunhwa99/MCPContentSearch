@@ -505,8 +505,8 @@ Current integrations and local configured sources:
   `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. Obsidian sync reads bounded Markdown
   notes from the filesystem and does not require a live Obsidian app. If the
   file count or file byte bound is exceeded, the sync fails as an incomplete
-  snapshot before stale cleanup. Real vault validation requires explicit user
-  approval; tests must use temporary vaults.
+  snapshot before stale cleanup. Real vault validation requires both explicit
+  user approval and a plan; tests must use temporary vaults.
 - A disabled retained source blocks future sync attempts but does not
   automatically hide already indexed active documents. Those documents remain
   retrievable until later cleanup or metadata changes mark them inactive.
@@ -520,8 +520,9 @@ Current integrations and local configured sources:
   embeddings.
 
 Testing should prefer mocked external APIs and temporary local vaults. Live
-network or real-vault validation requires explicit user approval and must not
-print credentials or local path details.
+network or real-vault validation requires both explicit user approval and a
+plan and must not print credentials or local path details. Plan-exempt work
+must reclassify before the live check or keep it `blocked/gated`.
 
 ## Configuration and Secrets
 
@@ -545,19 +546,25 @@ Domain exceptions live in `core/exceptions.py`.
 
 Use the smallest useful check first.
 
-The maintained verification model is layered:
+The maintained verification model is layered and test-first:
 
 - docs-only verification for README, harness docs, plans, and other markdown
   changes
+- Red-Green-Refactor for feature and behavior changes: write or update unit,
+  integration, and deterministic functional E2E coverage before production
+  code; record the RED command, tests/layers, non-zero exit, expected failure
+  signature, and ordering; make the minimum implementation pass; refactor while
+  focused tests stay green; then rerun affected tests
 - focused syntax, import, or targeted pytest checks for the directly changed
   modules
 - retained functional E2E coverage for MCP-visible sync/search/fetch
   workflows plus internal helper-answer coverage where retained tests depend on
   `CitationAnswerService`
-- full-wrapper verification through `./scripts/verify_all.sh` when the work item
-  needs the repo's broader default gate instead of only a narrow focused check
+- mandatory full-wrapper verification through `./scripts/verify_all.sh` for
+  every code-changing work item after refactor and before review or delivery
 - optional manual live smoke through `scripts/live_query_smoke.py` only when the
-  user explicitly approves real configured-source validation
+  user explicitly approves real configured-source validation and a plan records
+  its source/data/rollback scope
 - retained local eval surfaces such as `python scripts/run_contextwiki_eval.py`
   when the change affects a quality-sensitive retrieval or answer surface that
   already has modeled eval coverage
@@ -570,7 +577,7 @@ The maintained verification model is layered:
 - Syntax/import safety:
   `python -m compileall api core environments fetching indexing search storage main.py`.
 - Unit/integration tests: `uv run --locked pytest -m "not live"` when the uv
-  workspace is healthy.
+  workspace is healthy; feature and behavior changes must cover both layers.
 - MCP contract: focused tests around `register_tools` and retained tool
   functions. The strongest public contract layer uses real
   `FastMCP.call_tool(...)` payload checks rather than only internal helper
@@ -578,16 +585,17 @@ The maintained verification model is layered:
 - Search/indexing/storage: temp Chroma path, temp SQLite path, or mock
   collection; avoid user data.
 - Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
-  live API or real-vault checks only with explicit approval.
+  live API or real-vault checks only with explicit approval and a plan.
 - Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
   retained MCP sync/search/fetch paths, grouped document browsing, and any
   retained internal helper-answer flows without browser, wiki, live API, or
   LLM dependencies.
 - Full wrapper: `./scripts/verify_all.sh`, which includes compile, lint, type,
-  non-live pytest, deterministic local evaluation, and the functional E2E gate
-  when that broader default repository verification is required.
+  non-live pytest, deterministic local evaluation, and the functional E2E gate;
+  it is mandatory for every code-changing work item.
 - Manual live smoke: `python scripts/live_query_smoke.py`, only with explicit
-  approval because it can touch real configured sources or local user data.
+  approval and a plan because it can touch real configured sources or local
+  user data.
 - Retained eval runner: `PYTHONPATH=. python scripts/run_contextwiki_eval.py`
   or the repo wrapper that invokes it, used when a work item changes retrieval
   or answer quality on a modeled local eval surface.

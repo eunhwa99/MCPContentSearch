@@ -71,7 +71,10 @@ Function/class-aware code chunking, fingerprint deduplication, worker queues, re
   canonical URLs, tombstones, and line-range chunks before adding
   connector-specific fetching. Historical Web/docs connector scope is
   superseded by ADR 0006.
-- Tests should use fake sources and temporary SQLite paths. Live external validation remains opt-in only.
+- Tests should use fake sources and temporary SQLite paths. Live external
+  validation is blocked unless the task has a plan and the user explicitly
+  approves the bounded check; plan-exempt work must be reclassified as planned
+  work or keep using fake/temporary substitutes.
 
 ## Alternatives Considered
 

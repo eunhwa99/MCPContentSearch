@@ -7,7 +7,10 @@ description: Integration verification phase for MCPContentSearch changes, final 
 
 ## Input
 
-Read the current plan document, local diff, `.agents/docs/harness-engineering.md`, `.agents/docs/github-workflow.md`, changed files, and prior verification history.
+Read the current plan document when one is required, the recorded plan-exempt
+reason otherwise, local diff, `.agents/docs/harness-engineering.md`,
+`.agents/docs/github-workflow.md`, changed files, and prior verification
+history.
 
 ## Work
 
@@ -25,43 +28,63 @@ git diff --cached --check
 Stage the relevant docs-only files before `git diff --cached --check`; new
 untracked docs and plan files are not checked by the cached diff until staged.
 
-Python code:
+Python code integration first validates that the recorded post-refactor
+`./scripts/verify_all.sh` success matches the current HEAD/diff. Do not rerun
+the expensive full suite when no code, configuration, tests, or verification
+inputs changed and the evidence is current. If integration or review changes
+one of those inputs, the earlier evidence is stale: return to the applicable
+TDD/focused gate, then rerun the post-refactor full-suite gate and refresh the
+evidence.
 
-```bash
-python -m compileall api core environments fetching indexing search storage main.py
-uv run pytest
-```
+Focused unit, integration, and deterministic E2E checks must already be green.
+For feature/behavior changes, integration evidence must also show the
+pre-production RED command, layers/tests, non-zero exit code, expected failure
+signature, and ordering. Pure refactor, test-only, or other non-behavior work
+records RED as `n/a` with a rationale. Post-refactor affected checks and the
+full wrapper must pass; partial fallbacks are diagnostic only.
 
 MCP contract changes should include a startup/import or tool-registration smoke when it can run without live credentials and without mutating user Chroma data or SQLite metadata.
 
 Indexing/search/storage changes should avoid user data by using temp Chroma paths, temp SQLite paths, mocks, or clearly documented dry checks.
 
-Live Notion/Tistory/GitHub validation requires user approval. Do not print tokens.
+Live Notion/Tistory/GitHub validation requires both explicit user approval and
+a plan. Plan-exempt work must reclassify before the live check or keep it
+`blocked/gated` with a fake/temp substitute. Do not print tokens.
 
 Refresh the functional smoke matrix from
 `.agents/skills/harness-functional-smoke/SKILL.md` during integration. If
 refactor or integration changed any caller-visible path, rerun the affected
-smoke entries. The final matrix must be present in the plan before the final
-review gate and must explicitly cover retained MCP `sync_source`,
+smoke entries. The final matrix must be present in the plan, or in the
+review/final evidence for plan-exempt work, before the final review gate and
+must explicitly cover retained MCP `sync_source`,
 `list_sources`, and `get_sync_status` flows when source sync behavior is in
 scope, or mark live/user-data checks as blocked/gated with a local substitute.
 
 ## Completion
 
 If integration verification and the functional smoke matrix pass, run the final
-`$subagent-review-loop` review gate before PR delivery. If review findings
-require edits, rerun the affected verification and affected smoke entries, then
-start a fresh five-reviewer subagent review pass.
+three-reviewer harness gate before PR delivery. If review findings require a
+behavior-changing code/config edit, return to RED before production changes,
+then rerun GREEN, refactor, affected checks, the full-suite gate, and smoke. For
+a non-behavior code/config/test edit, record RED as `n/a` without manufacturing
+a failure, then rerun affected focused tests, the full-suite gate, and affected
+smoke. For a docs-only edit, rerun lightweight docs verification without fake
+RED. Refresh integration evidence, then start a fresh three-reviewer pass with
+the required distinct lenses.
 
-After the final clean `$subagent-review-loop` pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
+After the final clean three-reviewer pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
 Final response should include:
 
-- Plan document path.
+- Plan document path, or plan-exempt reason.
 - Changed files.
+- TDD RED evidence and confirmation that it predates production edits for
+  feature/behavior changes, or the non-behavior/docs-only `n/a` rationale.
 - Verification commands and results.
 - Functional smoke matrix results, including blocked/gated checks.
-- `$subagent-review-loop` status, including whether all five reviewers in the final fresh pass reported no actionable findings.
+- Three-reviewer harness status, including whether the newest fresh
+  bugs/correctness, security/data-safety, and performance/reliability reviewers
+  all reported no actionable findings.
 - Skipped checks or blockers.
 - Commit/push/PR status.
 

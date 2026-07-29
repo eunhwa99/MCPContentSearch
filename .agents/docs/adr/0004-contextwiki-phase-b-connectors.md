@@ -68,7 +68,8 @@ skips hidden and Obsidian metadata directories, parses frontmatter titles when
 available, and uses `obsidian://open` canonical URLs. Obsidian bounds are
 configured through positive integer `CONTEXTWIKI_OBSIDIAN_MAX_FILES` and
 `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` values. Verification must use temporary
-vaults unless the user explicitly approves a real vault path.
+vaults unless both a plan and explicit user approval authorize the real vault
+path.
 
 GitHub stale cleanup is scoped to the repository identities fetched by the
 current connector, such as `github:owner/repo:` document-id prefixes, rather
@@ -87,7 +88,9 @@ Connector fetches must fail the sync on required API/page fetch errors so
 source-wide tombstoning only runs after a complete bounded snapshot. A disabled
 connector blocks future syncs but does not automatically hide already indexed
 active documents from retrieval until later cleanup or metadata changes.
-Live external validation remains optional and must be explicitly requested.
+Live external validation is blocked unless the task has a plan and the user
+explicitly approves the bounded check. Plan-exempt work must be reclassified as
+planned work or keep using fake/temporary substitutes.
 For Obsidian, unreadable notes, traversal errors, or exceeded file count/byte
 bounds must fail the sync before stale cleanup can tombstone missing active
 documents.
