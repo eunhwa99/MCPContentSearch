@@ -73,22 +73,26 @@ Preferred checks by change type:
   owns `./scripts/verify_all.sh` for the current diff and requires it to pass
   for every code-changing work item.
 - Eval verification: after successful `./scripts/verify_all.sh`, the
-  orchestrator runs deterministic local eval checks such as
-  `uv run pytest -q tests/evals` or `PYTHONPATH=. python scripts/run_contextwiki_eval.py`,
-  whichever matches the already-modeled retained eval surface for the changed
+  orchestrator confirms the matching retained eval surface for the changed
   retrieval, ranking, grounding, citation-selection, or answer-quality
-  behavior. If no matching retained local eval surface exists yet, extend an
-  existing retained eval surface during coverage work and run the matching
-  eval command only after the full-suite gate, before smoke or review.
-  Features outside the current retained local eval coverage are not subject to
-  this eval requirement until the retained eval scope changes.
+  behavior. Prefer recording the full-suite deterministic quality eval layer
+  evidence when `./scripts/verify_all.sh` already executed that matching
+  surface; otherwise run the focused matching command such as
+  `uv run pytest -q tests/evals` or
+  `PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If no matching
+  retained local eval surface exists yet, extend an existing retained eval
+  surface during coverage work and satisfy the eval gate only after the
+  full-suite gate, before smoke or review. Features outside the current
+  retained local eval coverage are not subject to this eval requirement until
+  the retained eval scope changes.
 
 Use uv when it is available and healthy. If uv or the full wrapper fails
 because local setup is broken, record the blocker and run a dependency-free
 fallback only for diagnosis; do not mark the test gate complete.
 
-After the orchestrator completes refactoring, affected focused-test reruns, and
-a successful `./scripts/verify_all.sh`, run
+After the orchestrator completes refactoring, affected focused-test reruns, a
+successful `./scripts/verify_all.sh`, and any matching eval required by feature
+scope (only after that full-suite gate), run
 `.agents/skills/harness-functional-smoke/SKILL.md` before review. The test lane
 must leave a smoke matrix in the plan, or in the review/final evidence for
 plan-exempt work, that covers

@@ -53,9 +53,11 @@ delivery.
    while focused tests remain green.
 7. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Eval gate when required by feature scope: run any matching retained eval
-   command only after `./scripts/verify_all.sh` succeeds; never during focused
-   GREEN.
+8. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
+   succeeds, confirm the matching retained eval surface. Prefer recording the
+   full-suite deterministic quality eval layer evidence when that layer already
+   executed the matching surface; otherwise run the focused matching eval
+   command. Never run matching eval during focused GREEN.
 9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    covering the task-relevant feature inventory once through the safest real
    caller surfaces before review, not only the files changed.
@@ -82,12 +84,14 @@ environment or dependency failure blocks completion rather than permitting a
 partial fallback. If the feature changes retrieval quality,
 ranking, grounding, citation selection, answer quality, or another
 quality-sensitive output already modeled by retained local evaluations, also
-require adding or updating eval coverage and running the matching eval command
+require adding or updating eval coverage and satisfying the matching eval gate
 only after `./scripts/verify_all.sh` succeeds and before functional smoke or
-review; never during focused GREEN. If the feature falls within retained local
-eval coverage but no exact retained eval surface exists yet, also require
-extending an existing retained eval surface and running the matching eval
-command only after that full-suite gate.
+review; never during focused GREEN. Prefer recording full-suite deterministic
+quality eval layer evidence when that layer already executed the matching
+surface; otherwise run the focused matching eval command. If the feature falls
+within retained local eval coverage but no exact retained eval surface exists
+yet, also require extending an existing retained eval surface and satisfying
+the eval gate only after that full-suite gate.
 
 ## Loop Rules
 
@@ -98,10 +102,13 @@ Minimize human intervention by routing routine work through subagents when deleg
 If the main-agent synthesis or harness review produces an actionable
 behavior-changing code/config finding, return to the unit/integration/E2E RED
 gate before production edits, record fresh auditable RED evidence, then rerun
-GREEN, refactor, affected tests, `./scripts/verify_all.sh`, and functional
-smoke. For a non-behavior code/config/test finding, record RED as `n/a` without
-manufacturing a failure, then rerun affected focused tests,
-`./scripts/verify_all.sh`, and affected smoke. For a docs-only finding, rerun
+GREEN, refactor, affected tests, `./scripts/verify_all.sh`, any matching eval
+required by feature scope only after that full-suite gate (record full-suite
+eval evidence when already covered; otherwise rerun the matching eval), and
+functional smoke. For a non-behavior code/config/test finding, record RED as
+`n/a` without manufacturing a failure, then rerun affected focused tests,
+`./scripts/verify_all.sh`, any matching eval required by feature scope only
+after that full-suite gate, and affected smoke. For a docs-only finding, rerun
 lightweight docs verification without fake RED. Update the plan when one is
 required, assign each issue back to the responsible worker persona or a fresh
 replacement with the same ownership boundary, and continue directly to the
@@ -113,9 +120,11 @@ lenses: bugs/correctness/contracts/tests; security/privacy/data safety/secrets;
 and performance/reliability/async/concurrency/operability. Continue until all
 three in the newest pass report no actionable findings. For code changes,
 review-fix verification must include affected unit/integration/E2E tests and
-`./scripts/verify_all.sh`, plus any matching eval command only after that
-full-suite gate and before the next smoke/review pass. Worker subagents may
-edit only within delegated boundaries; reviewer subagents must not edit files.
+`./scripts/verify_all.sh`, plus any matching eval gate only after that
+full-suite gate and before the next smoke/review pass (prefer recording
+full-suite eval-layer evidence when it already covered the matching surface).
+Worker subagents may edit only within delegated boundaries; reviewer subagents
+must not edit files.
 
 Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, and docs-only.
 
@@ -134,12 +143,14 @@ behavior before production code.
 
 Use the current local eval surfaces when they apply, including deterministic
 eval tests under `tests/evals` such as `uv run pytest -q tests/evals` and
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Run matching eval
-commands only after `./scripts/verify_all.sh` succeeds and before functional
-smoke or review; do not run them during focused GREEN. If a feature falls
-within the repo's retained local eval coverage but no matching retained eval
-surface exists yet, extend an existing retained eval surface such as
-`tests/evals` or the fixture runner during coverage work and run the matching
-eval command only after the full-suite gate. Features outside the current
-retained local eval coverage are not subject to this eval requirement until the
-retained eval scope changes.
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
+eval gate only after `./scripts/verify_all.sh` succeeds and before functional
+smoke or review; do not run matching eval during focused GREEN. Prefer
+recording the full-suite deterministic quality eval layer evidence when that
+layer already executed the matching surface; otherwise run the focused matching
+eval command. If a feature falls within the repo's retained local eval coverage
+but no matching retained eval surface exists yet, extend an existing retained
+eval surface such as `tests/evals` or the fixture runner during coverage work
+and satisfy the eval gate only after the full-suite gate. Features outside the
+current retained local eval coverage are not subject to this eval requirement
+until the retained eval scope changes.
