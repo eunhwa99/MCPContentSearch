@@ -115,13 +115,15 @@ The test lane hands focused GREEN evidence to the refactor and post-refactor
 full-suite phases. The overall harness must not proceed to review until
 feature/behavior work has auditable pre-production RED evidence, focused
 unit/integration/E2E GREEN results, post-refactor affected-test results,
-`./scripts/verify_all.sh`, any matching eval command required by feature scope
-(only after that full-suite gate), and the functional smoke matrix recorded in
-the plan or plan-exempt evidence. Pure refactor, test-only, or other non-behavior code
-work records the RED gate as `n/a` with a rationale and still supplies
-applicable focused GREEN, full-suite, and smoke evidence. If required coverage
-does not exist yet, add it; a compile/import check alone is not a completion
-baseline for behavior-changing code work.
+`./scripts/verify_all.sh`, any matching eval gate required by feature scope
+(only after that full-suite gate; prefer recording full-suite quality-eval
+evidence when already covered), and the functional smoke matrix recorded in
+the plan or plan-exempt evidence. Pure refactor, test-only, or other
+non-behavior code work records the RED gate as `n/a` with a rationale and still
+supplies applicable focused GREEN, full-suite, matching-eval when in scope, and
+smoke evidence. If required coverage does not exist yet, add it; a
+compile/import check alone is not a completion baseline for behavior-changing
+code work.
 
 ## Failure Handling
 

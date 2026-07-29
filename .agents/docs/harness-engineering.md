@@ -491,6 +491,8 @@ Final reports include:
 - Plan document path, or plan-exempt reason
 - Changed files
 - Verification commands and results
+- Matching eval gate evidence when required by feature scope (recorded
+  full-suite quality-eval evidence or focused matching command result)
 - Functional smoke matrix results, including blocked/gated checks and local substitutes
 - Review status and any subagent-review limitation
 - Known blockers or skipped checks
