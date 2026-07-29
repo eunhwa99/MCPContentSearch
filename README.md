@@ -139,52 +139,15 @@ GITHUB_TOKEN=...                # needed for private repos or higher rate limits
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
 ```
 
-GitHub targets are resolved when each GitHub sync runs:
+GitHub targets are resolved when each sync runs:
 
-- A bare owner such as `eunaverse` discovers all repositories owned by that
-  account and visible to the optional `GITHUB_TOKEN`. Each discovered
-  repository uses the default branch reported by the GitHub API.
-  Each GitHub listing endpoint is bounded to 100 pages of 100 returned items
-  (up to 10,000 items per endpoint). If page 100 is still full, ContextWiki
-  cannot prove the listing is complete, so the sync fails before repository
-  indexing instead of using a partial list, and stale cleanup remains disabled.
-- `owner/repo` syncs only that repository using
-  `CONTEXTWIKI_GITHUB_DEFAULT_REF` (default: `main`), while
-  `owner/repo@ref` uses the explicit ref.
-- Multiple owner and exact-repository targets may be comma- or
-  newline-separated, but their repository identities must not overlap. For
-  example, `eunaverse,eunaverse/website@release` fails as a duplicate if owner
-  discovery includes `eunaverse/website`; the exact target does not override
-  the discovered repository's ref.
-
-Within each resolved repository, ContextWiki considers supported text/code
-files only: Markdown and plain-text formats; common Python, JavaScript,
-TypeScript, JVM, Go, Rust, Ruby, PHP, C/C++, C#, Swift, Scala, SQL, and shell
-files; plus YAML, TOML, JSON, XML, HTML, and CSS. Other file types are
-intentionally ignored. The default bounds are:
-
-- `CONTEXTWIKI_GITHUB_MAX_FILES=200` eligible files per repository.
-- `CONTEXTWIKI_GITHUB_MAX_FILE_BYTES=512000` bytes per file.
-
-When an eligible repository has more files than the file limit, or a supported
-file is skipped because it exceeds the byte limit, the snapshot is marked
-incomplete and stale cleanup is disabled. Do not assume every repository file
-was reflected: call `get_sync_status("source_github")` and inspect
-`source.stale_cleanup_disabled_reason`.
-
-Owner-wide sync can make many GitHub requests and increase indexing time and
-embedding-provider cost. Stale cleanup remains conservative: after a complete
-successful snapshot, it considers only the exact repository prefixes resolved
-for that sync. Repositories no longer visible to the current token, including
-historical private repositories, are not removed by a broad owner-wide cleanup.
-A repository confirmed empty by GitHub metadata is a complete zero-document
-scope, so its exact repository prefix participates in cleanup and previously
-indexed documents for that repository may be tombstoned after a complete sync.
-Missing or ambiguous empty-repository metadata is not accepted as a complete
-zero-document scope and cannot enable cleanup for that apparent empty state.
-After changing this setting for Claude Desktop, fully quit and restart Claude
-Desktop before syncing; refreshing the chat alone does not reload the process
-environment.
+- `owner` syncs repositories owned by that account and visible to the optional
+  `GITHUB_TOKEN`, using each repository's default branch.
+- `owner/repo` syncs one repository using `CONTEXTWIKI_GITHUB_DEFAULT_REF`
+  (default: `main`).
+- `owner/repo@ref` syncs one repository at the specified ref.
+- Separate multiple targets with commas or newlines. Do not combine an owner
+  target with one of its repositories, because overlapping targets are rejected.
 
 ---
 

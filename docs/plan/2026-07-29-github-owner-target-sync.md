@@ -236,3 +236,4 @@ selection, or answer quality.
 | Three-reviewer pass 3 | completed/clean | Fresh runtime/cleanup, test/integration, and security/docs reviewers all reported no actionable findings after identity and page-bound remediation. | User-overridden final three-reviewer gate |
 | Review | completed | Final fresh three-reviewer pass is fully clean. | Reviewers: runtime/cleanup, test/integration, security/docs |
 | Delivery | pending | Commit, push, and `main`-base PR after clean review. | Pending |
+| README simplification follow-up | completed | User requested replacing the detailed GitHub target explanation with exactly four concise usage bullets. This was a truly atomic docs-only edit, so the main agent edited directly; architecture retains the implementation details. | README contains only the requested four bullets; `git diff --check` passed |
