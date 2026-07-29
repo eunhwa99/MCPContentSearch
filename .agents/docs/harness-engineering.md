@@ -464,8 +464,9 @@ explicit user approval and a plan. Plan-exempt work must be reclassified before
 the live check or keep it `blocked/gated` and use a fake/temp substitute.
 
 After focused GREEN, refactoring, affected-test reruns, a successful
-`./scripts/verify_all.sh`, and any matching eval command required by feature
-scope, run the functional smoke gate in
+`./scripts/verify_all.sh`, and any matching eval gate required by feature
+scope (record full-suite quality-eval evidence when already covered; otherwise
+run the focused matching eval command), run the functional smoke gate in
 `.agents/skills/harness-functional-smoke/SKILL.md` before any review gate. The
 smoke matrix must start from the task-relevant inventory of retained MCP tools,
 source-sync paths, status surfaces, search, citation answers, and other

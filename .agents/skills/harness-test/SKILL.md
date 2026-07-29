@@ -49,12 +49,14 @@ Do not run matching eval commands in this focused GREEN lane. When a feature
 changes retrieval quality, ranking, grounding, citation selection, answer
 quality, or another quality-sensitive output already modeled by retained local
 evaluations, add or update eval coverage as part of the red/coverage work, but
-leave execution to the orchestrator: it runs the matching eval command only
-after `./scripts/verify_all.sh` succeeds and before functional smoke or review.
-If the feature falls within retained local eval coverage but no exact retained
-eval surface exists yet, extend an existing retained eval surface during
-coverage work; the orchestrator still runs that matching eval command only
-after the full-suite gate.
+leave the eval gate to the orchestrator: after `./scripts/verify_all.sh`
+succeeds and before functional smoke or review, satisfy the matching eval gate
+by recording full-suite deterministic quality eval layer evidence when that
+layer already covered the matching surface, otherwise running the focused
+matching eval command. If the feature falls within retained local eval coverage
+but no exact retained eval surface exists yet, extend an existing retained eval
+surface during coverage work; the orchestrator still satisfies that matching
+eval gate only after the full-suite gate.
 
 Preferred checks by change type:
 

@@ -108,12 +108,13 @@ eval evidence when already covered; otherwise rerun the matching eval), and
 functional smoke. For a non-behavior code/config/test finding, record RED as
 `n/a` without manufacturing a failure, then rerun affected focused tests,
 `./scripts/verify_all.sh`, any matching eval required by feature scope only
-after that full-suite gate, and affected smoke. For a docs-only finding, rerun
-lightweight docs verification without fake RED. Update the plan when one is
-required, assign each issue back to the responsible worker persona or a fresh
-replacement with the same ownership boundary, and continue directly to the
-next fresh review pass rather than restarting the already-completed initial RED
-phase.
+after that full-suite gate (record full-suite eval evidence when already
+covered; otherwise rerun the matching eval), and affected smoke. For a
+docs-only finding, rerun lightweight docs verification without fake RED. Update
+the plan when one is required, assign each issue back to the responsible worker
+persona or a fresh replacement with the same ownership boundary, and continue
+directly to the next fresh review pass rather than restarting the
+already-completed initial RED phase.
 Every review pass must run relevant verification and functional smoke first,
 then spawn exactly three fresh read-only reviewers with distinct primary
 lenses: bugs/correctness/contracts/tests; security/privacy/data safety/secrets;

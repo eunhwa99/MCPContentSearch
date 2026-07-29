@@ -45,8 +45,12 @@
   claim completion from a partial fallback.
 - Docs/instruction-only changes do not invent code tests or run the code TDD cycle; use the docs-only verification commands below.
 - After focused tests, refactor, affected-test reruns, and a successful
-  `./scripts/verify_all.sh`, run the functional smoke gate before the harness
-  review loop: use `.agents/skills/harness-functional-smoke/SKILL.md` to
+  `./scripts/verify_all.sh`, satisfy any matching eval gate required by feature
+  scope only after that full-suite gate (prefer recording the full-suite
+  deterministic quality eval layer evidence when it already covered the
+  matching surface; otherwise run the focused matching eval command), then run
+  the functional smoke gate before the harness review loop: use
+  `.agents/skills/harness-functional-smoke/SKILL.md` to
   exercise the task-relevant MCP/source-sync/user-visible feature inventory
   once through the safest real caller surfaces, not only unit-test the changed
   files. Record explicit safety blockers, approval needed, and nearest
@@ -56,13 +60,16 @@
 - If the main agent's synthesis or harness review reports an actionable
   behavior-changing code/config finding, return to the TDD RED gate before
   production edits, then rerun GREEN, refactor, affected tests,
-  `./scripts/verify_all.sh`, and functional smoke before a fresh three-reviewer
-  pass. For a non-behavior code/config/test finding, record RED as `n/a`
-  without manufacturing a failure, then rerun affected focused tests,
-  `./scripts/verify_all.sh`, and affected functional smoke. For a docs-only
-  finding, rerun the lightweight docs verification without fake RED. Update the
-  plan when one is required and route the fix to the responsible worker persona
-  or a fresh replacement with the same ownership boundary.
+  `./scripts/verify_all.sh`, any matching eval gate required by feature scope
+  only after that full-suite gate (record full-suite eval evidence when already
+  covered; otherwise rerun the matching eval), and functional smoke before a
+  fresh three-reviewer pass. For a non-behavior code/config/test finding,
+  record RED as `n/a` without manufacturing a failure, then rerun affected
+  focused tests, `./scripts/verify_all.sh`, any matching eval gate required by
+  feature scope only after that full-suite gate, and affected functional smoke.
+  For a docs-only finding, rerun the lightweight docs verification without fake
+  RED. Update the plan when one is required and route the fix to the responsible
+  worker persona or a fresh replacement with the same ownership boundary.
 - After the final clean three-reviewer pass, proceed to commit, push, and create a `main`-base PR by default. This is the standing repository workflow unless the user explicitly asks for local-only work or a safety blocker prevents PR delivery.
 - If the user gives multiple independent tasks, split them during planning. Use separate worker ownership and branch/worktree boundaries when parallel work is allowed.
 - Do not reply on GitHub, watch PRs, or push follow-up PR changes unless the user explicitly delegates that work.

@@ -66,10 +66,14 @@ Use this loop exactly:
    replacement when delegation is available and safe. For a behavior-changing
    code/config fix, return first to the unit/integration/E2E RED gate and record
    fresh auditable pre-edit failure evidence; then implement GREEN, refactor,
-   rerun affected tests, run `./scripts/verify_all.sh`, and refresh affected
-   smoke entries. For a non-behavior code/config/test fix, record RED as `n/a`
-   without manufacturing a failure, then rerun affected focused tests,
-   `./scripts/verify_all.sh`, and affected smoke entries. For a docs-only fix,
+   rerun affected tests, run `./scripts/verify_all.sh`, satisfy any matching
+   eval gate required by feature scope only after that full-suite gate (record
+   full-suite eval evidence when already covered; otherwise rerun the matching
+   eval), and refresh affected smoke entries. For a non-behavior
+   code/config/test fix, record RED as `n/a` without manufacturing a failure,
+   then rerun affected focused tests, `./scripts/verify_all.sh`, any matching
+   eval gate required by feature scope only after that full-suite gate, and
+   affected smoke entries. For a docs-only fix,
    rerun the lightweight docs checks without manufacturing a fake RED. If the
    main agent fixes directly
    because delegation is unavailable or unsafe, record that reason in the plan
