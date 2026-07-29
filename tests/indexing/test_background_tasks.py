@@ -91,9 +91,9 @@ def test_safe_error_message_redacts_semicolon_cookie_headers_and_unc_paths():
         r"\\?\UNC\server\private share\archive notes.md",
     )
     message = (
-        "Cookie: session=alpha; theme=private; preference=hidden, "
+        "Cookie: session=alpha; theme=private; preference=hidden\n"
         "job_id=job-123\n"
-        "Set-Cookie: sid=bravo; Path=/private; HttpOnly, "
+        "Set-Cookie: sid=bravo; Path=/private; HttpOnly\n"
         "source_id=source_notion\n"
         rf"failed reading {raw_values[5]}, mirror={raw_values[6]}, "
         rf"archive={raw_values[7]}"
@@ -117,10 +117,11 @@ def test_safe_error_message_redacts_coalesced_and_folded_cookie_pairs():
         "folded_cookie=delta",
     )
     message = (
-        "Cookie: session=alpha, theme=private, preference=hidden, "
+        "Cookie: session=alpha, theme=private, preference=hidden\n"
         "job_id=job-123\n"
         "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
-        "\tfolded_cookie=delta, source_id=source_notion; retry_count=2"
+        "\tfolded_cookie=delta\n"
+        "source_id=source_notion; retry_count=2"
     )
 
     redacted = safe_error_message(RuntimeError(message), max_length=800)
@@ -135,8 +136,8 @@ def test_safe_error_message_redacts_coalesced_and_folded_cookie_pairs():
 def test_error_stream_redacts_folded_cookie_continuations_across_lines():
     source = StringIO(
         "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
-        "\tfolded_cookie=delta, source_id=source_notion; retry_count=2\n"
-        "ordinary diagnostic, attempt=3\n"
+        "\tfolded_cookie=delta\n"
+        "ordinary diagnostic, source_id=source_notion; retry_count=2; attempt=3\n"
     )
     target = StringIO()
 
@@ -148,7 +149,72 @@ def test_error_stream_redacts_folded_cookie_continuations_across_lines():
     assert "folded_cookie=delta" not in redacted
     assert "source_id=source_notion" in redacted
     assert "retry_count=2" in redacted
-    assert "ordinary diagnostic, attempt=3" in redacted
+    assert (
+        "ordinary diagnostic, source_id=source_notion; retry_count=2; attempt=3"
+        in redacted
+    )
+
+
+def test_safe_error_message_fails_closed_for_cookie_names_that_match_diagnostic_fields():
+    message = (
+        "Cookie: source_id=cookie-source-secret, job_id=cookie-job-secret; "
+        "phase=cookie-phase-secret\n"
+        "ordinary diagnostic, source_id=source_notion; job_id=job-123; "
+        "phase=fetching_page_content\n"
+    )
+
+    redacted = safe_error_message(RuntimeError(message), max_length=800)
+
+    for secret in (
+        "cookie-source-secret",
+        "cookie-job-secret",
+        "cookie-phase-secret",
+    ):
+        assert secret not in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "phase=fetching_page_content" in redacted
+
+
+def test_error_stream_keeps_cookie_mode_after_an_oversized_header():
+    source = StringIO(
+        "Cookie: source_id=cookie-source-secret; padding="
+        + ("x" * 70000)
+        + "\n"
+        "\tjob_id=folded-cookie-secret; phase=folded-phase-secret\n"
+        "ordinary diagnostic, source_id=source_notion; job_id=job-123\n"
+    )
+    target = StringIO()
+
+    sanitize_error_stream(source, target)
+
+    redacted = target.getvalue()
+    assert "cookie-source-secret" not in redacted
+    assert "folded-cookie-secret" not in redacted
+    assert "folded-phase-secret" not in redacted
+    assert "<redacted oversized diagnostic>" in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+
+
+def test_error_stream_finishes_after_an_oversized_unterminated_line():
+    class FailingRepeatedEofStream(StringIO):
+        eof_reads = 0
+
+        def readline(self, size: int = -1) -> str:
+            value = super().readline(size)
+            if not value:
+                self.eof_reads += 1
+                if self.eof_reads > 1:
+                    raise AssertionError("sanitize_error_stream repeatedly read EOF")
+            return value
+
+    source = FailingRepeatedEofStream("Cookie: session=secret;" + ("x" * 70000))
+    target = StringIO()
+
+    sanitize_error_stream(source, target)
+
+    assert target.getvalue() == "<redacted oversized diagnostic>"
 
 
 def test_safe_error_message_keeps_the_existing_max_length_contract():

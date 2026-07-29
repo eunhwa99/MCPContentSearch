@@ -18,23 +18,13 @@ _PEM_BLOCK_PATTERN = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
     re.IGNORECASE | re.DOTALL,
 )
-_SAFE_DIAGNOSTIC_FIELD_NAMES = (
-    r"(?:attempt|chunk_count|document_count|job_id|owner_id|phase|pid|"
-    r"request_id|retry_count|source_id|status|trace_id|worker_id)"
-)
-_SAFE_DIAGNOSTIC_FIELD_PATTERN = re.compile(
-    rf"\b{_SAFE_DIAGNOSTIC_FIELD_NAMES}\s*=",
-    re.IGNORECASE,
-)
 _COOKIE_HEADER_START_PATTERN = re.compile(
     r"\b(?:set-cookie|cookie)\s*[:=]",
     re.IGNORECASE,
 )
 _COOKIE_HEADER_SECRET_PATTERN = re.compile(
-    r"(?P<prefix>\b(?:set-cookie|cookie)\s*[:=]\s*)"
-    r"(?P<secret>(?:(?!\r?\n(?![ \t])).)*?)"
-    rf"(?=(?:,\s*|\r?\n[ \t]+|;\s+)(?={_SAFE_DIAGNOSTIC_FIELD_NAMES}\s*=)"
-    r"|\r?\n(?![ \t])|$)",
+    r"(?P<prefix>\b(?:set-cookie|cookie)\s*[:=][ \t]*)"
+    r"(?P<secret>[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)",
     re.IGNORECASE | re.DOTALL,
 )
 _QUOTED_ASSIGNMENT_SECRET_PATTERN = re.compile(
@@ -165,13 +155,26 @@ def sanitize_error_stream(
         if not line:
             return
         if len(line) > max_line_chars and not line.endswith("\n"):
-            target.write("<redacted oversized diagnostic>")
-            while line and not line.endswith("\n"):
+            cookie_header_pending = (
+                cookie_header_pending and line.startswith((" ", "\t"))
+            )
+            scan_tail = ""
+            while True:
+                probe = f"{scan_tail}{line}"
+                if _COOKIE_HEADER_START_PATTERN.search(probe):
+                    cookie_header_pending = True
+                scan_tail = probe[-16:]
+                if line.endswith("\n"):
+                    break
                 line = source.readline(max_line_chars + 1)
+                if not line:
+                    break
+            target.write("<redacted oversized diagnostic>")
             if line.endswith("\n"):
                 target.write("\n")
             target.flush()
-            cookie_header_pending = False
+            if not line:
+                return
             continue
         is_cookie_continuation = cookie_header_pending and line.startswith(
             (" ", "\t")
@@ -193,9 +196,9 @@ def sanitize_error_stream(
             )
         target.flush()
         if _COOKIE_HEADER_START_PATTERN.search(line):
-            cookie_header_pending = not _SAFE_DIAGNOSTIC_FIELD_PATTERN.search(line)
+            cookie_header_pending = True
         elif is_cookie_continuation:
-            cookie_header_pending = not _SAFE_DIAGNOSTIC_FIELD_PATTERN.search(line)
+            cookie_header_pending = True
         else:
             cookie_header_pending = False
 

@@ -18,13 +18,38 @@ DRY_RUN=0
 RESTART_CHANGED=0
 PLIST_CANDIDATE=""
 PREVIOUS_PLIST_PATH=""
+ROLLBACK_PLIST_PATH=""
+TRANSACTION_ACTIVE=0
+TRANSACTION_ORIGINAL_PLIST=0
+TRANSACTION_ORIGINAL_LOADED=0
+TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=0
+PENDING_INTERRUPT_NAME=""
+PENDING_INTERRUPT_STATUS=0
 
 cleanup() {
-  rm -f "${PLIST_CANDIDATE:-}" "${PREVIOUS_PLIST_PATH:-}"
+  rm -f "${PLIST_CANDIDATE:-}" "${ROLLBACK_PLIST_PATH:-}"
+  if [[ "${TRANSACTION_ACTIVE}" -eq 0 ]]; then
+    rm -f "${PREVIOUS_PLIST_PATH:-}"
+  elif [[ -n "${PREVIOUS_PLIST_PATH:-}" ]]; then
+    printf 'error: rollback was incomplete; retained previous plist snapshot: %s\n' \
+      "${PREVIOUS_PLIST_PATH}" >&2
+  fi
   sync_worker_launch_agent_release_lock
 }
 
 trap cleanup EXIT
+
+record_interrupt() {
+  if [[ -z "${PENDING_INTERRUPT_NAME}" ]]; then
+    PENDING_INTERRUPT_NAME="$1"
+    PENDING_INTERRUPT_STATUS="$2"
+  fi
+}
+
+# Catchable SIGTERM/SIGINT finish the tracked child and then roll back. SIGKILL
+# cannot offer the same guarantee without a durable journal.
+trap 'record_interrupt TERM 143' TERM
+trap 'record_interrupt INT 130' INT
 
 usage() {
   cat <<'EOF'
@@ -49,6 +74,163 @@ EOF
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+run_launchctl_interrupt_safe() {
+  local command_status=1
+  local waiter_pid
+  local wait_status
+
+  (
+    trap '' TERM INT
+    launchctl "$@"
+  ) &
+  waiter_pid=$!
+  while true; do
+    if wait "${waiter_pid}"; then
+      command_status=0
+      break
+    else
+      wait_status=$?
+    fi
+    if kill -0 "${waiter_pid}" 2>/dev/null; then
+      continue
+    fi
+    command_status="${wait_status}"
+    break
+  done
+  return "${command_status}"
+}
+
+exit_if_interrupted_without_transaction() {
+  if [[ -n "${PENDING_INTERRUPT_NAME}" &&
+    "${TRANSACTION_ACTIVE}" -eq 0 ]]; then
+    printf 'error: interrupted by SIG%s before installation mutation\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+    exit "${PENDING_INTERRUPT_STATUS}"
+  fi
+}
+
+begin_install_transaction() {
+  TRANSACTION_ORIGINAL_LOADED="$1"
+  TRANSACTION_ORIGINAL_PLIST=0
+  TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=0
+  if [[ -f "${PLIST_PATH}" ]]; then
+    PREVIOUS_PLIST_PATH="$(
+      mktemp "${LAUNCH_AGENTS_DIR}/.${LABEL}.previous.XXXXXX"
+    )"
+    cp -p "${PLIST_PATH}" "${PREVIOUS_PLIST_PATH}"
+    TRANSACTION_ORIGINAL_PLIST=1
+  fi
+  TRANSACTION_ACTIVE=1
+}
+
+restore_previous_plist_snapshot() {
+  if [[ "${TRANSACTION_ORIGINAL_PLIST}" -eq 1 ]]; then
+    ROLLBACK_PLIST_PATH="$(
+      mktemp "${LAUNCH_AGENTS_DIR}/.${LABEL}.rollback.XXXXXX"
+    )"
+    if ! cp -p "${PREVIOUS_PLIST_PATH}" "${ROLLBACK_PLIST_PATH}"; then
+      return 1
+    fi
+    if ! mv "${ROLLBACK_PLIST_PATH}" "${PLIST_PATH}"; then
+      return 1
+    fi
+    ROLLBACK_PLIST_PATH=""
+  else
+    rm -f "${PLIST_PATH}"
+  fi
+}
+
+rollback_install_transaction() {
+  local current_loaded=0
+
+  if run_launchctl_interrupt_safe print "${SERVICE_TARGET}" \
+    >/dev/null 2>&1; then
+    current_loaded=1
+  fi
+  if [[ "${current_loaded}" -eq 1 &&
+    ("${TRANSACTION_NEW_SERVICE_MAY_BE_LOADED}" -eq 1 ||
+    "${TRANSACTION_ORIGINAL_LOADED}" -eq 0) ]]; then
+    if ! run_launchctl_interrupt_safe bootout "${SERVICE_TARGET}"; then
+      return 1
+    fi
+    current_loaded=0
+  fi
+  if ! restore_previous_plist_snapshot; then
+    return 1
+  fi
+  if [[ "${TRANSACTION_ORIGINAL_LOADED}" -eq 1 &&
+    "${current_loaded}" -eq 0 ]]; then
+    if [[ "${TRANSACTION_ORIGINAL_PLIST}" -ne 1 ]]; then
+      TRANSACTION_ACTIVE=0
+      rm -f "${PREVIOUS_PLIST_PATH:-}"
+      PREVIOUS_PLIST_PATH=""
+      return 2
+    fi
+    if ! run_launchctl_interrupt_safe \
+      bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"; then
+      return 1
+    fi
+  fi
+
+  TRANSACTION_ACTIVE=0
+  rm -f "${PREVIOUS_PLIST_PATH:-}"
+  PREVIOUS_PLIST_PATH=""
+  TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=0
+  return 0
+}
+
+commit_install_transaction() {
+  TRANSACTION_ACTIVE=0
+  rm -f "${PREVIOUS_PLIST_PATH:-}"
+  PREVIOUS_PLIST_PATH=""
+  TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=0
+}
+
+rollback_and_exit_for_interrupt() {
+  local rollback_status=0
+
+  if rollback_install_transaction; then
+    rollback_status=0
+  else
+    rollback_status=$?
+  fi
+  if [[ "${rollback_status}" -eq 0 ]]; then
+    printf 'error: interrupted by SIG%s; restored previous configuration and service state\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+  elif [[ "${rollback_status}" -eq 2 ]]; then
+    printf 'error: interrupted by SIG%s; no previous plist was available, so the prior loaded service could not be restored\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+  else
+    printf 'error: interrupted by SIG%s; rollback did not complete\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+  fi
+  exit "${PENDING_INTERRUPT_STATUS}"
+}
+
+rollback_for_command_failure() {
+  local failure_message="$1"
+  local rollback_status=0
+
+  if rollback_install_transaction; then
+    rollback_status=0
+  else
+    rollback_status=$?
+  fi
+  if [[ "${rollback_status}" -eq 0 ]]; then
+    fail "${failure_message}; restored previous configuration and service state"
+  fi
+  if [[ "${rollback_status}" -eq 2 ]]; then
+    fail "${failure_message}; no previous plist was available, so the service remains unloaded"
+  fi
+  fail "${failure_message}; rollback did not complete"
+}
+
+rollback_if_interrupted() {
+  if [[ -n "${PENDING_INTERRUPT_NAME}" ]]; then
+    rollback_and_exit_for_interrupt
+  fi
 }
 
 absolute_existing_dir() {
@@ -355,9 +537,10 @@ PLIST_CANDIDATE="$(mktemp "${LAUNCH_AGENTS_DIR}/.${LABEL}.candidate.XXXXXX")"
 render_plist "${PLIST_CANDIDATE}"
 
 SERVICE_LOADED=0
-if launchctl print "${SERVICE_TARGET}" >/dev/null 2>&1; then
+if run_launchctl_interrupt_safe print "${SERVICE_TARGET}" >/dev/null 2>&1; then
   SERVICE_LOADED=1
 fi
+exit_if_interrupted_without_transaction
 if [[ ! -f "${PLIST_PATH}" && "${SERVICE_LOADED}" -eq 1 && "${RESTART_CHANGED}" -ne 1 ]]; then
   fail "loaded service has no installed plist; rerun with --restart to replace it explicitly"
 fi
@@ -369,42 +552,47 @@ if [[ -f "${PLIST_PATH}" ]] && cmp -s "${PLIST_PATH}" "${PLIST_CANDIDATE}"; then
     printf 'Already installed with identical configuration; no changes made: %s\n' \
       "${LABEL}"
   else
-    launchctl bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"
+    begin_install_transaction "${SERVICE_LOADED}"
+    rollback_if_interrupted
+    TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=1
+    if ! run_launchctl_interrupt_safe \
+      bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"; then
+      rollback_if_interrupted
+      rollback_for_command_failure \
+        "identical LaunchAgent configuration failed to start"
+    fi
+    rollback_if_interrupted
+    commit_install_transaction
     printf 'LaunchAgent configuration is identical; started unloaded service: %s\n' \
       "${LABEL}"
   fi
 elif [[ -f "${PLIST_PATH}" && "${RESTART_CHANGED}" -ne 1 ]]; then
   fail "LaunchAgent configuration changed; rerun with --restart after checking active sync status"
 else
-  WAS_LOADED=0
-  if [[ -f "${PLIST_PATH}" ]]; then
-    PREVIOUS_PLIST_PATH="$(mktemp "${LAUNCH_AGENTS_DIR}/.${LABEL}.previous.XXXXXX")"
-    cp -p "${PLIST_PATH}" "${PREVIOUS_PLIST_PATH}"
-  fi
+  begin_install_transaction "${SERVICE_LOADED}"
+  rollback_if_interrupted
   if [[ "${SERVICE_LOADED}" -eq 1 ]]; then
-    WAS_LOADED=1
-    launchctl bootout "${SERVICE_TARGET}"
-  fi
-  mv "${PLIST_CANDIDATE}" "${PLIST_PATH}"
-  if ! launchctl bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"; then
-    if [[ -n "${PREVIOUS_PLIST_PATH}" ]]; then
-      mv "${PREVIOUS_PLIST_PATH}" "${PLIST_PATH}"
-      PREVIOUS_PLIST_PATH=""
-      if [[ "${WAS_LOADED}" -eq 1 ]]; then
-        if ! launchctl bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"; then
-          fail "new configuration failed to start and previous configuration was restored, but its service could not be restarted"
-        fi
-      fi
-      fail "new configuration failed to start; restored previous configuration and service state"
+    if ! run_launchctl_interrupt_safe bootout "${SERVICE_TARGET}"; then
+      rollback_if_interrupted
+      rollback_for_command_failure \
+        "could not stop the previous LaunchAgent service"
     fi
-    rm -f "${PLIST_PATH}"
-    if [[ "${WAS_LOADED}" -eq 1 ]]; then
-      fail "new configuration failed to start; no previous plist was available, so the service remains unloaded"
-    fi
-    fail "new configuration failed to start; removed the unstarted plist"
   fi
-  rm -f "${PREVIOUS_PLIST_PATH:-}"
-  PREVIOUS_PLIST_PATH=""
+  rollback_if_interrupted
+  if ! mv "${PLIST_CANDIDATE}" "${PLIST_PATH}"; then
+    rollback_for_command_failure \
+      "could not install the new LaunchAgent configuration"
+  fi
+  PLIST_CANDIDATE=""
+  rollback_if_interrupted
+  TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=1
+  if ! run_launchctl_interrupt_safe \
+    bootstrap "${DOMAIN_TARGET}" "${PLIST_PATH}"; then
+    rollback_if_interrupted
+    rollback_for_command_failure "new configuration failed to start"
+  fi
+  rollback_if_interrupted
+  commit_install_transaction
   printf 'Installed and started %s\n' "${LABEL}"
 fi
 

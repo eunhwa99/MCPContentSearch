@@ -152,10 +152,11 @@ def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path)
         r"\\?\C:\Users\tester\private vault\meeting notes.md",
     )
     raw = (
-        "Cookie: session=alpha, theme=private, preference=hidden, "
+        "Cookie: session=alpha, theme=private, preference=hidden\n"
         "job_id=job-123\n"
         "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
-        "\tfolded_cookie=delta, source_id=source_notion; retry_count=2\n"
+        "\tfolded_cookie=delta\n"
+        "source_id=source_notion; retry_count=2\n"
         rf"failed reading {raw_values[6]}, mirror={raw_values[7]}"
     )
 
@@ -181,6 +182,42 @@ def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path)
         assert "source_id=source_notion" in value
         assert "retry_count=2" in value
         assert "<redacted>" in value
+
+
+def test_metadata_store_fails_closed_for_cookie_names_that_match_diagnostic_fields(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Cookie: source_id=cookie-source-secret; job_id=cookie-job-secret; "
+        "phase=cookie-phase-secret\n"
+        "ordinary diagnostic, source_id=source_notion; job_id=job-123; "
+        "phase=fetching_page_content"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "cookie-source-secret" not in value
+        assert "cookie-job-secret" not in value
+        assert "cookie-phase-secret" not in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "phase=fetching_page_content" in value
 
 
 def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):

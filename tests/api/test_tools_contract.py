@@ -1791,14 +1791,14 @@ def test_status_payloads_redact_semicolon_cookie_headers_and_unc_paths(tmp_path)
         r"\\?\C:\Users\tester\private vault\meeting notes.md",
     )
     source_error = (
-        "Cookie: session=alpha, theme=private, preference=hidden, "
-        "job_id=job-123\n"
-        rf"failed reading {raw_values[6]}, source_id=source_github"
+        "Cookie: session=alpha, theme=private, preference=hidden\n"
+        rf"job_id=job-123; failed reading {raw_values[6]}, source_id=source_github"
     )
     job_error = (
         "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
-        "\tfolded_cookie=delta, job_id=job-123; retry_count=2\n"
-        rf"failed reading {raw_values[7]}, source_id=source_github"
+        "\tfolded_cookie=delta\n"
+        rf"job_id=job-123; retry_count=2; failed reading {raw_values[7]}, "
+        "source_id=source_github"
     )
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -1843,6 +1843,54 @@ def test_status_payloads_redact_semicolon_cookie_headers_and_unc_paths(tmp_path)
     assert "source_id=source_github" in payload
     assert "retry_count=2" in payload
     assert "<redacted>" in payload
+
+
+def test_status_payloads_fail_closed_for_cookie_names_that_match_diagnostic_fields(
+    tmp_path,
+):
+    cookie_error = (
+        "Set-Cookie: source_id=cookie-source-secret; job_id=cookie-job-secret; "
+        "phase=cookie-phase-secret\n"
+        "ordinary diagnostic, source_id=source_github; job_id=job-123; "
+        "phase=fetching_page_content"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (cookie_error, "source_github"),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    payload = _payload_text(sources)
+
+    for secret in (
+        "cookie-source-secret",
+        "cookie-job-secret",
+        "cookie-phase-secret",
+    ):
+        assert secret not in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "phase=fetching_page_content" in payload
 
 
 def test_get_sync_status_keeps_direct_storage_failure_sanitized_at_rest(tmp_path):

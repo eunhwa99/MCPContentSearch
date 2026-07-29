@@ -137,9 +137,11 @@ class SensitiveFailingConnector(RecordingConnector):
         raise RuntimeError(
             f"provider failure path:{self.sensitive_unix_path}, job_id=provider-job; "
             f"file:{self.sensitive_windows_path}; source_id={self.source.source_id} "
+            "retry_count=1 "
             f"token={self.sensitive_token}\n"
-            f"Cookie: {self.sensitive_cookie}, unknown_cookie=top-secret,\n"
-            "\tfolded_cookie=delta, retry_count=1\n"
+            f"Cookie: {self.sensitive_cookie}, unknown_cookie=top-secret, "
+            "source_id=cookie-source-secret, job_id=cookie-job-secret,\n"
+            "\tfolded_cookie=delta, phase=cookie-phase-secret\n"
             f"failed reading {self.sensitive_unc_path}, "
             f"mirror={self.sensitive_extended_path}"
         )
@@ -438,6 +440,9 @@ def test_mcp_enqueued_job_failure_does_not_persist_delimiter_paths_in_worker_log
             assert "theme=private" not in value
             assert "unknown_cookie=top-secret" not in value
             assert "folded_cookie=delta" not in value
+            assert "cookie-source-secret" not in value
+            assert "cookie-job-secret" not in value
+            assert "cookie-phase-secret" not in value
             assert "ntn_" not in value
             assert "secret_" not in value
             assert "job_id=provider-job" in value
@@ -455,6 +460,9 @@ def test_mcp_enqueued_job_failure_does_not_persist_delimiter_paths_in_worker_log
         assert "theme=private" not in combined_log
         assert "unknown_cookie=top-secret" not in combined_log
         assert "folded_cookie=delta" not in combined_log
+        assert "cookie-source-secret" not in combined_log
+        assert "cookie-job-secret" not in combined_log
+        assert "cookie-phase-secret" not in combined_log
         assert "ntn_" not in combined_log
         assert "secret_" not in combined_log
         assert "job_id=provider-job" in combined_log

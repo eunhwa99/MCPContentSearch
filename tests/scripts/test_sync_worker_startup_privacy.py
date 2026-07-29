@@ -47,7 +47,7 @@ def test_launch_agent_runner_sanitizes_startup_stderr_before_persisting(
                 "    'worker bootstrap failed, job_id=job-123\\n'",
                 "    'Authorization: Bearer startup-first startup-secret, '",
                 "    'source_id=source_notion\\n'",
-                "    'Cookie: session=alpha; theme=private; preference=hidden, '",
+                "    'Cookie: session=alpha; theme=private; preference=hidden\\n'",
                 "    'retry_count=1\\n'",
                 "    'token=raw-startup-token-value, '",
                 r"    'path=\\\\server\\private share\\meeting notes.md\\n'",
@@ -93,6 +93,61 @@ def test_launch_agent_runner_sanitizes_startup_stderr_before_persisting(
         "meeting notes.md",
     ):
         assert raw_value not in diagnostic
+
+
+def test_launch_agent_runner_redacts_oversized_cookie_header_and_folded_continuation(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write(",
+                "    'Cookie: source_id=cookie-source-secret; padding='",
+                "    + ('x' * 70000)",
+                "    + '\\n'",
+                ")",
+                "sys.stderr.write(",
+                "    '\\tjob_id=folded-cookie-secret; '",
+                "    'phase=folded-phase-secret\\n'",
+                ")",
+                "sys.stderr.write(",
+                "    'ordinary diagnostic, source_id=source_notion; '",
+                "    'job_id=job-123\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "cookie-source-secret" not in diagnostic
+    assert "folded-cookie-secret" not in diagnostic
+    assert "folded-phase-secret" not in diagnostic
+    assert "<redacted oversized diagnostic>" in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
 
 
 def test_launch_agent_runner_uses_uv_managed_sanitizer_without_path_python(

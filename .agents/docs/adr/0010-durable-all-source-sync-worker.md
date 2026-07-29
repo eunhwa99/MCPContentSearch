@@ -99,7 +99,10 @@ version. A valid queued job remains queued when no worker is available.
   installer restores the previous plist and loaded state. Replacement bootout
   uses the stable service target. A loaded service whose plist is missing also
   requires explicit `--restart`; without a prior plist, bootstrap failure
-  cannot restore the earlier service and leaves it unloaded.
+  cannot restore the earlier service and leaves it unloaded. Catchable
+  TERM/INT during a changed-config transaction is deferred until the tracked
+  child finishes and commit or rollback restores the prior snapshot/state.
+  The guarantee does not include SIGKILL without a durable transaction journal.
 - Install, restart, and uninstall serialize under one per-label operation lock
   from live-state inspection through commit or rollback. Dead owners are
   recoverable using PID and process-start evidence. During a `launchctl`

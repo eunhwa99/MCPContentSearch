@@ -26,6 +26,29 @@ OPERATION_LOCK_HELPER = (
     REPO_ROOT / "scripts" / "sync_worker_launch_agent_lock.sh"
 )
 LABEL = "com.eunaverse.contextwiki.sync-worker"
+SENSITIVE_TEST_ENV_KEY_FRAGMENTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def _safe_test_env(**overrides: str) -> dict[str, str]:
+    def is_sensitive_key(key: str) -> bool:
+        return any(
+            fragment in key.upper()
+            for fragment in SENSITIVE_TEST_ENV_KEY_FRAGMENTS
+        )
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not is_sensitive_key(key)
+    }
+    env.update(
+        {
+            key: value
+            for key, value in overrides.items()
+            if not is_sensitive_key(key)
+        }
+    )
+    return env
 
 
 def _fake_executable(path: Path) -> Path:
@@ -123,6 +146,58 @@ def _blocking_fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path
     return call_log, loaded_state
 
 
+def _transaction_fake_launchctl(
+    fake_bin: Path,
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    call_log = tmp_path / "transaction-launchctl-calls"
+    loaded_state = tmp_path / "transaction-launchctl-loaded"
+    fail_next_bootstrap = tmp_path / "transaction-fail-next-bootstrap"
+    launchctl = fake_bin / "launchctl"
+    launchctl.write_text(
+        "\n".join(
+            (
+                "#!/usr/bin/env sh",
+                'operation="${CONTEXTWIKI_TEST_OPERATION_ID:-unknown}"',
+                (
+                    f"printf '%s:%s\\n' \"$operation\" \"$*\" >> "
+                    f"{shlex.quote(str(call_log))}"
+                ),
+                'if test "${CONTEXTWIKI_TEST_BLOCK_COMMAND:-}" = "$1"; then',
+                '  touch "${CONTEXTWIKI_TEST_BLOCK_ENTERED}"',
+                (
+                    '  while test ! -f "${CONTEXTWIKI_TEST_BLOCK_RELEASE}"; do '
+                    "sleep 0.01; done"
+                ),
+                "fi",
+                'case "$1" in',
+                f"  print) test -f {shlex.quote(str(loaded_state))} ;;",
+                (
+                    "  bootstrap) "
+                    f"if test -f {shlex.quote(str(fail_next_bootstrap))}; then "
+                    f"rm -f {shlex.quote(str(fail_next_bootstrap))}; "
+                    "exit 42; "
+                    "fi; "
+                    f"touch {shlex.quote(str(loaded_state))} ;;"
+                ),
+                (
+                    "  bootout) "
+                    f"rm -f {shlex.quote(str(loaded_state))} ;;"
+                ),
+                "  *) exit 2 ;;",
+                "esac",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    launchctl.chmod(0o755)
+    uname = fake_bin / "uname"
+    uname.write_text("#!/usr/bin/env sh\nprintf 'Darwin\\n'\n", encoding="utf-8")
+    uname.chmod(0o755)
+    return call_log, loaded_state, fail_next_bootstrap
+
+
 def _wait_for_path(path: Path, *, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -151,6 +226,55 @@ def _install_command(
     ]
 
 
+def _prepare_changed_install_transaction(
+    tmp_path: Path,
+) -> tuple[
+    list[str],
+    list[str],
+    dict[str, str],
+    Path,
+    Path,
+    Path,
+    Path,
+]:
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state, fail_next_bootstrap = _transaction_fake_launchctl(
+        fake_bin,
+        tmp_path,
+    )
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    lock_root = tmp_path / "locks"
+    common_env = _safe_test_env(
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+        CONTEXTWIKI_TEST_OPERATION_ID="setup",
+    )
+    first_command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs-one",
+        launch_agents_dir=launch_agents_dir,
+    )
+    subprocess.run(first_command, check=True, env=common_env)
+    changed_command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs-two",
+        launch_agents_dir=launch_agents_dir,
+    )
+    changed_command.append("--restart")
+    return (
+        first_command,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        fail_next_bootstrap,
+        launch_agents_dir / f"{LABEL}.plist",
+    )
+
+
 def _fake_stat(
     fake_bin: Path,
     *,
@@ -175,6 +299,32 @@ def _fake_stat(
     )
     fake_stat.chmod(0o755)
     return fake_stat
+
+
+def test_safe_test_env_excludes_secret_shaped_parent_keys():
+    safe_env = _safe_test_env(
+        CONTEXTWIKI_TEST_MARKER="retained",
+        CONTEXTWIKI_TEST_SECRET="excluded",
+    )
+
+    assert safe_env["CONTEXTWIKI_TEST_MARKER"] == "retained"
+    assert "CONTEXTWIKI_TEST_SECRET" not in safe_env
+    assert all(
+        not any(
+            fragment in key.upper()
+            for fragment in SENSITIVE_TEST_ENV_KEY_FRAGMENTS
+        )
+        for key in safe_env
+    )
+
+
+def test_installer_limits_transaction_guarantee_to_catchable_interrupts():
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "SIGTERM" in installer
+    assert "SIGINT" in installer
+    assert "SIGKILL" in installer
+    assert "durable journal" in installer
 
 
 def test_mutating_launch_agent_helpers_share_packaged_operation_lock():
@@ -1791,6 +1941,205 @@ def test_changed_install_restores_previous_plist_and_service_on_bootstrap_failur
     calls = call_log.read_text(encoding="utf-8").splitlines()
     assert sum(line.startswith("bootout ") for line in calls) == 1
     assert sum(line.startswith("bootstrap ") for line in calls) == 3
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "expected_status"),
+    ((signal.SIGTERM, 128 + signal.SIGTERM), (signal.SIGINT, 128 + signal.SIGINT)),
+)
+def test_changed_install_rolls_back_after_interrupt_during_replacement_bootstrap(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+    expected_status: int,
+):
+    (
+        _,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        _,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    entered = tmp_path / "replacement-bootstrap-entered"
+    release = tmp_path / "replacement-bootstrap-release"
+    env = {
+        **common_env,
+        "CONTEXTWIKI_TEST_OPERATION_ID": "interrupted",
+        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
+        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+    }
+    process = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    try:
+        _wait_for_path(entered)
+        assert not loaded_state.exists()
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert "interrupted" in stderr.lower()
+    assert "restored previous configuration and service state" in stderr.lower()
+    assert plist_path.read_bytes() == previous_plist
+    assert loaded_state.exists()
+    assert not list(plist_path.parent.glob(f".{LABEL}.previous.*"))
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:3] == [
+        f"interrupted:print gui/{os.getuid()}/{LABEL}",
+        f"interrupted:bootout gui/{os.getuid()}/{LABEL}",
+        f"interrupted:bootstrap gui/{os.getuid()} {plist_path}",
+    ]
+    assert sum(":bootout " in line for line in calls) == 2
+    assert sum(":bootstrap " in line for line in calls) == 2
+
+
+def test_changed_install_waits_for_failing_bootstrap_then_rolls_back_interrupt(
+    tmp_path: Path,
+):
+    (
+        _,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        fail_next_bootstrap,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    fail_next_bootstrap.touch()
+    entered = tmp_path / "failing-bootstrap-entered"
+    release = tmp_path / "failing-bootstrap-release"
+    env = {
+        **common_env,
+        "CONTEXTWIKI_TEST_OPERATION_ID": "failing",
+        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
+        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+    }
+    process = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    try:
+        _wait_for_path(entered)
+        process.send_signal(signal.SIGTERM)
+        time.sleep(0.2)
+        assert process.poll() is None
+        release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 128 + signal.SIGTERM, (stdout, stderr)
+    assert "interrupted" in stderr.lower()
+    assert "restored previous configuration and service state" in stderr.lower()
+    assert plist_path.read_bytes() == previous_plist
+    assert loaded_state.exists()
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert sum(":bootout " in line for line in calls) == 1
+    assert sum(":bootstrap " in line for line in calls) == 2
+
+
+def test_interrupted_install_holds_lock_through_child_completion_and_rollback(
+    tmp_path: Path,
+):
+    (
+        first_command,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        _,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    entered = tmp_path / "serialized-bootstrap-entered"
+    release = tmp_path / "serialized-bootstrap-release"
+    first = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "CONTEXTWIKI_TEST_OPERATION_ID": "first",
+            "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
+            "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
+            "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        },
+    )
+    second: subprocess.Popen[str] | None = None
+
+    try:
+        _wait_for_path(entered)
+        first.send_signal(signal.SIGTERM)
+        second = subprocess.Popen(
+            first_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={
+                **common_env,
+                "CONTEXTWIKI_TEST_OPERATION_ID": "second",
+            },
+        )
+        time.sleep(0.3)
+        assert first.poll() is None
+        assert second.poll() is None
+        assert all(
+            line.startswith("first:")
+            for line in call_log.read_text(encoding="utf-8").splitlines()
+        )
+        release.touch()
+        first_stdout, first_stderr = first.communicate(timeout=8)
+        second_stdout, second_stderr = second.communicate(timeout=8)
+    finally:
+        release.touch()
+        for process in (first, second):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    assert first.returncode == 128 + signal.SIGTERM, (
+        first_stdout,
+        first_stderr,
+    )
+    assert second is not None
+    assert second.returncode == 0, (second_stdout, second_stderr)
+    assert plist_path.read_bytes() == previous_plist
+    assert loaded_state.exists()
+    operations = [
+        line.split(":", 1)[0]
+        for line in call_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert "second" in operations
+    assert operations == sorted(operations, key=lambda item: item == "second")
 
 
 def test_launch_agent_runner_preserves_and_bounds_startup_stderr(tmp_path: Path):

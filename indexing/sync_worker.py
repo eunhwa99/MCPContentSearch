@@ -45,7 +45,7 @@ PROJECT_LOGGER_PREFIXES = (
 PATH_FIELD_BOUNDARY = r"(?=(?:[,;]\s*|\s+)[A-Za-z_][A-Za-z0-9_.-]*\s*=|[\"'<>\n]|$)"
 SANITIZED_PATH_TAIL_RE = re.compile(
     r"(?P<marker><redacted(?:-path)?>)"
-    r"(?P<tail>\s+(?:(?!(?:[,;]\s*|\s+)"
+    r"(?P<tail>[ \t]+(?:(?!(?:[,;]\s*|\s+)"
     r"[A-Za-z_][A-Za-z0-9_.-]*\s*=|[\"'<>\n]).)+)" + PATH_FIELD_BOUNDARY
 )
 PATH_TAIL_EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]{1,16}\s*$")

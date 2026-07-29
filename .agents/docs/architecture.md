@@ -88,6 +88,12 @@ previous plist and its prior loaded state. A loaded service with a missing
 plist requires explicit `--restart` before replacement bootout. Since no prior
 plist is available in that state, replacement bootstrap failure leaves the
 service unloaded and cannot restore its earlier configuration automatically.
+During a changed-config transaction, catchable `SIGTERM`/`SIGINT` is latched
+until the tracked `launchctl` child finishes and commit or rollback completes.
+The previous snapshot is retained until that outcome is known, and incomplete
+rollback preserves the snapshot for diagnosis. `SIGKILL` cannot run shell
+cleanup and is outside this guarantee without a separate durable transaction
+journal.
 Install, restart, and uninstall share one exclusive per-label operation lock.
 The lock spans the first live-service/plist state read through the final
 mutation, commit, or rollback, so concurrently invoked helpers cannot apply a
@@ -125,9 +131,11 @@ Bearer/Basic, Cookie, and API-key values cannot leave trailing fragments.
 The same shared sanitizer runs before error text is persisted in SQLite and
 again at the MCP response boundary, so job/source status cannot expose token,
 provider URL, or local-path details that the worker log would redact. Cookie
-and Set-Cookie values, including coalesced or folded continuations, are removed
-through an explicit allowlist of structured diagnostic-field boundaries, and
-unlabelled Windows UNC and extended paths are treated as local paths.
+and Set-Cookie values remain fail-closed through their complete header and
+folded-continuation boundary, including oversized lines and cookie names that
+look like diagnostic fields. Diagnostic fields are retained only after an
+unambiguous non-folded line boundary. Unlabelled Windows UNC and extended paths
+are treated as local paths.
 
 The current architecture does not include a production Web Console, Auto Wiki
 generation, generic website/docs crawling, dynamic web fallback, or legacy

@@ -116,9 +116,9 @@ def test_worker_log_redactor_removes_semicolon_cookie_headers_and_unc_paths():
     )
 
     redacted = _redact_worker_log_message(
-        "Cookie: session=alpha; theme=private; preference=hidden, "
+        "Cookie: session=alpha; theme=private; preference=hidden\n"
         "job_id=job-123\n"
-        "Set-Cookie: sid=bravo; Path=/private; HttpOnly, "
+        "Set-Cookie: sid=bravo; Path=/private; HttpOnly\n"
         "source_id=source_notion\n"
         rf"failed reading {raw_values[5]}, mirror={raw_values[6]}"
     )
