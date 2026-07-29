@@ -117,8 +117,23 @@ class FakeMetadataStore:
         job = Dumpable(job_payload, **job_payload)
         self.jobs[source_id] = job
         self.jobs_by_id[job.job_id] = job
+        status = job_payload["status"]
+        source_status = SyncStatus.RUNNING if status == "queued" else SyncStatus(status)
+        self.sources[source_id] = self.sources[source_id].model_copy(
+            update={
+                "sync_status": source_status,
+                "last_synced_at": (
+                    job_payload.get("finished_at", "")
+                    if status == SyncStatus.SUCCEEDED.value
+                    else self.sources[source_id].last_synced_at
+                ),
+            }
+        )
 
     def register_source(self, source):
+        existing = self.sources.get(source.source_id)
+        if existing is not None:
+            return existing
         self.sources[source.source_id] = source
         return source
 
@@ -172,10 +187,10 @@ class FakeIngestionService:
         self.calls: dict[str, int] = {}
         self.job_numbers: dict[str, int] = {}
 
-    async def start_sync_source(self, source_id):
+    async def enqueue_sync_source(self, source_id):
         self.calls[source_id] = self.calls.get(source_id, 0) + 1
         existing_job = self.metadata_store.get_latest_sync_job(source_id)
-        if existing_job and getattr(existing_job, "status", "") == "running":
+        if existing_job and getattr(existing_job, "status", "") in {"queued", "running"}:
             return existing_job
 
         next_job_number = self.job_numbers.get(source_id, 0) + 1
@@ -183,7 +198,7 @@ class FakeIngestionService:
         job_payload = {
             "job_id": f"job-{source_id}-{next_job_number}",
             "source_id": source_id,
-            "status": "running",
+            "status": "queued",
             "started_at": "2026-06-15T00:00:00+00:00",
             "finished_at": "",
             "error_message": "",
@@ -191,13 +206,13 @@ class FakeIngestionService:
         self.metadata_store.set_job(source_id, job_payload)
         return Dumpable(job_payload, **job_payload)
 
-    async def sync_all(self):
+    async def enqueue_all(self):
         results = []
         for source_id in ("source_github", "source_obsidian"):
             job_payload = {
                 "job_id": f"job-{source_id}",
                 "source_id": source_id,
-                "status": "running",
+                "status": "queued",
                 "started_at": "2026-06-15T00:00:00+00:00",
                 "finished_at": "",
                 "error_message": "",
@@ -922,11 +937,11 @@ def test_sync_source_contract_uses_real_fastmcp_call_tool():
         {"source_id": "source_github"},
     )
 
-    assert payload["status"] == "running"
+    assert payload["status"] == "queued"
     assert payload["source_id"] == "source_github"
 
 
-def test_sync_source_contract_reuses_running_job_and_polls_to_terminal_status():
+def test_sync_source_contract_reuses_queued_job_and_polls_to_terminal_status():
     harness = build_contract_harness()
     mcp = harness["mcp"]
     metadata_store = harness["metadata_store"]
@@ -935,10 +950,19 @@ def test_sync_source_contract_reuses_running_job_and_polls_to_terminal_status():
     first_payload = call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
     second_payload = call_tool_json(mcp, "sync_source", {"source_id": "source_github"})
 
-    assert first_payload["status"] == "running"
-    assert second_payload["status"] == "running"
+    assert first_payload["status"] == "queued"
+    assert second_payload["status"] == "queued"
     assert second_payload["job_id"] == first_payload["job_id"]
     assert ingestion_service.calls["source_github"] == 2
+
+    queued_status = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"source_id": "source_github"},
+    )
+    assert queued_status["source"]["sync_status"] == "running"
+    assert queued_status["latest_job"]["job_id"] == first_payload["job_id"]
+    assert queued_status["latest_job"]["status"] == "queued"
 
     metadata_store.set_job(
         "source_github",
@@ -957,7 +981,39 @@ def test_sync_source_contract_reuses_running_job_and_polls_to_terminal_status():
     assert status_payload["latest_job"]["status"] == "succeeded"
 
 
-def test_sync_source_contract_returns_error_without_background_launcher():
+def test_sync_source_contract_reuses_worker_owned_running_job():
+    harness = build_contract_harness()
+    mcp = harness["mcp"]
+    metadata_store = harness["metadata_store"]
+
+    queued_payload = call_tool_json(
+        mcp,
+        "sync_source",
+        {"source_id": "source_github"},
+    )
+    metadata_store.set_job(
+        "source_github",
+        {
+            "job_id": queued_payload["job_id"],
+            "source_id": "source_github",
+            "status": "running",
+            "started_at": "2026-06-15T00:00:00+00:00",
+            "finished_at": "",
+            "error_message": "",
+        },
+    )
+
+    running_payload = call_tool_json(
+        mcp,
+        "sync_source",
+        {"source_id": "source_github"},
+    )
+
+    assert running_payload["status"] == "running"
+    assert running_payload["job_id"] == queued_payload["job_id"]
+
+
+def test_sync_source_contract_returns_error_without_durable_enqueue():
     source_registry = FakeSourceRegistry()
     metadata_store = FakeMetadataStore(source_registry)
     mcp = FastMCP("public-contract-test-no-launcher")
@@ -974,7 +1030,7 @@ def test_sync_source_contract_returns_error_without_background_launcher():
 
     assert payload == {
         "status": "error",
-        "message": "ingestion service does not support background sync launch",
+        "message": "ingestion service does not support durable sync enqueue",
     }
 
 
@@ -993,6 +1049,7 @@ def test_sync_all_contract_shows_all_running_then_polls_exact_jobs_to_terminal()
         "source_github",
         "source_obsidian",
     ]
+    assert {item["job"]["status"] for item in launched["results"]} == {"queued"}
     exact_targets = {
         item["source_id"]: item["job"]["job_id"]
         for item in launched["results"]
@@ -1006,8 +1063,8 @@ def test_sync_all_contract_shows_all_running_then_polls_exact_jobs_to_terminal()
         source_id: job["status"]
         for source_id, job in running_jobs.items()
     } == {
-        "source_github": "running",
-        "source_obsidian": "running",
+        "source_github": "queued",
+        "source_obsidian": "queued",
     }
 
     for source_id, job in running_jobs.items():

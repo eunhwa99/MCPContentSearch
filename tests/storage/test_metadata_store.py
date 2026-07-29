@@ -1,10 +1,11 @@
 import gc
+import os
 import sqlite3
 import warnings
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from threading import Barrier
+from threading import Barrier, BrokenBarrierError, Event
 
 import pytest
 from pydantic import ValidationError
@@ -18,7 +19,7 @@ from core.models import (
     SyncJobStatus,
     SyncStatus,
 )
-from storage.metadata_store import MetadataStore
+from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
 
 pytestmark = pytest.mark.integration
@@ -111,6 +112,296 @@ def _raw_source_and_job_status(store: MetadataStore, source_id: str, job_id: str
             (job_id,),
         ).fetchone()
     return source_row["sync_status"], job_row["status"]
+
+
+def _assert_sanitized_lifecycle_text(
+    value: str,
+    *,
+    structured_fields: tuple[str, ...] = (),
+) -> None:
+    assert "ntn_" not in value
+    assert "secret_" not in value
+    assert "/Users/tester/private" not in value
+    assert r"C:\Users\tester\private" not in value
+    assert "meeting notes.md" not in value
+    assert "<redacted>" in value
+    for field in structured_fields:
+        assert field in value
+
+
+def _sensitive_lifecycle_text(source_id: str) -> str:
+    return (
+        "provider failed "
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789 "
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789 "
+        "path:/Users/tester/private vault/meeting notes.md, job_id=job-123; "
+        rf"file:C:\Users\tester\private vault\meeting notes.md; source_id={source_id}"
+    )
+
+
+def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw_values = (
+        "session=alpha",
+        "theme=private",
+        "preference=hidden",
+        "sid=bravo",
+        "unknown_attribute=top-secret",
+        "folded_cookie=delta",
+        r"\\server\private share\meeting notes.md",
+        r"\\?\C:\Users\tester\private vault\meeting notes.md",
+    )
+    raw = (
+        "Cookie: session=alpha, theme=private, preference=hidden, "
+        "job_id=job-123\n"
+        "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
+        "\tfolded_cookie=delta, source_id=source_notion; retry_count=2\n"
+        rf"failed reading {raw_values[6]}, mirror={raw_values[7]}"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert all(raw_value not in value for raw_value in raw_values)
+        assert "job_id=job-123" in value
+        assert "source_id=source_notion" in value
+        assert "retry_count=2" in value
+        assert "<redacted>" in value
+
+
+def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw_upsert = _sensitive_lifecycle_text("source_notion")
+    raw_register = _sensitive_lifecycle_text("source_obsidian")
+
+    upserted = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw_upsert,
+            stale_cleanup_disabled_reason=raw_upsert,
+        )
+    )
+    registered = store.register_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw_register,
+            stale_cleanup_disabled_reason=raw_register,
+        )
+    )
+
+    _assert_sanitized_lifecycle_text(
+        upserted.last_error,
+        structured_fields=("job_id=job-123", "source_id=source_notion"),
+    )
+    _assert_sanitized_lifecycle_text(
+        registered.last_error,
+        structured_fields=("job_id=job-123", "source_id=source_obsidian"),
+    )
+    _assert_sanitized_lifecycle_text(upserted.stale_cleanup_disabled_reason)
+    _assert_sanitized_lifecycle_text(registered.stale_cleanup_disabled_reason)
+
+    with store._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_id, last_error, stale_cleanup_disabled_reason
+            FROM sources
+            ORDER BY source_id
+            """
+        ).fetchall()
+    for row in rows:
+        _assert_sanitized_lifecycle_text(
+            row["last_error"],
+            structured_fields=("job_id=job-123", f"source_id={row['source_id']}"),
+        )
+        _assert_sanitized_lifecycle_text(row["stale_cleanup_disabled_reason"])
+
+
+def test_metadata_store_sanitizes_direct_job_status_failure_and_cleanup_writes(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    source_id = "source_notion"
+    raw = _sensitive_lifecycle_text(source_id)
+    store.upsert_source(
+        SourceModel(
+            source_id=source_id,
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+
+    queued = store.create_sync_job(source_id)
+    updated = store.update_sync_job(
+        queued.job_id,
+        status_message=raw,
+        error_message=raw,
+    )
+    _assert_sanitized_lifecycle_text(
+        updated.status_message,
+        structured_fields=("job_id=job-123", f"source_id={source_id}"),
+    )
+    _assert_sanitized_lifecycle_text(updated.error_message)
+
+    failed = store.complete_failed_sync(
+        job_id=queued.job_id,
+        source_id=source_id,
+        error_message=raw,
+        stale_cleanup_disabled_reason=raw,
+    )
+    _assert_sanitized_lifecycle_text(
+        failed.error_message,
+        structured_fields=("job_id=job-123", f"source_id={source_id}"),
+    )
+    failed_source = store.get_source(source_id)
+    assert failed_source is not None
+    _assert_sanitized_lifecycle_text(failed_source.last_error)
+    _assert_sanitized_lifecycle_text(failed_source.stale_cleanup_disabled_reason)
+
+    cleanup_job, started = store.begin_sync_job(source_id)
+    assert started is True
+    completed, _ = store.complete_successful_sync(
+        job_id=cleanup_job.job_id,
+        source_id=source_id,
+        total_documents=0,
+        processed_documents=0,
+        indexed_chunks=0,
+        skipped_documents=0,
+        last_seen_at="",
+        cleanup_missing_documents=False,
+        deleted_at="",
+        stale_cleanup_disabled_reason=raw,
+    )
+    assert completed.status == SyncJobStatus.SUCCEEDED
+    completed_source = store.get_source(source_id)
+    assert completed_source is not None
+    _assert_sanitized_lifecycle_text(
+        completed_source.stale_cleanup_disabled_reason,
+        structured_fields=("job_id=job-123", f"source_id={source_id}"),
+    )
+
+    with store._connect() as conn:
+        failed_row = conn.execute(
+            "SELECT status_message, error_message FROM sync_jobs WHERE job_id = ?",
+            (failed.job_id,),
+        ).fetchone()
+        source_row = conn.execute(
+            """
+            SELECT last_error, stale_cleanup_disabled_reason
+            FROM sources WHERE source_id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+    _assert_sanitized_lifecycle_text(failed_row["status_message"])
+    _assert_sanitized_lifecycle_text(failed_row["error_message"])
+    assert source_row["last_error"] == ""
+    _assert_sanitized_lifecycle_text(source_row["stale_cleanup_disabled_reason"])
+
+
+def test_metadata_store_sanitizes_direct_disabled_enqueue_and_recovery_writes(tmp_path):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        unowned_running_job_grace_seconds=0,
+    )
+    raw_disabled = _sensitive_lifecycle_text("source_obsidian")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_obsidian",
+            source_type=SourceType.OBSIDIAN,
+            name="Obsidian",
+            enabled=False,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+
+    disabled, created = store.enqueue_sync_job(
+        "source_obsidian",
+        disabled_error_message=raw_disabled,
+        disabled_stale_cleanup_reason=raw_disabled,
+    )
+
+    assert created is True
+    assert disabled.status == SyncJobStatus.FAILED
+    _assert_sanitized_lifecycle_text(
+        disabled.error_message,
+        structured_fields=("job_id=job-123", "source_id=source_obsidian"),
+    )
+    disabled_source = store.get_source("source_obsidian")
+    assert disabled_source is not None
+    _assert_sanitized_lifecycle_text(disabled_source.last_error)
+    _assert_sanitized_lifecycle_text(disabled_source.stale_cleanup_disabled_reason)
+
+    source_id = "source_notion"
+    raw_recovery = _sensitive_lifecycle_text(source_id)
+    store.upsert_source(
+        SourceModel(
+            source_id=source_id,
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    orphan = store.create_sync_job(source_id)
+    old_started_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    _mark_job_running(
+        store,
+        orphan.job_id,
+        started_at=old_started_at,
+        owner_id="missing-owner",
+    )
+
+    recovered = store.recover_orphaned_running_jobs(
+        started_before=datetime.now(timezone.utc).isoformat(),
+        error_message=raw_recovery,
+        source_ids=(source_id,),
+    )
+
+    assert recovered == 1
+    recovered_job = store.get_sync_job(orphan.job_id)
+    recovered_source = store.get_source(source_id)
+    assert recovered_job is not None
+    assert recovered_source is not None
+    _assert_sanitized_lifecycle_text(
+        recovered_job.error_message,
+        structured_fields=("job_id=job-123", f"source_id={source_id}"),
+    )
+    _assert_sanitized_lifecycle_text(recovered_source.last_error)
+
+    with store._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT status_message, error_message
+            FROM sync_jobs
+            WHERE job_id IN (?, ?)
+            ORDER BY job_id
+            """,
+            (disabled.job_id, orphan.job_id),
+        ).fetchall()
+    for row in rows:
+        _assert_sanitized_lifecycle_text(row["status_message"])
+        _assert_sanitized_lifecycle_text(row["error_message"])
 
 
 def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
@@ -335,6 +626,140 @@ def test_metadata_store_loads_obsidian_source_rows(tmp_path):
     assert store.list_sources() == [persisted]
 
 
+@pytest.mark.parametrize("write_method", ["upsert_source", "register_source"])
+@pytest.mark.parametrize(
+    "unsafe_auth_ref",
+    [
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789",
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789",
+        "env:lowercase_secret",
+        "env:NOTION_API_KEY trailing-secret",
+    ],
+)
+def test_metadata_store_never_persists_noncanonical_auth_refs(
+    tmp_path,
+    write_method,
+    unsafe_auth_ref,
+):
+    store = MetadataStore(tmp_path / f"{write_method}.sqlite3")
+    persisted = getattr(store, write_method)(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref=unsafe_auth_ref,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT auth_ref FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()
+
+    assert persisted.auth_ref == ""
+    assert store.get_source("source_notion").auth_ref == ""
+    assert row["auth_ref"] == ""
+    assert "ntn_" not in row["auth_ref"]
+    assert "secret_" not in row["auth_ref"]
+
+
+@pytest.mark.parametrize("write_method", ["upsert_source", "register_source"])
+def test_metadata_store_preserves_canonical_auth_refs(tmp_path, write_method):
+    store = MetadataStore(tmp_path / f"{write_method}.sqlite3")
+
+    persisted = getattr(store, write_method)(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT auth_ref FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()
+
+    assert persisted.auth_ref == "env:NOTION_API_KEY"
+    assert row["auth_ref"] == "env:NOTION_API_KEY"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "fetching /Users/tester/private vault/notes.md",
+        r"fetching C:\Users\tester\private vault\notes.md",
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789",
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789",
+        "fetching_page_content trailing-data",
+    ],
+)
+def test_metadata_store_never_persists_noncanonical_job_phase(tmp_path, phase):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_notion")
+
+    updated = store.update_sync_job(job.job_id, phase=phase)
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT phase FROM sync_jobs WHERE job_id = ?",
+            (job.job_id,),
+        ).fetchone()
+    assert started is True
+    assert updated.phase == ""
+    assert row["phase"] == ""
+    assert phase not in row["phase"]
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "",
+        "starting",
+        "discovering_pages",
+        "fetching_page_content",
+        "indexing_documents",
+        "completed",
+        "failed",
+    ],
+)
+def test_metadata_store_preserves_canonical_job_phases(tmp_path, phase):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_notion")
+
+    updated = store.update_sync_job(job.job_id, phase=phase)
+
+    assert started is True
+    assert updated.phase == phase
+
+
 def test_legacy_removed_source_rows_are_skipped_without_deleting_data(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     _insert_legacy_web_source_row(store)
@@ -555,22 +980,34 @@ def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):
         local_store = MetadataStore(db_path)
         barrier.wait()
         job, started = local_store.begin_sync_job("source_github")
-        return job.job_id, started
+        return job.job_id, started, local_store.sync_owner_id
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         results = list(executor.map(lambda _: begin_from_new_connection(), range(worker_count)))
 
     started_results = [result for result in results if result[1]]
-    job_ids = {job_id for job_id, _ in results}
+    job_ids = {job_id for job_id, _, _ in results}
     with store._connect() as conn:
-        running_count = conn.execute(
-            "SELECT COUNT(*) AS count FROM sync_jobs WHERE source_id = ? AND status = ?",
+        running_row = conn.execute(
+            """
+            SELECT job_id, owner_id
+            FROM sync_jobs
+            WHERE source_id = ? AND status = ?
+            """,
             ("source_github", SyncJobStatus.RUNNING.value),
-        ).fetchone()["count"]
+        ).fetchone()
+        owner_ids = {
+            row["owner_id"]
+            for row in conn.execute(
+                "SELECT owner_id FROM sync_job_owners"
+            ).fetchall()
+        }
 
     assert len(started_results) == 1
     assert len(job_ids) == 1
-    assert running_count == 1
+    assert running_row["job_id"] in job_ids
+    assert running_row["owner_id"] == started_results[0][2]
+    assert owner_ids == {running_row["owner_id"]}
 
 
 def test_begin_sync_job_uses_running_job_even_when_source_status_is_stale(tmp_path):
@@ -705,7 +1142,7 @@ def test_recover_orphaned_running_jobs_fails_old_job_and_allows_fresh_sync(tmp_p
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     recovered_source = store.get_source("source_github")
     fresh, fresh_started = store.begin_sync_job("source_github")
@@ -720,10 +1157,10 @@ def test_recover_orphaned_running_jobs_fails_old_job_and_allows_fresh_sync(tmp_p
     source = store.get_source("source_github")
     assert recovered_count == 1
     assert failed_orphan.status == SyncJobStatus.FAILED
-    assert "server restart" in failed_orphan.error_message
+    assert "execution owner stopped responding" in failed_orphan.error_message
     assert claim_count == 0
     assert recovered_source.sync_status == SyncStatus.FAILED
-    assert "server restart" in recovered_source.last_error
+    assert "execution owner stopped responding" in recovered_source.last_error
     assert source.sync_status == SyncStatus.RUNNING
     assert source.last_error == ""
     assert fresh_started is True
@@ -753,7 +1190,7 @@ def test_recover_orphaned_running_jobs_preserves_jobs_started_after_cutoff(tmp_p
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     returned, started = store.begin_sync_job("source_github")
 
@@ -786,7 +1223,7 @@ def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     returned, started = store.begin_sync_job("source_github")
 
@@ -828,7 +1265,7 @@ def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, mo
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     fresh, fresh_started = store.begin_sync_job("source_github")
 
@@ -880,7 +1317,7 @@ def test_recover_orphaned_running_jobs_recovers_stale_previous_owner_even_if_pid
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     fresh, fresh_started = store.begin_sync_job("source_github")
 
@@ -929,11 +1366,25 @@ def test_recover_orphaned_running_jobs_preserves_same_pid_previous_owner_when_jo
         started_at=stale_owner_heartbeat,
         heartbeat_at=stale_owner_heartbeat,
     )
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ''
+            WHERE owner_id = ?
+            """,
+            ("previous-owner",),
+        )
     monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "different-process-instance"),
+    )
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     returned, started = store.begin_sync_job("source_github")
 
@@ -1070,7 +1521,7 @@ def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, m
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     returned, started = store.begin_sync_job("source_github")
 
@@ -1151,7 +1602,7 @@ def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path
     )
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
     alive["value"] = False
 
@@ -1191,7 +1642,7 @@ def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(t
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
 
     assert recovered_count == 1
@@ -1225,7 +1676,7 @@ def test_begin_sync_job_recovers_unowned_legacy_job_after_startup_grace(tmp_path
     )
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
-        error_message="Previous running sync job was recovered after server restart; start sync again.",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
     )
 
     _mark_job_running(
@@ -2638,6 +3089,236 @@ def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
     assert row["owner_id"] == ""
 
 
+def test_ensure_schema_adds_process_start_id_to_legacy_owner_table(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3", sync_owner_id="current-owner")
+    store.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with store._connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sync_job_owners (
+                owner_id TEXT PRIMARY KEY,
+                process_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL
+            );
+            INSERT INTO sync_job_owners (
+                owner_id, process_id, started_at, heartbeat_at
+            ) VALUES (
+                'legacy-owner', 123,
+                '2000-01-01T00:00:00+00:00',
+                '2000-01-01T00:00:00+00:00'
+            );
+            """
+        )
+
+    store.ensure_schema()
+
+    with store._connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sync_job_owners)").fetchall()
+        }
+        legacy_row = conn.execute(
+            """
+            SELECT process_start_id
+            FROM sync_job_owners
+            WHERE owner_id = ?
+            """,
+            ("legacy-owner",),
+        ).fetchone()
+        current_row = conn.execute(
+            """
+            SELECT process_start_id
+            FROM sync_job_owners
+            WHERE owner_id = ?
+            """,
+            ("current-owner",),
+        ).fetchone()
+
+    assert "process_start_id" in columns
+    assert legacy_row["process_start_id"] == ""
+    assert current_row is None
+
+
+def test_repeated_read_only_store_initialization_does_not_register_sync_owners(
+    tmp_path,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+
+    for index in range(25):
+        reader = MetadataStore(db_path, sync_owner_id=f"reader-{index}")
+        reader.ensure_schema()
+        assert reader.get_source("missing-source") is None
+
+    with MetadataStore(db_path)._connect() as conn:
+        owner_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM sync_job_owners"
+        ).fetchone()["count"]
+
+    assert owner_count == 0
+
+
+def test_claim_and_heartbeat_register_owner_and_prune_unreferenced_owners(
+    tmp_path,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    requester.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    queued, created = requester.enqueue_sync_job("source_notion")
+    assert created is True
+
+    worker = MetadataStore(db_path, sync_owner_id="worker")
+    claimed = worker.claim_next_sync_job(["source_notion"])
+    assert claimed is not None
+    assert claimed.job_id == queued.job_id
+
+    stale_timestamp = "2000-01-01T00:00:00+00:00"
+    with worker._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO sync_job_owners (
+                owner_id, process_id, process_start_id, started_at, heartbeat_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    f"stale-unreferenced-{index}",
+                    999_000 + index,
+                    "",
+                    stale_timestamp,
+                    stale_timestamp,
+                )
+                for index in range(25)
+            ],
+        )
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET heartbeat_at = ?
+            WHERE owner_id = ?
+            """,
+            (stale_timestamp, worker.sync_owner_id),
+        )
+
+    touched = worker.touch_sync_job(claimed.job_id)
+
+    assert touched is not None
+    assert touched.status == SyncJobStatus.RUNNING
+    with worker._connect() as conn:
+        owner_rows = conn.execute(
+            """
+            SELECT owner_id, started_at, heartbeat_at
+            FROM sync_job_owners
+            ORDER BY owner_id
+            """
+        ).fetchall()
+
+    assert [row["owner_id"] for row in owner_rows] == [worker.sync_owner_id]
+    assert owner_rows[0]["started_at"]
+    assert owner_rows[0]["heartbeat_at"] != stale_timestamp
+
+
+def test_ensure_schema_serializes_concurrent_legacy_owner_migrations(
+    tmp_path,
+    monkeypatch,
+):
+    real_connect = sqlite3.connect
+
+    class MigrationBarrierConnection(sqlite3.Connection):
+        migration_barrier: Barrier | None = None
+
+        def execute(self, sql, parameters=(), /):
+            if "PRAGMA table_info(sync_job_owners)" in sql:
+                barrier = self.migration_barrier
+                if barrier is not None:
+                    try:
+                        barrier.wait(timeout=0.1)
+                    except BrokenBarrierError:
+                        pass
+            return super().execute(sql, parameters)
+
+    current_barrier: Barrier | None = None
+
+    def coordinated_connect(*args, **kwargs):
+        kwargs["factory"] = MigrationBarrierConnection
+        conn = real_connect(*args, **kwargs)
+        conn.migration_barrier = current_barrier
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", coordinated_connect)
+
+    for attempt in range(5):
+        db_path = tmp_path / f"legacy-owner-{attempt}.sqlite3"
+        setup_store = MetadataStore(db_path)
+        setup_store.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with setup_store._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sync_job_owners (
+                    owner_id TEXT PRIMARY KEY,
+                    process_id INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL
+                );
+                INSERT INTO sync_job_owners (
+                    owner_id, process_id, started_at, heartbeat_at
+                ) VALUES (
+                    'legacy-owner', 123,
+                    '2000-01-01T00:00:00+00:00',
+                    '2000-01-01T00:00:00+00:00'
+                );
+                """
+            )
+
+        current_barrier = Barrier(2)
+        stores = (
+            MetadataStore(db_path, sync_owner_id=f"worker-{attempt}-one"),
+            MetadataStore(db_path, sync_owner_id=f"worker-{attempt}-two"),
+        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(store.ensure_schema) for store in stores]
+            for future in futures:
+                future.result()
+
+        with stores[0]._connect() as conn:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(sync_job_owners)").fetchall()
+            }
+            owners = {
+                row["owner_id"]: row["process_start_id"]
+                for row in conn.execute(
+                    """
+                    SELECT owner_id, process_start_id
+                    FROM sync_job_owners
+                    """
+                ).fetchall()
+            }
+
+        assert "process_start_id" in columns
+        assert owners["legacy-owner"] == ""
+        assert f"worker-{attempt}-one" not in owners
+        assert f"worker-{attempt}-two" not in owners
+
+        source = stores[0].register_source(
+            SourceModel(
+                source_id="source_github",
+                source_type=SourceType.GITHUB,
+                name="GitHub",
+                enabled=True,
+            )
+        )
+        assert source.source_id == "source_github"
+        assert stores[1].get_source("source_github") is not None
+
+
 def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -3290,3 +3971,1131 @@ def test_replace_document_chunks_preserves_source_mismatched_inactive_rows(tmp_p
         ).fetchone()
     assert inactive_row["chunk_id"] == "shared-id:chunk:0:b"
     assert store.list_chunks_for_document("shared-id") == [replacement]
+
+
+def test_enqueue_sync_job_reuses_queued_and_running_jobs(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    worker = MetadataStore(db_path, sync_owner_id="worker")
+    requester.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+
+    queued, enqueued = requester.enqueue_sync_job("source_notion")
+    reused_queued, enqueued_again = requester.enqueue_sync_job("source_notion")
+
+    assert enqueued is True
+    assert enqueued_again is False
+    assert reused_queued.job_id == queued.job_id
+    assert reused_queued.status == SyncJobStatus.QUEUED
+    assert requester.get_source("source_notion").sync_status == SyncStatus.RUNNING
+    assert requester.get_latest_sync_job("source_notion").job_id == queued.job_id
+
+    claimed = worker.claim_next_sync_job(["source_notion"])
+    reused_running, enqueued_while_running = requester.enqueue_sync_job("source_notion")
+
+    assert claimed is not None
+    assert claimed.job_id == queued.job_id
+    assert claimed.status == SyncJobStatus.RUNNING
+    assert worker.get_owned_running_sync_job(claimed.job_id) == claimed
+    assert requester.get_owned_running_sync_job(claimed.job_id) is None
+    assert enqueued_while_running is False
+    assert reused_running.job_id == claimed.job_id
+    assert reused_running.status == SyncJobStatus.RUNNING
+
+
+def test_disabled_source_enqueue_and_worker_claim_race_never_claims_new_job(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    requester.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=False,
+            sync_status=SyncStatus.FAILED,
+            last_error="Source source_notion is disabled",
+        )
+    )
+    worker = MetadataStore(db_path, sync_owner_id="worker")
+    worker.ensure_schema()
+    start_barrier = Barrier(2)
+    enqueue_finished = Event()
+
+    def enqueue_disabled_source():
+        start_barrier.wait()
+        try:
+            return requester.enqueue_sync_job("source_notion")
+        finally:
+            enqueue_finished.set()
+
+    def claim_after_enqueue_transaction():
+        start_barrier.wait()
+        assert enqueue_finished.wait(timeout=5)
+        return worker.claim_next_sync_job(["source_notion"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        enqueue_future = executor.submit(enqueue_disabled_source)
+        claim_future = executor.submit(claim_after_enqueue_transaction)
+        job, created = enqueue_future.result(timeout=5)
+        claimed = claim_future.result(timeout=5)
+
+    source = requester.get_source("source_notion")
+    assert created is True
+    assert job.status == SyncJobStatus.FAILED
+    assert job.finished_at
+    assert "disabled" in job.error_message.lower()
+    assert claimed is None
+    assert source.sync_status == SyncStatus.FAILED
+    assert "disabled" in source.last_error.lower()
+
+
+@pytest.mark.parametrize("active_status", [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING])
+def test_disabled_source_enqueue_reuses_existing_active_job(tmp_path, active_status):
+    db_path = tmp_path / active_status.value / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    enabled_source = SourceModel(
+        source_id="source_notion",
+        source_type=SourceType.NOTION,
+        name="Notion",
+        enabled=True,
+    )
+    requester.upsert_source(enabled_source)
+    active_job, created = requester.enqueue_sync_job("source_notion")
+    assert created is True
+    if active_status == SyncJobStatus.RUNNING:
+        worker = MetadataStore(db_path, sync_owner_id="worker")
+        worker.ensure_schema()
+        active_job = worker.claim_next_sync_job(["source_notion"])
+        assert active_job is not None
+
+    requester.register_source(
+        enabled_source.model_copy(
+            update={
+                "enabled": False,
+                "last_error": "Source source_notion is disabled",
+            }
+        )
+    )
+    returned, created_again = requester.enqueue_sync_job("source_notion")
+
+    assert created_again is False
+    assert returned.job_id == active_job.job_id
+    assert returned.status == active_status
+    assert requester.get_source("source_notion").sync_status == SyncStatus.RUNNING
+
+
+def test_two_workers_racing_claim_one_queued_job_have_one_winner(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    requester.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    queued, _ = requester.enqueue_sync_job("source_notion")
+    workers = [
+        MetadataStore(db_path, sync_owner_id="worker-a"),
+        MetadataStore(db_path, sync_owner_id="worker-b"),
+    ]
+    for worker in workers:
+        worker.ensure_schema()
+    barrier = Barrier(2)
+
+    def claim(worker):
+        barrier.wait()
+        return worker.claim_next_sync_job(["source_notion"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, workers))
+
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    assert winners[0].job_id == queued.job_id
+    assert requester.get_sync_job(queued.job_id).status == SyncJobStatus.RUNNING
+
+
+def test_two_requesters_racing_enqueue_reuse_one_queued_job(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    setup_store = MetadataStore(db_path, sync_owner_id="setup")
+    setup_store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    requesters = [
+        MetadataStore(db_path, sync_owner_id="requester-a"),
+        MetadataStore(db_path, sync_owner_id="requester-b"),
+    ]
+    for requester in requesters:
+        requester.ensure_schema()
+    barrier = Barrier(2)
+
+    def enqueue(requester):
+        barrier.wait()
+        return requester.enqueue_sync_job("source_notion")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(enqueue, requesters))
+
+    assert sum(1 for _, enqueued in results if enqueued) == 1
+    assert len({job.job_id for job, _ in results}) == 1
+    with setup_store._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM sync_jobs
+            WHERE source_id = ? AND status = ?
+            """,
+            ("source_notion", SyncJobStatus.QUEUED.value),
+        ).fetchone()
+    assert row["count"] == 1
+
+
+def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+        requester.enqueue_sync_job(source_id)
+
+    workers = [
+        MetadataStore(db_path, sync_owner_id="worker-a"),
+        MetadataStore(db_path, sync_owner_id="worker-b"),
+    ]
+    for worker in workers:
+        worker.ensure_schema()
+    barrier = Barrier(2)
+
+    def claim(worker):
+        barrier.wait()
+        return worker.claim_next_sync_job(["source_a", "source_b"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_results = list(executor.map(claim, workers))
+
+    winners = [
+        (index, result)
+        for index, result in enumerate(first_results)
+        if result is not None
+    ]
+    assert len(winners) == 1
+    winner_index, first_job = winners[0]
+    assert first_job.status == SyncJobStatus.RUNNING
+    assert sum(
+        1
+        for source_id in ("source_a", "source_b")
+        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
+    ) == 1
+
+    workers[winner_index].complete_failed_sync(
+        job_id=first_job.job_id,
+        source_id=first_job.source_id,
+        error_message="test terminalization",
+    )
+    second_job = workers[1 - winner_index].claim_next_sync_job(
+        ["source_a", "source_b"]
+    )
+
+    assert second_job is not None
+    assert second_job.job_id != first_job.job_id
+    assert second_job.source_id != first_job.source_id
+    assert second_job.status == SyncJobStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    ("stored_identity", "observed_identity"),
+    [
+        (
+            "linux-v2|boot-a|pidns-a|100",
+            "linux-v2|boot-a|pidns-a|200",
+        ),
+        (
+            "darwin:100:0",
+            "darwin:200:0",
+        ),
+    ],
+)
+def test_global_claim_recovers_live_pid_with_changed_valid_process_birth_identity(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+    observed_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with requester._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: True),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: observed_identity),
+    )
+
+    claimed = next_worker.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is not None
+    assert claimed.job_id == source_b_job.job_id
+    assert claimed.status == SyncJobStatus.RUNNING
+    recovered = requester.get_sync_job(source_a_job.job_id)
+    assert recovered.status == SyncJobStatus.FAILED
+    assert recovered.error_message == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("stored_identity", "observed_identity"),
+    [
+        (
+            "linux-v2|boot-a|pidns-a|100",
+            "linux-v2|boot-a|pidns-b|200",
+        ),
+        (
+            "linux-v2|boot-a||100",
+            "linux-v2|boot-a|pidns-b|200",
+        ),
+        (
+            "linux:boot-a:100",
+            "linux-v2|boot-a|pidns-b|200",
+        ),
+    ],
+)
+def test_global_claim_preserves_fresh_owner_across_unknown_linux_scope(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+    observed_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with requester._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (
+                stored_identity,
+                "previous-worker",
+            ),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: True),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: observed_identity),
+    )
+
+    claimed = next_worker.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is None
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.RUNNING
+    assert requester.get_sync_job(source_b_job.job_id).status == SyncJobStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    "observer_identity",
+    [
+        "linux-v2|boot-a|pidns-b|300",
+        "",
+    ],
+)
+def test_global_claim_preserves_fresh_linux_owner_when_pid_is_invisible_outside_same_scope(
+    tmp_path,
+    monkeypatch,
+    observer_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with requester._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            ("linux-v2|boot-a|pidns-a|100", "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(
+            lambda process_id: observer_identity
+            if process_id == os.getpid()
+            else ""
+        ),
+    )
+
+    claimed = next_worker.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is None
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.RUNNING
+    assert requester.get_sync_job(source_b_job.job_id).status == SyncJobStatus.QUEUED
+
+
+def test_global_claim_recovers_fresh_linux_owner_when_pid_is_dead_in_same_scope(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with requester._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            ("linux-v2|boot-a|pidns-a|100", "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(
+            lambda process_id: "linux-v2|boot-a|pidns-a|300"
+            if process_id == os.getpid()
+            else ""
+        ),
+    )
+
+    claimed = next_worker.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is not None
+    assert claimed.job_id == source_b_job.job_id
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    "observer_identity",
+    [
+        "linux-v2|boot-a|pidns-b|300",
+        "",
+    ],
+)
+def test_startup_recovery_preserves_fresh_linux_owner_when_pid_scope_is_not_same(
+    tmp_path,
+    monkeypatch,
+    observer_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(
+        db_path,
+        sync_owner_id="previous-worker",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    observer = MetadataStore(
+        db_path,
+        sync_owner_id="observer",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    previous_worker.upsert_source(
+        SourceModel(
+            source_id="source_a",
+            source_type=SourceType.GITHUB,
+            name="source_a",
+            enabled=True,
+        )
+    )
+    active_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    observer.ensure_schema()
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            ("linux-v2|boot-a|pidns-a|100", "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: observer_identity),
+    )
+
+    recovered_count = observer.recover_orphaned_running_jobs(
+        started_before="9999-01-01T00:00:00+00:00",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+
+    assert recovered_count == 0
+    assert observer.get_sync_job(active_job.job_id).status == SyncJobStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    "stored_identity",
+    [
+        "",
+        "linux:boot-a:100",
+        "malformed-process-identity",
+    ],
+)
+def test_global_claim_preserves_fresh_linux_owner_with_unknown_stored_scope(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    observer = MetadataStore(db_path, sync_owner_id="observer")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "linux-v2|boot-a|pidns-observer|300"),
+    )
+
+    claimed = observer.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is None
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.RUNNING
+    assert requester.get_sync_job(source_b_job.job_id).status == SyncJobStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    "stored_identity",
+    [
+        "",
+        "linux:boot-a:100",
+        "malformed-process-identity",
+    ],
+)
+def test_startup_recovery_preserves_fresh_linux_owner_with_unknown_stored_scope(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(
+        db_path,
+        sync_owner_id="previous-worker",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    observer = MetadataStore(
+        db_path,
+        sync_owner_id="observer",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    previous_worker.upsert_source(
+        SourceModel(
+            source_id="source_a",
+            source_type=SourceType.GITHUB,
+            name="source_a",
+            enabled=True,
+        )
+    )
+    active_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    observer.ensure_schema()
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "linux-v2|boot-a|pidns-observer|300"),
+    )
+
+    recovered_count = observer.recover_orphaned_running_jobs(
+        started_before="9999-01-01T00:00:00+00:00",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+
+    assert recovered_count == 0
+    assert observer.get_sync_job(active_job.job_id).status == SyncJobStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    "stored_identity",
+    [
+        "",
+        "legacy-process-identity",
+        "darwin:invalid:0",
+        "linux-v2|boot-a|pidns-a|100",
+    ],
+)
+def test_dead_owner_is_not_definitive_for_unknown_identity_from_darwin_observer(
+    monkeypatch,
+    stored_identity,
+):
+    monkeypatch.setattr(
+        "storage.metadata_store.sys.platform",
+        "darwin",
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "darwin:300:0"),
+    )
+
+    assert (
+        MetadataStore._dead_owner_is_definitive_in_current_scope(
+            {"process_start_id": stored_identity}
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "stored_identity",
+    [
+        "",
+        "legacy-process-identity",
+        "darwin:invalid:0",
+        "linux-v2|boot-a|pidns-a|100",
+    ],
+)
+def test_global_claim_preserves_fresh_owner_with_unknown_scope_on_darwin_esrch(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    observer = MetadataStore(db_path, sync_owner_id="observer")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        "storage.metadata_store.sys.platform",
+        "darwin",
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "darwin:300:0"),
+    )
+
+    claimed = observer.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is None
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.RUNNING
+    assert requester.get_sync_job(source_b_job.job_id).status == SyncJobStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    "stored_identity",
+    [
+        "",
+        "legacy-process-identity",
+        "darwin:invalid:0",
+        "linux-v2|boot-a|pidns-a|100",
+    ],
+)
+def test_startup_recovery_preserves_fresh_owner_with_unknown_scope_on_darwin_esrch(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(
+        db_path,
+        sync_owner_id="previous-worker",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    observer = MetadataStore(
+        db_path,
+        sync_owner_id="observer",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    previous_worker.upsert_source(
+        SourceModel(
+            source_id="source_a",
+            source_type=SourceType.GITHUB,
+            name="source_a",
+            enabled=True,
+        )
+    )
+    active_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    observer.ensure_schema()
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        "storage.metadata_store.sys.platform",
+        "darwin",
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: False),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "darwin:300:0"),
+    )
+
+    recovered_count = observer.recover_orphaned_running_jobs(
+        started_before="9999-01-01T00:00:00+00:00",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+
+    assert recovered_count == 0
+    assert observer.get_sync_job(active_job.job_id).status == SyncJobStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    ("stored_identity", "observed_identity"),
+    [
+        (
+            "linux-v2|boot-a|pidns-a|not-numeric",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|-1",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|0",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|\u0661",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|001",
+            "linux-v2|boot-a|pidns-a|1",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|100|extra",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2||pidns-a|100",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "darwin:100:not-numeric",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:-1:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:0:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:\u0661:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:100:\u0661",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:001:0",
+            "darwin:1:0",
+        ),
+        (
+            "darwin:100:001",
+            "darwin:100:1",
+        ),
+        (
+            "darwin:100:0:extra",
+            "darwin:300:0",
+        ),
+        (
+            "darwin::0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:100:1000000",
+            "darwin:300:0",
+        ),
+    ],
+)
+def test_global_claim_preserves_fresh_live_owner_with_malformed_recognized_identity(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+    observed_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    observer = MetadataStore(db_path, sync_owner_id="observer")
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+
+    source_a_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    source_b_job, enqueued = requester.enqueue_sync_job("source_b")
+    assert enqueued is True
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: True),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: observed_identity),
+    )
+
+    claimed = observer.claim_next_sync_job(["source_a", "source_b"])
+
+    assert claimed is None
+    assert requester.get_sync_job(source_a_job.job_id).status == SyncJobStatus.RUNNING
+    assert requester.get_sync_job(source_b_job.job_id).status == SyncJobStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    ("stored_identity", "observed_identity"),
+    [
+        (
+            "linux-v2|boot-a|pidns-a|not-numeric",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|-1",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|0",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|\u0661",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|001",
+            "linux-v2|boot-a|pidns-a|1",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|100|extra",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2||pidns-a|100",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "linux-v2|boot-a|pidns-a|",
+            "linux-v2|boot-a|pidns-a|300",
+        ),
+        (
+            "darwin:100:not-numeric",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:-1:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:0:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:\u0661:0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:100:\u0661",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:001:0",
+            "darwin:1:0",
+        ),
+        (
+            "darwin:100:001",
+            "darwin:100:1",
+        ),
+        (
+            "darwin:100:0:extra",
+            "darwin:300:0",
+        ),
+        (
+            "darwin::0",
+            "darwin:300:0",
+        ),
+        (
+            "darwin:100:1000000",
+            "darwin:300:0",
+        ),
+    ],
+)
+def test_startup_recovery_preserves_fresh_live_owner_with_malformed_recognized_identity(
+    tmp_path,
+    monkeypatch,
+    stored_identity,
+    observed_identity,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    previous_worker = MetadataStore(
+        db_path,
+        sync_owner_id="previous-worker",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    observer = MetadataStore(
+        db_path,
+        sync_owner_id="observer",
+        running_job_timeout_seconds=24 * 60 * 60,
+    )
+    previous_worker.upsert_source(
+        SourceModel(
+            source_id="source_a",
+            source_type=SourceType.GITHUB,
+            name="source_a",
+            enabled=True,
+        )
+    )
+    active_job, started = previous_worker.begin_sync_job("source_a")
+    assert started is True
+    observer.ensure_schema()
+    with observer._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_job_owners
+            SET process_start_id = ?
+            WHERE owner_id = ?
+            """,
+            (stored_identity, "previous-worker"),
+        )
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: True),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: observed_identity),
+    )
+
+    recovered_count = observer.recover_orphaned_running_jobs(
+        started_before="9999-01-01T00:00:00+00:00",
+        error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+    )
+
+    assert recovered_count == 0
+    assert observer.get_sync_job(active_job.job_id).status == SyncJobStatus.RUNNING
+
+
+def test_orphan_recovery_message_is_execution_owner_neutral():
+    assert ORPHANED_SYNC_JOB_RECOVERY_MESSAGE == (
+        "Previous running sync job was recovered after its execution owner stopped "
+        "responding; start sync again."
+    )

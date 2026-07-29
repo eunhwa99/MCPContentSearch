@@ -21,6 +21,7 @@ RETAINED_PACKAGES=(
   indexing
   search
   storage
+  app_runtime.py
   main.py
 )
 
@@ -32,6 +33,7 @@ COVERAGE_TARGETS=(
   --cov=indexing
   --cov=search
   --cov=storage
+  --cov=app_runtime
   --cov-report=term-missing
 )
 

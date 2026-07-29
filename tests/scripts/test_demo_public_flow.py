@@ -20,7 +20,7 @@ def test_run_demo_returns_grounded_local_flow():
         )
     )
 
-    assert result["sync"]["status"] == "running"
+    assert result["sync"]["status"] == "queued"
     assert result["status"]["source"]["source_id"] == "source_obsidian"
     assert result["status"]["latest_job"]["status"] == "succeeded"
     assert result["search"]["results"]
@@ -36,7 +36,7 @@ def test_run_demo_returns_insufficient_for_unrelated_question():
         )
     )
 
-    assert result["sync"]["status"] == "running"
+    assert result["sync"]["status"] == "queued"
     assert result["status"]["latest_job"]["status"] == "succeeded"
     assert result["search"]["results"]
     assert result["answer"]["evidence_status"] == "insufficient"
@@ -176,7 +176,7 @@ def test_demo_script_json_mode_runs_successfully():
     assert payload["query"] == "How does ContextWiki prevent stale citations?"
     assert payload["question"] == "How does ContextWiki prevent stale citations?"
     assert payload["same_input"] is True
-    assert payload["sync"]["status"] == "running"
+    assert payload["sync"]["status"] == "queued"
     assert payload["sync"]["job_id"] == "<generated>"
     assert payload["status"]["source"]["last_synced_at"] == "<generated>"
     assert payload["status"]["source"]["latest_success_at"] == "<generated>"
@@ -257,7 +257,7 @@ def test_demo_public_flow_script_runs_from_repo_root_without_pythonpath():
     )
 
     payload = json.loads(completed.stdout)
-    assert payload["sync"]["status"] == "running"
+    assert payload["sync"]["status"] == "queued"
     assert payload["status"]["latest_job"]["status"] == "succeeded"
     assert payload["answer"]["evidence_status"] == "grounded"
     assert completed.stdout.lstrip().startswith("{")

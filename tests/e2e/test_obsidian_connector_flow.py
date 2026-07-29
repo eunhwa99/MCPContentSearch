@@ -65,6 +65,13 @@ async def _wait_for_sync_completion(mcp: FastMCP, source_id: str, attempts: int 
     raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
 
 
+async def _run_next_queued_sync(ingestion: IngestionService):
+    claimed = ingestion.metadata_store.claim_next_sync_job()
+    assert claimed is not None
+    assert claimed.status == SyncJobStatus.RUNNING
+    return await ingestion.run_claimed_sync_job(claimed.job_id)
+
+
 def _make_vault(tmp_path, files: dict[str, str]):
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -108,7 +115,7 @@ def _obsidian_service(tmp_path, vault, **config_overrides):
         metadata_store=store,
         source_registry=registry,
     )
-    return connector, store, indexer, answer_service, mcp
+    return connector, store, indexer, ingestion, answer_service, mcp
 
 
 def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations(tmp_path):
@@ -132,11 +139,15 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
     (vault / ".trash").mkdir()
     (vault / ".trash" / "deleted.md").write_text("deleted", encoding="utf-8")
 
-    connector, store, indexer, answer_service, mcp = _obsidian_service(tmp_path, vault)
+    connector, store, indexer, ingestion, answer_service, mcp = _obsidian_service(
+        tmp_path,
+        vault,
+    )
 
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
         sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": "source_obsidian"})
+        await _run_next_queued_sync(ingestion)
         status = await _wait_for_sync_completion(mcp, "source_obsidian")
         return listed, sync_job, status
 
@@ -173,7 +184,7 @@ def test_obsidian_sync_through_mcp_tools_indexes_temp_vault_notes_with_citations
     assert [source["source_id"] for source in listed["sources"]] == ["source_obsidian"]
     assert listed["sources"][0]["enabled"] is True
     assert connector.supports_stale_cleanup is True
-    assert sync_job["status"] == "running"
+    assert sync_job["status"] == "queued"
     assert sync_job["source_id"] == "source_obsidian"
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"

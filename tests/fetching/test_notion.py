@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -707,6 +708,24 @@ def test_notion_block_fetch_can_surface_strict_full_sync_failures():
         asyncio.run(client.fetch_block_content(object(), "block-id", strict=True))
 
     assert asyncio.run(client.fetch_block_content(object(), "block-id")) == ""
+
+
+def test_notion_max_depth_warning_does_not_log_block_id(caplog):
+    client = NotionAPIClient(NotionConfig(api_key="secret"), AppConfig())
+    sensitive_block_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    with caplog.at_level(logging.WARNING, logger="fetching.notion"):
+        result = asyncio.run(
+            client.fetch_block_content(
+                object(),
+                sensitive_block_id,
+                depth=client.app_config.notion_max_depth + 1,
+            )
+        )
+
+    assert result == ""
+    assert "Max Notion block depth reached" in caplog.text
+    assert sensitive_block_id not in caplog.text
 
 
 def test_notion_block_fetch_stops_during_paginated_children():

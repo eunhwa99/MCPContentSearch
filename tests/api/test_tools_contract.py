@@ -60,8 +60,22 @@ class FakeIndexer:
 
 
 class FakeFailingIngestion:
-    async def start_sync_source(self, source_id):
+    async def enqueue_sync_source(self, source_id):
         raise ValueError(f"Unknown source: {source_id}")
+
+
+class FakeQueuedIngestion:
+    async def enqueue_sync_source(self, source_id):
+        return Dumpable(
+            {
+                "job_id": "job-queued",
+                "source_id": source_id,
+                "status": "queued",
+                "started_at": "2026-07-29T00:00:00+00:00",
+                "finished_at": "",
+                "error_message": "",
+            }
+        )
 
 
 class FakeBlockingOnlyIngestion:
@@ -77,7 +91,7 @@ class FakeBlockingOnlyIngestion:
 
 
 class FakeLeakyJobIngestion:
-    async def start_sync_source(self, source_id):
+    async def enqueue_sync_source(self, source_id):
         return Dumpable(
             {
                 "job_id": "job-leaky",
@@ -95,7 +109,7 @@ class FakeLeakyJobIngestion:
             }
         )
 
-    async def sync_all(self, source_ids=None):
+    async def enqueue_all(self, source_ids=None):
         return {
             "status": "failed",
             "summary": {
@@ -170,7 +184,7 @@ class ObserverCancelledOnceConnector(SourceConnector):
 
 
 class FakeCompletedSkippedSyncAllIngestion:
-    async def sync_all(self, source_ids=None):
+    async def enqueue_all(self, source_ids=None):
         return {
             "status": "accepted",
             "summary": {
@@ -213,7 +227,7 @@ class FakeCompletedSkippedSyncAllIngestion:
 
 
 class FakePartialSyncAllIngestion:
-    async def sync_all(self, source_ids=None):
+    async def enqueue_all(self, source_ids=None):
         return {
             "status": "partial",
             "summary": {
@@ -256,7 +270,7 @@ class FakePartialSyncAllIngestion:
 
 
 class FakeFailedSyncAllIngestion:
-    async def sync_all(self, source_ids=None):
+    async def enqueue_all(self, source_ids=None):
         return {
             "status": "failed",
             "summary": {
@@ -286,13 +300,13 @@ class FakeFailedSyncAllIngestion:
 
 
 class FakePathFailingIngestion:
-    async def start_sync_source(self, source_id):
+    async def enqueue_sync_source(self, source_id):
         raise ValueError(
             "Sync failed at /Users/eunhwa/private/vault.md "
             "with token supersecretvalue123456"
         )
 
-    async def sync_all(self, source_ids=None):
+    async def enqueue_all(self, source_ids=None):
         raise ValueError(
             "Bulk sync failed at /Users/eunhwa/private/vault.md "
             "with token supersecretvalue123456"
@@ -568,6 +582,25 @@ class RecoveringExactStatusMetadataStore(FakeMetadataStore):
         return self.failed_job if self.recovered else self.running_job
 
 
+class QueuedStatusMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        super().__init__()
+        self.source = Dumpable(
+            {"source_id": "source_fake", "sync_status": "running"},
+            source_id="source_fake",
+        )
+        self.job = Dumpable(
+            {
+                "job_id": "job-queued",
+                "source_id": "source_fake",
+                "status": "queued",
+                "started_at": "2026-07-29T00:00:00+00:00",
+                "finished_at": "",
+                "error_message": "",
+            }
+        )
+
+
 class FakeContextSearch:
     async def search_context(self, query, filters=None, top_k=10, include_debug=False):
         debug_payload = {}
@@ -791,6 +824,25 @@ def test_sync_source_returns_structured_error_for_unknown_source():
     assert "Unknown source" in result["message"]
 
 
+def test_sync_source_returns_new_durable_job_as_queued():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=FakeQueuedIngestion(),
+    )
+
+    result = asyncio.run(mcp.tools["sync_source"]("source_github"))
+
+    assert result == {
+        "job_id": "job-queued",
+        "source_id": "source_github",
+        "status": "queued",
+        "started_at": "2026-07-29T00:00:00+00:00",
+        "finished_at": "",
+        "error_message": "",
+    }
+
+
 def test_sync_source_redacts_secret_like_unknown_source_ids():
     mcp = FakeMCP()
     register_tools(
@@ -809,7 +861,7 @@ def test_sync_source_redacts_secret_like_unknown_source_ids():
 
 def test_sync_source_rejects_non_public_source_ids(tmp_path):
     class FakeStartOnlyIngestion:
-        async def start_sync_source(self, source_id):
+        async def enqueue_sync_source(self, source_id):
             raise AssertionError("non-public source should be rejected before launch")
 
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
@@ -857,7 +909,7 @@ def test_sync_source_redacts_returned_job_error_payload():
     assert "status_message" not in result
 
 
-def test_sync_source_returns_error_when_background_launcher_is_unavailable():
+def test_sync_source_returns_error_when_durable_enqueue_is_unavailable():
     mcp = FakeMCP()
     register_tools(
         mcp,
@@ -868,7 +920,7 @@ def test_sync_source_returns_error_when_background_launcher_is_unavailable():
 
     assert result == {
         "status": "error",
-        "message": "ingestion service does not support background sync launch",
+        "message": "ingestion service does not support durable sync enqueue",
     }
 
 
@@ -888,7 +940,7 @@ def test_sync_source_redacts_public_error_paths_and_whitespace_secrets():
     assert "token <redacted>" in result["message"]
 
 
-def test_sync_source_replays_observer_cancelled_background_failure_with_public_payload(
+def test_sync_source_reports_observer_cancelled_worker_failure_before_reenqueue(
     tmp_path,
 ):
     document = DocumentModel(
@@ -918,34 +970,29 @@ def test_sync_source_replays_observer_cancelled_background_failure_with_public_p
     )
 
     async def run_flow():
-        launched = await mcp.tools["sync_source"]("source_github")
-        for _ in range(100):
-            latest = store.get_latest_sync_job("source_github")
-            task = service._background_sync_tasks.get("source_github")
-            if (
-                latest is not None
-                and latest.status != SyncJobStatus.RUNNING
-                and (task is None or task.done())
-            ):
-                break
-            await asyncio.sleep(0.01)
-        replayed = await mcp.tools["sync_source"]("source_github")
-        relaunched = await mcp.tools["sync_source"]("source_github")
-        return launched, replayed, relaunched
+        accepted = await mcp.tools["sync_source"]("source_github")
+        claimed = store.claim_next_sync_job()
+        assert claimed is not None
+        completed = await service.run_claimed_sync_job(claimed.job_id)
+        terminal_status = await mcp.tools["get_sync_status"]("source_github")
+        reaccepted = await mcp.tools["sync_source"]("source_github")
+        return accepted, completed, terminal_status, reaccepted
 
-    launched, replayed, relaunched = asyncio.run(run_flow())
+    accepted, completed, terminal_status, reaccepted = asyncio.run(run_flow())
 
-    assert launched["source_id"] == "source_github"
-    assert launched["status"] == SyncJobStatus.RUNNING.value
-    assert "phase" not in launched
-    assert replayed["job_id"] == launched["job_id"]
-    assert replayed["status"] == SyncJobStatus.FAILED.value
-    assert replayed["error_message"] == (
+    assert accepted["source_id"] == "source_github"
+    assert accepted["status"] == SyncJobStatus.QUEUED.value
+    assert "phase" not in accepted
+    assert completed.job_id == accepted["job_id"]
+    assert completed.status == SyncJobStatus.FAILED
+    assert terminal_status["latest_job"]["job_id"] == accepted["job_id"]
+    assert terminal_status["latest_job"]["status"] == SyncJobStatus.FAILED.value
+    assert terminal_status["latest_job"]["error_message"] == (
         "Sync request was cancelled by a progress observer before completion."
     )
-    assert "phase" not in replayed
-    assert relaunched["job_id"] != launched["job_id"]
-    assert relaunched["status"] == SyncJobStatus.RUNNING.value
+    assert "phase" not in terminal_status["latest_job"]
+    assert reaccepted["job_id"] != accepted["job_id"]
+    assert reaccepted["status"] == SyncJobStatus.QUEUED.value
 
 
 def test_sync_all_redacts_public_error_paths_and_whitespace_secrets():
@@ -968,7 +1015,7 @@ def test_sync_all_skips_signature_introspection_when_public_filtering_is_not_nee
     monkeypatch,
 ):
     class FakeInspectableIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             return {
                 "status": "accepted",
                 "summary": {
@@ -1008,7 +1055,7 @@ def test_sync_all_skips_signature_introspection_when_public_filtering_is_not_nee
 
 def test_sync_all_returns_structured_error_when_preflight_source_refresh_fails():
     class FakeSyncAllIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             raise AssertionError("sync_all should not be called when preflight fails")
 
     mcp = FakeMCP()
@@ -1060,7 +1107,7 @@ def test_sync_all_returns_structured_error_when_public_filtering_is_unsupported(
             ]
 
     class FakeNoFilterSupportIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             raise AssertionError("legacy no-arg sync_all should not be called")
 
     mcp = FakeMCP()
@@ -1081,7 +1128,7 @@ def test_sync_all_returns_structured_error_when_public_filtering_is_unsupported(
 
 def test_sync_all_returns_structured_error_when_public_result_formatting_fails():
     class FakeSyncAllIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             return {
                 "status": "accepted",
                 "summary": {
@@ -1124,7 +1171,7 @@ def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_pat
     mcp = FakeMCP()
 
     class FakeEmptyErrorSyncAllIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             return {"status": "failed", "summary": {}, "results": []}
 
     register_tools(
@@ -1154,7 +1201,7 @@ def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_repo
     mcp = FakeMCP()
 
     class FakeEmptyFailedSyncAllIngestion:
-        async def sync_all(self):
+        async def enqueue_all(self):
             return {
                 "status": "failed",
                 "summary": {
@@ -1298,7 +1345,7 @@ def test_sync_all_redacts_returned_job_error_payload(tmp_path):
 
 def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
     class FakeMixedSyncAllIngestion:
-        async def sync_all(self, source_ids=None):
+        async def enqueue_all(self, source_ids=None):
             assert source_ids is None
             return {
                 "status": "partial",
@@ -1381,7 +1428,7 @@ def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
 
 def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
     class FakeHiddenOnlySyncAllIngestion:
-        async def sync_all(self, source_ids=None):
+        async def enqueue_all(self, source_ids=None):
             assert source_ids is None
             return {
                 "status": "failed",
@@ -1435,7 +1482,7 @@ def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_pat
         def __init__(self):
             self.called = False
 
-        async def sync_all(self):
+        async def enqueue_all(self):
             self.called = True
             return {"status": "accepted", "summary": {}, "results": []}
 
@@ -1468,7 +1515,7 @@ def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_pat
 
 def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(tmp_path):
     class OrderedSyncAllIngestion:
-        async def sync_all(self, source_ids=None):
+        async def enqueue_all(self, source_ids=None):
             assert source_ids is None
             return {
                 "status": "accepted",
@@ -1605,7 +1652,7 @@ def test_status_payloads_redact_persisted_secret_fields(tmp_path):
             source_type=SourceType.GITHUB,
             name="GitHub",
             enabled=True,
-            auth_ref="basic user:super-secret-value",
+            auth_ref="env:GITHUB_TOKEN",
             sync_status=SyncStatus.FAILED,
             last_error=(
                 "last sync failed with api_key=super-secret-value "
@@ -1616,6 +1663,10 @@ def test_status_payloads_redact_persisted_secret_fields(tmp_path):
     job = store.create_sync_job("source_github")
     now = datetime.now(timezone.utc).isoformat()
     with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET auth_ref = ? WHERE source_id = ?",
+            ("basic user:super-secret-value", "source_github"),
+        )
         conn.execute(
             """
             UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
@@ -1662,6 +1713,14 @@ def test_status_payloads_redact_persisted_secret_fields(tmp_path):
 
 
 def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_path):
+    notion_tokens = (
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789",
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789",
+    )
+    sensitive_paths = (
+        "/Users/eunhwa/private,vault/source notes.md",
+        r"C:\Users\eunhwa\private,vault\job notes.md",
+    )
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
         SourceModel(
@@ -1672,8 +1731,8 @@ def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_pa
             auth_ref="env:GITHUB_TOKEN",
             sync_status=SyncStatus.FAILED,
             last_error=(
-                "failed reading /Users/eunhwa/private/source.md "
-                "with token supersecretvalue123456"
+                f"failed reading {sensitive_paths[0]}, job_id=job-123; "
+                f"source_id=source_github token={notion_tokens[0]}"
             ),
         )
     )
@@ -1688,7 +1747,8 @@ def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_pa
             (
                 "failed",
                 now,
-                "job failed at ~/private/file.md with api_key anothersecretvalue123456",
+                f"job failed at {sensitive_paths[1]}; job_id=job-123, "
+                f"source_id=source_github token={notion_tokens[1]}",
                 job.job_id,
             ),
         )
@@ -1704,12 +1764,154 @@ def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_pa
     status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
     payload = _payload_text({"sources": sources, "status": status})
 
-    assert "/Users/eunhwa/private/source.md" not in payload
-    assert "~/private/file.md" not in payload
-    assert "supersecretvalue123456" not in payload
-    assert "anothersecretvalue123456" not in payload
-    assert "token <redacted>" in sources["sources"][0]["last_error"]
-    assert "api_key <redacted>" in status["latest_job"]["error_message"]
+    assert all(token not in payload for token in notion_tokens)
+    assert all(path not in payload for path in sensitive_paths)
+    assert "vault/source notes.md" not in payload
+    assert "vault\\job notes.md" not in payload
+    assert "notes.md" not in payload
+    for value in (
+        sources["sources"][0]["last_error"],
+        status["source"]["last_error"],
+        status["latest_job"]["error_message"],
+    ):
+        assert "job_id=job-123" in value
+        assert "source_id=source_github" in value
+        assert "<redacted" in value
+
+
+def test_status_payloads_redact_semicolon_cookie_headers_and_unc_paths(tmp_path):
+    raw_values = (
+        "session=alpha",
+        "theme=private",
+        "preference=hidden",
+        "sid=bravo",
+        "unknown_attribute=top-secret",
+        "folded_cookie=delta",
+        r"\\server\private share\meeting notes.md",
+        r"\\?\C:\Users\tester\private vault\meeting notes.md",
+    )
+    source_error = (
+        "Cookie: session=alpha, theme=private, preference=hidden, "
+        "job_id=job-123\n"
+        rf"failed reading {raw_values[6]}, source_id=source_github"
+    )
+    job_error = (
+        "Set-Cookie: sid=bravo, unknown_attribute=top-secret,\n"
+        "\tfolded_cookie=delta, job_id=job-123; retry_count=2\n"
+        rf"failed reading {raw_values[7]}, source_id=source_github"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    job = store.create_sync_job("source_github")
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (source_error, "source_github"),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            ("failed", now, job_error, job.job_id),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    payload = _payload_text({"sources": sources, "status": status})
+
+    assert all(raw_value not in payload for raw_value in raw_values)
+    assert "job_id=job-123" in payload
+    assert "source_id=source_github" in payload
+    assert "retry_count=2" in payload
+    assert "<redacted>" in payload
+
+
+def test_get_sync_status_keeps_direct_storage_failure_sanitized_at_rest(tmp_path):
+    raw_error = (
+        "provider failed "
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789 "
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789 "
+        "path:/Users/tester/private vault/meeting notes.md, job_id=job-123; "
+        r"file:C:\Users\tester\private vault\meeting notes.md; "
+        "source_id=source_notion"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    queued = store.create_sync_job("source_notion")
+    completed = store.complete_failed_sync(
+        job_id=queued.job_id,
+        source_id="source_notion",
+        error_message=raw_error,
+        stale_cleanup_disabled_reason=raw_error,
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+
+    with store._connect() as conn:
+        job_row = conn.execute(
+            "SELECT status_message, error_message FROM sync_jobs WHERE job_id = ?",
+            (queued.job_id,),
+        ).fetchone()
+        source_row = conn.execute(
+            """
+            SELECT last_error, stale_cleanup_disabled_reason
+            FROM sources WHERE source_id = ?
+            """,
+            ("source_notion",),
+        ).fetchone()
+    values = (
+        completed.status_message,
+        completed.error_message,
+        job_row["status_message"],
+        job_row["error_message"],
+        source_row["last_error"],
+        source_row["stale_cleanup_disabled_reason"],
+        status["source"]["last_error"],
+        status["latest_job"]["error_message"],
+    )
+    for value in values:
+        assert "ntn_" not in value
+        assert "secret_" not in value
+        assert "/Users/tester/private" not in value
+        assert r"C:\Users\tester\private" not in value
+        assert "meeting notes.md" not in value
+        assert "job_id=job-123" in value
+        assert "source_id=source_notion" in value
+        assert "<redacted>" in value
 
 
 def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
@@ -1730,7 +1932,7 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
             source_type=SourceType.NOTION,
             name="Notion",
             enabled=True,
-            auth_ref="env:ghp_secretcredential",
+            auth_ref="env:NOTION_API_KEY",
             sync_status=SyncStatus.IDLE,
         )
     )
@@ -1740,7 +1942,7 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
             source_type=SourceType.TISTORY,
             name="Tistory",
             enabled=True,
-            auth_ref="env:basic user:super-secret-value",
+            auth_ref="env:TISTORY_BLOG_NAME",
             sync_status=SyncStatus.IDLE,
         )
     )
@@ -1754,6 +1956,15 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
             sync_status=SyncStatus.IDLE,
         )
     )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET auth_ref = ? WHERE source_id = ?",
+            ("env:ghp_secretcredential", "source_notion"),
+        )
+        conn.execute(
+            "UPDATE sources SET auth_ref = ? WHERE source_id = ?",
+            ("env:basic user:super-secret-value", "source_tistory"),
+        )
     mcp = FakeMCP()
     register_tools(
         mcp,
@@ -1774,6 +1985,54 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
     assert auth_refs["source_tistory"] == "<redacted>"
     assert "ghp_secretcredential" not in payload
     assert "super-secret-value" not in payload
+
+
+def test_status_payload_drops_legacy_noncanonical_phase_and_auth_ref(tmp_path):
+    raw_auth_ref = "ntn_abcdefghijklmnopqrstuvwxyz0123456789"
+    raw_phase = (
+        "fetching /Users/tester/private vault/notes.md "
+        "with secret_abcdefghijklmnopqrstuvwxyz0123456789"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            auth_ref="env:NOTION_API_KEY",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_notion")
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET auth_ref = ? WHERE source_id = ?",
+            (raw_auth_ref, "source_notion"),
+        )
+        conn.execute(
+            "UPDATE sync_jobs SET phase = ? WHERE job_id = ?",
+            (raw_phase, job.job_id),
+        )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    listed = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+    payload = _payload_text({"listed": listed, "status": status})
+
+    assert started is True
+    assert listed["sources"][0]["auth_ref"] == "<redacted>"
+    assert "phase" not in status["latest_job"]
+    assert raw_auth_ref not in payload
+    assert raw_phase not in payload
+    assert "ntn_" not in payload
+    assert "secret_" not in payload
+    assert "/Users/tester/private" not in payload
 
 
 def test_disabled_obsidian_source_is_visible_in_public_status_payloads(tmp_path):
@@ -2344,6 +2603,23 @@ def test_get_sync_status_exact_job_mode_is_additive_and_never_crosses_source_bou
     assert missing_source == {"source": None, "job": None}
     assert set(latest) == {"source", "latest_job"}
     assert set(all_sources) == {"sources"}
+
+
+def test_get_sync_status_exposes_queued_job_without_running_progress_hints():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=QueuedStatusMetadataStore(),
+    )
+
+    single = asyncio.run(mcp.tools["get_sync_status"]("source_fake"))
+
+    assert single["source"]["sync_status"] == "running"
+    assert single["latest_job"]["job_id"] == "job-queued"
+    assert single["latest_job"]["status"] == "queued"
+    assert single["latest_job"]["started_at"] == "2026-07-29T00:00:00+00:00"
+    assert "phase" not in single["latest_job"]
+    assert "last_progress_at" not in single["latest_job"]
 
 
 def test_get_sync_status_exposes_running_phase_hints(tmp_path):

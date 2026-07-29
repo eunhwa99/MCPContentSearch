@@ -583,6 +583,53 @@ def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
     assert "eyJheader.payloadvalue.signaturevalue" not in caplog.text
 
 
+def test_ingestion_persists_strongly_sanitized_failure_with_structured_fields(
+    tmp_path,
+):
+    notion_tokens = (
+        "ntn_abcdefghijklmnopqrstuvwxyz0123456789",
+        "secret_abcdefghijklmnopqrstuvwxyz0123456789",
+    )
+    sensitive_paths = (
+        "/Users/tester/private,vault;meeting notes.md",
+        r"C:\Users\tester\private,vault;meeting notes.md",
+    )
+    connector = FakeConnector(
+        error=RuntimeError(
+            f"provider failure at {sensitive_paths[0]}, job_id=job-123; "
+            f"fallback={sensitive_paths[1]}; source_id=source_fake "
+            f"tokens={notion_tokens[0]} {notion_tokens[1]}"
+        )
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(),
+        indexer=RecordingIndexer(),
+    )
+
+    completed = asyncio.run(service.sync_source("source_fake"))
+    persisted_job = store.get_sync_job(completed.job_id)
+    persisted_source = store.get_source("source_fake")
+
+    assert completed.status == SyncJobStatus.FAILED
+    assert persisted_job is not None
+    assert persisted_source is not None
+    for value in (
+        completed.error_message,
+        persisted_job.error_message,
+        persisted_source.last_error,
+    ):
+        assert all(token not in value for token in notion_tokens)
+        assert all(path not in value for path in sensitive_paths)
+        assert "vault;meeting notes.md" not in value
+        assert "notes.md" not in value
+        assert "job_id=job-123" in value
+        assert "source_id=source_fake" in value
+        assert "<redacted" in value
+
+
 def test_ingestion_can_skip_source_config_registration_for_ad_hoc_sync(tmp_path):
     document = DocumentModel(
         id="doc-1",
@@ -1980,6 +2027,37 @@ def test_disabled_source_records_failed_job_without_fetching(tmp_path):
     assert store.get_source("source_disabled").sync_status == SyncStatus.FAILED
 
 
+def test_durable_disabled_source_is_failed_atomically_without_completion_handoff(
+    tmp_path,
+    monkeypatch,
+):
+    connector = DisabledConnector()
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(),
+        indexer=RecordingIndexer(),
+        durable_dispatch=True,
+    )
+
+    def unexpected_second_transaction(**_kwargs):
+        raise AssertionError("disabled enqueue must be terminal in its enqueue transaction")
+
+    monkeypatch.setattr(store, "complete_failed_sync", unexpected_second_transaction)
+
+    job, launch_outcome = asyncio.run(
+        service._enqueue_sync_source_with_outcome("source_disabled")
+    )
+
+    assert launch_outcome == "skipped"
+    assert job.status == SyncJobStatus.FAILED
+    assert job.finished_at
+    assert "disabled" in job.error_message.lower()
+    assert connector.called is False
+    assert store.get_source("source_disabled").sync_status == SyncStatus.FAILED
+
+
 def test_disabled_github_source_records_public_missing_repository_config_error(tmp_path):
     connector = GitHubSourceConnector(
         repositories=(),
@@ -2209,6 +2287,8 @@ def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, capl
     assert "discovered 2 upstream page(s) before indexing" in caplog.text
     assert "fetching upstream page 1/2" in caplog.text
     assert "fetched upstream page 2/2" in caplog.text
+    assert "page-1" not in caplog.text
+    assert "page-2" not in caplog.text
     latest = store.get_latest_sync_job("source_fake")
     assert latest.phase == "completed"
     assert latest.upstream_total_pages == 2
