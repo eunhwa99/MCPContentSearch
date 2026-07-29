@@ -42,6 +42,20 @@ def _blob_payload(content: bytes) -> dict:
     }
 
 
+def _http_status_error(url: str, status_code: int, message: str | None = None) -> None:
+    request = httpx.Request("GET", url)
+    response = httpx.Response(status_code, request=request)
+    raise httpx.HTTPStatusError(
+        message or f"HTTP {status_code}",
+        request=request,
+        response=response,
+    )
+
+
+def _http_404(url: str) -> None:
+    _http_status_error(url, 404, "Not Found")
+
+
 def test_github_http_client_streams_blob_json_with_byte_limit():
     payload = _blob_payload(b"hello")
 
@@ -1282,13 +1296,540 @@ class OwnerRepositoryListHTTP:
                     "default_branch": "trunk",
                     "owner": {"login": "eunhwa99"},
                 },
-                {
-                    "name": "ghp_secret",
-                    "default_branch": "main",
-                    "owner": {"login": "eunhwa99"},
-                },
             ]
         return []
+
+
+class TokenVisibleOwnerRepositoryListHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "public-repo",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                }
+            ]
+        if "/orgs/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "private-org-repo",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                    "private": True,
+                },
+                {
+                    "name": "other-account-repo",
+                    "default_branch": "main",
+                    "owner": {"login": "someone-else"},
+                    "private": True,
+                },
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class TokenOtherOwnerMergedGitHubHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+        self.repositories = {
+            "shared": ("stable", "shared.md", b"# Shared public and private metadata\n"),
+            "public-only": ("main", "public.md", b"# Public endpoint only\n"),
+            "private-only": ("stable", "private.md", b"# Private organization repo\n"),
+        }
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/public-org/repos?" in url:
+            return [
+                {
+                    "name": "shared",
+                    "default_branch": "main",
+                    "owner": {"login": "public-org"},
+                    "size": 0,
+                    "pushed_at": None,
+                },
+                {
+                    "name": "public-only",
+                    "default_branch": "main",
+                    "owner": {"login": "public-org"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+            ]
+        if "/orgs/public-org/repos?" in url:
+            return [
+                {
+                    "name": "shared",
+                    "default_branch": "stable",
+                    "owner": {"login": "public-org"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+                {
+                    "name": "private-only",
+                    "default_branch": "stable",
+                    "owner": {"login": "public-org"},
+                    "private": True,
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+                {
+                    "name": "authenticated-other-owner",
+                    "default_branch": "main",
+                    "owner": {"login": "token-user"},
+                    "private": True,
+                },
+            ]
+        for repository, (ref, path, content) in self.repositories.items():
+            if f"/repos/public-org/{repository}/commits/{ref}" in url:
+                return {
+                    "sha": _sha(f"{repository}-merged-commit"),
+                    "commit": {
+                        "tree": {"sha": _sha(f"{repository}-merged-tree")}
+                    },
+                }
+            if (
+                f"/repos/public-org/{repository}/git/trees/"
+                f"{repository}-merged-tree"
+            ) in url:
+                return {
+                    "tree": [
+                        {
+                            "path": path,
+                            "type": "blob",
+                            "sha": _sha(f"{repository}-merged-blob"),
+                            "size": len(content),
+                        }
+                    ]
+                }
+            if (
+                f"/repos/public-org/{repository}/git/blobs/"
+                f"{repository}-merged-blob"
+            ) in url:
+                return _blob_payload(content)
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class ConflictingOwnerBranchGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "conflict",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                }
+            ]
+        if "/orgs/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "conflict",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                }
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class NonOrgOtherUserOwnerDiscoveryHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/other-user/repos?" in url:
+            return [
+                {
+                    "name": "public-only",
+                    "default_branch": "main",
+                    "owner": {"login": "other-user"},
+                }
+            ]
+        if "/orgs/other-user/repos?" in url:
+            _http_404(url)
+        if url.rstrip("/").endswith("/user"):
+            return {"login": "token-user"}
+        if "/user/repos?" in url:
+            raise AssertionError(f"must not page global user repos: {url}")
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class SelfOwnedPersonalOwnerDiscoveryHTTP:
+    def __init__(self, token):
+        self.token = token
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/self-owner/repos?" in url:
+            return [
+                {
+                    "name": "public-repo",
+                    "default_branch": "main",
+                    "owner": {"login": "self-owner"},
+                }
+            ]
+        if "/orgs/self-owner/repos?" in url:
+            _http_404(url)
+        if url.rstrip("/").endswith("/user"):
+            return {"login": "self-owner"}
+        if "/user/repos?" in url:
+            if "affiliation=owner" not in url:
+                raise AssertionError(
+                    f"must not page unfiltered user repos without affiliation=owner: {url}"
+                )
+            return [
+                {
+                    "name": "private-self-repo",
+                    "default_branch": "stable",
+                    "owner": {"login": "self-owner"},
+                    "private": True,
+                },
+                {
+                    "name": "collaborator-other-owner",
+                    "default_branch": "main",
+                    "owner": {"login": "someone-else"},
+                    "private": True,
+                },
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class Non404OrgOwnerDiscoveryHTTP:
+    def __init__(self, token, status_code):
+        self.token = token
+        self.status_code = status_code
+        self.urls = []
+        self.headers = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        self.headers.append(headers or {})
+        if "/users/blocked-org/repos?" in url:
+            return [
+                {
+                    "name": "public-only",
+                    "default_branch": "main",
+                    "owner": {"login": "blocked-org"},
+                }
+            ]
+        if "/orgs/blocked-org/repos?" in url:
+            _http_status_error(url, self.status_code)
+        if url.rstrip("/").endswith("/user") or "/user/repos?" in url:
+            raise AssertionError(
+                f"must not fall through to authenticated user discovery after org error: {url}"
+            )
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class InvalidOwnerDefaultBranchGitHubHTTP:
+    def __init__(self, branch_metadata):
+        self.branch_metadata = branch_metadata
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "invalid-branch",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                    **self.branch_metadata,
+                }
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class MalformedOwnerRepositoryListHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "valid",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+                "malformed-repository-entry",
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class MalformedOwnerRepositoryIdentityHTTP:
+    def __init__(self, malformed_repository):
+        self.malformed_repository = malformed_repository
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "valid",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+                self.malformed_repository,
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class PublicOwnerMismatchGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "valid-other-owner-repo",
+                    "default_branch": "main",
+                    "owner": {"login": "someone-else"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                }
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class OverfullOwnerRepositoryPageHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "&page=1&" in url:
+            return [
+                {
+                    "name": f"repository-{index:03d}",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                }
+                for index in range(101)
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class OwnerTargetGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "alpha",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                },
+                {
+                    "name": "beta",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                },
+            ]
+        if "/repos/eunaverse/alpha/commits/main" in url:
+            return {
+                "sha": _sha("alpha-commit"),
+                "commit": {"tree": {"sha": _sha("alpha-tree")}},
+            }
+        if "/repos/eunaverse/beta/commits/stable" in url:
+            return {
+                "sha": _sha("beta-commit"),
+                "commit": {"tree": {"sha": _sha("beta-tree")}},
+            }
+        if "/repos/eunaverse/alpha/git/trees/alpha-tree" in url:
+            return {
+                "tree": [
+                    {
+                        "path": "README.md",
+                        "type": "blob",
+                        "sha": _sha("alpha-readme"),
+                        "size": 21,
+                    }
+                ]
+            }
+        if "/repos/eunaverse/beta/git/trees/beta-tree" in url:
+            return {
+                "tree": [
+                    {
+                        "path": "docs/guide.md",
+                        "type": "blob",
+                        "sha": _sha("beta-guide"),
+                        "size": 20,
+                    }
+                ]
+            }
+        if "/git/blobs/alpha-readme" in url:
+            return _blob_payload(b"# Alpha owner target\n")
+        if "/git/blobs/beta-guide" in url:
+            return _blob_payload(b"# Beta owner target\n")
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class IncompleteOwnerTargetGitHubHTTP(OwnerTargetGitHubHTTP):
+    async def get_json(self, url, headers=None):
+        labelled_url = _labelled_url(url)
+        if "/repos/eunaverse/beta/git/trees/beta-tree" in labelled_url:
+            self.urls.append(labelled_url)
+            return {
+                "tree": [
+                    {
+                        "path": "docs/guide.md",
+                        "type": "blob",
+                        "sha": _sha("beta-guide"),
+                        "size": 20,
+                    },
+                    {
+                        "path": "docs/unknown-size.md",
+                        "type": "blob",
+                        "sha": _sha("beta-unknown"),
+                    },
+                ]
+            }
+        return await super().get_json(url, headers=headers)
+
+
+class FailingOwnerDiscoveryGitHubHTTP:
+    async def get_json(self, url, headers=None):
+        if "/users/eunaverse/repos?" in url:
+            raise RuntimeError("GitHub repository discovery unavailable")
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class FullPaginationOwnerGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        if "/users/eunaverse/repos?" not in url:
+            raise AssertionError(f"unexpected GitHub API URL: {url}")
+        self.urls.append(url)
+        return [
+            {
+                "name": f"repository-{index}",
+                "default_branch": "main",
+                "owner": {"login": "eunaverse"},
+            }
+            for index in range(100)
+        ]
+
+
+class TwoPageOwnerRepositoryListHTTP:
+    def __init__(self):
+        self.urls = []
+
+    async def get_json(self, url, headers=None):
+        self.urls.append(url)
+        if "&page=1&" in url:
+            return [
+                {
+                    "name": f"repository-{index:03d}",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                }
+                for index in range(100)
+            ]
+        if "&page=2&" in url:
+            return [
+                {
+                    "name": "repository-100",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                },
+                {
+                    "name": "repository-101",
+                    "default_branch": "release",
+                    "owner": {"login": "eunaverse"},
+                },
+            ]
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class MixedOwnerExactGitHubHTTP(OwnerTargetGitHubHTTP):
+    async def get_json(self, url, headers=None):
+        labelled_url = _labelled_url(url)
+        if "/repos/other/gamma/commits/release" in labelled_url:
+            self.urls.append(labelled_url)
+            return {
+                "sha": _sha("gamma-commit"),
+                "commit": {"tree": {"sha": _sha("gamma-tree")}},
+            }
+        if "/repos/other/gamma/git/trees/gamma-tree" in labelled_url:
+            self.urls.append(labelled_url)
+            return {
+                "tree": [
+                    {
+                        "path": "CHANGELOG.md",
+                        "type": "blob",
+                        "sha": _sha("gamma-changelog"),
+                        "size": 21,
+                    }
+                ]
+            }
+        if "/git/blobs/gamma-changelog" in labelled_url:
+            self.urls.append(labelled_url)
+            return _blob_payload(b"# Gamma exact target\n")
+        return await super().get_json(url, headers=headers)
+
+
+class AmbiguousEmptyOwnerGitHubHTTP:
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.commit_requested = False
+
+    async def get_json(self, url, headers=None):
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "ambiguous-empty",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    **self.metadata,
+                }
+            ]
+        if "/repos/eunaverse/ambiguous-empty/commits/main" in url:
+            self.commit_requested = True
+            raise RuntimeError("ambiguous empty repository commit lookup failed")
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
 
 
 def test_github_repository_discovery_expands_owner_url_to_repo_specs():
@@ -1304,14 +1845,598 @@ def test_github_repository_discovery_expands_owner_url_to_repo_specs():
     assert http.urls[0].startswith("https://api.github.com/users/eunhwa99/repos?")
 
 
-def test_github_repository_discovery_keeps_explicit_repository_target_off_network():
+def test_github_repository_discovery_continues_after_full_first_page():
+    http = TwoPageOwnerRepositoryListHTTP()
+    discovery = GitHubRepositoryDiscovery(AppConfig(), http_client=http)
+
+    specs = asyncio.run(discovery.discover_repository_specs("eunaverse"))
+
+    assert len(specs) == 102
+    assert specs[:2] == [
+        "eunaverse/repository-000@main",
+        "eunaverse/repository-001@main",
+    ]
+    assert specs[-2:] == [
+        "eunaverse/repository-100@stable",
+        "eunaverse/repository-101@release",
+    ]
+    assert len(http.urls) == 2
+    assert "&page=1&" in http.urls[0]
+    assert "&page=2&" in http.urls[1]
+
+
+def test_authenticated_owner_discovery_includes_token_visible_organization_repositories():
+    token = "header-only-credential"
+    http = TokenVisibleOwnerRepositoryListHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("eunaverse"))
+
+    assert specs == [
+        "eunaverse/public-repo@main",
+        "eunaverse/private-org-repo@stable",
+    ]
+    authenticated_url = next(
+        url for url in http.urls if url.startswith("https://api.github.com/orgs/eunaverse/repos?")
+    )
+    assert "type=all" in authenticated_url
+    assert "affiliation=" not in authenticated_url
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+def test_token_owner_sync_merges_public_and_private_results_conservatively():
+    token = "header-only-other-owner-credential"
+    http = TokenOtherOwnerMergedGitHubHTTP(token)
+    connector = GitHubSourceConnector(
+        repositories=("public-org",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        token=token,
+        http_client=http,
+    )
+
+    documents = asyncio.run(connector.fetch_documents())
+
+    assert {document.document_id for document in documents} == {
+        "github:public-org/shared:shared.md",
+        "github:public-org/public-only:public.md",
+        "github:public-org/private-only:private.md",
+    }
+    assert not any(
+        "authenticated-other-owner" in document.document_id
+        for document in documents
+    )
+    assert sum(
+        "/repos/public-org/shared/commits/stable" in url for url in http.urls
+    ) == 1
+    shared_spec = next(
+        spec for spec in connector.fetcher.repository_specs if spec.repo == "shared"
+    )
+    assert shared_spec.is_empty is False
+    assert shared_spec.ref == "stable"
+    assert connector.cleanup_document_id_prefixes == (
+        "github:public-org/shared:",
+        "github:public-org/public-only:",
+        "github:public-org/private-only:",
+    )
+    assert any("/users/public-org/repos?" in url for url in http.urls)
+    authenticated_url = next(
+        url for url in http.urls if url.startswith("https://api.github.com/orgs/public-org/repos?")
+    )
+    assert "type=all" in authenticated_url
+    assert "affiliation=" not in authenticated_url
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(documents)
+
+
+def test_authenticated_org_owner_discovery_uses_orgs_endpoint_not_user_repos():
+    token = "header-only-org-discovery-credential"
+    http = TokenVisibleOwnerRepositoryListHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("eunaverse"))
+
+    assert "eunaverse/private-org-repo@stable" in specs
+    assert any(
+        url.startswith("https://api.github.com/orgs/eunaverse/repos?")
+        and "type=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert not any(
+        url.startswith("https://api.github.com/user/repos?")
+        and "visibility=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+def test_authenticated_non_org_other_user_discovery_stays_on_public_users_list():
+    token = "header-only-other-user-credential"
+    http = NonOrgOtherUserOwnerDiscoveryHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("other-user"))
+
+    assert specs == ["other-user/public-only@main"]
+    assert any("/users/other-user/repos?" in url for url in http.urls)
+    assert any("/orgs/other-user/repos?" in url for url in http.urls)
+    assert any(url.rstrip("/").endswith("/user") for url in http.urls)
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+def test_authenticated_self_owned_personal_discovery_uses_affiliation_owner():
+    token = "header-only-self-owner-credential"
+    http = SelfOwnedPersonalOwnerDiscoveryHTTP(token)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    specs = asyncio.run(discovery.discover_repository_specs("self-owner"))
+
+    assert specs == [
+        "self-owner/public-repo@main",
+        "self-owner/private-self-repo@stable",
+    ]
+    assert any("/orgs/self-owner/repos?" in url for url in http.urls)
+    assert any(url.rstrip("/").endswith("/user") for url in http.urls)
+    authenticated_url = next(
+        url for url in http.urls if url.startswith("https://api.github.com/user/repos?")
+    )
+    assert "affiliation=owner" in authenticated_url
+    assert "visibility=all" in authenticated_url
+    assert not any(
+        url.startswith("https://api.github.com/user/repos?")
+        and "visibility=all" in url
+        and "affiliation=" not in url
+        for url in http.urls
+    )
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+    assert token not in repr(specs)
+
+
+@pytest.mark.parametrize("status_code", [403, 500])
+def test_authenticated_org_discovery_propagates_non_404_org_http_errors(status_code):
+    token = "header-only-org-error-credential"
+    http = Non404OrgOwnerDiscoveryHTTP(token, status_code)
+    discovery = GitHubRepositoryDiscovery(
+        AppConfig(),
+        token=token,
+        http_client=http,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        asyncio.run(discovery.discover_repository_specs("blocked-org"))
+
+    assert raised.value.response.status_code == status_code
+    assert any("/users/blocked-org/repos?" in url for url in http.urls)
+    assert any("/orgs/blocked-org/repos?" in url for url in http.urls)
+    assert not any(url.rstrip("/").endswith("/user") for url in http.urls)
+    assert not any("/user/repos?" in url for url in http.urls)
+    assert all(headers["Authorization"] == f"Bearer {token}" for headers in http.headers)
+    assert token not in " ".join(http.urls)
+
+
+def test_conflicting_non_empty_owner_default_branches_fail_without_cleanup():
+    http = ConflictingOwnerBranchGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        token="header-only-conflict-credential",
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"eunaverse/conflict reported conflicting default branches",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+@pytest.mark.parametrize(
+    "branch_metadata",
+    [
+        {},
+        {"default_branch": None},
+        {"default_branch": ""},
+        {"default_branch": "feature[invalid]"},
+    ],
+)
+def test_non_empty_owner_repository_requires_valid_api_default_branch(
+    branch_metadata,
+):
+    http = InvalidOwnerDefaultBranchGitHubHTTP(branch_metadata)
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(
+            github_default_ref="configured-fallback",
+            github_max_files=5,
+            github_max_file_bytes=1000,
+        ),
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"eunaverse/invalid-branch had invalid default branch",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_malformed_owner_list_entry_fails_before_fetch_and_disables_cleanup():
+    http = MalformedOwnerRepositoryListHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^GitHub repository list response was invalid$",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+@pytest.mark.parametrize(
+    "malformed_repository",
+    [
+        {
+            "default_branch": "main",
+            "owner": {"login": "eunaverse"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": None,
+            "default_branch": "main",
+            "owner": {"login": "eunaverse"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": 7,
+            "default_branch": "main",
+            "owner": {"login": "eunaverse"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "invalid/repository",
+            "default_branch": "main",
+            "owner": {"login": "eunaverse"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "ghp_secret",
+            "default_branch": "main",
+            "owner": {"login": "eunaverse"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "missing-owner",
+            "default_branch": "main",
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "non-dict-owner",
+            "default_branch": "main",
+            "owner": "eunaverse",
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "missing-owner-login",
+            "default_branch": "main",
+            "owner": {},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "none-owner-login",
+            "default_branch": "main",
+            "owner": {"login": None},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "non-string-owner-login",
+            "default_branch": "main",
+            "owner": {"login": 7},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+        {
+            "name": "invalid-owner-login",
+            "default_branch": "main",
+            "owner": {"login": "invalid/owner"},
+            "size": 1,
+            "pushed_at": "2026-07-29T00:00:00Z",
+        },
+    ],
+)
+def test_malformed_owner_repository_identity_fails_whole_fetch(
+    malformed_repository,
+):
+    http = MalformedOwnerRepositoryIdentityHTTP(malformed_repository)
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^GitHub repository list response was invalid$",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_public_owner_endpoint_mismatch_fails_whole_fetch():
+    http = PublicOwnerMismatchGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^GitHub repository list response was invalid$",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_overfull_owner_repository_page_fails_before_page_two_or_fetch():
+    http = OverfullOwnerRepositoryPageHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^GitHub repository list response was invalid$",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert len(http.urls) == 1
+    assert "&page=1&" in http.urls[0]
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("eunhwa99/neetcode", "eunhwa99/neetcode@main"),
+        ("eunhwa99/neetcode@release", "eunhwa99/neetcode@release"),
+    ],
+)
+def test_github_repository_discovery_keeps_explicit_repository_target_off_network(
+    target,
+    expected,
+):
     http = OwnerRepositoryListHTTP()
     discovery = GitHubRepositoryDiscovery(AppConfig(), http_client=http)
 
-    specs = asyncio.run(discovery.discover_repository_specs("eunhwa99/neetcode@main"))
+    specs = asyncio.run(discovery.discover_repository_specs(target))
 
-    assert specs == ["eunhwa99/neetcode@main"]
+    assert specs == [expected]
     assert http.urls == []
+
+
+def test_github_connector_resolves_owner_default_branches_and_cleanup_prefixes():
+    http = OwnerTargetGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    assert connector.cleanup_document_id_prefixes == ()
+
+    documents = asyncio.run(connector.fetch_documents())
+
+    assert {document.document_id for document in documents} == {
+        "github:eunaverse/alpha:README.md",
+        "github:eunaverse/beta:docs/guide.md",
+    }
+    assert any("/repos/eunaverse/alpha/commits/main" in url for url in http.urls)
+    assert any("/repos/eunaverse/beta/commits/stable" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == [
+        parse_repository_spec("eunaverse/alpha@main"),
+        parse_repository_spec("eunaverse/beta@stable"),
+    ]
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/alpha:",
+        "github:eunaverse/beta:",
+    )
+    assert connector.supports_stale_cleanup is True
+
+
+def test_github_connector_fetches_non_overlapping_mixed_owner_and_exact_targets_once():
+    http = MixedOwnerExactGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse", "other/gamma@release"),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    documents = asyncio.run(connector.fetch_documents())
+
+    assert {document.document_id for document in documents} == {
+        "github:eunaverse/alpha:README.md",
+        "github:eunaverse/beta:docs/guide.md",
+        "github:other/gamma:CHANGELOG.md",
+    }
+    expected_commit_urls = (
+        "/repos/eunaverse/alpha/commits/main",
+        "/repos/eunaverse/beta/commits/stable",
+        "/repos/other/gamma/commits/release",
+    )
+    assert all(
+        sum(expected_url in actual_url for actual_url in http.urls) == 1
+        for expected_url in expected_commit_urls
+    )
+    assert sum("/users/eunaverse/repos?" in url for url in http.urls) == 1
+    assert not any("/users/other/repos?" in url for url in http.urls)
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/alpha:",
+        "github:eunaverse/beta:",
+        "github:other/gamma:",
+    )
+    assert connector.supports_stale_cleanup is True
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"size": 0},
+        {"size": 0, "pushed_at": "2026-07-29T00:00:00Z"},
+        {"pushed_at": None},
+        {"size": False, "pushed_at": None},
+    ],
+)
+def test_github_connector_does_not_treat_ambiguous_empty_metadata_as_confirmed(
+    metadata,
+):
+    http = AmbiguousEmptyOwnerGitHubHTTP(metadata)
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(RuntimeError, match="commit lookup failed"):
+        asyncio.run(connector.fetch_documents())
+
+    assert http.commit_requested is True
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_github_connector_rejects_mixed_owner_and_exact_duplicate_identity():
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse", "EUNAVERSE/ALPHA@release"),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=OwnerTargetGitHubHTTP(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Duplicate GitHub repository spec: eunaverse/alpha",
+    ):
+        asyncio.run(connector.fetch_documents())
+
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_github_connector_discovery_failure_disables_cleanup_scope():
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=FailingOwnerDiscoveryGitHubHTTP(),
+    )
+
+    with pytest.raises(RuntimeError, match="repository discovery unavailable"):
+        asyncio.run(connector.fetch_documents())
+
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_github_connector_full_final_discovery_page_fails_without_cleanup():
+    http = FullPaginationOwnerGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+
+    with pytest.raises(RuntimeError, match="repository list exceeded pagination limit"):
+        asyncio.run(connector.fetch_documents())
+
+    assert len(http.urls) == 100
+    assert "page=100" in http.urls[-1]
+    assert connector.cleanup_document_id_prefixes == ()
+    assert connector.supports_stale_cleanup is False
+
+
+def test_github_connector_incomplete_owner_fetch_disables_cleanup():
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=IncompleteOwnerTargetGitHubHTTP(),
+    )
+
+    documents = asyncio.run(connector.fetch_documents())
+
+    assert {document.document_id for document in documents} == {
+        "github:eunaverse/alpha:README.md",
+        "github:eunaverse/beta:docs/guide.md",
+    }
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/alpha:",
+        "github:eunaverse/beta:",
+    )
+    assert connector.supports_stale_cleanup is False
 
 
 def test_parse_repository_spec_rejects_credentialed_clone_url_without_leaking_secret():

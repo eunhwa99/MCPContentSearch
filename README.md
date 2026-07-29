@@ -130,12 +130,24 @@ NOTION_API_KEY=...
 # For example, use devlog, not https://devlog.tistory.com.
 TISTORY_BLOG_NAME=devlog
 
-# Use owner/repo or owner/repo@ref.
-CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch@main
+# Use a bare owner to discover all owned repositories visible to GITHUB_TOKEN.
+CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse
+# Or sync only exact repositories; separate targets with commas or newlines.
+# CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse/MCPContentSearch,eunaverse/website@main
 GITHUB_TOKEN=...                # needed for private repos or higher rate limits
 
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
 ```
+
+GitHub targets are resolved when each sync runs:
+
+- `owner` syncs repositories owned by that account and visible to the optional
+  `GITHUB_TOKEN`, using each repository's default branch.
+- `owner/repo` syncs one repository using `CONTEXTWIKI_GITHUB_DEFAULT_REF`
+  (default: `main`).
+- `owner/repo@ref` syncs one repository at the specified ref.
+- Separate multiple targets with commas or newlines. Do not combine an owner
+  target with one of its repositories, because overlapping targets are rejected.
 
 ---
 
@@ -251,7 +263,9 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 |---------|-----|
 | MCP server not discovered | Recheck config path and fully restart the client |
 | Only works after manual start | Run `command` + `args` directly in terminal to see errors |
-| `Invalid GitHub repository spec` | Use `owner/repo` or `owner/repo@ref`; separate multiple repositories with commas |
+| `Invalid GitHub target` or `Invalid GitHub repository spec` | Use a bare `owner`, `owner/repo`, or `owner/repo@ref`; separate multiple targets with commas or newlines |
+| `Duplicate GitHub repository spec` | Remove overlapping targets. Do not combine an owner with an exact target for a repository that owner discovery returns; an exact ref does not override the discovered ref |
+| GitHub target changes are not reflected in Claude Desktop | Fully quit and restart Claude Desktop after editing its environment or `.env`, then run `sync_source("source_github")` and poll `get_sync_status("source_github")` |
 | Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
 | Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
 | A sync failed | Call `get_sync_status("source_notion")`, replacing `source_notion` with the failed source ID shown above |
@@ -268,7 +282,8 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 
 `demo.sh` needs no credentials. It uses the bundled Obsidian sample vault,
 temporary SQLite and Chroma storage, and mock embeddings. `verify_all.sh` runs
-the full checks used after code changes.
+the full checks used after code changes. Automated verification does not run a
+live GitHub owner sync; it uses fake GitHub responses and temporary stores.
 
 ---
 

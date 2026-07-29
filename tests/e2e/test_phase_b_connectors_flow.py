@@ -166,6 +166,229 @@ class FakeGitHubHTTP:
         raise AssertionError(f"unexpected GitHub API URL: {url}")
 
 
+class OwnerMultiRepoGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+        self.contents = {
+            "alpha-readme": b"# Alpha MCP\n\nAlpha orchestration handbook.\n",
+            "beta-guide": b"# Beta citations\n\nBeta citation search guide.\n",
+        }
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "alpha",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                },
+                {
+                    "name": "beta",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                },
+            ]
+        if "/repos/eunaverse/alpha/commits/main" in url:
+            return {
+                "sha": _sha("alpha-commit"),
+                "commit": {"tree": {"sha": _sha("alpha-tree")}},
+            }
+        if "/repos/eunaverse/beta/commits/stable" in url:
+            return {
+                "sha": _sha("beta-commit"),
+                "commit": {"tree": {"sha": _sha("beta-tree")}},
+            }
+        if "/repos/eunaverse/alpha/git/trees/alpha-tree" in url:
+            return {
+                "tree": [
+                    {
+                        "path": "README.md",
+                        "type": "blob",
+                        "sha": _sha("alpha-readme"),
+                        "size": len(self.contents["alpha-readme"]),
+                    }
+                ]
+            }
+        if "/repos/eunaverse/beta/git/trees/beta-tree" in url:
+            return {
+                "tree": [
+                    {
+                        "path": "docs/guide.md",
+                        "type": "blob",
+                        "sha": _sha("beta-guide"),
+                        "size": len(self.contents["beta-guide"]),
+                    }
+                ]
+            }
+        if "/git/blobs/alpha-readme" in url:
+            return _blob_payload(self.contents["alpha-readme"])
+        if "/git/blobs/beta-guide" in url:
+            return _blob_payload(self.contents["beta-guide"])
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class BlockingOwnerMultiRepoGitHubHTTP(OwnerMultiRepoGitHubHTTP):
+    def __init__(self):
+        super().__init__()
+        self.discovery_started = asyncio.Event()
+        self.release_discovery = asyncio.Event()
+
+    async def get_json(self, url, headers=None):
+        if "/users/eunaverse/repos?" in url:
+            self.discovery_started.set()
+            await self.release_discovery.wait()
+        return await super().get_json(url, headers=headers)
+
+
+class OwnerEmptyAndPopulatedGitHubHTTP:
+    def __init__(self):
+        self.urls = []
+        self.content = b"# Populated repository\n\nSearchable owner sync evidence.\n"
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "empty",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 0,
+                    "pushed_at": None,
+                },
+                {
+                    "name": "populated",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+            ]
+        if "/repos/eunaverse/empty/commits/" in url:
+            raise AssertionError("confirmed empty repository must not request a commit")
+        if "/repos/eunaverse/populated/commits/stable" in url:
+            return {
+                "sha": _sha("populated-commit"),
+                "commit": {"tree": {"sha": _sha("populated-tree")}},
+            }
+        if "/repos/eunaverse/populated/git/trees/populated-tree" in url:
+            return {
+                "tree": [
+                    {
+                        "path": "README.md",
+                        "type": "blob",
+                        "sha": _sha("populated-readme"),
+                        "size": len(self.content),
+                    }
+                ]
+            }
+        if "/repos/eunaverse/populated/git/blobs/populated-readme" in url:
+            return _blob_payload(self.content)
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class SeedOwnerLifecycleGitHubHTTP:
+    def __init__(self):
+        self.repositories = {
+            "populated": ("old.py", b"print('old populated')\n"),
+            "empty": ("old.py", b"print('old empty')\n"),
+            "historical-private": ("legacy.py", b"print('private history')\n"),
+        }
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        for repository, (path, content) in self.repositories.items():
+            if f"/repos/eunaverse/{repository}/commits/main" in url:
+                return {
+                    "sha": _sha(f"{repository}-seed-commit"),
+                    "commit": {
+                        "tree": {"sha": _sha(f"{repository}-seed-tree")}
+                    },
+                }
+            if (
+                f"/repos/eunaverse/{repository}/git/trees/"
+                f"{repository}-seed-tree"
+            ) in url:
+                return {
+                    "tree": [
+                        {
+                            "path": path,
+                            "type": "blob",
+                            "sha": _sha(f"{repository}-seed-blob"),
+                            "size": len(content),
+                        }
+                    ]
+                }
+            if (
+                f"/repos/eunaverse/{repository}/git/blobs/"
+                f"{repository}-seed-blob"
+            ) in url:
+                return _blob_payload(content)
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+class OwnerLifecycleGitHubHTTP:
+    def __init__(self, *, incomplete=False):
+        self.incomplete = incomplete
+        self.urls = []
+        self.content = b"print('current populated')\n"
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.urls.append(url)
+        if "/users/eunaverse/repos?" in url:
+            return [
+                {
+                    "name": "populated",
+                    "default_branch": "stable",
+                    "owner": {"login": "eunaverse"},
+                    "size": 1,
+                    "pushed_at": "2026-07-29T00:00:00Z",
+                },
+                {
+                    "name": "empty",
+                    "default_branch": "main",
+                    "owner": {"login": "eunaverse"},
+                    "size": 0,
+                    "pushed_at": None,
+                },
+            ]
+        if "/repos/eunaverse/empty/commits/" in url:
+            raise AssertionError("confirmed empty repository must not request a commit")
+        if "/repos/eunaverse/populated/commits/stable" in url:
+            return {
+                "sha": _sha("populated-current-commit"),
+                "commit": {"tree": {"sha": _sha("populated-current-tree")}},
+            }
+        if "/repos/eunaverse/populated/git/trees/populated-current-tree" in url:
+            if self.incomplete:
+                return {
+                    "tree": [
+                        {
+                            "path": "unknown-size.py",
+                            "type": "blob",
+                            "sha": _sha("populated-unknown-size"),
+                        }
+                    ]
+                }
+            return {
+                "tree": [
+                    {
+                        "path": "current.py",
+                        "type": "blob",
+                        "sha": _sha("populated-current-blob"),
+                        "size": len(self.content),
+                    }
+                ]
+            }
+        if "/repos/eunaverse/populated/git/blobs/populated-current-blob" in url:
+            return _blob_payload(self.content)
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
 class TreeGitHubHTTP:
     def __init__(self, paths):
         self.paths = tuple(paths)
@@ -448,10 +671,11 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
 
 
 def test_retained_github_sync_through_mcp_tools(tmp_path):
+    http = OwnerMultiRepoGitHubHTTP()
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunaverse",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
-        http_client=FakeGitHubHTTP(),
+        http_client=http,
     )
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     indexer = RecordingIndexer()
@@ -485,30 +709,46 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
         return listed, sync_job, status
 
     listed, sync_job, status = asyncio.run(run_flow())
-    document_id = "github:eunhwa99/mcpcontentsearch:api/tools.py"
-    chunks = store.list_chunks_for_document(document_id)
-    search_result = _call_tool_json(
+    alpha_document_id = "github:eunaverse/alpha:README.md"
+    beta_document_id = "github:eunaverse/beta:docs/guide.md"
+    alpha_chunks = store.list_chunks_for_document(alpha_document_id)
+    beta_chunks = store.list_chunks_for_document(beta_document_id)
+    alpha_search = _call_tool_json(
         mcp,
         "search_context",
         {
-            "query": "register_tools ok",
+            "query": "alpha orchestration handbook",
             "filters": {"source_id": "source_github"},
             "top_k": 3,
         },
     )
-    fetched_document = _call_tool_json(
+    beta_search = _call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "beta citation search guide",
+            "filters": {"source_id": "source_github"},
+            "top_k": 3,
+        },
+    )
+    fetched_alpha = _call_tool_json(
         mcp,
         "fetch_context",
-        {"document_id": document_id},
+        {"document_id": alpha_document_id},
+    )
+    fetched_beta = _call_tool_json(
+        mcp,
+        "fetch_context",
+        {"document_id": beta_document_id},
     )
     fetched_chunk = _call_tool_json(
         mcp,
         "fetch_context",
-        {"chunk_id": search_result["results"][0]["chunk_id"]},
+        {"chunk_id": alpha_search["results"][0]["chunk_id"]},
     )
     answer = asyncio.run(
         answer_service.answer_with_citations(
-            "register_tools ok",
+            "alpha orchestration handbook",
             filters={"source_id": "source_github"},
             top_k=3,
         )
@@ -519,23 +759,268 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
     assert sync_job["source_id"] == "source_github"
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
-    assert status["latest_job"]["processed_documents"] == 1
-    assert status["latest_job"]["indexed_chunks"] >= 1
+    assert status["latest_job"]["processed_documents"] == 2
+    assert status["latest_job"]["indexed_chunks"] >= 2
     assert store.get_source("source_github").sync_status == SyncStatus.SUCCEEDED
-    assert store.get_document(document_id).source_id == "source_github"
-    assert chunks
-    assert chunks[0].path == "api/tools.py"
-    assert chunks[0].line_start == 1
-    assert chunks[0].line_end == 2
-    assert indexer.documents[0].source_id == "source_github"
-    assert indexer.documents[0].document_id == document_id
-    assert search_result["results"][0]["source_id"] == "source_github"
-    assert search_result["results"][0]["chunk_id"] == chunks[0].chunk_id
-    assert fetched_document["document"]["document_id"] == document_id
-    assert fetched_document["chunks"][0]["chunk_id"] == chunks[0].chunk_id
-    assert fetched_chunk["chunk"]["text"] == chunks[0].text
+    assert store.get_document(alpha_document_id).source_id == "source_github"
+    assert store.get_document(beta_document_id).source_id == "source_github"
+    assert alpha_chunks
+    assert beta_chunks
+    assert alpha_chunks[0].path == "README.md"
+    assert beta_chunks[0].path == "docs/guide.md"
+    assert {document.document_id for document in indexer.documents} == {
+        alpha_document_id,
+        beta_document_id,
+    }
+    assert alpha_search["results"][0]["source_id"] == "source_github"
+    assert alpha_search["results"][0]["document_id"] == alpha_document_id
+    assert beta_search["results"][0]["document_id"] == beta_document_id
+    assert fetched_alpha["document"]["document_id"] == alpha_document_id
+    assert fetched_alpha["chunks"][0]["chunk_id"] == alpha_chunks[0].chunk_id
+    assert fetched_beta["document"]["document_id"] == beta_document_id
+    assert fetched_beta["chunks"][0]["chunk_id"] == beta_chunks[0].chunk_id
+    assert fetched_chunk["chunk"]["text"] == alpha_chunks[0].text
+    assert answer["evidence_status"] == "grounded"
+    assert answer["used_chunks"] == [alpha_search["results"][0]["chunk_id"]]
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/alpha:",
+        "github:eunaverse/beta:",
+    )
+    assert any("/repos/eunaverse/alpha/commits/main" in url for url in http.urls)
+    assert any("/repos/eunaverse/beta/commits/stable" in url for url in http.urls)
+
+
+def test_retained_owner_sync_all_waits_for_exact_job_and_keeps_search_flow(tmp_path):
+    http = BlockingOwnerMultiRepoGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    registry = SourceRegistry([connector])
+    ingestion = IngestionService(
+        metadata_store=store,
+        source_registry=registry,
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+    context_search = ContextSearchService(
+        metadata_store=store,
+        retriever=indexer.documents,
+    )
+    answer_service = CitationAnswerService(
+        context_search=context_search,
+        min_score=0.1,
+        min_results=1,
+    )
+    mcp = FastMCP("retained-owner-sync-all-wait-smoke")
+    register_tools(
+        mcp,
+        ingestion_service=ingestion,
+        context_search_service=context_search,
+        answer_service=answer_service,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    async def run_flow():
+        listed = await _call_tool_json_async(mcp, "list_sources")
+        launched = await _call_tool_json_async(mcp, "sync_all")
+        await asyncio.wait_for(http.discovery_started.wait(), timeout=1)
+        waited_task = asyncio.create_task(
+            _call_tool_json_async(
+                mcp,
+                "wait_for_sync_all",
+                {
+                    "timeout_seconds": 2.0,
+                    "poll_interval_seconds": 0.1,
+                },
+            )
+        )
+        await asyncio.sleep(0.01)
+        http.release_discovery.set()
+        waited = await asyncio.wait_for(waited_task, timeout=3)
+        status = await _call_tool_json_async(
+            mcp,
+            "get_sync_status",
+            {"source_id": "source_github"},
+        )
+        return listed, launched, waited, status
+
+    listed, launched, waited, status = asyncio.run(run_flow())
+    alpha_document_id = "github:eunaverse/alpha:README.md"
+    beta_document_id = "github:eunaverse/beta:docs/guide.md"
+    alpha_search = _call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "alpha orchestration handbook",
+            "filters": {"source_id": "source_github"},
+            "top_k": 3,
+        },
+    )
+    beta_search = _call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "beta citation search guide",
+            "filters": {"source_id": "source_github"},
+            "top_k": 3,
+        },
+    )
+    fetched_alpha = _call_tool_json(
+        mcp,
+        "fetch_context",
+        {"document_id": alpha_document_id},
+    )
+    fetched_beta = _call_tool_json(
+        mcp,
+        "fetch_context",
+        {"document_id": beta_document_id},
+    )
+    alpha_answer = asyncio.run(
+        answer_service.answer_with_citations(
+            "alpha orchestration handbook",
+            filters={"source_id": "source_github"},
+            top_k=3,
+        )
+    )
+    beta_answer = asyncio.run(
+        answer_service.answer_with_citations(
+            "beta citation search guide",
+            filters={"source_id": "source_github"},
+            top_k=3,
+        )
+    )
+
+    assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
+    assert launched["status"] == "accepted"
+    assert launched["summary"]["started"] == 1
+    assert len(launched["results"]) == 1
+    launched_result = launched["results"][0]
+    assert launched_result["source_id"] == "source_github"
+    assert launched_result["launch_outcome"] == "started"
+    assert launched_result["job"]["status"] == "running"
+    launched_job_id = launched_result["job"]["job_id"]
+
+    assert waited["status"] == "completed", waited
+    assert waited["summary"]["total_sources"] == 1
+    assert waited["summary"]["succeeded"] == 1
+    assert len(waited["results"]) == 1
+    waited_result = waited["results"][0]
+    assert waited_result["source_id"] == "source_github"
+    assert waited_result["launch_outcome"] == "already_running"
+    assert waited_result["completion_outcome"] == "succeeded"
+    assert waited_result["job"]["status"] == "succeeded"
+    assert waited_result["job"]["job_id"] == launched_job_id
+
+    assert status["source"]["sync_status"] == "succeeded"
+    assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["job_id"] == launched_job_id
+    assert status["latest_job"]["processed_documents"] == 2
+    assert store.get_document(alpha_document_id).deleted_at == ""
+    assert store.get_document(beta_document_id).deleted_at == ""
+    assert alpha_search["results"][0]["document_id"] == alpha_document_id
+    assert beta_search["results"][0]["document_id"] == beta_document_id
+    assert fetched_alpha["document"]["document_id"] == alpha_document_id
+    assert fetched_beta["document"]["document_id"] == beta_document_id
+    assert alpha_answer["evidence_status"] == "grounded"
+    assert beta_answer["evidence_status"] == "grounded"
+    assert alpha_answer["used_chunks"] == [
+        alpha_search["results"][0]["chunk_id"]
+    ]
+    assert beta_answer["used_chunks"] == [
+        beta_search["results"][0]["chunk_id"]
+    ]
+
+
+def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_path):
+    http = OwnerEmptyAndPopulatedGitHubHTTP()
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    registry = SourceRegistry([connector])
+    ingestion = IngestionService(
+        metadata_store=store,
+        source_registry=registry,
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+    context_search = ContextSearchService(
+        metadata_store=store,
+        retriever=indexer.documents,
+    )
+    answer_service = CitationAnswerService(
+        context_search=context_search,
+        min_score=0.1,
+        min_results=1,
+    )
+    mcp = FastMCP("retained-owner-empty-repo-smoke")
+    register_tools(
+        mcp,
+        ingestion_service=ingestion,
+        context_search_service=context_search,
+        answer_service=answer_service,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    async def run_flow():
+        listed = await _call_tool_json_async(mcp, "list_sources")
+        sync_job = await _call_tool_json_async(
+            mcp,
+            "sync_source",
+            {"source_id": "source_github"},
+        )
+        status = await _wait_for_sync_completion(mcp, "source_github")
+        return listed, sync_job, status
+
+    listed, sync_job, status = asyncio.run(run_flow())
+    document_id = "github:eunaverse/populated:README.md"
+    search_result = _call_tool_json(
+        mcp,
+        "search_context",
+        {
+            "query": "searchable owner sync evidence",
+            "filters": {"source_id": "source_github"},
+            "top_k": 3,
+        },
+    )
+    fetched = _call_tool_json(
+        mcp,
+        "fetch_context",
+        {"document_id": document_id},
+    )
+    answer = asyncio.run(
+        answer_service.answer_with_citations(
+            "searchable owner sync evidence",
+            filters={"source_id": "source_github"},
+            top_k=3,
+        )
+    )
+
+    assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
+    assert sync_job["status"] == "running"
+    assert status["source"]["sync_status"] == "succeeded"
+    assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["processed_documents"] == 1
+    assert store.get_document(document_id).deleted_at == ""
+    assert search_result["results"][0]["document_id"] == document_id
+    assert fetched["document"]["document_id"] == document_id
     assert answer["evidence_status"] == "grounded"
     assert answer["used_chunks"] == [search_result["results"][0]["chunk_id"]]
+    assert connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/empty:",
+        "github:eunaverse/populated:",
+    )
+    assert connector.supports_stale_cleanup is True
+    assert not any("/repos/eunaverse/empty/commits/" in url for url in http.urls)
 
 
 def test_github_connector_syncs_through_ingestion_service(tmp_path):
@@ -567,6 +1052,88 @@ def test_github_connector_syncs_through_ingestion_service(tmp_path):
     assert indexer.documents[0].document_id == (
         "github:eunhwa99/mcpcontentsearch:api/tools.py"
     )
+
+
+def test_owner_cleanup_lifecycle_is_scoped_and_incomplete_followup_is_safe(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
+
+    seed_connector = GitHubSourceConnector(
+        repositories=(
+            "eunaverse/populated@main",
+            "eunaverse/empty@main",
+            "eunaverse/historical-private@main",
+        ),
+        config=config,
+        http_client=SeedOwnerLifecycleGitHubHTTP(),
+        allow_stale_cleanup=False,
+    )
+    seed_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([seed_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    seed_job = asyncio.run(seed_service.sync_source("source_github"))
+    populated_stale_id = "github:eunaverse/populated:old.py"
+    empty_stale_id = "github:eunaverse/empty:old.py"
+    historical_private_id = "github:eunaverse/historical-private:legacy.py"
+    assert seed_job.status == SyncJobStatus.SUCCEEDED
+    assert store.get_document(populated_stale_id).deleted_at == ""
+    assert store.get_document(empty_stale_id).deleted_at == ""
+    assert store.get_document(historical_private_id).deleted_at == ""
+
+    complete_http = OwnerLifecycleGitHubHTTP()
+    complete_connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=config,
+        http_client=complete_http,
+    )
+    complete_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([complete_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    complete_job = asyncio.run(complete_service.sync_source("source_github"))
+    current_id = "github:eunaverse/populated:current.py"
+
+    assert complete_job.status == SyncJobStatus.SUCCEEDED
+    assert complete_connector.supports_stale_cleanup is True
+    assert complete_connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/populated:",
+        "github:eunaverse/empty:",
+    )
+    assert store.get_document(populated_stale_id).deleted_at != ""
+    assert store.get_document(empty_stale_id).deleted_at != ""
+    assert store.get_document(historical_private_id).deleted_at == ""
+    assert store.get_document(current_id).deleted_at == ""
+    assert not any(
+        "/repos/eunaverse/empty/commits/" in url for url in complete_http.urls
+    )
+
+    incomplete_connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=config,
+        http_client=OwnerLifecycleGitHubHTTP(incomplete=True),
+    )
+    incomplete_service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([incomplete_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    incomplete_job = asyncio.run(incomplete_service.sync_source("source_github"))
+
+    assert incomplete_job.status == SyncJobStatus.SUCCEEDED
+    assert incomplete_connector.supports_stale_cleanup is False
+    assert store.get_document(current_id).deleted_at == ""
+    assert store.list_chunks_for_document(current_id)
+    assert store.get_document(historical_private_id).deleted_at == ""
 
 
 def test_github_sync_skips_stale_cleanup_when_file_cap_is_exceeded(tmp_path):
