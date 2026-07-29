@@ -42,9 +42,10 @@ File names should be numbered and descriptive:
 | [0004](0004-contextwiki-phase-b-connectors.md) | accepted, website/docs superseded by [0006](0006-slim-mcp-core-scope.md) | ContextWiki Phase B GitHub connector, retained Obsidian local-vault connector, and superseded website/docs connector |
 | [0005](0005-contextwiki-auto-wiki-llm-synthesis.md) | superseded by [0006](0006-slim-mcp-core-scope.md) for current scope | Historical ContextWiki Auto Wiki LLM synthesis boundary |
 | [0006](0006-slim-mcp-core-scope.md) | accepted, query-rewrite wording superseded by [0008](0008-background-sync-all-and-deterministic-retrieval.md) | Slim MCP core scope |
-| [0007](0007-sync-source-background-launch-contract.md) | accepted, completion-attribution polling partially superseded by [0009](0009-exact-sync-job-status-observation.md) | Public MCP `sync_source` background-launch contract and internal blocking execution split |
-| [0008](0008-background-sync-all-and-deterministic-retrieval.md) | accepted, completion-attribution polling partially superseded by [0009](0009-exact-sync-job-status-observation.md) | Public `sync_all` background-launch aggregation and removal of LLM query rewrite |
+| [0007](0007-sync-source-background-launch-contract.md) | accepted; completion attribution superseded by [0009](0009-exact-sync-job-status-observation.md), MCP-process execution ownership superseded by [0010](0010-durable-all-source-sync-worker.md) | Public MCP `sync_source` background-launch contract and internal blocking execution split |
+| [0008](0008-background-sync-all-and-deterministic-retrieval.md) | deterministic retrieval and launch aggregation accepted; completion attribution superseded by [0009](0009-exact-sync-job-status-observation.md), MCP-process execution ownership superseded by [0010](0010-durable-all-source-sync-worker.md) | Public `sync_all` launch aggregation and removal of LLM query rewrite |
 | [0009](0009-exact-sync-job-status-observation.md) | accepted | Exact sync-job status observation through paced, bounded short MCP requests |
+| [0010](0010-durable-all-source-sync-worker.md) | accepted | Durable SQLite execution ownership plus LaunchAgent-supervised all-source sync worker |
 
 ## When to Add or Update ADRs
 

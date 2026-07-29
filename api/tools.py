@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated
@@ -11,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from core.error_sanitizer import sanitize_error_text
 from core.models import (
     DocumentSortBy,
     SearchFilters,
@@ -19,6 +19,7 @@ from core.models import (
     SourceType,
     SyncStatus,
 )
+from core.sync_lifecycle import normalize_auth_ref, normalize_sync_job_phase
 from indexing.background_tasks import safe_error_message
 from search import debug_redaction
 
@@ -30,7 +31,6 @@ if TYPE_CHECKING:
     from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
-SAFE_PUBLIC_ENV_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
 REGISTERABLE_SOURCE_ATTRS = (
     "source_id",
     "source_type",
@@ -156,13 +156,13 @@ def register_tools(
 
     @mcp.tool()
     async def sync_source(source_id: str) -> dict:
-        """특정 source sync를 시작하거나 기존 running job을 재사용한다."""
+        """특정 source sync를 durable queue에 넣거나 기존 active job을 재사용한다."""
         if ingestion_service is None:
             return {"status": "error", "message": "ingestion service is not configured"}
-        if not hasattr(ingestion_service, "start_sync_source"):
+        if not hasattr(ingestion_service, "enqueue_sync_source"):
             return {
                 "status": "error",
-                "message": "ingestion service does not support background sync launch",
+                "message": "ingestion service does not support durable sync enqueue",
             }
         if not _source_id_is_public(
             source_id,
@@ -172,7 +172,7 @@ def register_tools(
             message = safe_error_message(ValueError(f"Unknown source: {source_id}"))
             return {"status": "error", "message": message}
         try:
-            job = await ingestion_service.start_sync_source(source_id)
+            job = await ingestion_service.enqueue_sync_source(source_id)
             return _safe_sync_job_payload(job)
         except Exception as exc:
             message = safe_error_message(exc)
@@ -181,7 +181,7 @@ def register_tools(
 
     @mcp.tool()
     async def sync_all() -> dict:
-        """Start or reuse all source syncs in the background and return launch outcomes immediately.
+        """Enqueue or reuse all source syncs and return launch outcomes immediately.
 
         Keep only started/already_running source_id and job_id targets.
         Do not poll skipped or failed launches; report them immediately.
@@ -205,7 +205,11 @@ def register_tools(
                 source_registry,
                 public_source_ids,
             )
-            sync_all_callable = ingestion_service.sync_all
+            if not hasattr(ingestion_service, "enqueue_all"):
+                return _sync_all_error_payload(
+                    "ingestion service does not support durable bulk sync enqueue"
+                )
+            sync_all_callable = ingestion_service.enqueue_all
             if public_bulk_sync_requires_filtering:
                 sync_all_signature = inspect.signature(sync_all_callable)
                 if "source_ids" not in sync_all_signature.parameters:
@@ -647,7 +651,7 @@ def _model_payload(model) -> dict:
 def _redact_public_error_text(value):
     if not value:
         return value
-    return safe_error_message(ValueError(str(value)))
+    return sanitize_error_text(value)
 
 
 def _redact_public_query_text(value: str):
@@ -658,8 +662,9 @@ def _safe_auth_ref(value):
     if not value:
         return value
     auth_ref = str(value)
-    if SAFE_PUBLIC_ENV_REF_RE.match(auth_ref):
-        return auth_ref
+    normalized = normalize_auth_ref(auth_ref)
+    if normalized:
+        return normalized
     return "<redacted>"
 
 
@@ -686,8 +691,16 @@ def _safe_sync_job_payload(job, *, include_progress_hints: bool = False) -> dict
             "status_message",
         ):
             payload.pop(key, None)
-    elif "status_message" in payload:
-        payload["status_message"] = _redact_public_error_text(payload["status_message"])
+    else:
+        normalized_phase = normalize_sync_job_phase(payload.get("phase"))
+        if normalized_phase:
+            payload["phase"] = normalized_phase
+        else:
+            payload.pop("phase", None)
+        if "status_message" in payload:
+            payload["status_message"] = _redact_public_error_text(
+                payload["status_message"]
+            )
     if "error_message" in payload:
         payload["error_message"] = _redact_public_error_text(payload["error_message"])
     return payload

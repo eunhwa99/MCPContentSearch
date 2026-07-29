@@ -103,4 +103,5 @@ embedding provider.
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
 - `.agents/docs/adr/0007-sync-source-background-launch-contract.md`
 - `.agents/docs/adr/0009-exact-sync-job-status-observation.md`
+- `.agents/docs/adr/0010-durable-all-source-sync-worker.md`
 - `docs/plan/2026-07-29-background-sync-all-remove-query-rewrite.md`

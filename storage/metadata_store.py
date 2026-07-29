@@ -1,8 +1,10 @@
 import base64
 import binascii
+import ctypes
 import json
-import sqlite3
 import os
+import sqlite3
+import sys
 import uuid
 from contextlib import contextmanager
 from errno import EPERM, ESRCH
@@ -10,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
+from core.error_sanitizer import sanitize_error_text
 from core.models import (
     ChunkModel,
     DocumentSortBy,
@@ -22,12 +25,44 @@ from core.models import (
     SyncJobStatus,
     SyncStatus,
 )
+from core.sync_lifecycle import normalize_auth_ref, normalize_sync_job_phase
 from core.utils import ContentHasher
 
 
 ORPHANED_SYNC_JOB_RECOVERY_MESSAGE = (
-    "Previous running sync job was recovered after server restart; start sync again."
+    "Previous running sync job was recovered after its execution owner stopped "
+    "responding; start sync again."
 )
+_DARWIN_PROC_PIDTBSDINFO = 3
+
+
+class _DarwinProcBSDInfo(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_uint32),
+        ("status", ctypes.c_uint32),
+        ("xstatus", ctypes.c_uint32),
+        ("pid", ctypes.c_uint32),
+        ("ppid", ctypes.c_uint32),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("ruid", ctypes.c_uint32),
+        ("rgid", ctypes.c_uint32),
+        ("svuid", ctypes.c_uint32),
+        ("svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("comm", ctypes.c_char * 16),
+        ("name", ctypes.c_char * 32),
+        ("nfiles", ctypes.c_uint32),
+        ("pgid", ctypes.c_uint32),
+        ("pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("nice", ctypes.c_int32),
+        ("start_tvsec", ctypes.c_uint64),
+        ("start_tvusec", ctypes.c_uint64),
+    ]
+
+
 OBSIDIAN_REFRESH_CLEARABLE_ERRORS = (
     "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
     "is not set or is not an existing directory.",
@@ -45,6 +80,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sanitize_lifecycle_text(value: object) -> str:
+    if not value:
+        return ""
+    return sanitize_error_text(value)
+
+
+def _sanitize_source_lifecycle(source: SourceModel) -> SourceModel:
+    return source.model_copy(
+        update={
+            "auth_ref": normalize_auth_ref(source.auth_ref),
+            "last_error": _sanitize_lifecycle_text(source.last_error),
+            "stale_cleanup_disabled_reason": _sanitize_lifecycle_text(
+                source.stale_cleanup_disabled_reason
+            ),
+        }
+    )
+
+
 class MetadataStore:
     """SQLite-backed metadata store for ContextWiki sources, jobs, docs, and chunks."""
 
@@ -59,6 +112,8 @@ class MetadataStore:
         self.running_job_timeout_seconds = running_job_timeout_seconds
         self.sync_owner_id = sync_owner_id or str(uuid.uuid4())
         self.unowned_running_job_grace_seconds = unowned_running_job_grace_seconds
+        self._cached_process_id = 0
+        self._cached_process_start_id = ""
 
     def ensure_schema(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +157,7 @@ class MetadataStore:
                 CREATE TABLE IF NOT EXISTS sync_job_owners (
                     owner_id TEXT PRIMARY KEY,
                     process_id INTEGER NOT NULL,
+                    process_start_id TEXT NOT NULL DEFAULT '',
                     started_at TEXT NOT NULL,
                     heartbeat_at TEXT NOT NULL
                 );
@@ -160,6 +216,9 @@ class MetadataStore:
                 );
                 """
             )
+            # executescript may commit before running its statements. Acquire the
+            # migration write lock afterward so every check-and-alter stays atomic.
+            conn.execute("BEGIN IMMEDIATE")
             self._ensure_columns(
                 conn,
                 "sources",
@@ -198,15 +257,22 @@ class MetadataStore:
             )
             self._ensure_columns(
                 conn,
+                "sync_job_owners",
+                {
+                    "process_start_id": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            self._ensure_columns(
+                conn,
                 "chunks",
                 {
                     "version_id": "TEXT NOT NULL DEFAULT ''",
                 },
             )
-            self._touch_sync_owner(conn, _now())
 
     def upsert_source(self, source: SourceModel) -> SourceModel:
         self.ensure_schema()
+        source = _sanitize_source_lifecycle(source)
         existing = self.get_source(source.source_id)
         created_at = source.created_at or (existing.created_at if existing else _now())
         updated_at = _now()
@@ -248,6 +314,7 @@ class MetadataStore:
     def register_source(self, source: SourceModel) -> SourceModel:
         """Register static source config while preserving operational status."""
         self.ensure_schema()
+        source = _sanitize_source_lifecycle(source)
         created_at = source.created_at or _now()
         updated_at = _now()
         with self._connect() as conn:
@@ -388,6 +455,245 @@ class MetadataStore:
             )
         return job
 
+    def enqueue_sync_job(
+        self,
+        source_id: str,
+        *,
+        disabled_error_message: str = "",
+        disabled_stale_cleanup_reason: str = "",
+    ) -> tuple[SyncJobModel, bool]:
+        """Atomically reuse active work or create a terminal/queued sync job."""
+        self.ensure_schema()
+        enqueued_at = _now()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            source_row = conn.execute(
+                "SELECT * FROM sources WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            if not source_row:
+                raise ValueError(f"Unknown source: {source_id}")
+
+            active_row = self._resolve_active_running_job(conn, source_id, enqueued_at)
+            if active_row is None:
+                active_row = self._get_queued_sync_job(conn, source_id)
+            if active_row is not None:
+                self._mark_source_sync_active(conn, source_id, enqueued_at)
+                return self._job_from_row(active_row), False
+
+            if not bool(source_row["enabled"]):
+                error_message = _sanitize_lifecycle_text(
+                    disabled_error_message
+                    or source_row["last_error"]
+                    or source_row["stale_cleanup_disabled_reason"]
+                    or f"Source {source_id} is disabled"
+                )
+                stale_cleanup_disabled_reason = _sanitize_lifecycle_text(
+                    disabled_stale_cleanup_reason
+                    or source_row["stale_cleanup_disabled_reason"]
+                )
+                job = SyncJobModel(
+                    job_id=str(uuid.uuid4()),
+                    source_id=source_id,
+                    status=SyncJobStatus.FAILED,
+                    started_at=enqueued_at,
+                    finished_at=enqueued_at,
+                    phase="failed",
+                    last_progress_at=enqueued_at,
+                    status_message=error_message,
+                    error_message=error_message,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sync_jobs (
+                        job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
+                        total_documents, processed_documents, indexed_chunks,
+                        skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                        last_progress_at, status_message, error_message
+                    ) VALUES (?, ?, '', ?, ?, '', ?, 0, 0, 0, 0, ?, 0, 0, ?, ?, ?)
+                    """,
+                    (
+                        job.job_id,
+                        job.source_id,
+                        job.status.value,
+                        job.started_at,
+                        job.finished_at,
+                        job.phase,
+                        job.last_progress_at,
+                        job.status_message,
+                        job.error_message,
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE sources SET
+                        sync_status = ?,
+                        last_error = ?,
+                        stale_cleanup_disabled_reason = ?,
+                        updated_at = ?
+                    WHERE source_id = ?
+                    """,
+                    (
+                        SyncStatus.FAILED.value,
+                        error_message,
+                        stale_cleanup_disabled_reason,
+                        enqueued_at,
+                        source_id,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM sync_jobs WHERE job_id = ?",
+                    (job.job_id,),
+                ).fetchone()
+                return self._job_from_row(row), True
+
+            job = SyncJobModel(
+                job_id=str(uuid.uuid4()),
+                source_id=source_id,
+                status=SyncJobStatus.QUEUED,
+                started_at=enqueued_at,
+            )
+            conn.execute(
+                """
+                INSERT INTO sync_jobs (
+                    job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
+                    total_documents, processed_documents, indexed_chunks,
+                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    last_progress_at, status_message, error_message
+                ) VALUES (?, ?, '', ?, ?, '', '', 0, 0, 0, 0, '', 0, 0, '', '', '')
+                """,
+                (
+                    job.job_id,
+                    job.source_id,
+                    job.status.value,
+                    job.started_at,
+                ),
+            )
+            self._mark_source_sync_active(conn, source_id, enqueued_at)
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?",
+                (job.job_id,),
+            ).fetchone()
+        return self._job_from_row(row), True
+
+    def claim_next_sync_job(
+        self,
+        source_ids: Iterable[str] | None = None,
+    ) -> Optional[SyncJobModel]:
+        """Atomically claim the oldest queued job for this worker owner."""
+        self.ensure_schema()
+        scoped_source_ids = tuple(
+            dict.fromkeys(str(source_id) for source_id in source_ids or () if source_id)
+        )
+        if source_ids is not None and not scoped_source_ids:
+            return None
+        claimed_at = _now()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            running_source_rows = conn.execute(
+                """
+                SELECT DISTINCT source_id
+                FROM sync_jobs
+                WHERE status = ?
+                """,
+                (SyncJobStatus.RUNNING.value,),
+            ).fetchall()
+            for running_source_row in running_source_rows:
+                running_source_id = running_source_row["source_id"]
+                active_row = self._resolve_active_running_job(
+                    conn,
+                    running_source_id,
+                    claimed_at,
+                    failure_reason=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+                )
+                if active_row is None:
+                    self._reconcile_source_after_inactive_job(
+                        conn,
+                        running_source_id,
+                        claimed_at,
+                        ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+                    )
+            rows = conn.execute(
+                """
+                SELECT j.*
+                FROM sync_jobs j
+                JOIN sources s ON s.source_id = j.source_id
+                WHERE j.status = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sync_jobs active
+                      WHERE active.status = ?
+                )
+                ORDER BY j.started_at, j.rowid
+                """,
+                (
+                    SyncJobStatus.QUEUED.value,
+                    SyncJobStatus.RUNNING.value,
+                ),
+            ).fetchall()
+            scoped_source_id_set = set(scoped_source_ids)
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if not scoped_source_id_set
+                    or candidate["source_id"] in scoped_source_id_set
+                ),
+                None,
+            )
+            if row is None:
+                return None
+
+            cursor = conn.execute(
+                """
+                UPDATE sync_jobs SET
+                    owner_id = ?,
+                    status = ?,
+                    heartbeat_at = ?,
+                    phase = ?,
+                    last_progress_at = ?,
+                    status_message = ?,
+                    error_message = ''
+                WHERE job_id = ? AND status = ?
+                """,
+                (
+                    self.sync_owner_id,
+                    SyncJobStatus.RUNNING.value,
+                    claimed_at,
+                    "starting",
+                    claimed_at,
+                    "Sync worker claimed the queued job.",
+                    row["job_id"],
+                    SyncJobStatus.QUEUED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self._touch_sync_owner(conn, claimed_at)
+            self._mark_source_sync_active(conn, row["source_id"], claimed_at)
+            claimed_row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?",
+                (row["job_id"],),
+            ).fetchone()
+        return self._job_from_row(claimed_row) if claimed_row else None
+
+    def get_owned_running_sync_job(self, job_id: str) -> Optional[SyncJobModel]:
+        """Return a running job only when this store's worker owner claimed it."""
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM sync_jobs
+                WHERE job_id = ? AND status = ? AND owner_id = ?
+                """,
+                (
+                    job_id,
+                    SyncJobStatus.RUNNING.value,
+                    self.sync_owner_id,
+                ),
+            ).fetchone()
+        return self._job_from_row(row) if row else None
+
     def begin_sync_job(self, source_id: str) -> tuple[SyncJobModel, bool]:
         """Atomically start a sync job or return the active running job."""
         self.ensure_schema()
@@ -401,17 +707,10 @@ class MetadataStore:
             if not source_row:
                 raise ValueError(f"Unknown source: {source_id}")
             active_row = self._resolve_active_running_job(conn, source_id, started_at)
+            if active_row is None:
+                active_row = self._get_queued_sync_job(conn, source_id)
             if active_row:
-                conn.execute(
-                    """
-                    UPDATE sources SET
-                        sync_status = ?,
-                        last_error = '',
-                        updated_at = ?
-                    WHERE source_id = ?
-                    """,
-                    (SyncStatus.RUNNING.value, _now(), source_id),
-                )
+                self._mark_source_sync_active(conn, source_id, started_at)
                 return self._job_from_row(active_row), False
 
             job = SyncJobModel(
@@ -449,16 +748,8 @@ class MetadataStore:
                     job.error_message,
                 ),
             )
-            conn.execute(
-                """
-                UPDATE sources SET
-                    sync_status = ?,
-                    last_error = '',
-                    updated_at = ?
-                WHERE source_id = ?
-                """,
-                (SyncStatus.RUNNING.value, _now(), source_id),
-            )
+            self._touch_sync_owner(conn, started_at)
+            self._mark_source_sync_active(conn, source_id, started_at)
         return job, True
 
     def touch_sync_job(self, job_id: str) -> Optional[SyncJobModel]:
@@ -628,7 +919,20 @@ class MetadataStore:
             SyncJobStatus.FAILED.value,
         }:
             raise ValueError("Use complete_successful_sync() or complete_failed_sync()")
+        updates = dict(updates)
+        if "phase" in updates:
+            updates["phase"] = normalize_sync_job_phase(updates["phase"])
+        for field in ("status_message", "error_message"):
+            if field in updates:
+                updates[field] = _sanitize_lifecycle_text(updates[field])
         updated = job.model_copy(update=updates)
+        updated = updated.model_copy(
+            update={
+                "phase": normalize_sync_job_phase(updated.phase),
+                "status_message": _sanitize_lifecycle_text(updated.status_message),
+                "error_message": _sanitize_lifecycle_text(updated.error_message),
+            }
+        )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
@@ -676,6 +980,10 @@ class MetadataStore:
     ) -> SyncJobModel:
         """Fail a queued/running sync without clobbering another active job."""
         self.ensure_schema()
+        error_message = _sanitize_lifecycle_text(error_message)
+        stale_cleanup_disabled_reason = _sanitize_lifecycle_text(
+            stale_cleanup_disabled_reason
+        )
         finished_at = _now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -710,7 +1018,10 @@ class MetadataStore:
             )
             conn.execute("DELETE FROM document_claims WHERE job_id = ?", (job_id,))
             active_row = self._resolve_active_running_job(conn, source_id, finished_at)
-            if not active_row:
+            queued_row = self._get_queued_sync_job(conn, source_id)
+            if active_row or queued_row:
+                self._mark_source_sync_active(conn, source_id, finished_at)
+            else:
                 conn.execute(
                     """
                     UPDATE sources SET
@@ -740,6 +1051,7 @@ class MetadataStore:
     ) -> int:
         """Fail restart-orphaned jobs without stealing a live owned sync."""
         self.ensure_schema()
+        error_message = _sanitize_lifecycle_text(error_message)
         cutoff = self._parse_timestamp(started_before)
         if not cutoff:
             raise ValueError("started_before must be an ISO-8601 timestamp")
@@ -783,12 +1095,17 @@ class MetadataStore:
                 active_row = conn.execute(
                     """
                     SELECT job_id FROM sync_jobs
-                    WHERE source_id = ? AND status = ?
+                    WHERE source_id = ? AND status IN (?, ?)
                     LIMIT 1
                     """,
-                    (source_id, SyncJobStatus.RUNNING.value),
+                    (
+                        source_id,
+                        SyncJobStatus.RUNNING.value,
+                        SyncJobStatus.QUEUED.value,
+                    ),
                 ).fetchone()
                 if active_row:
+                    self._mark_source_sync_active(conn, source_id, finished_at)
                     continue
                 conn.execute(
                     """
@@ -837,6 +1154,11 @@ class MetadataStore:
                         (SyncStatus.RUNNING.value, checked_at, source_id),
                     )
                 return self._job_from_row(active_row)
+            queued_row = self._get_queued_sync_job(conn, source_id)
+            if queued_row:
+                if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
+                    self._mark_source_sync_active(conn, source_id, checked_at)
+                return self._job_from_row(queued_row)
             if source_row and source_row["sync_status"] == SyncStatus.RUNNING.value:
                 self._reconcile_source_after_inactive_job(
                     conn,
@@ -1412,6 +1734,9 @@ class MetadataStore:
     ) -> tuple[SyncJobModel, list[str]]:
         """Atomically finalize a successful sync and optional stale cleanup."""
         self.ensure_schema()
+        stale_cleanup_disabled_reason = _sanitize_lifecycle_text(
+            stale_cleanup_disabled_reason
+        )
         finished_at = _now()
         source_updated_at = _now()
         cleanup_prefixes = tuple(
@@ -1575,8 +1900,13 @@ class MetadataStore:
         finished_at: str,
         error_message: str,
     ):
+        error_message = _sanitize_lifecycle_text(error_message)
         active_row = self._resolve_active_running_job(conn, source_id, finished_at)
         if active_row:
+            return
+        queued_row = self._get_queued_sync_job(conn, source_id)
+        if queued_row:
+            self._mark_source_sync_active(conn, source_id, finished_at)
             return
         conn.execute(
             """
@@ -1590,7 +1920,33 @@ class MetadataStore:
         )
 
     @staticmethod
+    def _get_queued_sync_job(conn, source_id: str):
+        return conn.execute(
+            """
+            SELECT * FROM sync_jobs
+            WHERE source_id = ? AND status = ?
+            ORDER BY started_at, rowid
+            LIMIT 1
+            """,
+            (source_id, SyncJobStatus.QUEUED.value),
+        ).fetchone()
+
+    @staticmethod
+    def _mark_source_sync_active(conn, source_id: str, updated_at: str):
+        conn.execute(
+            """
+            UPDATE sources SET
+                sync_status = ?,
+                last_error = '',
+                updated_at = ?
+            WHERE source_id = ?
+            """,
+            (SyncStatus.RUNNING.value, updated_at, source_id),
+        )
+
+    @staticmethod
     def _fail_sync_job_row(conn, job_id: str, finished_at: str, error_message: str):
+        error_message = _sanitize_lifecycle_text(error_message)
         conn.execute(
             """
             UPDATE sync_jobs SET
@@ -1689,6 +2045,9 @@ class MetadataStore:
         if not owner_row:
             return False
         if not self._is_process_alive(owner_row["process_id"]):
+            return self._dead_owner_is_definitive_in_current_scope(owner_row)
+        process_instance_matches = self._owner_process_instance_matches(owner_row)
+        if process_instance_matches is False:
             return True
         if self._owner_pid_matches_current_process(owner_row):
             return self._is_stale_running_job(row)
@@ -1705,6 +2064,11 @@ class MetadataStore:
                 if owner_id == self.sync_owner_id:
                     return self._is_stale_running_job(row)
                 if not self._is_process_alive(owner_row["process_id"]):
+                    return self._dead_owner_is_definitive_in_current_scope(
+                        owner_row
+                    )
+                process_instance_matches = self._owner_process_instance_matches(owner_row)
+                if process_instance_matches is False:
                     return True
                 if self._owner_pid_matches_current_process(owner_row):
                     return self._is_stale_running_job(row)
@@ -1730,18 +2094,256 @@ class MetadataStore:
         except (TypeError, ValueError):
             return False
 
+    @classmethod
+    def _owner_process_instance_matches(cls, row) -> Optional[bool]:
+        stored_identity = (
+            str(row["process_start_id"] or "")
+            if "process_start_id" in row.keys()
+            else ""
+        )
+        if not stored_identity:
+            return None
+        current_identity = cls._get_process_start_identity(row["process_id"])
+        if not current_identity:
+            return None
+        if stored_identity == current_identity:
+            return True
+
+        stored_linux_identity = cls._parse_linux_process_start_identity(
+            stored_identity
+        )
+        current_linux_identity = cls._parse_linux_process_start_identity(
+            current_identity
+        )
+        if stored_linux_identity or current_linux_identity:
+            if not stored_linux_identity or not current_linux_identity:
+                return None
+            stored_boot_id, stored_namespace, _ = stored_linux_identity
+            current_boot_id, current_namespace, _ = current_linux_identity
+            if (
+                not stored_boot_id
+                or not stored_namespace
+                or not current_boot_id
+                or not current_namespace
+            ):
+                return None
+            if (stored_boot_id, stored_namespace) != (
+                current_boot_id,
+                current_namespace,
+            ):
+                return None
+            return False
+
+        stored_darwin_identity = cls._parse_darwin_process_start_identity(
+            stored_identity
+        )
+        current_darwin_identity = cls._parse_darwin_process_start_identity(
+            current_identity
+        )
+        if stored_identity.startswith("darwin:") or current_identity.startswith(
+            "darwin:"
+        ):
+            if stored_darwin_identity is None or current_darwin_identity is None:
+                return None
+            return False
+        return None
+
+    @classmethod
+    def _dead_owner_is_definitive_in_current_scope(cls, row) -> bool:
+        stored_identity = (
+            str(row["process_start_id"] or "")
+            if "process_start_id" in row.keys()
+            else ""
+        )
+        current_identity = cls._get_process_start_identity(os.getpid())
+        current_linux_identity = cls._parse_linux_process_start_identity(
+            current_identity
+        )
+        stored_linux_identity = cls._parse_linux_process_start_identity(
+            stored_identity
+        )
+        if stored_linux_identity is not None or current_linux_identity is not None:
+            if stored_linux_identity is None or current_linux_identity is None:
+                return False
+            stored_boot_id, stored_namespace, _ = stored_linux_identity
+            current_boot_id, current_namespace, _ = current_linux_identity
+            return (stored_boot_id, stored_namespace) == (
+                current_boot_id,
+                current_namespace,
+            )
+
+        stored_darwin_identity = cls._parse_darwin_process_start_identity(
+            stored_identity
+        )
+        current_darwin_identity = cls._parse_darwin_process_start_identity(
+            current_identity
+        )
+        if stored_darwin_identity is not None or current_darwin_identity is not None:
+            return (
+                stored_darwin_identity is not None
+                and current_darwin_identity is not None
+            )
+        return False
+
+    @staticmethod
+    def _parse_linux_process_start_identity(
+        identity: str,
+    ) -> Optional[tuple[str, str, str]]:
+        parts = identity.split("|")
+        if (
+            len(parts) != 4
+            or parts[0] != "linux-v2"
+            or not parts[1]
+            or not parts[2]
+            or not parts[3]
+            or not MetadataStore._is_ascii_digits(parts[3])
+            or parts[3].startswith("0")
+        ):
+            return None
+        return parts[1], parts[2], parts[3]
+
+    @staticmethod
+    def _parse_darwin_process_start_identity(
+        identity: str,
+    ) -> Optional[tuple[str, str]]:
+        parts = identity.split(":")
+        if (
+            len(parts) != 3
+            or parts[0] != "darwin"
+            or not MetadataStore._is_ascii_digits(parts[1])
+            or not MetadataStore._is_ascii_digits(parts[2])
+            or parts[1].startswith("0")
+            or (len(parts[2]) > 1 and parts[2].startswith("0"))
+        ):
+            return None
+        normalized_microseconds = parts[2].lstrip("0") or "0"
+        if len(normalized_microseconds) > 6:
+            return None
+        return parts[1], parts[2]
+
+    @staticmethod
+    def _is_ascii_digits(value: str) -> bool:
+        return bool(value) and value.isascii() and value.isdecimal()
+
     def _touch_sync_owner(self, conn, timestamp: str):
         process_id = os.getpid()
+        if (
+            self._cached_process_id != process_id
+            or not self._cached_process_start_id
+        ):
+            self._cached_process_id = process_id
+            self._cached_process_start_id = self._get_process_start_identity(
+                process_id
+            )
+        process_start_id = self._cached_process_start_id
         conn.execute(
             """
-            INSERT INTO sync_job_owners (owner_id, process_id, started_at, heartbeat_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sync_job_owners (
+                owner_id, process_id, process_start_id, started_at, heartbeat_at
+            )
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(owner_id) DO UPDATE SET
+                process_start_id = CASE
+                    WHEN sync_job_owners.process_id != excluded.process_id
+                    THEN excluded.process_start_id
+                    WHEN excluded.process_start_id != ''
+                    THEN excluded.process_start_id
+                    ELSE sync_job_owners.process_start_id
+                END,
                 process_id = excluded.process_id,
                 heartbeat_at = excluded.heartbeat_at
             """,
-            (self.sync_owner_id, process_id, timestamp, timestamp),
+            (
+                self.sync_owner_id,
+                process_id,
+                process_start_id,
+                timestamp,
+                timestamp,
+            ),
         )
+        conn.execute(
+            """
+            DELETE FROM sync_job_owners
+            WHERE owner_id != ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM sync_jobs
+                  WHERE sync_jobs.owner_id = sync_job_owners.owner_id
+                    AND sync_jobs.status = ?
+              )
+            """,
+            (self.sync_owner_id, SyncJobStatus.RUNNING.value),
+        )
+
+    @staticmethod
+    def _get_process_start_identity(process_id: int) -> str:
+        try:
+            normalized_process_id = int(process_id)
+        except (TypeError, ValueError):
+            return ""
+        if normalized_process_id <= 0:
+            return ""
+
+        proc_stat_path = Path(f"/proc/{normalized_process_id}/stat")
+        try:
+            stat_value = proc_stat_path.read_text(encoding="utf-8")
+            closing_parenthesis = stat_value.rfind(")")
+            stat_fields = stat_value[closing_parenthesis + 2 :].split()
+            start_ticks = stat_fields[19]
+            try:
+                boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                boot_id = ""
+            if not boot_id:
+                try:
+                    boot_time_row = next(
+                        row
+                        for row in Path("/proc/stat")
+                        .read_text(encoding="utf-8")
+                        .splitlines()
+                        if row.startswith("btime ")
+                    )
+                    boot_id = boot_time_row.split(maxsplit=1)[1]
+                except (IndexError, OSError, StopIteration):
+                    return ""
+            try:
+                pid_namespace = os.readlink(
+                    f"/proc/{normalized_process_id}/ns/pid"
+                )
+            except OSError:
+                pid_namespace = ""
+            return f"linux-v2|{boot_id}|{pid_namespace}|{start_ticks}"
+        except (IndexError, OSError):
+            pass
+
+        if sys.platform != "darwin":
+            return ""
+        try:
+            process_info = _DarwinProcBSDInfo()
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            proc_pidinfo = libproc.proc_pidinfo
+            proc_pidinfo.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
+            proc_pidinfo.restype = ctypes.c_int
+            copied_bytes = proc_pidinfo(
+                normalized_process_id,
+                _DARWIN_PROC_PIDTBSDINFO,
+                0,
+                ctypes.byref(process_info),
+                ctypes.sizeof(process_info),
+            )
+        except (AttributeError, OSError):
+            return ""
+        if copied_bytes != ctypes.sizeof(process_info):
+            return ""
+        return f"darwin:{process_info.start_tvsec}:{process_info.start_tvusec}"
 
     @staticmethod
     def _is_process_alive(process_id: int) -> bool:
@@ -2196,7 +2798,7 @@ class MetadataStore:
             processed_documents=row["processed_documents"],
             indexed_chunks=row["indexed_chunks"],
             skipped_documents=row["skipped_documents"],
-            phase=row["phase"],
+            phase=normalize_sync_job_phase(row["phase"]),
             upstream_total_pages=row["upstream_total_pages"],
             upstream_fetched_pages=row["upstream_fetched_pages"],
             last_progress_at=row["last_progress_at"],

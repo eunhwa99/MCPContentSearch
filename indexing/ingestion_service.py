@@ -2,18 +2,22 @@ import asyncio
 import inspect
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
+from core.error_sanitizer import sanitize_error_text
 from core.models import DocumentModel, SyncJobStatus
 from core.utils import ContentHasher
 from fetching.connectors import SourceRegistry
 from fetching.notion import _StopRequested
-from indexing.background_tasks import safe_error_message
 from indexing.chunker import DocumentChunker
 from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
 
 CANCELLED_SYNC_ERROR = "Sync request was cancelled before completion."
+WORKER_STOPPED_SYNC_ERROR = (
+    "Sync worker stopped before completion; restart the worker and start sync again."
+)
 FETCHING_PAGE_CONTENT_PHASE = "fetching_page_content"
 INDEXING_DOCUMENTS_PHASE = "indexing_documents"
 FETCH_PROGRESS_STOP_SIGNAL = object()
@@ -33,7 +37,7 @@ def _now() -> str:
 def _redact_sensitive_error(message: str) -> str:
     if not message:
         return "Sync failed. See server logs for details."
-    return safe_error_message(RuntimeError(message))
+    return sanitize_error_text(message)
 
 
 def _stale_cleanup_reason_for_connector(connector, fallback_message: str = "") -> str:
@@ -96,14 +100,16 @@ class IngestionService:
         chunker: DocumentChunker,
         indexer,
         register_source_config: bool = True,
+        durable_dispatch: bool = False,
     ):
         self.metadata_store = metadata_store
         self.source_registry = source_registry
         self.chunker = chunker
         self.indexer = indexer
         self._background_sync_tasks: dict[str, asyncio.Task] = {}
-        self._recent_terminal_background_jobs: dict[str, object] = {}
+        self._recent_terminal_background_jobs: dict[str, Any] = {}
         self.register_source_config = register_source_config
+        self.durable_dispatch = durable_dispatch
         self.metadata_store.ensure_schema()
         if self.register_source_config:
             for source in self.source_registry.list_sources():
@@ -114,6 +120,8 @@ class IngestionService:
             self.metadata_store.register_source(source)
 
     async def sync_all(self, source_ids: list[str] | None = None) -> dict:
+        if self.durable_dispatch:
+            return await self.enqueue_all(source_ids=source_ids)
         sources = self.source_registry.list_sources()
         if self.register_source_config:
             self.refresh_registered_sources()
@@ -178,6 +186,71 @@ class IngestionService:
             "results": results,
         }
 
+    async def enqueue_all(self, source_ids: list[str] | None = None) -> dict:
+        """Durably enqueue selected sources without owning their execution."""
+        sources = self.source_registry.list_sources()
+        if self.register_source_config:
+            self.refresh_registered_sources()
+        selected_source_ids = (
+            [source.source_id for source in sources]
+            if source_ids is None
+            else list(source_ids)
+        )
+        selected_source_ids = list(dict.fromkeys(selected_source_ids))
+        requested_at = _now()
+        results = []
+        for selected_source_id in selected_source_ids:
+            try:
+                job, launch_outcome = await self._enqueue_sync_source_with_outcome(
+                    selected_source_id
+                )
+                results.append(
+                    {
+                        "source_id": selected_source_id,
+                        "launch_outcome": launch_outcome,
+                        "job": job,
+                        "message": "",
+                    }
+                )
+            except Exception as exc:
+                message = _redact_sensitive_error(str(exc))
+                logger.error(
+                    "Bulk sync enqueue failed for source %s: %s",
+                    selected_source_id,
+                    message,
+                )
+                results.append(
+                    {
+                        "source_id": selected_source_id,
+                        "launch_outcome": "failed",
+                        "job": None,
+                        "message": message,
+                    }
+                )
+        summary = {
+            "total_sources": len(results),
+            "started": sum(
+                1 for result in results if result["launch_outcome"] == "started"
+            ),
+            "already_running": sum(
+                1
+                for result in results
+                if result["launch_outcome"] == "already_running"
+            ),
+            "skipped": sum(
+                1 for result in results if result["launch_outcome"] == "skipped"
+            ),
+            "failed": sum(
+                1 for result in results if result["launch_outcome"] == "failed"
+            ),
+            "requested_at": requested_at,
+        }
+        return {
+            "status": _bulk_launch_status_from_results(results),
+            "summary": summary,
+            "results": results,
+        }
+
     async def sync_source(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
         await self._await_finished_background_handoff(source_id)
@@ -216,6 +289,8 @@ class IngestionService:
         return await self._run_sync_source_job(job.job_id, source_id, connector)
 
     async def start_sync_source(self, source_id: str):
+        if self.durable_dispatch:
+            return await self.enqueue_sync_source(source_id)
         job, _ = await self._start_sync_source_with_outcome(source_id)
         return job
 
@@ -265,15 +340,78 @@ class IngestionService:
         self._background_sync_tasks[source_id] = task
         setattr(task, "contextwiki_job_id", job.job_id)
         setattr(task, "contextwiki_connector", connector)
-        task.add_done_callback(
-            lambda completed_task, sid=source_id, jid=job.job_id, sync_connector=connector: self._finalize_background_sync_task(
-                sid,
-                jid,
-                sync_connector,
+
+        def _finalize(completed_task: asyncio.Task) -> None:
+            self._finalize_background_sync_task(
+                source_id,
+                job.job_id,
+                connector,
                 completed_task,
             )
-        )
+
+        task.add_done_callback(_finalize)
         return job, "started"
+
+    async def enqueue_sync_source(self, source_id: str):
+        job, _ = await self._enqueue_sync_source_with_outcome(source_id)
+        return job
+
+    async def _enqueue_sync_source_with_outcome(self, source_id: str):
+        connector = self.source_registry.get_connector(source_id)
+        if self.register_source_config:
+            self.refresh_registered_sources()
+        else:
+            connector.refresh_source_state()
+        disabled_message = ""
+        disabled_stale_cleanup_reason = ""
+        if not connector.source.enabled:
+            disabled_message = _redact_sensitive_error(
+                getattr(connector, "disabled_reason", "")
+                or f"Source {source_id} is disabled"
+            )
+            disabled_stale_cleanup_reason = _stale_cleanup_reason_for_connector(
+                connector,
+                disabled_message,
+            )
+        job, created = self.metadata_store.enqueue_sync_job(
+            source_id,
+            disabled_error_message=disabled_message,
+            disabled_stale_cleanup_reason=disabled_stale_cleanup_reason,
+        )
+        if not created:
+            return job, "already_running"
+        if job.status == SyncJobStatus.FAILED:
+            return job, "skipped"
+        logger.info("Queued durable sync job for source %s", source_id)
+        return job, "started"
+
+    async def run_claimed_sync_job(self, job_id: str):
+        """Execute exactly one running job claimed by this worker process."""
+        job = self.metadata_store.get_owned_running_sync_job(job_id)
+        if job is None:
+            raise ValueError(f"Sync job is not claimed by this worker: {job_id}")
+        connector = self.source_registry.get_connector(job.source_id)
+        connector.refresh_source_state()
+        if not connector.source.enabled:
+            message = _redact_sensitive_error(
+                getattr(connector, "disabled_reason", "")
+                or f"Source {job.source_id} is disabled"
+            )
+            return self.metadata_store.complete_failed_sync(
+                job_id=job.job_id,
+                source_id=job.source_id,
+                error_message=message,
+                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(
+                    connector,
+                    message,
+                ),
+            )
+        return await self._run_sync_source_job(
+            job.job_id,
+            job.source_id,
+            connector,
+            cancellation_error=WORKER_STOPPED_SYNC_ERROR,
+        )
 
     def _begin_sync_source(self, source_id: str):
         connector = self.source_registry.get_connector(source_id)
@@ -300,7 +438,14 @@ class IngestionService:
             ), False
         return connector, job, True
 
-    async def _run_sync_source_job(self, job_id: str, source_id: str, connector):
+    async def _run_sync_source_job(
+        self,
+        job_id: str,
+        source_id: str,
+        connector,
+        *,
+        cancellation_error: str = CANCELLED_SYNC_ERROR,
+    ):
         job = None
         observer_stop_requested = False
         previous_progress_callback = getattr(connector, "progress_callback", None)
@@ -545,12 +690,12 @@ class IngestionService:
                 ),
             )
         except asyncio.CancelledError:
-            error_message = CANCELLED_SYNC_ERROR
+            error_message = cancellation_error
             logger.warning("Sync cancelled for source %s", source_id)
             if "uncommitted_vector_ids" in locals():
                 await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
             self.metadata_store.complete_failed_sync(
-                job_id=job.job_id,
+                job_id=job.job_id if job is not None else job_id,
                 source_id=source_id,
                 error_message=error_message,
                 stale_cleanup_disabled_reason=(
@@ -733,7 +878,6 @@ class IngestionService:
         event_name = str(event.get("event") or "").strip()
         total_pages = _int_progress_value(event.get("total_pages"))
         current_page = _int_progress_value(event.get("current_page"))
-        page_id = str(event.get("page_id") or "").strip() or "unknown-page"
         elapsed_seconds = _float_progress_value(event.get("elapsed_seconds"))
         progress_timestamp = _now()
         existing_total = _int_progress_value(
@@ -812,11 +956,10 @@ class IngestionService:
                 ),
             )
             logger.info(
-                "Source %s fetching upstream page %s/%s (%s)",
+                "Source %s fetching upstream page %s/%s",
                 source_id,
                 current_page or "?",
                 total_pages or "?",
-                page_id,
             )
             return None
 
@@ -834,11 +977,10 @@ class IngestionService:
                 ),
             )
             logger.info(
-                "Source %s fetched upstream page %s/%s (%s) in %.2fs",
+                "Source %s fetched upstream page %s/%s in %.2fs",
                 source_id,
                 current_page or "?",
                 total_pages or "?",
-                page_id,
                 elapsed_seconds,
             )
             return None

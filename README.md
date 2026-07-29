@@ -10,18 +10,16 @@ Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and 
 ## 🏗️ Architecture
 
 ```text
-[ Sources ]
- Notion / Tistory / GitHub / Obsidian
-                |
-                v
-         [ Ingestion Service ]
-             /            \
-            v              v
-      [ Chroma ]      [ SQLite ]
-    semantic search   metadata gate
-            \              /
-             v            v
-         [ Verified Context ]
+[ MCP client ]                         [ macOS LaunchAgent ]
+       |                                        |
+       v                                        v
+[ FastMCP server ] -- enqueue --> [ SQLite jobs ] <-- claim -- [ Sync worker ]
+       |                                |                         |
+       |                                |                 Notion / Tistory /
+       |                                |                 GitHub / Obsidian
+       |                                |                         |
+       v                                v                         v
+ [ Search tools ] <------ active gate ------ [ Chroma + lifecycle metadata ]
 ```
 
 For detailed data flows and design constraints, see
@@ -34,8 +32,8 @@ For detailed data flows and design constraints, see
 | Tool | What it does | When the LLM uses it |
 |------|--------------|----------------------|
 | `list_sources()` | Lists configured sources and their current state | When the user asks which sources are connected or available |
-| `sync_source(source_id)` | Starts a sync for one source, or returns its already-running sync job | When the user asks to import or refresh one specific source |
-| `sync_all()` | Starts all configured source syncs in the background and immediately reports each launch result | When the user asks to import or refresh every source |
+| `sync_source(source_id)` | Enqueues one durable source job, or returns its existing queued/running job | When the user asks to import or refresh one specific source |
+| `sync_all()` | Enqueues all configured sources and immediately reports each launch result | When the user asks to import or refresh every source |
 | `get_sync_status(source_id="", job_id="")` | Shows one exact job when both IDs are supplied, the latest job for one source when only `source_id` is supplied, or all sources when both are omitted | When the user asks whether a sync has finished or why it failed |
 | `search_context(query, ...)` | Finds relevant chunks and returns citation-ready context after SQLite validation | When the LLM needs focused evidence to answer the user's question |
 | `search_documents(query, ...)` | Returns one result per matching document and can sort the semantic candidates by relevance or normalized dates | When the user asks for relevant documents and the LLM needs one representative passage from each document |
@@ -132,6 +130,11 @@ cp .env.example .env
 uv run --locked python main.py
 ```
 
+The command above runs only the FastMCP process. Durable source sync also needs
+the separate sync worker described in
+[Durable sync worker on macOS](#durable-sync-worker-on-macos). A queued job
+remains safely queued until that worker is available.
+
 **Docker:**
 
 ```bash
@@ -142,6 +145,26 @@ docker run --rm -i \
   -v contextwiki_data:/home/appuser/.mcp_content_search \
   contextwiki
 ```
+
+Run the generic worker separately with the same environment and named volume:
+
+```bash
+docker run -d --name contextwiki-sync-worker \
+  --restart unless-stopped \
+  --log-driver local \
+  --log-opt max-size=5m \
+  --log-opt max-file=3 \
+  --env-file .env \
+  -v contextwiki_data:/home/appuser/.mcp_content_search \
+  contextwiki \
+  /app/.venv/bin/python -m indexing.sync_worker
+```
+
+The worker container is separate from the stdio MCP container. Docker restarts
+it after an unexpected exit, while `docker stop contextwiki-sync-worker`
+intentionally leaves it stopped. A graceful stop fails the in-flight job; an
+abrupt crash uses the same SQLite owner/heartbeat recovery as the LaunchAgent.
+The Docker log-driver options bound retained stdout/stderr logs.
 
 > For Obsidian in Docker, add `-v "/path/to/vault:/vault:ro"` and set `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
 
@@ -218,6 +241,10 @@ Important:
 
 - Repository `.env` values do not override env vars already set by Claude
   Desktop or your shell.
+- Both FastMCP and the durable worker snapshot source configuration at process
+  startup. After changing `.env` or source settings, fully restart the MCP
+  client and restart the LaunchAgent worker with
+  `./scripts/restart_sync_worker_launch_agent.sh`.
 - If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or
   other source env vars in `claude_desktop_config.json` or a parent shell, clear
   the stale values there too.
@@ -275,7 +302,7 @@ Add the same local uv config above to `.cursor/mcp.json`.
 
 1. Refresh content:
    - For one source, call `sync_source("source_notion")` and inspect its
-     top-level `status`. If it is `running`, retain its `source_id` and
+     top-level `status`. If it is `queued` or `running`, retain its `source_id` and
      `job_id`, then call `get_sync_status(source_id=..., job_id=...)` and read
      the exact `job.status` until it becomes `succeeded` or `failed`. Continue
      only after `succeeded`, and use the same paced, bounded observation policy
@@ -329,6 +356,151 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 
 ---
 
+## Durable sync worker on macOS
+
+ContextWiki uses two independent processes for durable local sync:
+
+```text
+FastMCP process                 LaunchAgent worker
+accepts tools and queues jobs   claims and executes jobs
+Ctrl+C can stop it              continues until separately stopped
+```
+
+The same generic worker handles Notion, Tistory, GitHub, and Obsidian. Source
+credentials remain in the repository-local `.env`; the generated plist
+contains only absolute executable, repository, and log paths.
+
+For foreground development only, run
+`uv run --locked python -m indexing.sync_worker` in a second terminal. Closing
+that terminal stops the worker. The LaunchAgent setup below is the durable
+macOS option.
+
+Preview the resolved installation without writing a plist or calling
+`launchctl`:
+
+```bash
+./scripts/install_sync_worker_launch_agent.sh --dry-run
+```
+
+Install and start the worker:
+
+```bash
+./scripts/install_sync_worker_launch_agent.sh
+```
+
+The installer resolves the current repository and `uv` to absolute paths and
+renders
+`~/Library/LaunchAgents/com.eunaverse.contextwiki.sync-worker.plist`. Running
+the same command again with identical settings is a no-op and does not
+interrupt an active sync. If the plist is identical but the service is
+unloaded, the installer loads it again. If the rendered configuration changed,
+the installer stops with guidance instead of silently restarting the worker.
+The default log directory is secured to mode `0700`. A new custom `--log-dir`
+is also created with mode `0700`; an existing custom directory must already
+have that mode, use a canonical absolute path with no symbolic-link
+components, be owned by the current user, and be writable and searchable by
+that user. The installer rejects an unsafe custom directory without changing
+its permissions. `--dry-run` and `--render-only` never change the log
+directory.
+First inspect active sync status, then apply the change explicitly:
+
+```bash
+./scripts/install_sync_worker_launch_agent.sh --restart
+```
+
+If the changed configuration cannot start, the installer restores the previous
+plist and its prior loaded state. If a service is loaded but its plist was
+removed manually, the default install refuses to interrupt it. Inspect the
+active sync, then use `--restart` explicitly. Because no prior plist exists in
+that case, a replacement bootstrap failure leaves the service unloaded and
+cannot restore its earlier configuration automatically.
+Install, restart, and uninstall commands for this label are serialized. A
+second command waits up to 30 seconds while the first finishes its complete
+state check and mutation or rollback. A lock left by a dead helper is recovered
+when its process identity is definitively stale. A freshly ownerless or
+partially written lock fails this bounded wait instead of risking removal of an
+operation still publishing its identity; after the conservative 60-second
+grace, a later command can recover that abandoned crash-window lock.
+
+Manage the worker:
+
+```bash
+./scripts/status_sync_worker_launch_agent.sh
+./scripts/restart_sync_worker_launch_agent.sh
+./scripts/uninstall_sync_worker_launch_agent.sh
+```
+
+Uninstall addresses the stable service label, so it can stop a loaded service
+even if its plist was already removed manually.
+
+If installation used a custom directory, pass the same directory to uninstall:
+
+```bash
+./scripts/uninstall_sync_worker_launch_agent.sh \
+  --launch-agents-dir /absolute/custom/LaunchAgents
+```
+
+For artifact-only inspection, render a plist without loading it:
+
+```bash
+./scripts/install_sync_worker_launch_agent.sh \
+  --render-only /tmp/contextwiki-sync-worker.plist
+plutil -lint /tmp/contextwiki-sync-worker.plist
+```
+
+Runtime behavior:
+
+- Stopping `uv run --locked python main.py` or closing its MCP client does not
+  stop a job already owned by the LaunchAgent worker.
+- Stopping or uninstalling the worker stops sync execution. A graceful stop
+  records the in-flight job as failed; after an abrupt stop, the existing
+  owner/heartbeat recovery marks orphaned work failed before a fresh retry.
+- `queued` means SQLite accepted the request but no worker has claimed it yet.
+  `running` means the worker owns it. `succeeded` and `failed` are terminal.
+- The worker intentionally executes one job at a time across all sources.
+
+Worker logs are written to:
+
+```text
+~/.mcp_content_search/logs/sync-worker.log
+~/.mcp_content_search/logs/sync-worker.log.1
+~/.mcp_content_search/logs/sync-worker.log.2
+~/.mcp_content_search/logs/sync-worker.log.3
+~/.mcp_content_search/logs/sync-worker-startup.log
+```
+
+The active file is limited to 5 MiB and retains at most three rotated backups.
+Third-party INFO logs such as HTTP request URLs are suppressed. Project INFO
+logs contain aggregate counts and source/job lifecycle only; document, chunk,
+Notion page, and Notion block identifiers are absent or DEBUG-only. The common
+handler applies the centralized credential sanitizer to every retained record,
+including complete multiword Authorization Bearer/Basic, Cookie, and API-key
+values plus bare Notion token signatures, then redacts HTTP(S) URLs, local
+paths, and formatter-added stack or exception context. Oversized retained
+records are byte-bounded before rotation so a single record cannot exceed the
+configured active-file limit. The same sanitizer is applied before job/source
+errors are stored and again when MCP status payloads are returned.
+The separate startup diagnostic continuously keeps only the latest 1 MiB of
+`uv`, import, initialization, and uncaught startup stderr, including while a
+long-running process is still emitting and before Python logging can be
+configured. After reaching the limit, it compacts to a half-size retained tail
+and then resumes appending, so sustained output does not rewrite the full
+1 MiB file for every input chunk.
+
+Safe diagnostics:
+
+```bash
+./scripts/status_sync_worker_launch_agent.sh
+tail -n 100 ~/.mcp_content_search/logs/sync-worker.log
+tail -n 100 ~/.mcp_content_search/logs/sync-worker-startup.log
+```
+
+Do not paste `.env`, tokens, or indexed content into diagnostics. Installing
+the LaunchAgent starts a persistent process that can access configured sources
+and the normal local SQLite/Chroma stores.
+
+---
+
 ## 🔧 Troubleshooting
 
 | Symptom | Fix |
@@ -338,8 +510,12 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 | `Invalid GitHub target` or `Invalid GitHub repository spec` | Use a bare `owner`, `owner/repo`, or `owner/repo@ref`; separate multiple targets with commas or newlines |
 | `Duplicate GitHub repository spec` | Remove overlapping targets. Do not combine an owner with an exact target for a repository that owner discovery returns; an exact ref does not override the discovered ref |
 | GitHub target changes are not reflected in Claude Desktop | Fully quit and restart Claude Desktop after editing its environment or `.env`, run `sync_source("source_github")`, retain its returned `source_id` and `job_id`, then poll the exact job with `get_sync_status(source_id=..., job_id=...)` using the bounded policy above |
+| Sync remains `queued` | Run `./scripts/status_sync_worker_launch_agent.sh`; install or restart the worker if it is absent |
+| Worker repeatedly exits | Inspect `sync-worker-startup.log` first, then `sync-worker.log`; verify the absolute repository and `uv` paths with installer `--dry-run` |
+| MCP stopped but sync is still `running` | Expected: the independent LaunchAgent worker owns the sync |
+| Worker was stopped during sync | Restart it, inspect the failed/orphaned terminal job, then explicitly request a fresh sync |
 | Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
-| Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
+| Source still disabled after config change | Fully restart the MCP client and run `./scripts/restart_sync_worker_launch_agent.sh`; both processes snapshot source config at startup |
 | A sync failed | For current latest-source inspection, call `get_sync_status("source_notion")`, replacing the source ID as needed. For a job launched in this conversation, use its retained `source_id` and `job_id` with exact-job status instead |
 
 ---
@@ -365,9 +541,10 @@ live GitHub owner sync; it uses fake GitHub responses and temporary stores.
 main.py          FastMCP server entry point
 api/             MCP tool handlers
 core/            Shared models, exceptions, utilities
+deploy/launchd/  Version-controlled macOS LaunchAgent template
 environments/    Env var and secret loading
 fetching/        Source connectors (Notion, Tistory, GitHub, Obsidian)
-indexing/        Chunking, deduplication, Chroma indexing
+indexing/        Chunking, durable sync worker, deduplication, Chroma indexing
 search/          Search, ranking, metadata gate, citation answer support
 storage/         SQLite lifecycle management
 tests/, scripts/ Verification harnesses and utilities

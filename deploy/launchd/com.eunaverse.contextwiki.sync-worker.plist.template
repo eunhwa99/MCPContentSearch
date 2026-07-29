@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@@LABEL@@</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@@LAUNCHER_PATH@@</string>
+    <string>@@UV_PATH@@</string>
+    <string>@@REPO_ROOT@@</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@@REPO_ROOT@@</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CONTEXTWIKI_SYNC_WORKER_LOG_PATH</key>
+    <string>@@WORKER_LOG@@</string>
+    <key>CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES</key>
+    <string>5242880</string>
+    <key>CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT</key>
+    <string>3</string>
+    <key>CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH</key>
+    <string>@@DIAGNOSTIC_LOG@@</string>
+    <key>CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES</key>
+    <string>1048576</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+</dict>
+</plist>

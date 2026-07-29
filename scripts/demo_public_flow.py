@@ -28,6 +28,7 @@ from fetching.connectors import ObsidianSourceConnector, SourceRegistry
 from indexing.chunker import DocumentChunker
 from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
+from indexing.sync_worker import SyncWorker
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore
@@ -37,6 +38,7 @@ class DemoMCP:
     def __init__(self):
         self.tools: dict[str, object] = {}
         self.answer_service: CitationAnswerService | None = None
+        self.sync_worker: SyncWorker | None = None
 
     def tool(self):
         def decorator(func):
@@ -114,6 +116,20 @@ def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
         source_registry=source_registry,
     )
     mcp.answer_service = answer_service
+    worker_metadata_store = MetadataStore(config.metadata_db_path)
+    worker_ingestion_service = IngestionService(
+        metadata_store=worker_metadata_store,
+        source_registry=SourceRegistry([ObsidianSourceConnector(config)]),
+        chunker=DocumentChunker(max_chars=500, overlap_chars=50),
+        indexer=indexer,
+        register_source_config=False,
+    )
+    mcp.sync_worker = SyncWorker(
+        worker_ingestion_service,
+        worker_metadata_store,
+        source_ids=("source_obsidian",),
+        poll_interval_seconds=0.1,
+    )
     return mcp
 
 
@@ -146,6 +162,14 @@ async def run_demo(query: str, question: str) -> dict:
             sample_vault = repo_root / "sample_vault"
             mcp = build_demo_components(sample_vault, Path(temp_dir))
             sync_payload = await mcp.tools["sync_source"]("source_obsidian")
+            if mcp.sync_worker is None:
+                raise RuntimeError("Demo sync worker is not configured")
+            completed_job = await mcp.sync_worker.run_once()
+            if (
+                completed_job is None
+                or completed_job.job_id != sync_payload.get("job_id")
+            ):
+                raise RuntimeError("Demo sync worker did not complete the accepted job")
             status_payload = await _wait_for_demo_sync_completion(mcp, "source_obsidian")
             search_payload = await mcp.tools["search_context"](
                 query,

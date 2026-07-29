@@ -42,12 +42,16 @@ class IndexManager:
                 {"contextwiki_managed": "true" if managed else {"$ne": "true"}}
             )
             self.collection.delete(where={"$and": filters})
-            logger.info("Deleted outdated document: %s from %s", doc_id, resolved_source_id)
+            logger.debug(
+                "Deleted outdated document: %s from %s",
+                doc_id,
+                resolved_source_id,
+            )
             return
         self.collection.delete(
             where={"$and": [{"doc_id": doc_id}, {"contextwiki_managed": {"$ne": "true"}}]}
         )
-        logger.info("Deleted outdated document: %s", doc_id)
+        logger.debug("Deleted outdated document: %s", doc_id)
 
     @staticmethod
     def _document_key(doc: DocumentModel) -> str:
