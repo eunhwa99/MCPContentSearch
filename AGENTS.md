@@ -66,7 +66,9 @@
   fresh three-reviewer pass. For a non-behavior code/config/test finding,
   record RED as `n/a` without manufacturing a failure, then rerun affected
   focused tests, `./scripts/verify_all.sh`, any matching eval gate required by
-  feature scope only after that full-suite gate, and affected functional smoke.
+  feature scope only after that full-suite gate (record full-suite eval
+  evidence when already covered; otherwise rerun the matching eval), and
+  affected functional smoke.
   For a docs-only finding, rerun the lightweight docs verification without fake
   RED. Update the plan when one is required and route the fix to the responsible
   worker persona or a fresh replacement with the same ownership boundary.
@@ -129,7 +131,12 @@ If `uv run ...` fails because the local environment or workspace metadata is not
   Notion/Tistory/GitHub checks require both explicit user approval and a plan;
   plan-exempt work must reclassify or keep the check `blocked/gated`. Never
   expose tokens.
-- Verification and functional smoke must happen before the harness review loop; if review findings require edits, rerun the affected verification and affected functional smoke entries before starting a fresh three-reviewer pass.
+- Verification, any matching eval gate required by feature scope (only after
+  `./scripts/verify_all.sh`, prefer recording full-suite quality-eval evidence
+  when already covered), and functional smoke must happen before the harness
+  review loop; if review findings require edits, rerun the affected
+  verification, matching eval gate when in scope, and affected functional smoke
+  entries before starting a fresh three-reviewer pass.
 
 ## Security and Configuration
 

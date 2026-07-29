@@ -477,9 +477,12 @@ considering live external checks. A skipped live check is acceptable only when
 the matrix records the safety reason, needed user approval, and nearest local
 substitute.
 
-Verification and functional smoke must precede the harness review loop. If
-review findings require changes, rerun the affected verification and affected
-smoke entries before starting the next fresh three-reviewer pass.
+Verification, any matching eval gate required by feature scope (only after
+`./scripts/verify_all.sh`, prefer recording full-suite quality-eval evidence
+when already covered), and functional smoke must precede the harness review
+loop. If review findings require changes, rerun the affected verification,
+matching eval gate when in scope, and affected smoke entries before starting
+the next fresh three-reviewer pass.
 
 ## Delivery
 

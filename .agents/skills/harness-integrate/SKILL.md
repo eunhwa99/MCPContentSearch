@@ -33,15 +33,19 @@ Python code integration first validates that the recorded post-refactor
 the expensive full suite when no code, configuration, tests, or verification
 inputs changed and the evidence is current. If integration or review changes
 one of those inputs, the earlier evidence is stale: return to the applicable
-TDD/focused gate, then rerun the post-refactor full-suite gate and refresh the
-evidence.
+TDD/focused gate, then rerun the post-refactor full-suite gate, satisfy any
+matching eval gate required by feature scope only after that full-suite gate
+(record full-suite quality-eval evidence when already covered; otherwise run
+the focused matching eval command), and refresh the evidence.
 
 Focused unit, integration, and deterministic E2E checks must already be green.
 For feature/behavior changes, integration evidence must also show the
 pre-production RED command, layers/tests, non-zero exit code, expected failure
 signature, and ordering. Pure refactor, test-only, or other non-behavior work
 records RED as `n/a` with a rationale. Post-refactor affected checks and the
-full wrapper must pass; partial fallbacks are diagnostic only.
+full wrapper must pass; partial fallbacks are diagnostic only. When feature
+scope requires it, matching eval gate evidence must also be current after the
+full-suite gate.
 
 MCP contract changes should include a startup/import or tool-registration smoke when it can run without live credentials and without mutating user Chroma data or SQLite metadata.
 
@@ -84,6 +88,8 @@ Final response should include:
 - TDD RED evidence and confirmation that it predates production edits for
   feature/behavior changes, or the non-behavior/docs-only `n/a` rationale.
 - Verification commands and results.
+- Matching eval gate evidence when required by feature scope (recorded
+  full-suite quality-eval evidence or focused matching command result).
 - Functional smoke matrix results, including blocked/gated checks.
 - Three-reviewer harness status, including whether the newest fresh
   bugs/correctness, security/data-safety, and performance/reliability reviewers
