@@ -45,12 +45,16 @@ GREEN so the next phase can refactor. The orchestrator reruns affected focused
 tests after refactor and owns the mandatory `./scripts/verify_all.sh` execution
 for the current diff before smoke or review.
 
-When a feature changes retrieval quality, ranking, grounding, citation
-selection, answer quality, or another quality-sensitive output already modeled
-by retained local evaluations, also add or update eval coverage and run the
-matching eval command before review. If the feature falls within retained local
-eval coverage but no exact retained eval surface exists yet, extend an existing
-retained eval surface and run the matching eval command before review.
+Do not run matching eval commands in this focused GREEN lane. When a feature
+changes retrieval quality, ranking, grounding, citation selection, answer
+quality, or another quality-sensitive output already modeled by retained local
+evaluations, add or update eval coverage as part of the red/coverage work, but
+leave execution to the orchestrator: it runs the matching eval command only
+after `./scripts/verify_all.sh` succeeds and before functional smoke or review.
+If the feature falls within retained local eval coverage but no exact retained
+eval surface exists yet, extend an existing retained eval surface during
+coverage work; the orchestrator still runs that matching eval command only
+after the full-suite gate.
 
 Preferred checks by change type:
 
@@ -68,14 +72,16 @@ Preferred checks by change type:
 - Full repository verification: the separate post-refactor orchestrator gate
   owns `./scripts/verify_all.sh` for the current diff and requires it to pass
   for every code-changing work item.
-- Eval verification: use deterministic local eval checks such as
+- Eval verification: after successful `./scripts/verify_all.sh`, the
+  orchestrator runs deterministic local eval checks such as
   `uv run pytest -q tests/evals` or `PYTHONPATH=. python scripts/run_contextwiki_eval.py`,
   whichever matches the already-modeled retained eval surface for the changed
   retrieval, ranking, grounding, citation-selection, or answer-quality
   behavior. If no matching retained local eval surface exists yet, extend an
-  existing retained eval surface and run the matching eval command before
-  review. Features outside the current retained local eval coverage are not
-  subject to this eval requirement until the retained eval scope changes.
+  existing retained eval surface during coverage work and run the matching
+  eval command only after the full-suite gate, before smoke or review.
+  Features outside the current retained local eval coverage are not subject to
+  this eval requirement until the retained eval scope changes.
 
 Use uv when it is available and healthy. If uv or the full wrapper fails
 because local setup is broken, record the blocker and run a dependency-free
@@ -103,8 +109,9 @@ The test lane hands focused GREEN evidence to the refactor and post-refactor
 full-suite phases. The overall harness must not proceed to review until
 feature/behavior work has auditable pre-production RED evidence, focused
 unit/integration/E2E GREEN results, post-refactor affected-test results,
-`./scripts/verify_all.sh`, and the functional smoke matrix recorded in the plan
-or plan-exempt evidence. Pure refactor, test-only, or other non-behavior code
+`./scripts/verify_all.sh`, any matching eval command required by feature scope
+(only after that full-suite gate), and the functional smoke matrix recorded in
+the plan or plan-exempt evidence. Pure refactor, test-only, or other non-behavior code
 work records the RED gate as `n/a` with a rationale and still supplies
 applicable focused GREEN, full-suite, and smoke evidence. If required coverage
 does not exist yet, add it; a compile/import check alone is not a completion

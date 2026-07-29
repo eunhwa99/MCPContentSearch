@@ -53,15 +53,18 @@ delivery.
    while focused tests remain green.
 7. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+8. Eval gate when required by feature scope: run any matching retained eval
+   command only after `./scripts/verify_all.sh` succeeds; never during focused
+   GREEN.
+9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    covering the task-relevant feature inventory once through the safest real
    caller surfaces before review, not only the files changed.
-9. Middle review gate: `.agents/skills/harness-review/SKILL.md`, running the
+10. Middle review gate: `.agents/skills/harness-review/SKILL.md`, running the
    three-reviewer harness loop.
-10. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-11. Final review gate: `.agents/skills/harness-review/SKILL.md`, running the
+11. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+12. Final review gate: `.agents/skills/harness-review/SKILL.md`, running the
    three-reviewer harness loop.
-12. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+13. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
 
 Docs/instruction-only work skips the code-specific TDD red, green
 implementation, full-suite, and functional-smoke gates and uses docs-only
@@ -80,9 +83,11 @@ partial fallback. If the feature changes retrieval quality,
 ranking, grounding, citation selection, answer quality, or another
 quality-sensitive output already modeled by retained local evaluations, also
 require adding or updating eval coverage and running the matching eval command
-before review. If the feature falls within retained local eval coverage but no
-exact retained eval surface exists yet, also require extending an existing
-retained eval surface and running the matching eval command before review.
+only after `./scripts/verify_all.sh` succeeds and before functional smoke or
+review; never during focused GREEN. If the feature falls within retained local
+eval coverage but no exact retained eval surface exists yet, also require
+extending an existing retained eval surface and running the matching eval
+command only after that full-suite gate.
 
 ## Loop Rules
 
@@ -108,9 +113,9 @@ lenses: bugs/correctness/contracts/tests; security/privacy/data safety/secrets;
 and performance/reliability/async/concurrency/operability. Continue until all
 three in the newest pass report no actionable findings. For code changes,
 review-fix verification must include affected unit/integration/E2E tests and
-`./scripts/verify_all.sh`, plus any matching eval command before the next
-smoke/review pass. Worker subagents may edit only within delegated boundaries;
-reviewer subagents must not edit files.
+`./scripts/verify_all.sh`, plus any matching eval command only after that
+full-suite gate and before the next smoke/review pass. Worker subagents may
+edit only within delegated boundaries; reviewer subagents must not edit files.
 
 Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, and docs-only.
 
@@ -129,9 +134,12 @@ behavior before production code.
 
 Use the current local eval surfaces when they apply, including deterministic
 eval tests under `tests/evals` such as `uv run pytest -q tests/evals` and
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If a feature falls
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Run matching eval
+commands only after `./scripts/verify_all.sh` succeeds and before functional
+smoke or review; do not run them during focused GREEN. If a feature falls
 within the repo's retained local eval coverage but no matching retained eval
 surface exists yet, extend an existing retained eval surface such as
-`tests/evals` or the fixture runner and run the matching eval command before
-review. Features outside the current retained local eval coverage are not
-subject to this eval requirement until the retained eval scope changes.
+`tests/evals` or the fixture runner during coverage work and run the matching
+eval command only after the full-suite gate. Features outside the current
+retained local eval coverage are not subject to this eval requirement until the
+retained eval scope changes.

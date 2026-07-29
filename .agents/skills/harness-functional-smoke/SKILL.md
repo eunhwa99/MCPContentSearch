@@ -8,8 +8,9 @@ description: Use when MCPContentSearch changes are implemented and user-visible 
 ## Purpose
 
 Run this gate only after focused unit/integration/E2E tests pass, refactoring
-and affected-test reruns finish, and `./scripts/verify_all.sh` succeeds. Run it
-before any three-reviewer harness loop.
+and affected-test reruns finish, `./scripts/verify_all.sh` succeeds, and any
+matching eval command required by feature scope has already run after that
+full-suite gate. Run it before any three-reviewer harness loop.
 It proves the task-relevant feature inventory works once through the safest real
 caller surfaces, not only through unit tests or helper functions.
 

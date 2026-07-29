@@ -42,10 +42,13 @@ gate into a partial fallback.
 If the feature changes retrieval quality, ranking,
 grounding, citation selection, answer quality, or another quality-sensitive
 output already modeled by retained local evaluations, it must also add or
-update eval coverage and run the matching eval command before review. If the
-feature falls within retained local eval coverage but no exact retained eval
-surface exists yet, it must extend an existing retained eval surface and run
-the matching eval command before review.
+update eval coverage and run the matching eval command after
+`./scripts/verify_all.sh` succeeds and before functional smoke or review. If
+the feature falls within retained local eval coverage but no exact retained
+eval surface exists yet, it must extend an existing retained eval surface and
+run the matching eval command only after that full-suite gate. Do not run
+matching eval commands during focused GREEN; that lane stops so refactor can
+run next.
 
 0. Branch preflight: follow `.agents/docs/github-workflow.md`.
 1. Plan decision: create or update
@@ -69,15 +72,18 @@ the matching eval command before review.
    while the focused tests remain green.
 7. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+8. Eval gate when required by feature scope: run any matching retained eval
+   command only after `./scripts/verify_all.sh` succeeds; never during focused
+   GREEN.
+9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    which exercises the task-relevant feature inventory once through the safest
    real caller surfaces or records a safety-gated skip.
-9. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
+10. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
    three-reviewer harness loop.
-10. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-11. Final review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
+11. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+12. Final review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
    three-reviewer harness loop.
-12. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59`. If no real issue exists, omit closing keywords instead of inventing one.
+13. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59`. If no real issue exists, omit closing keywords instead of inventing one.
 
 Docs/instruction-only work skips the code-specific TDD red, green
 implementation, full-suite, and functional-smoke gates. It uses the docs-only
@@ -237,10 +243,11 @@ else:
   delegate implementation/integration work to bounded worker personas where possible
   collect worker results, inspect the diff, and synthesize the main-agent result
   run focused unit, integration, and E2E tests until GREEN
+  stop focused GREEN without running matching eval commands
   run refactor phase while focused tests remain GREEN
   rerun affected focused tests
   run ./scripts/verify_all.sh for the current diff and require the full suite to pass
-  run any matching eval command required by the current feature scope
+  run any matching eval command required by the current feature scope only after verify_all
   run functional smoke gate using harness-functional-smoke
   repeat:
     run middle three-reviewer harness gate
@@ -252,10 +259,12 @@ else:
       return to unit/integration/E2E RED before production edits
       record auditable RED evidence
       implement GREEN, refactor, rerun affected tests, and run verify_all
+      run any matching eval command required by feature scope only after verify_all
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
+      run any matching eval command required by feature scope only after verify_all
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -275,10 +284,12 @@ else:
       return to unit/integration/E2E RED before production edits
       record auditable RED evidence
       implement GREEN, refactor, rerun affected tests, and run verify_all
+      run any matching eval command required by feature scope only after verify_all
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
+      run any matching eval command required by feature scope only after verify_all
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -389,7 +400,8 @@ must pass after implementation.
 When the added feature changes retrieval quality, ranking, grounding, citation
 selection, answer quality, or another quality-sensitive output that is already
 modeled by retained local evaluations, they must add or update eval coverage
-and run the relevant eval command before review.
+and run the relevant eval command only after `./scripts/verify_all.sh`
+succeeds and before functional smoke or review, never during focused GREEN.
 
 Before review for code-changing work, run the repo-wide functional E2E
 regression gate that exercises retained end-to-end feature workflows
@@ -421,13 +433,15 @@ the all-tests-pass gate.
 
 Current local eval paths include deterministic eval tests under
 `tests/evals` such as `uv run pytest -q tests/evals` plus the fixture runner at
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If a feature falls
+`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Run those matching eval
+commands only after `./scripts/verify_all.sh` succeeds and before functional
+smoke or review; do not run them during focused GREEN. If a feature falls
 within the repo's retained local eval coverage but no matching retained eval
 surface exists yet, treat that as missing required coverage: extend an existing
-retained eval surface such as `tests/evals` or the fixture runner and execute
-the matching eval command before review. Features outside the current retained
-local eval coverage are not subject to this eval requirement until the retained
-eval scope changes.
+retained eval surface such as `tests/evals` or the fixture runner during
+coverage work and execute the matching eval command only after the full-suite
+gate. Features outside the current retained local eval coverage are not subject
+to this eval requirement until the retained eval scope changes.
 
 MCP tool changes should include an import/startup smoke when it can run without
 real credentials or without mutating user Chroma data or SQLite metadata.
@@ -435,8 +449,9 @@ External live checks against Notion, Tistory, or GitHub sources require both
 explicit user approval and a plan. Plan-exempt work must be reclassified before
 the live check or keep it `blocked/gated` and use a fake/temp substitute.
 
-After focused GREEN, refactoring, affected-test reruns, and a successful
-`./scripts/verify_all.sh`, run the functional smoke gate in
+After focused GREEN, refactoring, affected-test reruns, a successful
+`./scripts/verify_all.sh`, and any matching eval command required by feature
+scope, run the functional smoke gate in
 `.agents/skills/harness-functional-smoke/SKILL.md` before any review gate. The
 smoke matrix must start from the task-relevant inventory of retained MCP tools,
 source-sync paths, status surfaces, search, citation answers, and other

@@ -1,9 +1,10 @@
 # Functional Smoke Matrix
 
 Use this matrix only after focused unit/integration/E2E tests pass, refactoring
-and affected-test reruns finish, and `./scripts/verify_all.sh` succeeds. Run it
-before the harness three-reviewer loop. Copy the task-relevant inventory rows
-into the plan,
+and affected-test reruns finish, `./scripts/verify_all.sh` succeeds, and any
+matching eval command required by feature scope has already run after that
+full-suite gate. Run it before the harness three-reviewer loop. Copy the
+task-relevant inventory rows into the plan,
 or into reviewer/final/PR evidence for plan-exempt work, before review. Mark
 each row `passed`, `failed`, `not affected`, or `blocked/gated`. PR notes may
 copy or link to the plan matrix when one exists.
