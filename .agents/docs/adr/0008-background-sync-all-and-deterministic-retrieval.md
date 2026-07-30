@@ -8,13 +8,21 @@ accepted
 
 2026-07-29
 
+## Partial Supersession
+
+ADR 0009 supersedes only this ADR's original completion-attribution guidance
+that polled each source's latest job. The `sync_all` background-launch
+aggregation, per-source SQLite guards, launch-outcome reporting, lack of a
+batch scheduler/table, and deterministic retrieval decisions remain accepted.
+
 ## Context
 
 The public MCP `sync_source(source_id)` contract already launches one source
-sync in the background and asks callers to poll `get_sync_status(source_id)`.
-The public `sync_all()` tool still waited for every selected source to finish.
-That mismatch made bulk sync more likely to exceed an MCP request timeout and
-forced clients to handle two different completion models.
+sync in the background. Its original latest-source completion polling was
+later refined by ADR 0009. The public `sync_all()` tool still waited for every
+selected source to finish. That mismatch made bulk sync more likely to exceed
+an MCP request timeout and forced clients to handle two different completion
+models.
 
 The optional search LLM query-rewrite path also added configuration, external
 query egress, debug vocabulary, tests, and runtime branches. Retrieval already
@@ -33,8 +41,9 @@ Make public `sync_all()` a background-launch aggregator:
   indexing, or cleanup to finish
 - report a launch outcome for every selected source and an aggregate
   launch-oriented status
-- require callers to poll `get_sync_status(source_id)` for each source until
-  its latest job reaches `succeeded` or `failed`
+- require completion-seeking callers to retain exact `{source_id, job_id}`
+  targets only for `started` and `already_running` results, then use ADR 0009's
+  paced, bounded short-call observation contract
 
 This does not add a batch job table, scheduler, or separate batch-status tool.
 The existing per-source SQLite job records remain authoritative. Background
@@ -56,12 +65,13 @@ embedding provider.
 
 ## Consequences
 
-- `sync_source` and `sync_all` now share immediate-return plus per-source
-  polling semantics.
+- `sync_source` and `sync_all` now share immediate-return plus exact-job
+  observation semantics.
 - A successful bulk launch response means work was accepted or already
   running; it does not mean source content has finished syncing.
-- Clients must inspect each launch result and then use `get_sync_status` before
-  searching newly refreshed content.
+- Clients must inspect each launch result, retain exact IDs only for
+  `started`/`already_running` jobs, and use ADR 0009's exact-job status mode
+  before searching newly refreshed content.
 - Bulk launch failures remain visible without hiding successfully launched
   sources.
 - Search no longer has query-rewrite-specific environment variables, external
@@ -92,4 +102,5 @@ embedding provider.
 - `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
 - `.agents/docs/adr/0007-sync-source-background-launch-contract.md`
+- `.agents/docs/adr/0009-exact-sync-job-status-observation.md`
 - `docs/plan/2026-07-29-background-sync-all-remove-query-rewrite.md`

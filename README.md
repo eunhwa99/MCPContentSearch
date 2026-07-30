@@ -36,8 +36,7 @@ For detailed data flows and design constraints, see
 | `list_sources()` | Lists configured sources and their current state | When the user asks which sources are connected or available |
 | `sync_source(source_id)` | Starts a sync for one source, or returns its already-running sync job | When the user asks to import or refresh one specific source |
 | `sync_all()` | Starts all configured source syncs in the background and immediately reports each launch result | When the user asks to import or refresh every source |
-| `wait_for_sync_all()` | Starts or reuses all public configured-source syncs and waits for their final results within a bounded wait | When the user wants one final all-source report without polling each source |
-| `get_sync_status(source_id="")` | Shows source and sync-job status for one source, or all sources when `source_id` is omitted | When the user asks whether a sync has finished or why it failed |
+| `get_sync_status(source_id="", job_id="")` | Shows one exact job when both IDs are supplied, the latest job for one source when only `source_id` is supplied, or all sources when both are omitted | When the user asks whether a sync has finished or why it failed |
 | `search_context(query, ...)` | Finds relevant chunks and returns citation-ready context after SQLite validation | When the LLM needs focused evidence to answer the user's question |
 | `search_documents(query, ...)` | Returns one result per matching document and can sort the semantic candidates by relevance or normalized dates | When the user asks for relevant documents and the LLM needs one representative passage from each document |
 | `list_documents(...)` | Browses all active public documents without a semantic query, with deterministic date sorting and cursor pagination | When the user asks for recent, oldest, or date-bounded documents rather than topic matches |
@@ -110,8 +109,8 @@ do not need to be rebuilt.
 | “Which sources are connected?” | `list_sources()` |
 | “Refresh my Notion content.” | `sync_source("source_notion")` |
 | “Start refreshing all of my connected sources in the background.” | `sync_all()` |
-| “Refresh all of my connected sources and tell me their final results.” | `wait_for_sync_all()` |
-| “Has the Notion sync finished?” | `get_sync_status("source_notion")` |
+| “Refresh all of my connected sources and tell me their final results.” | `sync_all()`, then make paced exact-job `get_sync_status(source_id=..., job_id=...)` calls |
+| “What is the latest Notion sync status?” | `get_sync_status("source_notion")` |
 | “Find evidence about how this project prevents stale citations.” | `search_context(...)` |
 | “Show me each relevant document about SQLite with its most relevant passage.” | `search_documents(...)` |
 | “Show my newest documents from July, regardless of topic.” | `list_documents(filters={"indexed_from": "2026-07-01"}, sort_by="indexed_at", sort_order="desc")` |
@@ -276,27 +275,47 @@ Add the same local uv config above to `.cursor/mcp.json`.
 
 1. Refresh content:
    - For one source, call `sync_source("source_notion")` and inspect its
-     top-level `status`. If it is `running`, call
-     `get_sync_status("source_notion")` until `latest_job.status` becomes
-     `succeeded` or `failed`. Continue only after `succeeded`. An immediate
-     `failed` response uses `error_message`, while an `error` response uses
-     `message`; after polling ends in `failed`, inspect
-     `latest_job.error_message` or `source.latest_failure_reason`.
-   - For one completion report covering all public configured sources, call
-     `wait_for_sync_all()`. It starts new jobs or reuses already-running jobs,
-     then waits within a bounded request for their final per-source results.
-     The result can contain a mix of success, failure, skipped launch, and
-     timeout outcomes. A timeout ends only this wait; it does not cancel the
-     background sync. Call `get_sync_status(source_id)` later to observe a
-     timed-out job's eventual completion.
-   - To launch all sources without waiting, call `sync_all()`. It remains
-     launch-only and returns after launch decisions, without waiting for the
-     syncs to finish. Check each `results[].launch_outcome`: `started` means a
-     new job was launched, `already_running` means the existing job was reused,
-     and `skipped` or `failed` means that source did not start. For every
-     started or already running source, poll `get_sync_status(source_id)` until
-     `latest_job.status` becomes `succeeded` or `failed`. The top-level status
-     summarizes launch acceptance: `accepted`, `partial`, or `failed`.
+     top-level `status`. If it is `running`, retain its `source_id` and
+     `job_id`, then call `get_sync_status(source_id=..., job_id=...)` and read
+     the exact `job.status` until it becomes `succeeded` or `failed`. Continue
+     only after `succeeded`, and use the same paced, bounded observation policy
+     described below even for this single target. An immediate `failed`
+     response uses `error_message`, while an `error` response uses `message`;
+     after exact-job observation ends in `failed`, inspect
+     `job.error_message`.
+   - For all public configured sources, call `sync_all()` once. It starts new
+     jobs or reuses already-running jobs, then returns after the launch
+     decisions without waiting for ingestion to finish. Check each
+     `results[].launch_outcome`: `started` means a new job was launched,
+     `already_running` means an existing job was reused, and `skipped` or
+     `failed` means that source did not start. Retain the pair
+     `{source_id, job_id}` from `results[].source_id` and
+     `results[].job.job_id` only for `started` and `already_running` results.
+     Report `skipped` and `failed` launches immediately and do not poll them.
+     If a retained launch has no job ID, report that it cannot be observed
+     exactly; do not fall back to a newer latest job.
+   - For each retained target, the MCP client or agent must make a short,
+     separate `get_sync_status(source_id=..., job_id=...)` request and read the
+     exact `job`, never `latest_job`. Stop that target when `job.status` is
+     `succeeded` or `failed`. Start with a 2-second interval and use capped
+     backoff such as 2, 4, 8, then at most 10 seconds between observation
+     rounds. Use one overall 5-minute observation deadline for the batch,
+     measured from the start of completion observation after `sync_all()`
+     returns.
+   - Stop observing a target after three consecutive status errors or responses
+     with no exact `job`; a successful exact-job response resets that target's
+     consecutive error count. Report the observation problem without
+     substituting the source's newer `latest_job`. At the 5-minute deadline,
+     report every still-running `{source_id, job_id}` without marking it failed
+     or cancelling it. The background sync continues, and observation can
+     resume later with the same exact IDs.
+   - ContextWiki does not automatically schedule later status calls or push a
+     completion notification. The `sync_all()` top-level status describes
+     launch acceptance (`accepted`, `partial`, or `failed`), not sync
+     completion. Calling `get_sync_status(source_id)` without `job_id` still
+     returns that source's latest job, and omitting both arguments still returns
+     all sources; those modes are for current-state inspection, not exact
+     attribution to the `sync_all()` launch.
 2. Search successfully refreshed sources with `search_context()` or
    `search_documents()`, or browse them without a query using
    `list_documents()`.
@@ -318,10 +337,10 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 | Only works after manual start | Run `command` + `args` directly in terminal to see errors |
 | `Invalid GitHub target` or `Invalid GitHub repository spec` | Use a bare `owner`, `owner/repo`, or `owner/repo@ref`; separate multiple targets with commas or newlines |
 | `Duplicate GitHub repository spec` | Remove overlapping targets. Do not combine an owner with an exact target for a repository that owner discovery returns; an exact ref does not override the discovered ref |
-| GitHub target changes are not reflected in Claude Desktop | Fully quit and restart Claude Desktop after editing its environment or `.env`, then run `sync_source("source_github")` and poll `get_sync_status("source_github")` |
+| GitHub target changes are not reflected in Claude Desktop | Fully quit and restart Claude Desktop after editing its environment or `.env`, run `sync_source("source_github")`, retain its returned `source_id` and `job_id`, then poll the exact job with `get_sync_status(source_id=..., job_id=...)` using the bounded policy above |
 | Obsidian not working in Docker | Set both the volume mount and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault` |
 | Source still disabled after config change | Fully restart the MCP client — a chat refresh is not enough |
-| A sync failed | Call `get_sync_status("source_notion")`, replacing `source_notion` with the failed source ID shown above |
+| A sync failed | For current latest-source inspection, call `get_sync_status("source_notion")`, replacing the source ID as needed. For a job launched in this conversation, use its retained `source_id` and `job_id` with exact-job status instead |
 
 ---
 

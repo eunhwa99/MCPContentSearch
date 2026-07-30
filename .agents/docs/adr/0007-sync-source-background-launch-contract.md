@@ -8,6 +8,13 @@ accepted
 
 2026-06-15
 
+## Partial Supersession
+
+ADR 0009 supersedes only this ADR's original completion-attribution guidance
+that polled the source's latest job. The background-launch contract, internal
+blocking execution split, SQLite ownership rules, and cancellation
+reconciliation decisions remain accepted.
+
 ## Context
 
 `MCPContentSearch` originally treated `sync_source(source_id)` as a blocking
@@ -42,8 +49,9 @@ Under this contract, public MCP `sync_source(source_id)`:
 - starts a new background sync job or reuses the active running job for the
   same source
 - returns the current job payload immediately, typically with `status=running`
-- requires callers to poll `get_sync_status(source_id)` for terminal
-  `succeeded` or `failed` completion
+- requires completion-seeking callers to retain the returned `source_id` and
+  `job_id`, then observe that exact job through the paced, bounded short-call
+  contract in ADR 0009
 - must not silently fall back to the blocking path when a background launcher
   is unavailable
 
@@ -63,7 +71,7 @@ newer foreign retry must override the stale local cancelled handoff.
 - MCP tool names remain stable: callers keep using `sync_source` and
   `get_sync_status` instead of introducing a new public launcher tool.
 - Client-facing docs, architecture notes, and retained MCP contract tests must
-  describe and verify the immediate-return plus polling behavior.
+  describe and verify the immediate-return plus exact-job observation behavior.
 - Review gates must treat public `sync_source` as a contract boundary change,
   not just an implementation detail.
 - Background-task cancellation, early startup failure, and overlapping
@@ -93,5 +101,6 @@ newer foreign retry must override the stale local cancelled handoff.
 - `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
 - `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
+- `.agents/docs/adr/0009-exact-sync-job-status-observation.md`
 - `docs/contextwiki-core-understanding.md`
 - `docs/plan/2026-06-15-notion-cancel-sync-stuck.md`

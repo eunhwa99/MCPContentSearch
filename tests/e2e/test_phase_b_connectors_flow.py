@@ -76,6 +76,31 @@ async def _wait_for_sync_completion(mcp: FastMCP, source_id: str, attempts: int 
     raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
 
 
+async def _wait_for_exact_sync_completion(
+    mcp: FastMCP,
+    targets: dict[str, str],
+    attempts: int = 500,
+) -> dict[str, dict]:
+    latest_by_source: dict[str, dict] = {}
+    for _ in range(attempts):
+        for source_id, job_id in targets.items():
+            latest_by_source[source_id] = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": source_id, "job_id": job_id},
+            )
+        if all(
+            (latest_by_source[source_id].get("job") or {}).get("status")
+            in {"succeeded", "failed"}
+            for source_id in targets
+        ):
+            return latest_by_source
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"Timed out waiting for exact sync completion: {latest_by_source}"
+    )
+
+
 class FakeRetainedSourceConnector(SourceConnector):
     def __init__(
         self,
@@ -790,7 +815,7 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
     assert any("/repos/eunaverse/beta/commits/stable" in url for url in http.urls)
 
 
-def test_retained_owner_sync_all_waits_for_exact_job_and_keeps_search_flow(tmp_path):
+def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path):
     http = BlockingOwnerMultiRepoGitHubHTTP()
     connector = GitHubSourceConnector(
         repositories=("eunaverse",),
@@ -815,7 +840,7 @@ def test_retained_owner_sync_all_waits_for_exact_job_and_keeps_search_flow(tmp_p
         min_score=0.1,
         min_results=1,
     )
-    mcp = FastMCP("retained-owner-sync-all-wait-smoke")
+    mcp = FastMCP("retained-owner-sync-all-poll-smoke")
     register_tools(
         mcp,
         ingestion_service=ingestion,
@@ -829,27 +854,23 @@ def test_retained_owner_sync_all_waits_for_exact_job_and_keeps_search_flow(tmp_p
         listed = await _call_tool_json_async(mcp, "list_sources")
         launched = await _call_tool_json_async(mcp, "sync_all")
         await asyncio.wait_for(http.discovery_started.wait(), timeout=1)
-        waited_task = asyncio.create_task(
-            _call_tool_json_async(
-                mcp,
-                "wait_for_sync_all",
-                {
-                    "timeout_seconds": 2.0,
-                    "poll_interval_seconds": 0.1,
-                },
-            )
-        )
-        await asyncio.sleep(0.01)
-        http.release_discovery.set()
-        waited = await asyncio.wait_for(waited_task, timeout=3)
-        status = await _call_tool_json_async(
+        running = await _call_tool_json_async(
             mcp,
             "get_sync_status",
-            {"source_id": "source_github"},
+            {"source_id": ""},
         )
-        return listed, launched, waited, status
+        http.release_discovery.set()
+        terminal_by_source = await _wait_for_exact_sync_completion(
+            mcp,
+            {
+                item["source_id"]: item["job"]["job_id"]
+                for item in launched["results"]
+                if item["launch_outcome"] in {"started", "already_running"}
+            },
+        )
+        return listed, launched, running, terminal_by_source
 
-    listed, launched, waited, status = asyncio.run(run_flow())
+    listed, launched, running, terminal_by_source = asyncio.run(run_flow())
     alpha_document_id = "github:eunaverse/alpha:README.md"
     beta_document_id = "github:eunaverse/beta:docs/guide.md"
     alpha_search = _call_tool_json(
@@ -905,21 +926,16 @@ def test_retained_owner_sync_all_waits_for_exact_job_and_keeps_search_flow(tmp_p
     assert launched_result["job"]["status"] == "running"
     launched_job_id = launched_result["job"]["job_id"]
 
-    assert waited["status"] == "completed", waited
-    assert waited["summary"]["total_sources"] == 1
-    assert waited["summary"]["succeeded"] == 1
-    assert len(waited["results"]) == 1
-    waited_result = waited["results"][0]
-    assert waited_result["source_id"] == "source_github"
-    assert waited_result["launch_outcome"] == "already_running"
-    assert waited_result["completion_outcome"] == "succeeded"
-    assert waited_result["job"]["status"] == "succeeded"
-    assert waited_result["job"]["job_id"] == launched_job_id
+    running_item = running["sources"][0]
+    assert running_item["source"]["source_id"] == "source_github"
+    assert running_item["latest_job"]["status"] == "running"
+    assert running_item["latest_job"]["job_id"] == launched_job_id
 
-    assert status["source"]["sync_status"] == "succeeded"
-    assert status["latest_job"]["status"] == "succeeded"
-    assert status["latest_job"]["job_id"] == launched_job_id
-    assert status["latest_job"]["processed_documents"] == 2
+    terminal_item = terminal_by_source["source_github"]
+    assert terminal_item["source"]["sync_status"] == "succeeded"
+    assert terminal_item["job"]["status"] == "succeeded"
+    assert terminal_item["job"]["job_id"] == launched_job_id
+    assert terminal_item["job"]["processed_documents"] == 2
     assert store.get_document(alpha_document_id).deleted_at == ""
     assert store.get_document(beta_document_id).deleted_at == ""
     assert alpha_search["results"][0]["document_id"] == alpha_document_id

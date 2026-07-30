@@ -14,9 +14,8 @@ maintained design reference beyond the README.
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
 - MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
-  `list_sources`, `sync_source`, `sync_all`, `wait_for_sync_all`,
-  `get_sync_status`, `search_context`, `search_documents`, `list_documents`,
-  and `fetch_context`.
+  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
+  `search_context`, `search_documents`, `list_documents`, and `fetch_context`.
 - Configuration: `environments/config.py` contains `AppConfig`, source
   connector settings, metadata DB path, and Chroma setup.
 - Secrets/environment loading: `environments/token.py` and runtime environment
@@ -110,10 +109,12 @@ Those fields explain recent source health, retained indexed volume, and whether
 cleanup is intentionally disabled for safety.
 
 When a sync job is actively running, `get_sync_status` may additionally expose
-`latest_job` progress hints that explain whether the system is still upstream
-discovery/fetch-bound or already indexing. Those hints are intentionally
-running-only and are suppressed again once the latest job reaches a terminal
-state. Maintained reviewer-facing hints now include:
+progress hints that explain whether the system is still upstream
+discovery/fetch-bound or already indexing. Exact-job mode exposes them under
+`job`; the latest-one-source and all-source modes expose them under
+`latest_job`. Those hints are intentionally running-only and are suppressed
+again once the selected job reaches a terminal state. Maintained
+reviewer-facing hints now include:
 
 ```text
 phase
@@ -123,8 +124,8 @@ last_progress_at
 status_message
 ```
 
-Those running-job hints are intentionally limited to `get_sync_status`; they do
-not broaden the public `sync_source` or `sync_all` response shapes.
+Those running-job hints are intentionally limited to `get_sync_status`; they
+do not broaden the public `sync_source` or `sync_all` response shapes.
 
 The numeric hint semantics are phase-aware but should remain monotonic within a
 running sync:
@@ -163,7 +164,7 @@ sync_source
   -> DocumentChunker
   -> ContentIndexer and Chroma collection
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
-  -> get_sync_status reads terminal completion
+  -> get_sync_status(source_id, job_id) reads that exact job's completion
 ```
 
 If the source already has an active job, `sync_source` returns that existing
@@ -187,22 +188,33 @@ sync_all
   -> return before fetching and indexing finish
   -> report each launch as started, already_running, skipped, or failed
   -> aggregate launch acceptance as accepted, partial, or failed
-  -> get_sync_status(source_id) reads each source's terminal completion
+  -> caller keeps each started or already_running {source_id, job_id} as a
+     completion target
+  -> caller reports skipped and failed launches without treating them as
+     pending work
+  -> caller issues short, separate
+     get_sync_status(source_id=..., job_id=...) requests
+  -> caller reads the exact job rather than a newer latest_job
+  -> caller repeats with paced, capped backoff while a target job remains
+     non-terminal and the observation bounds allow
+  -> succeeded or failed is the terminal per-source completion result
 ```
 
-Completion-waiting bulk sync flow:
+The retained observation policy starts at a 2-second interval, backs off with a
+10-second cap, and has one overall 5-minute deadline measured from the start of
+completion observation after `sync_all` returns. A target stops after three
+consecutive status errors or responses with no exact `job`; a successful
+exact-job response resets its consecutive error count. At the deadline, the
+caller reports still-running `{source_id, job_id}` values without cancelling
+their background syncs and may resume observation later with the same IDs. Each
+status invocation is an independent MCP request initiated by the client or
+agent. The server does not automatically schedule later calls or push a
+completion notification.
 
-```text
-wait_for_sync_all
-  -> enumerate public retained configured sources
-  -> launch new jobs or reuse already-running jobs
-  -> retain the exact job ids returned by that launch operation
-  -> observe those jobs through SQLite within a bounded wait
-  -> return final per-source success or failure, plus any skipped launch or
-     timeout outcome
-  -> leave timed-out background jobs running
-  -> get_sync_status(source_id) can observe their later completion
-```
+When `job_id` is omitted, `get_sync_status(source_id)` retains the existing
+latest-one-source response with `latest_job`, and omitting both arguments
+retains the existing all-source response. Those modes describe current state;
+they are not used to attribute completion to a retained `sync_all` job.
 
 Retrieval and answer flow:
 
@@ -258,8 +270,8 @@ internal helper answer flows
   Obsidian is a configured local-vault Markdown source, not a live Obsidian app
   or plugin integration.
 - `indexing`: document indexing lifecycle, deterministic chunking, content
-  hash/chunk-id comparison, Chroma mutation, index status updates, and bounded
-  observation of exact bulk-sync job completion.
+  hash/chunk-id comparison, Chroma mutation, index status updates, and
+  background sync execution under per-source concurrency guards.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
   active-result validation, and internal citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, normalized
@@ -412,8 +424,7 @@ Current tools:
 - `list_sources() -> dict`
 - `sync_source(source_id: str) -> dict`
 - `sync_all() -> dict`
-- `wait_for_sync_all(...) -> dict`
-- `get_sync_status(source_id: str = "") -> dict`
+- `get_sync_status(source_id: str = "", job_id: str = "") -> dict`
 - `search_context(query: str, filters: SearchFilters | None = None, top_k: int = 10, include_debug: bool = False) -> dict`
 - `search_documents(query: str, filters: SearchFilters | None = None, sort_by: SearchSortBy = "relevance", sort_order: SortOrder = "desc", top_k: int = 10) -> dict`
 - `list_documents(filters: SearchFilters | None = None, sort_by: DocumentSortBy = "indexed_at", sort_order: SortOrder = "desc", page_size: int = 20, cursor: str | None = None) -> dict`
@@ -438,14 +449,22 @@ Contract intent:
   decisions instead of waiting for ingestion to finish. Per-source
   `launch_outcome` values are `started`, `already_running`, `skipped`, or
   `failed`; the aggregate launch status is `accepted`, `partial`, or `failed`.
-  Callers must poll `get_sync_status(source_id)` for terminal completion.
-- `wait_for_sync_all` is the completion-oriented companion to `sync_all`. It
-  starts or reuses every public retained configured-source job, tracks the
-  exact jobs returned by that launch operation, and observes their SQLite
-  lifecycle within a bounded wait. One result may contain per-source success,
-  failure, skipped launch, and timeout outcomes. A timeout is an observation
-  boundary, not cancellation: background jobs continue and remain observable
-  through `get_sync_status(source_id)`.
+  Completion-seeking callers retain `{source_id, job_id}` only from
+  `started`/`already_running` results, report `skipped`/`failed` launches
+  immediately, and do not poll a retained result that lacks a job ID.
+- `get_sync_status(source_id, job_id)` returns the exact public sync job under
+  `job`; it must not substitute a newer `latest_job`. Completion observers use
+  short separate requests with a 2-second initial interval, capped backoff up
+  to 10 seconds, and one overall 5-minute deadline. They stop a target after
+  three consecutive status errors or missing exact jobs, report observation
+  uncertainty without substituting latest state, and report still-running job
+  IDs at the deadline without cancellation. Observation may resume later with
+  the same exact IDs. Repeating requests is client or agent behavior, not
+  automatic client scheduling, server-side waiting, or server push.
+- Existing calls that omit `job_id` keep their response shapes:
+  `get_sync_status(source_id)` returns one source plus `latest_job`, while
+  `get_sync_status()` returns all public sources plus each `latest_job`. These
+  modes are current-state inspection, not exact completion attribution.
 - `search_documents` is document-oriented: it uses the same retained-source
   retrieval path but returns one representative chunk-backed row per document
   for browsing. Its public result contract intentionally replaces the earlier
