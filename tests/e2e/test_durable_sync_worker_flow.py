@@ -2,7 +2,9 @@ import asyncio
 import base64
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from threading import Event
 
 import pytest
@@ -26,7 +28,7 @@ from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
 from indexing.sync_worker import SyncWorker, _configure_logging
 from search.context_service import ContextSearchService
-from storage.metadata_store import MetadataStore
+from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
 
 pytestmark = pytest.mark.e2e
@@ -135,13 +137,27 @@ class SensitiveFailingConnector(RecordingConnector):
 
     async def fetch_documents(self):
         raise RuntimeError(
-            f"provider failure path:{self.sensitive_unix_path}, job_id=provider-job; "
+            "Cookie: initial-alpha-42\r"
+            " folded-alpha-42, folded-epsilon-42\r"
+            "\tfolded-beta-42 folded-gamma-42\r"
+            "job_id=provider-job retry_count=24\r"
+            "Set-Cookie: initial-delta-42\r"
+            "\tfolded-delta-42\r"
+            f"source_id={self.source.source_id}\n"
+            f"path:{self.sensitive_unix_path}\r"
+            "filesystem clear diagnostic attempt=25\r"
+            "Authorization\r Bearer\r e2e-auth-42\r"
+            "job_id=provider-job; "
             f"file:{self.sensitive_windows_path}; source_id={self.source.source_id} "
             "retry_count=1 "
             f"token={self.sensitive_token}\n"
             f"Cookie: {self.sensitive_cookie}, unknown_cookie=top-secret, "
             "source_id=cookie-source-secret, job_id=cookie-job-secret,\n"
             "\tfolded_cookie=delta, phase=cookie-phase-secret\n"
+            "Set-Cookie\r"
+            " source_id=folded-name-cookie-source-secret; "
+            "job_id=folded-name-cookie-job-secret\r"
+            "\tphase=folded-name-cookie-phase-secret\r"
             f"failed reading {self.sensitive_unc_path}, "
             f"mirror={self.sensitive_extended_path}"
         )
@@ -443,11 +459,25 @@ def test_mcp_enqueued_job_failure_does_not_persist_delimiter_paths_in_worker_log
             assert "cookie-source-secret" not in value
             assert "cookie-job-secret" not in value
             assert "cookie-phase-secret" not in value
+            assert "e2e-auth-42" not in value
+            assert "initial-alpha-42" not in value
+            assert "folded-alpha-42" not in value
+            assert "folded-epsilon-42" not in value
+            assert "folded-beta-42" not in value
+            assert "folded-gamma-42" not in value
+            assert "initial-delta-42" not in value
+            assert "folded-delta-42" not in value
+            assert "folded-name-cookie-source-secret" not in value
+            assert "folded-name-cookie-job-secret" not in value
+            assert "folded-name-cookie-phase-secret" not in value
             assert "ntn_" not in value
             assert "secret_" not in value
             assert "job_id=provider-job" in value
             assert "source_id=source_notion" in value
+            assert "retry_count=24" in value
             assert "retry_count=1" in value
+            assert "filesystem clear diagnostic" in value
+            assert "attempt=25" in value
             assert "<redacted" in value
         assert sensitive_unix_path not in combined_log
         assert sensitive_windows_path not in combined_log
@@ -463,11 +493,25 @@ def test_mcp_enqueued_job_failure_does_not_persist_delimiter_paths_in_worker_log
         assert "cookie-source-secret" not in combined_log
         assert "cookie-job-secret" not in combined_log
         assert "cookie-phase-secret" not in combined_log
+        assert "e2e-auth-42" not in combined_log
+        assert "initial-alpha-42" not in combined_log
+        assert "folded-alpha-42" not in combined_log
+        assert "folded-epsilon-42" not in combined_log
+        assert "folded-beta-42" not in combined_log
+        assert "folded-gamma-42" not in combined_log
+        assert "initial-delta-42" not in combined_log
+        assert "folded-delta-42" not in combined_log
+        assert "folded-name-cookie-source-secret" not in combined_log
+        assert "folded-name-cookie-job-secret" not in combined_log
+        assert "folded-name-cookie-phase-secret" not in combined_log
         assert "ntn_" not in combined_log
         assert "secret_" not in combined_log
         assert "job_id=provider-job" in combined_log
         assert "source_id=source_notion" in combined_log
+        assert "retry_count=24" in combined_log
         assert "retry_count=1" in combined_log
+        assert "filesystem clear diagnostic" in combined_log
+        assert "attempt=25" in combined_log
         assert "<redacted" in combined_log
     finally:
         for handler in list(root_logger.handlers):
@@ -494,6 +538,66 @@ def _single_source_mcp(metadata_path):
         source_registry=registry,
     )
     return mcp, ingestion, store
+
+
+def test_durable_queued_status_remains_observable_during_unrelated_sqlite_write(
+    tmp_path,
+):
+    metadata_path = tmp_path / "durable-status-contention.sqlite3"
+    store = MetadataStore(metadata_path, sync_owner_id="status-owner")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    queued_job, enqueued = store.enqueue_sync_job("source_notion")
+    assert enqueued is True
+    mcp = FastMCP("durable-status-contention-e2e")
+    register_tools(mcp, metadata_store=store)
+
+    writer_conn = sqlite3.connect(metadata_path)
+    writer_conn.execute("BEGIN IMMEDIATE")
+    writer_conn.execute(
+        "UPDATE sources SET updated_at = updated_at WHERE source_id = ?",
+        ("source_notion",),
+    )
+    writer_closed = False
+    timed_out = False
+    started_at = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            status_future = executor.submit(
+                asyncio.run,
+                _call_tool_json(
+                    mcp,
+                    "get_sync_status",
+                    {"source_id": "source_notion"},
+                ),
+            )
+            try:
+                status = status_future.result(timeout=0.75)
+            except FutureTimeoutError:
+                timed_out = True
+            finally:
+                writer_conn.rollback()
+                writer_conn.close()
+                writer_closed = True
+            status_future.result(timeout=5)
+    finally:
+        if not writer_closed:
+            if writer_conn.in_transaction:
+                writer_conn.rollback()
+            writer_conn.close()
+
+    assert timed_out is False
+    assert time.monotonic() - started_at < 1.25
+    assert status["source"]["source_id"] == "source_notion"
+    assert status["source"]["sync_status"] == "running"
+    assert status["latest_job"]["job_id"] == queued_job.job_id
+    assert status["latest_job"]["status"] == "queued"
 
 
 def test_disabled_mcp_enqueue_cannot_be_claimed_by_stale_enabled_worker(tmp_path):
@@ -602,6 +706,211 @@ def test_sync_all_without_worker_exposes_exact_job_still_queued(tmp_path):
     assert status["job"]["job_id"] == item["job"]["job_id"]
     assert store.get_sync_job(item["job"]["job_id"]).status == SyncJobStatus.QUEUED
     assert mcp_ingestion._background_sync_tasks == {}
+
+
+def test_scoped_worker_recovers_stale_legacy_source_and_completes_retained_job(
+    tmp_path,
+):
+    metadata_path = tmp_path / "scoped-worker.sqlite3"
+    setup_store = MetadataStore(
+        metadata_path,
+        sync_owner_id="setup",
+        running_job_timeout_seconds=3600,
+        unowned_running_job_grace_seconds=0,
+    )
+    setup_store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    retained_job, enqueued = setup_store.enqueue_sync_job("source_notion")
+    old_timestamp = "2000-01-01T00:00:00+00:00"
+    with setup_store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (
+                source_id, source_type, name, enabled, auth_ref, sync_status,
+                last_synced_at, last_error, stale_cleanup_disabled_reason,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, '', ?, '', '', '', ?, ?)
+            """,
+            (
+                "source_web",
+                "web",
+                "Legacy Web",
+                1,
+                SyncStatus.RUNNING.value,
+                old_timestamp,
+                old_timestamp,
+            ),
+        )
+    legacy_job = setup_store.create_sync_job("source_web")
+    with setup_store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents (
+                document_id, source_id, external_id, title, content, url,
+                canonical_url, platform, date, path, updated_at, last_seen_at,
+                last_seen_sync_id, deleted_at, version_id, content_hash
+            ) VALUES (?, ?, '', ?, ?, ?, '', ?, '', ?, ?, '', '', '', '', ?)
+            """,
+            (
+                "legacy-doc",
+                "source_web",
+                "Legacy Web Doc",
+                "Legacy content must survive worker recovery.",
+                "https://example.test/legacy",
+                "Web",
+                "/legacy",
+                old_timestamp,
+                "legacy-document-hash",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO chunks (
+                chunk_id, document_id, source_id, title, text, url, path,
+                chunk_index, line_start, line_end, version_id, content_hash,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, '', ?, ?)
+            """,
+            (
+                "legacy-chunk",
+                "legacy-doc",
+                "source_web",
+                "Legacy Web Doc",
+                "Legacy content must survive worker recovery.",
+                "https://example.test/legacy",
+                "/legacy",
+                "legacy-chunk-hash",
+                old_timestamp,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO chunk_tombstones (
+                chunk_id, document_id, source_id, recorded_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "legacy-tombstone",
+                "legacy-deleted-doc",
+                "source_web",
+                old_timestamp,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET
+                status = ?, started_at = ?, heartbeat_at = '', owner_id = ''
+            WHERE job_id = ?
+            """,
+            (
+                SyncJobStatus.RUNNING.value,
+                old_timestamp,
+                legacy_job.job_id,
+            ),
+        )
+        before_documents = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM documents WHERE source_id = ? ORDER BY document_id",
+                ("source_web",),
+            ).fetchall()
+        ]
+        before_chunks = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM chunks WHERE source_id = ? ORDER BY chunk_id",
+                ("source_web",),
+            ).fetchall()
+        ]
+        before_tombstones = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM chunk_tombstones
+                WHERE source_id = ?
+                ORDER BY chunk_id
+                """,
+                ("source_web",),
+            ).fetchall()
+        ]
+
+    connector = RecordingConnector("source_notion", SourceType.NOTION)
+    worker_store = MetadataStore(
+        metadata_path,
+        sync_owner_id="retained-worker",
+        running_job_timeout_seconds=3600,
+        unowned_running_job_grace_seconds=0,
+    )
+    worker = SyncWorker(
+        IngestionService(
+            metadata_store=worker_store,
+            source_registry=SourceRegistry([connector]),
+            chunker=DocumentChunker(max_chars=160, overlap_chars=0),
+            indexer=RecordingIndexer(),
+            register_source_config=False,
+        ),
+        worker_store,
+        source_ids=("source_notion",),
+        poll_interval_seconds=0.1,
+    )
+
+    completed = asyncio.run(worker.run_once())
+
+    assert enqueued is True
+    assert completed is not None
+    assert completed.job_id == retained_job.job_id
+    assert completed.status == SyncJobStatus.SUCCEEDED
+    assert connector.fetch_count == 1
+    assert (
+        worker_store.get_sync_job(retained_job.job_id).status
+        == SyncJobStatus.SUCCEEDED
+    )
+    with worker_store._connect() as conn:
+        legacy_source = conn.execute(
+            "SELECT sync_status, last_error FROM sources WHERE source_id = ?",
+            ("source_web",),
+        ).fetchone()
+        legacy_job_row = conn.execute(
+            "SELECT status, error_message FROM sync_jobs WHERE job_id = ?",
+            (legacy_job.job_id,),
+        ).fetchone()
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM documents WHERE source_id = ? ORDER BY document_id",
+                ("source_web",),
+            ).fetchall()
+        ] == before_documents
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM chunks WHERE source_id = ? ORDER BY chunk_id",
+                ("source_web",),
+            ).fetchall()
+        ] == before_chunks
+        assert [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM chunk_tombstones
+                WHERE source_id = ?
+                ORDER BY chunk_id
+                """,
+                ("source_web",),
+            ).fetchall()
+        ] == before_tombstones
+    assert legacy_source["sync_status"] == SyncStatus.FAILED.value
+    assert legacy_source["last_error"] == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+    assert legacy_job_row["status"] == SyncJobStatus.FAILED.value
+    assert (
+        legacy_job_row["error_message"] == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+    )
 
 
 def test_queued_exact_job_can_be_observed_then_completed_by_separate_worker(tmp_path):

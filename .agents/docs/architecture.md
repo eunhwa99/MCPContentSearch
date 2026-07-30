@@ -686,8 +686,11 @@ Contract intent:
   because default embeddings may send queries to an external provider;
   `list_documents` and `fetch_context` advertise `openWorldHint=False`.
   `list_sources` and `get_sync_status` do not advertise read-only/idempotent
-  hints because their registration refresh can persist configured source
-  metadata. Sync tools also remain mutating operations.
+  hints even though observation overlays configured registry state in memory
+  without persisting that overlay. `get_sync_status` may still reconcile
+  running-job lifecycle through `get_latest_sync_job` / schema init, so
+  read-only or idempotent hints would remain inaccurate. Sync tools also
+  remain mutating operations.
 
 Retained debug-oriented answer inspection surfaces should stay documented and
 stable enough for local evaluation and reviewer use:

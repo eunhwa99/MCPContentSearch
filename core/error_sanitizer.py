@@ -22,10 +22,53 @@ _COOKIE_HEADER_START_PATTERN = re.compile(
     r"\b(?:set-cookie|cookie)\s*[:=]",
     re.IGNORECASE,
 )
+_AUTHORIZATION_HEADER_START_PATTERN = re.compile(
+    r"\bauthorization[ \t]*[:=][ \t]*(?:bearer|basic)\b",
+    re.IGNORECASE,
+)
+_LINE_END_PATTERN = r"(?:\r\n|\r|\n)"
+_AUTHORIZATION_HEADER_NAME_ONLY_PATTERN = re.compile(
+    r"^[ \t]*authorization(?:[ \t]*[:=])?[ \t]*$",
+    re.IGNORECASE,
+)
+_COOKIE_HEADER_NAME_ONLY_PATTERN = re.compile(
+    rf"^[ \t]*(?:set-cookie|cookie)[ \t]*(?:{_LINE_END_PATTERN})?$",
+    re.IGNORECASE,
+)
+_COOKIE_HEADER_NAME_ONLY_BLOCK_PATTERN = re.compile(
+    rf"(?P<header>(?<![^\r\n])[ \t]*(?:set-cookie|cookie)[ \t]*"
+    rf"{_LINE_END_PATTERN})"
+    rf"(?P<folded>(?:[ \t]+[^\r\n]*(?:{_LINE_END_PATTERN}|\Z))+)",
+    re.IGNORECASE,
+)
+_COOKIE_FOLDED_LINE_PATTERN = re.compile(
+    rf"(?<![^\r\n])(?P<indent>[ \t]+)[^\r\n]*"
+    rf"(?P<ending>{_LINE_END_PATTERN}|\Z)",
+)
 _COOKIE_HEADER_SECRET_PATTERN = re.compile(
     r"(?P<prefix>\b(?:set-cookie|cookie)\s*[:=][ \t]*)"
-    r"(?P<secret>[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)",
+    rf"(?P<secret>[^\r\n]*(?:{_LINE_END_PATTERN}[ \t]+[^\r\n]*)*)",
     re.IGNORECASE | re.DOTALL,
+)
+_AUTHORIZATION_FOLDED_BLOCK_PATTERN = re.compile(
+    r"(?P<header>\bauthorization[ \t]*[:=][ \t]*"
+    rf"(?:(?:bearer|basic)\b[^\r\n]*{_LINE_END_PATTERN}|"
+    rf"{_LINE_END_PATTERN}[ \t]+(?:bearer|basic)[ \t]*"
+    rf"{_LINE_END_PATTERN}))"
+    rf"(?P<folded>(?:[ \t]+[^\r\n]*(?:{_LINE_END_PATTERN}|\Z))+)",
+    re.IGNORECASE,
+)
+_AUTHORIZATION_BARE_NAME_FOLDED_BLOCK_PATTERN = re.compile(
+    rf"(?P<header>(?<![^\r\n])[ \t]*authorization[ \t]*"
+    rf"{_LINE_END_PATTERN}[ \t]+(?:bearer|basic)[ \t]*"
+    rf"{_LINE_END_PATTERN})"
+    rf"(?P<folded>(?:[ \t]+[^\r\n]*(?:{_LINE_END_PATTERN}|\Z))+)",
+    re.IGNORECASE,
+)
+_AUTH_SCHEME_SECRET_PATTERN = re.compile(
+    r"(?P<prefix>\b(?:Bearer|Basic)[ \t]+)"
+    r"(?P<secret>(?!(?:authentication|troubleshooting)\b)[^ \t\r\n,;}]+)",
+    re.IGNORECASE,
 )
 _QUOTED_ASSIGNMENT_SECRET_PATTERN = re.compile(
     rf"(?P<prefix>['\"]?(?:{_SENSITIVE_KEY_PATTERN})['\"]?\s*[:=]\s*)"
@@ -39,14 +82,13 @@ _TOKEN_SECRET_PATTERN = re.compile(
     r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
     r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
     r"AIza[A-Za-z0-9_-]{20,}|"
-    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
-    r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,})",
+    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
 _MULTIWORD_ASSIGNMENT_SECRET_PATTERN = re.compile(
     rf"(?P<prefix>['\"]?(?:{_SENSITIVE_KEY_PATTERN})['\"]?\s*[:=]\s*['\"]?)"
-    rf"(?P<secret>[^'\"\n,;}}]+?)(?P<suffix>['\"]?)"
-    rf"(?=(?:\s+['\"]?(?:{_SENSITIVE_KEY_PATTERN})['\"]?\s*[:=])|[\n,;}}]|$)",
+    rf"(?P<secret>[^'\"\r\n,;}}]+?)(?P<suffix>['\"]?)"
+    rf"(?=(?:\s+['\"]?(?:{_SENSITIVE_KEY_PATTERN})['\"]?\s*[:=])|[\r\n,;}}]|$)",
     re.IGNORECASE,
 )
 _ASSIGNMENT_SECRET_PATTERN = re.compile(
@@ -72,15 +114,15 @@ _SENSITIVE_WHITESPACE_FIELD_START = (
 )
 _PATH_TERMINATOR = (
     rf"(?:{_STRUCTURED_FIELD_START}|{_SENSITIVE_WHITESPACE_FIELD_START}|"
-    r"[\"'<>\n]|$)"
+    r"[\"'<>\r\n]|$)"
 )
 _PATH_CONTENT = rf"(?:(?!{_PATH_TERMINATOR}).)+?"
 _PATH_PROSE_START = (
     r"[,;]?\s+(?:after|and|before|because|during|using|when|while|with)\b"
 )
 _PATH_EXTENSION_CONTENT = (
-    rf"(?:(?![\"'<>\n]).)+?\.[A-Za-z0-9]{{1,16}}"
-    rf"(?=(?:{_STRUCTURED_FIELD_START}|{_PATH_PROSE_START}|[\"'<>\n]|$))"
+    rf"(?:(?![\"'<>\r\n]).)+?\.[A-Za-z0-9]{{1,16}}"
+    rf"(?=(?:{_STRUCTURED_FIELD_START}|{_PATH_PROSE_START}|[\"'<>\r\n]|$))"
 )
 _PATH_VALUE = rf"(?:{_PATH_EXTENSION_CONTENT}|{_PATH_CONTENT})"
 _LABELED_PATH_PATTERN = re.compile(
@@ -96,12 +138,48 @@ _ABSOLUTE_PATH_PATTERN = re.compile(
 )
 
 
+def _redact_name_only_cookie_block(match: re.Match[str]) -> str:
+    folded = _COOKIE_FOLDED_LINE_PATTERN.sub(
+        lambda line: (
+            f"{line.group('indent')}<redacted>{line.group('ending')}"
+        ),
+        match.group("folded"),
+    )
+    return f"{match.group('header')}{folded}"
+
+
+def _redact_folded_authorization_block(match: re.Match[str]) -> str:
+    folded = _COOKIE_FOLDED_LINE_PATTERN.sub(
+        lambda line: (
+            f"{line.group('indent')}<redacted-auth>{line.group('ending')}"
+        ),
+        match.group("folded"),
+    )
+    return f"{match.group('header')}{folded}"
+
+
 def sanitize_error_text(value: object, max_length: int = 300) -> str:
     """Redact credentials, URLs, and paths before text crosses a durable boundary."""
     message = str(value)
     message = _PEM_BLOCK_PATTERN.sub("<redacted>", message)
+    message = _COOKIE_HEADER_NAME_ONLY_BLOCK_PATTERN.sub(
+        _redact_name_only_cookie_block,
+        message,
+    )
+    message = _AUTHORIZATION_BARE_NAME_FOLDED_BLOCK_PATTERN.sub(
+        _redact_folded_authorization_block,
+        message,
+    )
+    message = _AUTHORIZATION_FOLDED_BLOCK_PATTERN.sub(
+        _redact_folded_authorization_block,
+        message,
+    )
     message = _COOKIE_HEADER_SECRET_PATTERN.sub(
         lambda match: f"{match.group('prefix')}<redacted>",
+        message,
+    )
+    message = _AUTH_SCHEME_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}<redacted-auth>",
         message,
     )
     message = _HTTP_URL_PATTERN.sub("<redacted>", message)
@@ -142,6 +220,76 @@ def safe_error_message(error: BaseException, max_length: int = 300) -> str:
     return sanitize_error_text(message, max_length=max_length)
 
 
+def _cookie_header_pending_after_chunk(
+    chunk: str,
+    *,
+    was_pending: bool,
+) -> bool:
+    pending = was_pending
+    logical_line_start = 0
+    for line_ending in re.finditer(_LINE_END_PATTERN, chunk):
+        logical_line = chunk[logical_line_start : line_ending.start()]
+        is_continuation = pending and logical_line.startswith((" ", "\t"))
+        if (
+            _COOKIE_HEADER_START_PATTERN.search(logical_line)
+            or _COOKIE_HEADER_NAME_ONLY_PATTERN.fullmatch(logical_line)
+        ):
+            pending = True
+        elif is_continuation:
+            pending = True
+        else:
+            pending = False
+        logical_line_start = line_ending.end()
+
+    if logical_line_start < len(chunk):
+        logical_line = chunk[logical_line_start:]
+        is_continuation = pending and logical_line.startswith((" ", "\t"))
+        if (
+            _COOKIE_HEADER_START_PATTERN.search(logical_line)
+            or _COOKIE_HEADER_NAME_ONLY_PATTERN.fullmatch(logical_line)
+        ):
+            pending = True
+        elif is_continuation:
+            pending = True
+        else:
+            pending = False
+    return pending
+
+
+def _authorization_header_pending_after_chunk(
+    chunk: str,
+    *,
+    was_pending: bool,
+) -> bool:
+    pending = was_pending
+    logical_line_start = 0
+    for line_ending in re.finditer(_LINE_END_PATTERN, chunk):
+        logical_line = chunk[logical_line_start : line_ending.start()]
+        if (
+            _AUTHORIZATION_HEADER_START_PATTERN.search(logical_line)
+            or _AUTHORIZATION_HEADER_NAME_ONLY_PATTERN.fullmatch(logical_line)
+        ):
+            pending = True
+        elif pending and logical_line.startswith((" ", "\t")):
+            pending = True
+        else:
+            pending = False
+        logical_line_start = line_ending.end()
+
+    if logical_line_start < len(chunk):
+        logical_line = chunk[logical_line_start:]
+        if (
+            _AUTHORIZATION_HEADER_START_PATTERN.search(logical_line)
+            or _AUTHORIZATION_HEADER_NAME_ONLY_PATTERN.fullmatch(logical_line)
+        ):
+            pending = True
+        elif pending and logical_line.startswith((" ", "\t")):
+            pending = True
+        else:
+            pending = False
+    return pending
+
+
 def sanitize_error_stream(
     source: TextIO,
     target: TextIO,
@@ -150,43 +298,80 @@ def sanitize_error_stream(
 ) -> None:
     """Sanitize a text stream without retaining unbounded diagnostic lines."""
     cookie_header_pending = False
+    authorization_header_pending = False
+    cookie_continuation_fragment_pending = False
+    authorization_continuation_fragment_pending = False
+    pending_chunk = ""
+    trailing_cr_pending = False
     while True:
-        line = source.readline(max_line_chars + 1)
+        if pending_chunk:
+            line = pending_chunk
+            pending_chunk = ""
+        else:
+            line = source.readline(max_line_chars + 1)
         if not line:
             return
+        if trailing_cr_pending:
+            trailing_cr_pending = False
+            if line.startswith("\n"):
+                target.write("\n")
+                target.flush()
+                line = line[1:]
+                if not line:
+                    continue
         if len(line) > max_line_chars and not line.endswith("\n"):
-            cookie_header_pending = (
-                cookie_header_pending and line.startswith((" ", "\t"))
-            )
-            scan_tail = ""
+            line_ending = re.search(_LINE_END_PATTERN, line)
             while True:
-                probe = f"{scan_tail}{line}"
-                if _COOKIE_HEADER_START_PATTERN.search(probe):
-                    cookie_header_pending = True
-                scan_tail = probe[-16:]
-                if line.endswith("\n"):
+                if line_ending is not None:
                     break
                 line = source.readline(max_line_chars + 1)
                 if not line:
                     break
+                line_ending = re.search(_LINE_END_PATTERN, line)
+            # Chunking can separate a sensitive header name from its delimiter,
+            # so continuation lines after any oversized diagnostic fail closed.
+            cookie_header_pending = True
+            authorization_header_pending = True
+            cookie_continuation_fragment_pending = False
+            authorization_continuation_fragment_pending = False
             target.write("<redacted oversized diagnostic>")
-            if line.endswith("\n"):
-                target.write("\n")
+            if line_ending is not None:
+                target.write(line_ending.group())
+                pending_chunk = line[line_ending.end() :]
+                trailing_cr_pending = (
+                    line_ending.group() == "\r"
+                    and line_ending.end() == len(line)
+                )
             target.flush()
             if not line:
                 return
             continue
-        is_cookie_continuation = cookie_header_pending and line.startswith(
-            (" ", "\t")
+        is_cookie_continuation = cookie_header_pending and (
+            cookie_continuation_fragment_pending
+            or line.startswith((" ", "\t"))
         )
-        if is_cookie_continuation:
+        is_authorization_continuation = (
+            authorization_header_pending
+            and (
+                authorization_continuation_fragment_pending
+                or line.startswith((" ", "\t"))
+            )
+        )
+        if is_cookie_continuation or is_authorization_continuation:
             indentation = line[: len(line) - len(line.lstrip(" \t"))]
-            synthetic_header = f"Cookie: {line[len(indentation):]}"
+            header = (
+                "Cookie:"
+                if is_cookie_continuation
+                else "Authorization: Bearer"
+            )
+            synthetic_header = f"{header} {line[len(indentation):]}"
             sanitized = sanitize_error_text(
                 synthetic_header,
                 max_length=max(300, len(synthetic_header) + 1),
             )
-            target.write(f"{indentation}{sanitized.removeprefix('Cookie: ')}")
+            target.write(
+                f"{indentation}{sanitized.removeprefix(f'{header} ')}"
+            )
         else:
             target.write(
                 sanitize_error_text(
@@ -195,12 +380,32 @@ def sanitize_error_stream(
                 )
             )
         target.flush()
-        if _COOKIE_HEADER_START_PATTERN.search(line):
-            cookie_header_pending = True
-        elif is_cookie_continuation:
-            cookie_header_pending = True
-        else:
-            cookie_header_pending = False
+        ends_with_line_ending = (
+            re.search(rf"{_LINE_END_PATTERN}\Z", line) is not None
+        )
+        cookie_state_chunk = (
+            f" {line}" if cookie_continuation_fragment_pending else line
+        )
+        authorization_state_chunk = (
+            f" {line}"
+            if authorization_continuation_fragment_pending
+            else line
+        )
+        cookie_header_pending = _cookie_header_pending_after_chunk(
+            cookie_state_chunk,
+            was_pending=cookie_header_pending,
+        )
+        authorization_header_pending = _authorization_header_pending_after_chunk(
+            authorization_state_chunk,
+            was_pending=authorization_header_pending,
+        )
+        cookie_continuation_fragment_pending = (
+            cookie_header_pending and not ends_with_line_ending
+        )
+        authorization_continuation_fragment_pending = (
+            authorization_header_pending and not ends_with_line_ending
+        )
+        trailing_cr_pending = line.endswith("\r")
 
 
 def _main() -> int:

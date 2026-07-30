@@ -23,10 +23,28 @@ TRANSACTION_ACTIVE=0
 TRANSACTION_ORIGINAL_PLIST=0
 TRANSACTION_ORIGINAL_LOADED=0
 TRANSACTION_NEW_SERVICE_MAY_BE_LOADED=0
+RENDER_TRANSACTION_ACTIVE=0
+RENDER_ORIGINAL_PRESENT=0
+RENDER_PREVIOUS_PATH=""
+RENDER_TARGET_PATH=""
+RENDER_PUBLISHED=0
+RENDER_TEMPORARY_PATH=""
 PENDING_INTERRUPT_NAME=""
 PENDING_INTERRUPT_STATUS=0
 
 cleanup() {
+  if [[ "${RENDER_TRANSACTION_ACTIVE}" -eq 1 ]]; then
+    if [[ "${RENDER_PUBLISHED}" -eq 1 ]]; then
+      if [[ "${RENDER_ORIGINAL_PRESENT}" -eq 1 ]]; then
+        if ! mv -f "${RENDER_PREVIOUS_PATH}" "${RENDER_TARGET_PATH}"; then
+          printf 'error: rendered target rollback did not complete\n' >&2
+        fi
+      elif ! rm -f "${RENDER_TARGET_PATH}"; then
+        printf 'error: newly rendered target cleanup did not complete\n' >&2
+      fi
+    fi
+  fi
+  rm -f "${RENDER_PREVIOUS_PATH:-}" "${RENDER_TEMPORARY_PATH:-}"
   rm -f "${PLIST_CANDIDATE:-}" "${ROLLBACK_PLIST_PATH:-}"
   if [[ "${TRANSACTION_ACTIVE}" -eq 0 ]]; then
     rm -f "${PREVIOUS_PLIST_PATH:-}"
@@ -109,6 +127,107 @@ exit_if_interrupted_without_transaction() {
       "${PENDING_INTERRUPT_NAME}" >&2
     exit "${PENDING_INTERRUPT_STATUS}"
   fi
+}
+
+exit_if_interrupted_after_commit() {
+  if [[ -n "${PENDING_INTERRUPT_NAME}" &&
+    "${TRANSACTION_ACTIVE}" -eq 0 ]]; then
+    printf 'error: interrupted by SIG%s; installation committed before interruption\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+    exit "${PENDING_INTERRUPT_STATUS}"
+  fi
+}
+
+exit_if_interrupted_after_render_commit() {
+  if [[ -n "${PENDING_INTERRUPT_NAME}" &&
+    "${RENDER_TRANSACTION_ACTIVE}" -eq 0 ]]; then
+    printf 'error: interrupted by SIG%s; rendered target was committed before interruption\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+    exit "${PENDING_INTERRUPT_STATUS}"
+  fi
+}
+
+finalize_success_output() {
+  local outcome="$1"
+
+  trap - TERM INT
+  case "${outcome}" in
+    committed)
+      exit_if_interrupted_after_commit
+      ;;
+    rendered)
+      exit_if_interrupted_after_render_commit
+      ;;
+    *)
+      exit_if_interrupted_without_transaction
+      ;;
+  esac
+}
+
+begin_render_transaction() {
+  local output_dir
+
+  RENDER_TARGET_PATH="$1"
+  RENDER_ORIGINAL_PRESENT=0
+  RENDER_PUBLISHED=0
+  output_dir="$(dirname "${RENDER_TARGET_PATH}")"
+  mkdir -p "${output_dir}"
+  if [[ -e "${RENDER_TARGET_PATH}" || -L "${RENDER_TARGET_PATH}" ]]; then
+    RENDER_PREVIOUS_PATH="$(
+      mktemp "${output_dir}/.${LABEL}.render-previous.XXXXXX"
+    )"
+    cp -p "${RENDER_TARGET_PATH}" "${RENDER_PREVIOUS_PATH}"
+    RENDER_ORIGINAL_PRESENT=1
+  fi
+  RENDER_TRANSACTION_ACTIVE=1
+}
+
+exit_if_render_interrupted() {
+  local rollback_succeeded=1
+
+  [[ -n "${PENDING_INTERRUPT_NAME}" ]] || return 0
+  if [[ "${RENDER_PUBLISHED}" -eq 0 ]]; then
+    RENDER_TRANSACTION_ACTIVE=0
+    rm -f "${RENDER_PREVIOUS_PATH:-}"
+    RENDER_PREVIOUS_PATH=""
+    if [[ "${RENDER_ORIGINAL_PRESENT}" -eq 1 ]]; then
+      printf 'error: render interrupted by SIG%s before publication; previous rendered target was preserved\n' \
+        "${PENDING_INTERRUPT_NAME}" >&2
+    else
+      printf 'error: render interrupted by SIG%s before publication; no rendered target was published\n' \
+        "${PENDING_INTERRUPT_NAME}" >&2
+    fi
+    exit "${PENDING_INTERRUPT_STATUS}"
+  fi
+
+  if [[ "${RENDER_ORIGINAL_PRESENT}" -eq 1 ]]; then
+    mv -f "${RENDER_PREVIOUS_PATH}" "${RENDER_TARGET_PATH}" ||
+      rollback_succeeded=0
+  else
+    rm -f "${RENDER_TARGET_PATH}" || rollback_succeeded=0
+  fi
+  if [[ "${rollback_succeeded}" -eq 1 ]]; then
+    RENDER_TRANSACTION_ACTIVE=0
+    RENDER_PREVIOUS_PATH=""
+    if [[ "${RENDER_ORIGINAL_PRESENT}" -eq 1 ]]; then
+      printf 'error: render interrupted by SIG%s during publication; restored previous rendered target\n' \
+        "${PENDING_INTERRUPT_NAME}" >&2
+    else
+      printf 'error: render interrupted by SIG%s during publication; removed newly rendered target\n' \
+        "${PENDING_INTERRUPT_NAME}" >&2
+    fi
+  else
+    printf 'error: render interrupted by SIG%s; rendered target rollback did not complete\n' \
+      "${PENDING_INTERRUPT_NAME}" >&2
+  fi
+  exit "${PENDING_INTERRUPT_STATUS}"
+}
+
+commit_render_transaction() {
+  RENDER_TRANSACTION_ACTIVE=0
+  rm -f "${RENDER_PREVIOUS_PATH:-}"
+  RENDER_PREVIOUS_PATH=""
+  RENDER_PUBLISHED=0
 }
 
 begin_install_transaction() {
@@ -278,31 +397,35 @@ directory_owner_uid() {
   fail "could not inspect log directory ownership: ${path_value}"
 }
 
-validate_custom_log_path_components() {
+validate_log_path_components() {
   local path_value="$1"
+  local directory_kind="$2"
   local relative_path
   local current_path=""
   local component
   local -a components
 
   [[ "${path_value}" == /* ]] ||
-    fail "custom log directory must be absolute: ${path_value}"
+    fail "${directory_kind} log directory must be absolute: ${path_value}"
   if [[ "${path_value}" != "/" && "${path_value}" == */ ]]; then
-    fail "custom log directory must use a canonical path without a trailing slash: ${path_value}"
+    fail "${directory_kind} log directory must use a canonical path without a trailing slash: ${path_value}"
   fi
 
   relative_path="${path_value#/}"
   IFS='/' read -r -a components <<< "${relative_path}"
   for component in "${components[@]}"; do
     if [[ -z "${component}" || "${component}" == "." || "${component}" == ".." ]]; then
-      fail "custom log directory must use a canonical path: ${path_value}"
+      fail "${directory_kind} log directory must use a canonical path: ${path_value}"
     fi
     current_path="${current_path}/${component}"
     if [[ -L "${current_path}" ]]; then
       if [[ "${current_path}" == "${path_value}" ]]; then
-        fail "custom log directory must not be a symbolic link: ${path_value}"
+        fail "${directory_kind} log directory must not be a symbolic link: ${path_value}"
       fi
-      fail "custom log directory must not contain a symbolic-link component: ${current_path}"
+      fail "${directory_kind} log directory must not contain a symbolic-link component: ${current_path}"
+    fi
+    if [[ -e "${current_path}" && ! -d "${current_path}" ]]; then
+      fail "${directory_kind} log directory path contains a non-directory component: ${current_path}"
     fi
   done
 }
@@ -330,11 +453,13 @@ validate_existing_custom_log_directory() {
 prepare_log_directory() {
   local previous_umask
   local directory_kind="default"
+  local owner_uid
+  local current_uid
 
   if [[ "${LOG_DIR_WAS_EXPLICIT}" -eq 1 ]]; then
     directory_kind="custom"
-    validate_custom_log_path_components "${LOG_DIR}"
   fi
+  validate_log_path_components "${LOG_DIR}" "${directory_kind}"
   if [[ -L "${LOG_DIR}" ]]; then
     fail "${directory_kind} log directory must not be a symbolic link: ${LOG_DIR}"
   fi
@@ -346,6 +471,14 @@ prepare_log_directory() {
     if [[ "${LOG_DIR_WAS_EXPLICIT}" -eq 1 ]]; then
       validate_existing_custom_log_directory
     else
+      owner_uid="$(directory_owner_uid "${LOG_DIR}")"
+      current_uid="$(id -u)"
+      if [[ "${owner_uid}" != "${current_uid}" ]]; then
+        fail "existing default log directory must be owned by the current user: ${LOG_DIR} (owner ${owner_uid}, current ${current_uid})"
+      fi
+      if [[ ! -w "${LOG_DIR}" || ! -x "${LOG_DIR}" ]]; then
+        fail "existing default log directory must be writable and searchable by the current user: ${LOG_DIR}"
+      fi
       chmod 0700 "${LOG_DIR}"
     fi
     return
@@ -358,9 +491,9 @@ prepare_log_directory() {
   if [[ -L "${LOG_DIR}" || ! -d "${LOG_DIR}" ]]; then
     fail "could not create a private ${directory_kind} log directory: ${LOG_DIR}"
   fi
+  validate_log_path_components "${LOG_DIR}" "${directory_kind}"
   chmod 0700 "${LOG_DIR}"
   if [[ "${LOG_DIR_WAS_EXPLICIT}" -eq 1 ]]; then
-    validate_custom_log_path_components "${LOG_DIR}"
     validate_existing_custom_log_directory
   fi
 }
@@ -388,6 +521,7 @@ render_plist() {
   output_dir="$(dirname "${output_path}")"
   mkdir -p "${output_dir}"
   temporary_path="$(mktemp "${output_dir}/.${LABEL}.XXXXXX")"
+  RENDER_TEMPORARY_PATH="${temporary_path}"
   trap 'rm -f "${temporary_path:-}"' RETURN
 
   escaped_label="$(xml_escape "${LABEL}")"
@@ -414,8 +548,19 @@ render_plist() {
     plutil -lint "${temporary_path}" >/dev/null
   fi
 
+  if [[ "${RENDER_TRANSACTION_ACTIVE}" -eq 1 ]]; then
+    exit_if_render_interrupted
+  fi
   chmod 0644 "${temporary_path}"
+  if [[ "${RENDER_TRANSACTION_ACTIVE}" -eq 1 ]]; then
+    exit_if_render_interrupted
+  fi
   mv "${temporary_path}" "${output_path}"
+  if [[ "${RENDER_TRANSACTION_ACTIVE}" -eq 1 ]]; then
+    RENDER_PUBLISHED=1
+    exit_if_render_interrupted
+  fi
+  RENDER_TEMPORARY_PATH=""
   trap - RETURN
 }
 
@@ -503,7 +648,10 @@ LAUNCH_AGENTS_DIR="$(absolute_output_path "${LAUNCH_AGENTS_DIR}")"
 
 if [[ -n "${RENDER_ONLY_PATH}" ]]; then
   RENDER_ONLY_PATH="$(absolute_output_path "${RENDER_ONLY_PATH}")"
+  begin_render_transaction "${RENDER_ONLY_PATH}"
   render_plist "${RENDER_ONLY_PATH}"
+  commit_render_transaction
+  finalize_success_output "rendered"
   printf 'Rendered LaunchAgent plist: %s\n' "${RENDER_ONLY_PATH}"
   exit 0
 fi
@@ -513,6 +661,7 @@ DOMAIN_TARGET="gui/$(id -u)"
 SERVICE_TARGET="${DOMAIN_TARGET}/${LABEL}"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
+  finalize_success_output "unchanged"
   printf 'LaunchAgent label: %s\n' "${LABEL}"
   printf 'Repository: %s\n' "${REPO_ROOT}"
   printf 'uv executable: %s\n' "${UV_PATH}"
@@ -545,10 +694,20 @@ if [[ ! -f "${PLIST_PATH}" && "${SERVICE_LOADED}" -eq 1 && "${RESTART_CHANGED}" 
   fail "loaded service has no installed plist; rerun with --restart to replace it explicitly"
 fi
 
-if [[ -f "${PLIST_PATH}" ]] && cmp -s "${PLIST_PATH}" "${PLIST_CANDIDATE}"; then
+PLIST_IS_IDENTICAL=0
+if [[ -f "${PLIST_PATH}" ]] &&
+  cmp -s "${PLIST_PATH}" "${PLIST_CANDIDATE}"; then
+  PLIST_IS_IDENTICAL=1
+fi
+exit_if_interrupted_without_transaction
+
+if [[ "${PLIST_IS_IDENTICAL}" -eq 1 ]]; then
+  exit_if_interrupted_without_transaction
   rm -f "${PLIST_CANDIDATE}"
   PLIST_CANDIDATE=""
+  exit_if_interrupted_without_transaction
   if [[ "${SERVICE_LOADED}" -eq 1 ]]; then
+    finalize_success_output "unchanged"
     printf 'Already installed with identical configuration; no changes made: %s\n' \
       "${LABEL}"
   else
@@ -563,6 +722,7 @@ if [[ -f "${PLIST_PATH}" ]] && cmp -s "${PLIST_PATH}" "${PLIST_CANDIDATE}"; then
     fi
     rollback_if_interrupted
     commit_install_transaction
+    finalize_success_output "committed"
     printf 'LaunchAgent configuration is identical; started unloaded service: %s\n' \
       "${LABEL}"
   fi
@@ -593,6 +753,7 @@ else
   fi
   rollback_if_interrupted
   commit_install_transaction
+  finalize_success_output "committed"
   printf 'Installed and started %s\n' "${LABEL}"
 fi
 

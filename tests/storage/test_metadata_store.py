@@ -1,9 +1,10 @@
 import gc
 import os
 import sqlite3
+import time
 import warnings
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from threading import Barrier, BrokenBarrierError, Event
 
@@ -139,6 +140,196 @@ def _sensitive_lifecycle_text(source_id: str) -> str:
     )
 
 
+def test_metadata_store_redacts_short_explicit_auth_credentials_at_rest(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "provider rejected Bearer abc123 while syncing, source_id=source_notion; "
+        "fallback Basic Og== because retrying; job_id=job-123"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "abc123" not in value
+        assert "Og==" not in value
+        assert "Bearer <redacted-auth> while syncing," in value
+        assert "Basic <redacted-auth> because retrying;" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+
+
+def test_metadata_store_redacts_folded_authorization_credentials_at_rest(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Authorization: Bearer\r\n"
+        " folded-store-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization: Basic\r"
+        "\tfolded-store-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=26"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "folded-store-bearer-credential" not in value
+        assert "folded-store-basic-credential" not in value
+        assert "first clear diagnostic" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "second clear diagnostic" in value
+        assert "phase=fetching_page_content" in value
+        assert "retry_count=26" in value
+
+
+def test_metadata_store_redacts_multistage_folded_authorization_credentials_at_rest(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Authorization:\r\n"
+        " Bearer\r\n"
+        " multistage-store-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization=\r"
+        "\tBasic\r"
+        "\tmultistage-store-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=28"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "multistage-store-bearer-credential" not in value
+        assert "multistage-store-basic-credential" not in value
+        assert "first clear diagnostic" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "second clear diagnostic" in value
+        assert "phase=fetching_page_content" in value
+        assert "retry_count=28" in value
+
+
+def test_metadata_store_redacts_bare_name_folded_authorization_credentials_at_rest(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Authorization\r\n"
+        " Bearer\r\n"
+        " bare-name-store-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization\r"
+        "\tBasic\r"
+        "\tbare-name-store-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=34"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "bare-name-store-bearer-credential" not in value
+        assert "bare-name-store-basic-credential" not in value
+        assert "first clear diagnostic" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "second clear diagnostic" in value
+        assert "phase=fetching_page_content" in value
+        assert "retry_count=34" in value
+
+
+def test_metadata_store_preserves_lone_cr_clear_diagnostic_after_labeled_path(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    sensitive_path = "/Users/tester/private vault/observability notes.md"
+    raw = (
+        f"provider failure path:{sensitive_path}\r"
+        "clear diagnostic source_id=source_notion "
+        "job_id=job-123 retry_count=25"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert sensitive_path not in value
+        assert "observability notes.md" not in value
+        assert "clear diagnostic" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "retry_count=25" in value
+
+
 def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     raw_values = (
@@ -218,6 +409,123 @@ def test_metadata_store_fails_closed_for_cookie_names_that_match_diagnostic_fiel
         assert "source_id=source_notion" in value
         assert "job_id=job-123" in value
         assert "phase=fetching_page_content" in value
+
+
+def test_metadata_store_redacts_name_only_cookie_header_folded_lines_at_rest(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Cookie\r"
+        " source_id=folded-cookie-source-secret; "
+        "job_id=folded-cookie-job-secret\r"
+        "\tphase=folded-cookie-phase-secret\r"
+        "ordinary diagnostic, source_id=source_notion; job_id=job-123; "
+        "phase=fetching_page_content"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "folded-cookie-source-secret" not in value
+        assert "folded-cookie-job-secret" not in value
+        assert "folded-cookie-phase-secret" not in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "phase=fetching_page_content" in value
+
+
+def test_metadata_store_redacts_lone_cr_cookie_value_continuations_at_rest(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Cookie: initial-alpha-value\r"
+        " folded-alpha-value, folded-delta-value\r"
+        "\tfolded-beta-value\r"
+        "first clear diagnostic, source_id=source_notion; job_id=job-123\r"
+        "Set-Cookie: initial-delta-value\r"
+        "\tfolded-gamma-value\r"
+        "second clear diagnostic, phase=fetching_page_content"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        for secret in (
+            "initial-alpha-value",
+            "folded-alpha-value",
+            "folded-delta-value",
+            "folded-beta-value",
+            "initial-delta-value",
+            "folded-gamma-value",
+        ):
+            assert secret not in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "phase=fetching_page_content" in value
+
+
+def test_metadata_store_preserves_lone_cr_clear_diagnostic_without_comma(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    raw = (
+        "Cookie: initial-alpha-value\r"
+        "clear diagnostic source_id=source_notion "
+        "job_id=job-123 retry_count=24"
+    )
+
+    stored = store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.FAILED,
+            last_error=raw,
+        )
+    )
+    with store._connect() as conn:
+        persisted = conn.execute(
+            "SELECT last_error FROM sources WHERE source_id = ?",
+            ("source_notion",),
+        ).fetchone()["last_error"]
+
+    for value in (stored.last_error, persisted):
+        assert "initial-alpha-value" not in value
+        assert "clear diagnostic" in value
+        assert "source_id=source_notion" in value
+        assert "job_id=job-123" in value
+        assert "retry_count=24" in value
 
 
 def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):
@@ -892,6 +1200,473 @@ def test_scoped_orphan_recovery_does_not_mutate_legacy_removed_sources(tmp_path)
     )
     assert store.get_source("source_github").sync_status == SyncStatus.FAILED
     assert store.get_sync_job(retained_job.job_id).status == SyncJobStatus.FAILED
+
+
+def test_scoped_claim_recovers_stale_out_of_scope_legacy_source_without_mutating_content(
+    tmp_path,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        sync_owner_id="retained-worker",
+        running_job_timeout_seconds=3600,
+        unowned_running_job_grace_seconds=0,
+    )
+    _insert_legacy_web_source_row(store)
+    store.upsert_document_and_replace_chunks(
+        DocumentModel(
+            id="legacy-doc",
+            document_id="legacy-doc",
+            source_id="source_web",
+            title="Legacy Web Doc",
+            content="Legacy content must not change during job recovery.",
+            url="https://example.com/legacy",
+            platform="Web",
+            path="/legacy",
+        ),
+        [
+            ChunkModel(
+                chunk_id="legacy-chunk",
+                document_id="legacy-doc",
+                source_id="source_web",
+                title="Legacy Web Doc",
+                text="Legacy content must not change during job recovery.",
+                url="https://example.com/legacy",
+                path="/legacy",
+                chunk_index=0,
+                content_hash="legacy-hash",
+            )
+        ],
+    )
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO chunk_tombstones (
+                chunk_id, document_id, source_id, recorded_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "legacy-tombstone",
+                "legacy-deleted-doc",
+                "source_web",
+                "2000-01-01T00:00:00+00:00",
+            ),
+        )
+    legacy_job = store.create_sync_job("source_web")
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    _mark_job_running(
+        store,
+        legacy_job.job_id,
+        started_at=old_timestamp,
+        heartbeat_at=old_timestamp,
+    )
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sources SET sync_status = ?, last_error = '', updated_at = ?
+            WHERE source_id = ?
+            """,
+            (SyncStatus.RUNNING.value, old_timestamp, "source_web"),
+        )
+        before_documents = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM documents WHERE source_id = ? ORDER BY document_id",
+                ("source_web",),
+            ).fetchall()
+        ]
+        before_chunks = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM chunks WHERE source_id = ? ORDER BY chunk_id",
+                ("source_web",),
+            ).fetchall()
+        ]
+        before_tombstones = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM chunk_tombstones
+                WHERE source_id = ?
+                ORDER BY chunk_id
+                """,
+                ("source_web",),
+            ).fetchall()
+        ]
+
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    retained_job, enqueued = store.enqueue_sync_job("source_notion")
+
+    claimed = store.claim_next_sync_job(["source_notion"])
+
+    assert enqueued is True
+    assert claimed is not None
+    assert claimed.job_id == retained_job.job_id
+    assert claimed.status == SyncJobStatus.RUNNING
+    assert _raw_source_and_job_status(store, "source_web", legacy_job.job_id) == (
+        SyncStatus.FAILED.value,
+        SyncJobStatus.FAILED.value,
+    )
+    assert (
+        store.get_sync_job(legacy_job.job_id).error_message
+        == ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
+    )
+    assert store.get_sync_job(retained_job.job_id).status == SyncJobStatus.RUNNING
+    with store._connect() as conn:
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM documents WHERE source_id = ? ORDER BY document_id",
+                ("source_web",),
+            ).fetchall()
+        ] == before_documents
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM chunks WHERE source_id = ? ORDER BY chunk_id",
+                ("source_web",),
+            ).fetchall()
+        ] == before_chunks
+        assert [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM chunk_tombstones
+                WHERE source_id = ?
+                ORDER BY chunk_id
+                """,
+                ("source_web",),
+            ).fetchall()
+        ] == before_tombstones
+
+
+def test_scoped_claim_preserves_live_out_of_scope_global_running_blocker(
+    tmp_path,
+    monkeypatch,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3",
+        sync_owner_id="retained-worker",
+        running_job_timeout_seconds=3600,
+    )
+    _insert_legacy_web_source_row(store)
+    legacy_job = store.create_sync_job("source_web")
+    _mark_job_running(
+        store,
+        legacy_job.job_id,
+        owner_id="legacy-worker",
+    )
+    with store._connect() as conn:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO sync_job_owners (
+                owner_id, process_id, process_start_id, started_at, heartbeat_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("legacy-worker", 4242, "linux:boot-a:100", now, now),
+        )
+        conn.execute(
+            """
+            UPDATE sources SET sync_status = ?, last_error = '', updated_at = ?
+            WHERE source_id = ?
+            """,
+            (SyncStatus.RUNNING.value, now, "source_web"),
+        )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_is_process_alive",
+        staticmethod(lambda process_id: process_id == 4242),
+    )
+    monkeypatch.setattr(
+        MetadataStore,
+        "_get_process_start_identity",
+        staticmethod(lambda process_id: "linux:boot-a:100"),
+    )
+
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    retained_job, enqueued = store.enqueue_sync_job("source_notion")
+
+    claimed = store.claim_next_sync_job(["source_notion"])
+
+    assert enqueued is True
+    assert claimed is None
+    assert _raw_source_and_job_status(store, "source_web", legacy_job.job_id) == (
+        SyncStatus.RUNNING.value,
+        SyncJobStatus.RUNNING.value,
+    )
+    assert store.get_sync_job(retained_job.job_id).status == SyncJobStatus.QUEUED
+
+
+def test_initialized_metadata_reads_do_not_wait_for_unrelated_writer(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    writer_store = MetadataStore(db_path, sync_owner_id="writer")
+    writer_store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    job = writer_store.create_sync_job("source_notion")
+    observer_store = MetadataStore(db_path, sync_owner_id="observer")
+    observer_store.ensure_schema()
+
+    writer_conn = sqlite3.connect(db_path)
+    writer_conn.execute("BEGIN IMMEDIATE")
+    writer_conn.execute(
+        "UPDATE sources SET updated_at = updated_at WHERE source_id = ?",
+        ("source_notion",),
+    )
+    writer_closed = False
+    timed_out = False
+    started_at = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            source_future = executor.submit(observer_store.list_sources)
+            job_future = executor.submit(writer_store.get_sync_job, job.job_id)
+            try:
+                sources = source_future.result(timeout=0.5)
+                observed_job = job_future.result(timeout=0.5)
+            except FutureTimeoutError:
+                timed_out = True
+            finally:
+                writer_conn.rollback()
+                writer_conn.close()
+                writer_closed = True
+            source_future.result(timeout=5)
+            job_future.result(timeout=5)
+    finally:
+        if not writer_closed:
+            if writer_conn.in_transaction:
+                writer_conn.rollback()
+            writer_conn.close()
+
+    assert timed_out is False
+    assert time.monotonic() - started_at < 1.0
+    assert [source.source_id for source in sources] == ["source_notion"]
+    assert observed_job.job_id == job.job_id
+
+
+@pytest.mark.parametrize(
+    ("job_state", "expected_status"),
+    [
+        ("queued", SyncJobStatus.QUEUED),
+        ("running", SyncJobStatus.RUNNING),
+        ("terminal", SyncJobStatus.SUCCEEDED),
+    ],
+)
+def test_latest_sync_job_observation_does_not_wait_for_unrelated_writer(
+    tmp_path,
+    job_state,
+    expected_status,
+):
+    db_path = tmp_path / f"{job_state}.sqlite3"
+    store = MetadataStore(db_path, sync_owner_id="status-owner")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    if job_state == "queued":
+        expected_job, enqueued = store.enqueue_sync_job("source_notion")
+        assert enqueued is True
+    else:
+        expected_job, started = store.begin_sync_job("source_notion")
+        assert started is True
+        if job_state == "terminal":
+            expected_job, deleted_chunk_ids = store.complete_successful_sync(
+                job_id=expected_job.job_id,
+                source_id="source_notion",
+                total_documents=0,
+                processed_documents=0,
+                indexed_chunks=0,
+                skipped_documents=0,
+                last_seen_at=datetime.now(timezone.utc).isoformat(),
+                cleanup_missing_documents=False,
+                deleted_at=datetime.now(timezone.utc).isoformat(),
+            )
+            assert deleted_chunk_ids == []
+
+    writer_conn = sqlite3.connect(db_path)
+    writer_conn.execute("BEGIN IMMEDIATE")
+    writer_conn.execute(
+        "UPDATE sources SET updated_at = updated_at WHERE source_id = ?",
+        ("source_notion",),
+    )
+    writer_closed = False
+    timed_out = False
+    started_at = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            status_future = executor.submit(
+                store.get_latest_sync_job,
+                "source_notion",
+            )
+            try:
+                observed_job = status_future.result(timeout=0.5)
+            except FutureTimeoutError:
+                timed_out = True
+            finally:
+                writer_conn.rollback()
+                writer_conn.close()
+                writer_closed = True
+            status_future.result(timeout=5)
+    finally:
+        if not writer_closed:
+            if writer_conn.in_transaction:
+                writer_conn.rollback()
+            writer_conn.close()
+
+    assert timed_out is False
+    assert time.monotonic() - started_at < 1.0
+    assert observed_job is not None
+    assert observed_job.job_id == expected_job.job_id
+    assert observed_job.status == expected_status
+
+
+def test_latest_sync_job_stale_reconciliation_is_atomic(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "stale-status.sqlite3"
+    store = MetadataStore(
+        db_path,
+        sync_owner_id="status-owner",
+        running_job_timeout_seconds=0,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    stale_job, started = store.begin_sync_job("source_notion")
+    assert started is True
+    observer = MetadataStore(db_path, sync_owner_id="observer")
+    observer.ensure_schema()
+
+    reconciliation_started = Event()
+    release_reconciliation = Event()
+    original_reconcile = store._reconcile_source_after_inactive_job
+
+    def pause_before_source_reconciliation(
+        conn,
+        source_id,
+        finished_at,
+        error_message,
+    ):
+        reconciliation_started.set()
+        assert release_reconciliation.wait(timeout=5)
+        return original_reconcile(
+            conn,
+            source_id,
+            finished_at,
+            error_message,
+        )
+
+    monkeypatch.setattr(
+        store,
+        "_reconcile_source_after_inactive_job",
+        pause_before_source_reconciliation,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        status_future = executor.submit(
+            store.get_latest_sync_job,
+            "source_notion",
+        )
+        assert reconciliation_started.wait(timeout=5)
+        before_commit = _raw_source_and_job_status(
+            observer,
+            "source_notion",
+            stale_job.job_id,
+        )
+        release_reconciliation.set()
+        reconciled_job = status_future.result(timeout=5)
+
+    assert before_commit == (
+        SyncStatus.RUNNING.value,
+        SyncJobStatus.RUNNING.value,
+    )
+    assert reconciled_job is not None
+    assert reconciled_job.job_id == stale_job.job_id
+    assert reconciled_job.status == SyncJobStatus.FAILED
+    assert _raw_source_and_job_status(
+        observer,
+        "source_notion",
+        stale_job.job_id,
+    ) == (
+        SyncStatus.FAILED.value,
+        SyncJobStatus.FAILED.value,
+    )
+
+
+def test_initialized_waiter_reads_while_worker_claim_transaction_is_open(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(db_path, sync_owner_id="requester")
+    requester.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+        )
+    )
+    queued_job, enqueued = requester.enqueue_sync_job("source_notion")
+    worker = MetadataStore(db_path, sync_owner_id="worker")
+    worker.ensure_schema()
+    transaction_open = Event()
+    release_transaction = Event()
+    original_touch_sync_owner = worker._touch_sync_owner
+
+    def pause_claim_transaction(conn, timestamp):
+        original_touch_sync_owner(conn, timestamp)
+        transaction_open.set()
+        assert release_transaction.wait(timeout=5)
+
+    monkeypatch.setattr(worker, "_touch_sync_owner", pause_claim_transaction)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claim_future = executor.submit(
+            worker.claim_next_sync_job,
+            ["source_notion"],
+        )
+        assert transaction_open.wait(timeout=5)
+        waiter_future = executor.submit(requester.get_sync_job, queued_job.job_id)
+        try:
+            observed_job = waiter_future.result(timeout=0.5)
+        finally:
+            release_transaction.set()
+        claimed_job = claim_future.result(timeout=5)
+
+    assert enqueued is True
+    assert observed_job.status == SyncJobStatus.QUEUED
+    assert claimed_job is not None
+    assert claimed_job.job_id == queued_job.job_id
+    assert requester.get_sync_job(queued_job.job_id).status == SyncJobStatus.RUNNING
 
 
 def test_atomic_document_chunk_commit_rolls_back_when_chunk_insert_fails(tmp_path):

@@ -554,9 +554,9 @@ def test_contextwiki_fastmcp_exact_job_polling_survives_latest_job_supersession(
     async def run_flow():
         entered = [asyncio.Event(), asyncio.Event()]
         release = [asyncio.Event(), asyncio.Event()]
-        connector = SupersedingConnector(entered, release)
-        registry = SourceRegistry([connector])
-        store = MetadataStore(tmp_path / "exact-job-supersession.sqlite3")
+        metadata_path = tmp_path / "exact-job-supersession.sqlite3"
+        registry = SourceRegistry([SupersedingConnector(entered, release)])
+        store = MetadataStore(metadata_path)
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
@@ -570,41 +570,42 @@ def test_contextwiki_fastmcp_exact_job_polling_survives_latest_job_supersession(
             metadata_store=store,
             source_registry=registry,
         )
+        worker = _build_separate_sync_worker(
+            metadata_path,
+            [SupersedingConnector(entered, release)],
+        )
+        source_id = "source_superseded"
+        worker_task_b = None
 
         try:
             launch_a = await _call_tool_json_async(mcp, "sync_all")
             job_a = launch_a["results"][0]["job"]
+            worker_task_a = asyncio.create_task(worker.run_once())
             await asyncio.wait_for(entered[0].wait(), timeout=1)
-            task_a = ingestion._background_sync_tasks[connector.source.source_id]
             release[0].set()
-            await asyncio.wait_for(task_a, timeout=1)
+            await asyncio.wait_for(worker_task_a, timeout=1)
 
             launch_b = await _call_tool_json_async(mcp, "sync_all")
             job_b = launch_b["results"][0]["job"]
+            worker_task_b = asyncio.create_task(worker.run_once())
             await asyncio.wait_for(entered[1].wait(), timeout=1)
 
             exact_a = await _call_tool_json_async(
                 mcp,
                 "get_sync_status",
-                {
-                    "source_id": connector.source.source_id,
-                    "job_id": job_a["job_id"],
-                },
+                {"source_id": source_id, "job_id": job_a["job_id"]},
             )
             latest = await _call_tool_json_async(
                 mcp,
                 "get_sync_status",
-                {"source_id": connector.source.source_id},
+                {"source_id": source_id},
             )
             return job_a, job_b, exact_a, latest
         finally:
             for signal in release:
                 signal.set()
-            if ingestion._background_sync_tasks:
-                await asyncio.gather(
-                    *ingestion._background_sync_tasks.values(),
-                    return_exceptions=True,
-                )
+            if worker_task_b is not None and not worker_task_b.done():
+                await asyncio.gather(worker_task_b, return_exceptions=True)
 
     job_a, job_b, exact_a, latest = asyncio.run(run_flow())
 

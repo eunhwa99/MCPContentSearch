@@ -1,8 +1,13 @@
 import asyncio
+import json
+import sqlite3
+import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from api.tools import _search_documents_result_payload, register_tools
 from core.models import (
@@ -1845,6 +1850,295 @@ def test_status_payloads_redact_semicolon_cookie_headers_and_unc_paths(tmp_path)
     assert "<redacted>" in payload
 
 
+def test_list_and_status_redact_short_explicit_auth_credentials_from_legacy_rows(
+    tmp_path,
+):
+    source_error = (
+        "provider rejected Bearer abc123 while syncing, source_id=source_github; "
+        "job_id=job-123"
+    )
+    job_error = (
+        "fallback Basic Og== because retrying; "
+        "source_id=source_github; job_id=job-123"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    job = store.create_sync_job("source_github")
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (source_error, "source_github"),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            ("failed", now, job_error, job.job_id),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    payload = _payload_text({"sources": sources, "status": status})
+
+    assert "abc123" not in payload
+    assert "Og==" not in payload
+    assert "Bearer <redacted-auth> while syncing," in payload
+    assert "Basic <redacted-auth> because retrying;" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+
+
+def test_status_payloads_redact_folded_authorization_credentials_from_legacy_rows(
+    tmp_path,
+):
+    source_error = (
+        "Authorization: Bearer\r\n"
+        " folded-public-bearer-credential\r\n"
+        "source clear diagnostic source_id=source_github job_id=job-123"
+    )
+    job_error = (
+        "Authorization: Basic\r"
+        "\tfolded-public-basic-credential\r"
+        "job clear diagnostic phase=fetching_page_content retry_count=26"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    job = store.create_sync_job("source_github")
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (source_error, "source_github"),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            ("failed", now, job_error, job.job_id),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    payload = _payload_text({"sources": sources, "status": status})
+
+    assert "folded-public-bearer-credential" not in payload
+    assert "folded-public-basic-credential" not in payload
+    assert "source clear diagnostic" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "job clear diagnostic" in payload
+    assert "phase=fetching_page_content" in payload
+    assert "retry_count=26" in payload
+
+
+def test_status_payloads_redact_multistage_folded_authorization_from_legacy_rows(
+    tmp_path,
+):
+    source_error = (
+        "Authorization:\r\n"
+        " Bearer\r\n"
+        " multistage-public-bearer-credential\r\n"
+        "source clear diagnostic source_id=source_github job_id=job-123"
+    )
+    job_error = (
+        "Authorization=\r"
+        "\tBasic\r"
+        "\tmultistage-public-basic-credential\r"
+        "job clear diagnostic phase=fetching_page_content retry_count=28"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    job = store.create_sync_job("source_github")
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (source_error, "source_github"),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            ("failed", now, job_error, job.job_id),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    payload = _payload_text({"sources": sources, "status": status})
+
+    assert "multistage-public-bearer-credential" not in payload
+    assert "multistage-public-basic-credential" not in payload
+    assert "source clear diagnostic" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "job clear diagnostic" in payload
+    assert "phase=fetching_page_content" in payload
+    assert "retry_count=28" in payload
+
+
+def test_status_payloads_redact_bare_name_folded_authorization_from_legacy_rows(
+    tmp_path,
+):
+    source_error = (
+        "Authorization\r\n"
+        " Bearer\r\n"
+        " bare-name-public-bearer-credential\r\n"
+        "source clear diagnostic source_id=source_github job_id=job-123"
+    )
+    job_error = (
+        "Authorization\r"
+        "\tBasic\r"
+        "\tbare-name-public-basic-credential\r"
+        "job clear diagnostic phase=fetching_page_content retry_count=34"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    job = store.create_sync_job("source_github")
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (source_error, "source_github"),
+        )
+        conn.execute(
+            """
+            UPDATE sync_jobs SET status = ?, finished_at = ?, error_message = ?
+            WHERE job_id = ?
+            """,
+            ("failed", now, job_error, job.job_id),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    payload = _payload_text({"sources": sources, "status": status})
+
+    assert "bare-name-public-bearer-credential" not in payload
+    assert "bare-name-public-basic-credential" not in payload
+    assert "source clear diagnostic" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "job clear diagnostic" in payload
+    assert "phase=fetching_page_content" in payload
+    assert "retry_count=34" in payload
+
+
+def test_status_payloads_preserve_lone_cr_clear_diagnostic_after_legacy_path(
+    tmp_path,
+):
+    sensitive_path = "/Users/tester/private vault/observability notes.md"
+    raw_error = (
+        f"provider failure {sensitive_path}\r"
+        "clear diagnostic source_id=source_github "
+        "job_id=job-123 retry_count=25"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (raw_error, "source_github"),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    payload = _payload_text(sources)
+
+    assert sensitive_path not in payload
+    assert "observability notes.md" not in payload
+    assert "clear diagnostic" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "retry_count=25" in payload
+
+
 def test_status_payloads_fail_closed_for_cookie_names_that_match_diagnostic_fields(
     tmp_path,
 ):
@@ -1891,6 +2185,151 @@ def test_status_payloads_fail_closed_for_cookie_names_that_match_diagnostic_fiel
     assert "source_id=source_github" in payload
     assert "job_id=job-123" in payload
     assert "phase=fetching_page_content" in payload
+
+
+def test_status_payloads_redact_name_only_cookie_header_folded_lines(tmp_path):
+    cookie_error = (
+        "Set-Cookie\r"
+        " source_id=folded-cookie-source-secret; "
+        "job_id=folded-cookie-job-secret\r"
+        "\tphase=folded-cookie-phase-secret\r"
+        "ordinary diagnostic, source_id=source_github; job_id=job-123; "
+        "phase=fetching_page_content"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (cookie_error, "source_github"),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    payload = _payload_text(sources)
+
+    for secret in (
+        "folded-cookie-source-secret",
+        "folded-cookie-job-secret",
+        "folded-cookie-phase-secret",
+    ):
+        assert secret not in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "phase=fetching_page_content" in payload
+
+
+def test_status_payloads_redact_lone_cr_cookie_value_continuations_from_legacy_rows(
+    tmp_path,
+):
+    cookie_error = (
+        "Cookie: initial-alpha-value\r"
+        " folded-alpha-value, folded-delta-value\r"
+        "\tfolded-beta-value\r"
+        "first clear diagnostic, source_id=source_github; job_id=job-123\r"
+        "Set-Cookie: initial-delta-value\r"
+        "\tfolded-gamma-value\r"
+        "second clear diagnostic, phase=fetching_page_content"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (cookie_error, "source_github"),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    payload = _payload_text(sources)
+
+    for secret in (
+        "initial-alpha-value",
+        "folded-alpha-value",
+        "folded-delta-value",
+        "folded-beta-value",
+        "initial-delta-value",
+        "folded-gamma-value",
+    ):
+        assert secret not in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "phase=fetching_page_content" in payload
+
+
+def test_status_payloads_preserve_lone_cr_clear_diagnostic_from_legacy_rows(
+    tmp_path,
+):
+    cookie_error = (
+        "Set-Cookie: initial-alpha-value\r"
+        "clear diagnostic source_id=source_github "
+        "job_id=job-123 retry_count=24"
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            auth_ref="env:GITHUB_TOKEN",
+            sync_status=SyncStatus.FAILED,
+            last_error="placeholder",
+        )
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE sources SET last_error = ? WHERE source_id = ?",
+            (cookie_error, "source_github"),
+        )
+
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    sources = asyncio.run(mcp.tools["list_sources"]())
+    payload = _payload_text(sources)
+
+    assert "initial-alpha-value" not in payload
+    assert "clear diagnostic" in payload
+    assert "source_id=source_github" in payload
+    assert "job_id=job-123" in payload
+    assert "retry_count=24" in payload
 
 
 def test_get_sync_status_keeps_direct_storage_failure_sanitized_at_rest(tmp_path):
@@ -2162,6 +2601,40 @@ def test_list_sources_and_status_refresh_dynamic_registry_state_without_sync(tmp
     assert status["source"]["sync_status"] == "failed"
     assert status["source"]["last_error"] == OBSIDIAN_DISABLED_ERROR
     assert status["latest_job"] is None
+
+    exact_store = MetadataStore(tmp_path / "exact.sqlite3")
+    exact_store.upsert_source(_succeeded_obsidian_source())
+    exact_job = exact_store.create_sync_job("source_obsidian")
+    exact_registry = RefreshingObsidianRegistry()
+    exact_mcp = FakeMCP()
+    register_tools(
+        exact_mcp,
+        metadata_store=exact_store,
+        source_registry=exact_registry,
+    )
+
+    assert exact_store.get_source("source_obsidian").enabled is True
+
+    exact_calls_after_registration = exact_registry.calls
+    exact = asyncio.run(
+        exact_mcp.tools["get_sync_status"]("source_obsidian", exact_job.job_id)
+    )
+    listed_overlay = listed["sources"][0]
+    latest_overlay = status["source"]
+
+    assert exact_registry.calls > exact_calls_after_registration
+    assert exact["job"]["job_id"] == exact_job.job_id
+    assert exact["source"]["source_id"] == listed_overlay["source_id"]
+    assert exact["source"]["enabled"] is False
+    assert exact["source"]["enabled"] == latest_overlay["enabled"]
+    assert exact["source"]["sync_status"] == "failed"
+    assert exact["source"]["sync_status"] == latest_overlay["sync_status"]
+    assert exact["source"]["last_error"] == OBSIDIAN_DISABLED_ERROR
+    assert exact["source"]["last_error"] == latest_overlay["last_error"]
+    persisted = exact_store.get_source("source_obsidian")
+    assert persisted.enabled is True
+    assert persisted.last_error != OBSIDIAN_DISABLED_ERROR
+    assert persisted.sync_status != SyncStatus.FAILED
 
 
 def test_fetch_context_hides_tombstoned_documents():
@@ -2651,6 +3124,111 @@ def test_get_sync_status_exact_job_mode_is_additive_and_never_crosses_source_bou
     assert missing_source == {"source": None, "job": None}
     assert set(latest) == {"source", "latest_job"}
     assert set(all_sources) == {"sources"}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_source_count"),
+    [
+        ({"source_id": "source_notion"}, 1),
+        ({}, 2),
+    ],
+)
+def test_real_fastmcp_get_sync_status_does_not_wait_for_unrelated_writer(
+    tmp_path,
+    arguments,
+    expected_source_count,
+):
+    db_path = tmp_path / "status-contention.sqlite3"
+    store = MetadataStore(db_path, sync_owner_id="status-owner")
+    for source_id, source_type in (
+        ("source_github", SourceType.GITHUB),
+        ("source_notion", SourceType.NOTION),
+    ):
+        store.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=source_type,
+                name=source_id,
+                enabled=True,
+            )
+        )
+    queued_job, enqueued = store.enqueue_sync_job("source_notion")
+    assert enqueued is True
+    terminal_job, started = store.begin_sync_job("source_github")
+    assert started is True
+    terminal_job, deleted_chunk_ids = store.complete_successful_sync(
+        job_id=terminal_job.job_id,
+        source_id="source_github",
+        total_documents=0,
+        processed_documents=0,
+        indexed_chunks=0,
+        skipped_documents=0,
+        last_seen_at=datetime.now(timezone.utc).isoformat(),
+        cleanup_missing_documents=False,
+        deleted_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert deleted_chunk_ids == []
+
+    mcp = FastMCP("status-contention-contract")
+    register_tools(mcp, metadata_store=store)
+
+    def call_status_tool():
+        blocks = asyncio.run(mcp.call_tool("get_sync_status", arguments))
+        return json.loads(blocks[0].text)
+
+    writer_conn = sqlite3.connect(db_path)
+    writer_conn.execute("BEGIN IMMEDIATE")
+    writer_conn.execute(
+        "UPDATE sources SET updated_at = updated_at WHERE source_id = ?",
+        ("source_github",),
+    )
+    writer_closed = False
+    timed_out = False
+    started_at = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            status_future = executor.submit(call_status_tool)
+            try:
+                status = status_future.result(timeout=0.75)
+            except FutureTimeoutError:
+                timed_out = True
+            finally:
+                writer_conn.rollback()
+                writer_conn.close()
+                writer_closed = True
+            status_future.result(timeout=5)
+    finally:
+        if not writer_closed:
+            if writer_conn.in_transaction:
+                writer_conn.rollback()
+            writer_conn.close()
+
+    assert timed_out is False
+    assert time.monotonic() - started_at < 1.25
+    if arguments:
+        assert expected_source_count == 1
+        assert status["source"]["source_id"] == "source_notion"
+        assert status["source"]["sync_status"] == "running"
+        assert status["latest_job"]["job_id"] == queued_job.job_id
+        assert status["latest_job"]["status"] == "queued"
+    else:
+        assert len(status["sources"]) == expected_source_count
+        statuses_by_source = {
+            item["source"]["source_id"]: item
+            for item in status["sources"]
+        }
+        assert statuses_by_source["source_notion"]["source"]["sync_status"] == "running"
+        assert (
+            statuses_by_source["source_notion"]["latest_job"]["job_id"]
+            == queued_job.job_id
+        )
+        assert statuses_by_source["source_notion"]["latest_job"]["status"] == "queued"
+        assert statuses_by_source["source_github"]["source"]["sync_status"] == "succeeded"
+        assert (
+            statuses_by_source["source_github"]["latest_job"]["job_id"]
+            == terminal_job.job_id
+        )
+        assert statuses_by_source["source_github"]["latest_job"]["status"] == "succeeded"
 
 
 def test_get_sync_status_exposes_queued_job_without_running_progress_hints():

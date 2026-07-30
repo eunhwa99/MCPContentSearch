@@ -51,6 +51,18 @@ def _safe_test_env(**overrides: str) -> dict[str, str]:
     return env
 
 
+def _process_start_id(process_id: int) -> str:
+    """Match sync_worker_launch_agent_process_start_id() locale contract."""
+    result = subprocess.run(
+        ["ps", "-p", str(process_id), "-o", "lstart="],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return result.stdout.strip()
+
+
 def _fake_executable(path: Path) -> Path:
     path.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
     path.chmod(0o755)
@@ -144,6 +156,114 @@ def _blocking_fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path
     uname.write_text("#!/usr/bin/env sh\nprintf 'Darwin\\n'\n", encoding="utf-8")
     uname.chmod(0o755)
     return call_log, loaded_state
+
+
+def _blocking_fake_cmp(fake_bin: Path) -> None:
+    cmp = fake_bin / "cmp"
+    cmp.write_text(
+        "\n".join(
+            (
+                "#!/usr/bin/env sh",
+                'touch "${CONTEXTWIKI_TEST_CMP_ENTERED}"',
+                (
+                    'while test ! -f "${CONTEXTWIKI_TEST_CMP_RELEASE}"; do '
+                    "sleep 0.01; done"
+                ),
+                'exec /usr/bin/cmp "$@"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    cmp.chmod(0o755)
+
+
+def _blocking_fake_plutil(fake_bin: Path) -> None:
+    plutil = fake_bin / "plutil"
+    plutil.write_text(
+        "\n".join(
+            (
+                "#!/usr/bin/env sh",
+                'touch "${CONTEXTWIKI_TEST_PLUTIL_ENTERED}"',
+                (
+                    'while test ! -f "${CONTEXTWIKI_TEST_PLUTIL_RELEASE}"; do '
+                    "sleep 0.01; done"
+                ),
+                "exit 0",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    plutil.chmod(0o755)
+
+
+def _blocking_fake_rm(fake_bin: Path) -> None:
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    rm = fake_bin / "rm"
+    rm.write_text(
+        "\n".join(
+            (
+                "#!/usr/bin/env sh",
+                'should_block=""',
+                'if test -n "${CONTEXTWIKI_TEST_RM_FRAGMENT:-}"; then',
+                '  for argument in "$@"; do',
+                '    case "$argument" in',
+                (
+                    '      *"${CONTEXTWIKI_TEST_RM_FRAGMENT}"*) '
+                    'should_block=1 ;;'
+                ),
+                "    esac",
+                "  done",
+                "fi",
+                'if test -n "$should_block"; then',
+                '  touch "${CONTEXTWIKI_TEST_RM_ENTERED}"',
+                (
+                    '  while test ! -f "${CONTEXTWIKI_TEST_RM_RELEASE}"; do '
+                    "sleep 0.01; done"
+                ),
+                "fi",
+                f"exec {shlex.quote(real_rm)} \"$@\"",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    rm.chmod(0o755)
+
+
+def _blocking_imported_printf(tmp_path: Path) -> Path:
+    touch = shutil.which("touch")
+    assert touch is not None
+    bash_env = tmp_path / "blocking-printf.bash"
+    bash_env.write_text(
+        "\n".join(
+            (
+                "printf() {",
+                (
+                    '  if [[ -n "${CONTEXTWIKI_TEST_PRINTF_FRAGMENT:-}" && '
+                    '"${1:-}" == *"${CONTEXTWIKI_TEST_PRINTF_FRAGMENT}"* ]]; then'
+                ),
+                (
+                    f"    command {shlex.quote(touch)} "
+                    '"${CONTEXTWIKI_TEST_PRINTF_ENTERED}"'
+                ),
+                (
+                    '    while [[ ! -f "${CONTEXTWIKI_TEST_PRINTF_RELEASE}" ]]; '
+                    "do"
+                ),
+                "      :",
+                "    done",
+                "  fi",
+                '  builtin printf "$@"',
+                "}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return bash_env
 
 
 def _transaction_fake_launchctl(
@@ -445,12 +565,7 @@ def test_launch_agent_operation_lock_never_reclaims_old_published_live_owner(
     lock_dir.mkdir(parents=True)
     live_owner = subprocess.Popen(["/bin/sleep", "5"])
     try:
-        owner_start = subprocess.run(
-            ["ps", "-p", str(live_owner.pid), "-o", "lstart="],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        owner_start = _process_start_id(live_owner.pid)
         (lock_dir / "owner").write_text(
             f"{live_owner.pid}\n{owner_start}\n",
             encoding="utf-8",
@@ -502,12 +617,7 @@ def test_published_child_identity_staleness_truth_table(
     exited_child = subprocess.Popen(["/usr/bin/true"])
     exited_child.wait(timeout=5)
     try:
-        live_child_start = subprocess.run(
-            ["ps", "-p", str(live_child.pid), "-o", "lstart="],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        live_child_start = _process_start_id(live_child.pid)
         if child_state == "live-matching":
             child_pid = live_child.pid
             child_start = live_child_start
@@ -702,12 +812,7 @@ def test_launch_agent_operation_lock_preserves_live_reclaim_marker(
     reclaim_dir.mkdir(parents=True)
     live_owner = subprocess.Popen(["/bin/sleep", "5"])
     try:
-        owner_start = subprocess.run(
-            ["ps", "-p", str(live_owner.pid), "-o", "lstart="],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        owner_start = _process_start_id(live_owner.pid)
         (reclaim_dir / "owner").write_text(
             f"{live_owner.pid}\n{owner_start}\n",
             encoding="utf-8",
@@ -1217,6 +1322,83 @@ def test_render_only_creates_valid_absolute_secret_free_plist(tmp_path: Path):
     assert stat.S_IMODE(output_path.stat().st_mode) == 0o644
 
 
+@pytest.mark.parametrize("target_exists", (True, False))
+@pytest.mark.parametrize(
+    ("signal_number", "signal_name", "expected_status"),
+    (
+        (signal.SIGTERM, "TERM", 128 + signal.SIGTERM),
+        (signal.SIGINT, "INT", 128 + signal.SIGINT),
+    ),
+)
+def test_render_only_interrupt_during_validation_preserves_target(
+    tmp_path: Path,
+    target_exists: bool,
+    signal_number: signal.Signals,
+    signal_name: str,
+    expected_status: int,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _blocking_fake_plutil(fake_bin)
+    output_path = tmp_path / "rendered.plist"
+    previous_contents = b"pre-existing rendered target\n"
+    if target_exists:
+        output_path.write_bytes(previous_contents)
+    plutil_entered = tmp_path / "plutil-entered"
+    plutil_release = tmp_path / "plutil-release"
+    process = subprocess.Popen(
+        [
+            str(INSTALL_SCRIPT),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--uv-path",
+            str(fake_uv),
+            "--log-dir",
+            str(tmp_path / "logs"),
+            "--render-only",
+            str(output_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_safe_test_env(
+            PATH=f"{fake_bin}:{os.environ['PATH']}",
+            CONTEXTWIKI_TEST_PLUTIL_ENTERED=str(plutil_entered),
+            CONTEXTWIKI_TEST_PLUTIL_RELEASE=str(plutil_release),
+        ),
+    )
+
+    try:
+        _wait_for_path(plutil_entered)
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        plutil_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        plutil_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    if target_exists:
+        assert output_path.read_bytes() == previous_contents
+        assert stderr == (
+            f"error: render interrupted by SIG{signal_name} before publication; "
+            "previous rendered target was preserved\n"
+        )
+    else:
+        assert not output_path.exists()
+        assert stderr == (
+            f"error: render interrupted by SIG{signal_name} before publication; "
+            "no rendered target was published\n"
+        )
+    assert "Rendered LaunchAgent plist" not in stdout
+    assert not list(tmp_path.glob(f".{LABEL}.*"))
+
+
 def test_render_only_is_idempotent_and_never_calls_launchctl(tmp_path: Path):
     fake_uv = _fake_executable(tmp_path / "uv")
     fake_bin = tmp_path / "bin"
@@ -1616,6 +1798,74 @@ def test_install_secures_existing_default_log_dir(tmp_path: Path):
     assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
 
 
+def test_install_rejects_symlink_in_default_log_parent_before_mutation(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    real_app_data = tmp_path / "real-app-data"
+    real_log_dir = real_app_data / "logs"
+    real_log_dir.mkdir(parents=True, mode=0o755)
+    retained_file = real_log_dir / "retained.log"
+    retained_file.write_text("retained target\n", encoding="utf-8")
+    app_data_link = tmp_path / ".mcp_content_search"
+    app_data_link.symlink_to(real_app_data, target_is_directory=True)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    original_app_data_mode = stat.S_IMODE(real_app_data.stat().st_mode)
+    original_log_mode = stat.S_IMODE(real_log_dir.stat().st_mode)
+    original_content = retained_file.read_bytes()
+    env = _safe_test_env(
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+        CONTEXTWIKI_LAUNCH_AGENT_HOME=str(tmp_path),
+    )
+
+    install_result = subprocess.run(
+        [
+            str(INSTALL_SCRIPT),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--uv-path",
+            str(fake_uv),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert install_result.returncode != 0
+    assert "symbolic-link" in install_result.stderr
+    assert app_data_link.is_symlink()
+    assert stat.S_IMODE(real_app_data.stat().st_mode) == original_app_data_mode
+    assert stat.S_IMODE(real_log_dir.stat().st_mode) == original_log_mode
+    assert retained_file.read_bytes() == original_content
+    assert not launch_agents_dir.exists()
+    assert not call_log.exists()
+
+    runner_result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=_safe_test_env(
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(
+                app_data_link / "logs" / "startup.log"
+            ),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+        ),
+        timeout=10,
+    )
+
+    assert runner_result.returncode != 0
+    assert app_data_link.is_symlink()
+    assert stat.S_IMODE(real_app_data.stat().st_mode) == original_app_data_mode
+    assert stat.S_IMODE(real_log_dir.stat().st_mode) == original_log_mode
+    assert retained_file.read_bytes() == original_content
+
+
 def test_dry_run_and_render_only_do_not_mutate_existing_custom_log_dir(
     tmp_path: Path,
 ):
@@ -1767,6 +2017,306 @@ def test_install_is_noop_when_identical_and_changed_config_requires_restart(
     assert payload["EnvironmentVariables"]["CONTEXTWIKI_SYNC_WORKER_LOG_PATH"] == str(
         tmp_path / "logs-two" / "sync-worker.log"
     )
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "expected_status"),
+    ((signal.SIGTERM, 128 + signal.SIGTERM), (signal.SIGINT, 128 + signal.SIGINT)),
+)
+def test_identical_loaded_install_does_not_report_success_after_interrupt_during_cmp(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+    expected_status: int,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    lock_root = tmp_path / "locks"
+    command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs",
+        launch_agents_dir=launch_agents_dir,
+    )
+    common_env = _safe_test_env(
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+    )
+    subprocess.run(command, check=True, env=common_env)
+    plist_path = launch_agents_dir / f"{LABEL}.plist"
+    previous_plist = plist_path.read_bytes()
+    calls_after_install = call_log.read_text(encoding="utf-8").splitlines()
+    cmp_entered = tmp_path / "cmp-entered"
+    cmp_release = tmp_path / "cmp-release"
+    _blocking_fake_cmp(fake_bin)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "CONTEXTWIKI_TEST_CMP_ENTERED": str(cmp_entered),
+            "CONTEXTWIKI_TEST_CMP_RELEASE": str(cmp_release),
+        },
+    )
+
+    try:
+        _wait_for_path(cmp_entered)
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        cmp_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        cmp_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert "interrupted" in stderr.lower()
+    assert "already installed" not in stdout.lower()
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() == previous_plist
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:-1] == calls_after_install
+    assert calls[-1].startswith("print ")
+    assert sum(line.startswith("bootstrap ") for line in calls) == 1
+    assert not any(line.startswith("bootout ") for line in calls)
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
+
+
+@pytest.mark.parametrize("restart_changed", (False, True))
+@pytest.mark.parametrize(
+    ("signal_number", "signal_name", "expected_status"),
+    (
+        (signal.SIGTERM, "TERM", 128 + signal.SIGTERM),
+        (signal.SIGINT, "INT", 128 + signal.SIGINT),
+    ),
+)
+def test_changed_install_interrupt_during_cmp_exits_before_restart_decision(
+    tmp_path: Path,
+    restart_changed: bool,
+    signal_number: signal.Signals,
+    signal_name: str,
+    expected_status: int,
+):
+    (
+        _,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        _,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    if not restart_changed:
+        changed_command.remove("--restart")
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    cmp_entered = tmp_path / "changed-cmp-entered"
+    cmp_release = tmp_path / "changed-cmp-release"
+    _blocking_fake_cmp(tmp_path / "bin")
+    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    operation = (
+        f"changed-cmp-{'restart' if restart_changed else 'no-restart'}-"
+        f"{signal_name.lower()}"
+    )
+    process = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
+            "CONTEXTWIKI_TEST_CMP_ENTERED": str(cmp_entered),
+            "CONTEXTWIKI_TEST_CMP_RELEASE": str(cmp_release),
+        },
+    )
+
+    try:
+        _wait_for_path(cmp_entered)
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        cmp_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        cmp_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert stderr == (
+        f"error: interrupted by SIG{signal_name} before installation mutation\n"
+    )
+    assert "configuration changed" not in stderr.lower()
+    assert "restored previous configuration" not in stderr.lower()
+    assert "Installed and started" not in stdout
+    assert "Status:" not in stdout
+    assert "Logs:" not in stdout
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() == previous_plist
+    assert not list(plist_path.parent.glob(f".{LABEL}.previous.*"))
+    assert not list(plist_path.parent.glob(f".{LABEL}.candidate.*"))
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [f"{operation}:print gui/{os.getuid()}/{LABEL}"]
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "signal_name", "expected_status"),
+    (
+        (signal.SIGTERM, "TERM", 128 + signal.SIGTERM),
+        (signal.SIGINT, "INT", 128 + signal.SIGINT),
+    ),
+)
+def test_identical_loaded_install_exits_after_interrupt_during_candidate_cleanup(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+    signal_name: str,
+    expected_status: int,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    lock_root = tmp_path / "locks"
+    command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs",
+        launch_agents_dir=launch_agents_dir,
+    )
+    common_env = _safe_test_env(
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+    )
+    subprocess.run(command, check=True, env=common_env)
+    plist_path = launch_agents_dir / f"{LABEL}.plist"
+    previous_plist = plist_path.read_bytes()
+    calls_after_install = call_log.read_text(encoding="utf-8").splitlines()
+    rm_entered = tmp_path / "candidate-rm-entered"
+    rm_release = tmp_path / "candidate-rm-release"
+    _blocking_fake_rm(fake_bin)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "CONTEXTWIKI_TEST_RM_FRAGMENT": ".candidate.",
+            "CONTEXTWIKI_TEST_RM_ENTERED": str(rm_entered),
+            "CONTEXTWIKI_TEST_RM_RELEASE": str(rm_release),
+        },
+    )
+
+    try:
+        _wait_for_path(rm_entered)
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        rm_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        rm_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert stderr == (
+        f"error: interrupted by SIG{signal_name} before installation mutation\n"
+    )
+    assert "Already installed" not in stdout
+    assert "Status:" not in stdout
+    assert "Logs:" not in stdout
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() == previous_plist
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:-1] == calls_after_install
+    assert calls[-1].startswith("print ")
+    assert sum(line.startswith("bootstrap ") for line in calls) == 1
+    assert not any(line.startswith("bootout ") for line in calls)
+    assert not list(launch_agents_dir.glob(f".{LABEL}.candidate.*"))
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
+
+
+@pytest.mark.parametrize("signal_number", (signal.SIGTERM, signal.SIGINT))
+def test_identical_loaded_success_output_uses_default_signal_disposition(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    lock_root = tmp_path / "locks"
+    command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs",
+        launch_agents_dir=launch_agents_dir,
+    )
+    common_env = _safe_test_env(
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+    )
+    subprocess.run(command, check=True, env=common_env)
+    plist_path = launch_agents_dir / f"{LABEL}.plist"
+    previous_plist = plist_path.read_bytes()
+    calls_after_install = call_log.read_text(encoding="utf-8").splitlines()
+    printf_entered = tmp_path / "noop-printf-entered"
+    printf_release = tmp_path / "noop-printf-release"
+    bash_env = _blocking_imported_printf(tmp_path)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "BASH_ENV": str(bash_env),
+            "CONTEXTWIKI_TEST_PRINTF_FRAGMENT": "Already installed",
+            "CONTEXTWIKI_TEST_PRINTF_ENTERED": str(printf_entered),
+            "CONTEXTWIKI_TEST_PRINTF_RELEASE": str(printf_release),
+        },
+    )
+
+    try:
+        _wait_for_path(printf_entered)
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        printf_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        printf_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == -signal_number, (stdout, stderr)
+    assert "Already installed" not in stdout
+    assert "Status:" not in stdout
+    assert "Logs:" not in stdout
+    assert stderr == ""
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() == previous_plist
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:-1] == calls_after_install
+    assert calls[-1].startswith("print ")
+    assert sum(line.startswith("bootstrap ") for line in calls) == 1
+    assert not any(line.startswith("bootout ") for line in calls)
+    assert not list(launch_agents_dir.glob(f".{LABEL}.candidate.*"))
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
 
 
 def test_identical_install_bootstraps_when_service_is_unloaded(tmp_path: Path):
@@ -2010,6 +2560,152 @@ def test_changed_install_rolls_back_after_interrupt_during_replacement_bootstrap
     assert sum(":bootstrap " in line for line in calls) == 2
 
 
+@pytest.mark.parametrize(
+    ("signal_number", "signal_name", "expected_status"),
+    (
+        (signal.SIGTERM, "TERM", 128 + signal.SIGTERM),
+        (signal.SIGINT, "INT", 128 + signal.SIGINT),
+    ),
+)
+def test_successful_changed_install_reports_interrupt_during_commit_cleanup(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+    signal_name: str,
+    expected_status: int,
+):
+    (
+        _,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        _,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    rm_entered = tmp_path / "commit-rm-entered"
+    rm_release = tmp_path / "commit-rm-release"
+    _blocking_fake_rm(tmp_path / "bin")
+    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    operation = f"commit-interrupted-{signal_name.lower()}"
+    process = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
+            "CONTEXTWIKI_TEST_RM_FRAGMENT": ".previous.",
+            "CONTEXTWIKI_TEST_RM_ENTERED": str(rm_entered),
+            "CONTEXTWIKI_TEST_RM_RELEASE": str(rm_release),
+        },
+    )
+
+    try:
+        _wait_for_path(rm_entered)
+        assert loaded_state.exists()
+        assert plist_path.read_bytes() != previous_plist
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        assert process.poll() is None
+        rm_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        rm_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert stderr == (
+        f"error: interrupted by SIG{signal_name}; "
+        "installation committed before interruption\n"
+    )
+    assert "Installed and started" not in stdout
+    assert "Status:" not in stdout
+    assert "Logs:" not in stdout
+    assert "restored previous configuration" not in stderr.lower()
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() != previous_plist
+    assert not list(plist_path.parent.glob(f".{LABEL}.previous.*"))
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        f"{operation}:print gui/{os.getuid()}/{LABEL}",
+        f"{operation}:bootout gui/{os.getuid()}/{LABEL}",
+        f"{operation}:bootstrap gui/{os.getuid()} {plist_path}",
+    ]
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
+
+
+@pytest.mark.parametrize("signal_number", (signal.SIGTERM, signal.SIGINT))
+def test_committed_install_success_output_uses_default_signal_disposition(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+):
+    (
+        _,
+        changed_command,
+        common_env,
+        call_log,
+        loaded_state,
+        _,
+        plist_path,
+    ) = _prepare_changed_install_transaction(tmp_path)
+    previous_plist = plist_path.read_bytes()
+    call_log.write_text("", encoding="utf-8")
+    printf_entered = tmp_path / "committed-printf-entered"
+    printf_release = tmp_path / "committed-printf-release"
+    bash_env = _blocking_imported_printf(tmp_path)
+    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    operation = f"committed-printf-{signal_number.name.lower()}"
+    process = subprocess.Popen(
+        changed_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **common_env,
+            "BASH_ENV": str(bash_env),
+            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
+            "CONTEXTWIKI_TEST_PRINTF_FRAGMENT": "Installed and started",
+            "CONTEXTWIKI_TEST_PRINTF_ENTERED": str(printf_entered),
+            "CONTEXTWIKI_TEST_PRINTF_RELEASE": str(printf_release),
+        },
+    )
+
+    try:
+        _wait_for_path(printf_entered)
+        assert loaded_state.exists()
+        assert plist_path.read_bytes() != previous_plist
+        process.send_signal(signal_number)
+        time.sleep(0.2)
+        printf_release.touch()
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        printf_release.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == -signal_number, (stdout, stderr)
+    assert "Installed and started" not in stdout
+    assert "Status:" not in stdout
+    assert "Logs:" not in stdout
+    assert stderr == ""
+    assert loaded_state.exists()
+    assert plist_path.read_bytes() != previous_plist
+    assert not list(plist_path.parent.glob(f".{LABEL}.previous.*"))
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        f"{operation}:print gui/{os.getuid()}/{LABEL}",
+        f"{operation}:bootout gui/{os.getuid()}/{LABEL}",
+        f"{operation}:bootstrap gui/{os.getuid()} {plist_path}",
+    ]
+    assert not lock_root.joinpath(f"{LABEL}.lock").exists()
+
+
 def test_changed_install_waits_for_failing_bootstrap_then_rolls_back_interrupt(
     tmp_path: Path,
 ):
@@ -2173,6 +2869,112 @@ def test_launch_agent_runner_preserves_and_bounds_startup_stderr(tmp_path: Path)
     assert "last startup diagnostic" in diagnostic
 
 
+def test_launch_agent_runner_recreates_private_runtime_log_paths_and_temp_files(
+    tmp_path: Path,
+):
+    worker_ready = tmp_path / "worker-ready"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                "#!/bin/sh",
+                f"touch {shlex.quote(str(worker_ready))}",
+                "printf 'startup diagnostic\\n' >&2",
+                "trap 'exit 0' TERM INT",
+                "while true; do sleep 1; done",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_dir = tmp_path / "deleted-after-install"
+    diagnostic_log = diagnostic_dir / "startup.log"
+    process = subprocess.Popen(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        env=_safe_test_env(
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+        ),
+        preexec_fn=lambda: os.umask(0o022),
+    )
+
+    try:
+        _wait_for_path(worker_ready)
+        _wait_for_path(diagnostic_log)
+
+        assert stat.S_IMODE(diagnostic_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(diagnostic_log.stat().st_mode) == 0o600
+        assert diagnostic_dir.stat().st_uid == os.getuid()
+        assert diagnostic_log.stat().st_uid == os.getuid()
+        runtime_files = [
+            path
+            for path in diagnostic_dir.iterdir()
+            if path.name.startswith(".sync-worker-")
+        ]
+        assert runtime_files
+        assert all(
+            stat.S_IMODE(path.lstat().st_mode) == 0o600
+            for path in runtime_files
+        )
+        assert all(path.lstat().st_uid == os.getuid() for path in runtime_files)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ("symlink_directory", "symlink_file", "non_directory"),
+)
+def test_launch_agent_runner_rejects_unsafe_runtime_log_paths_without_mutation(
+    tmp_path: Path,
+    unsafe_kind: str,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    target_dir = tmp_path / "target"
+    target_dir.mkdir(mode=0o755)
+    target_file = target_dir / "target.log"
+    target_file.write_text("retained target\n", encoding="utf-8")
+    target_file.chmod(0o644)
+    expected_dir_mode = stat.S_IMODE(target_dir.stat().st_mode)
+    expected_file_mode = stat.S_IMODE(target_file.stat().st_mode)
+    expected_content = target_file.read_bytes()
+
+    if unsafe_kind == "symlink_directory":
+        diagnostic_dir = tmp_path / "linked-dir"
+        diagnostic_dir.symlink_to(target_dir, target_is_directory=True)
+        diagnostic_log = diagnostic_dir / "startup.log"
+    elif unsafe_kind == "symlink_file":
+        diagnostic_dir = tmp_path / "logs"
+        diagnostic_dir.mkdir(mode=0o700)
+        diagnostic_log = diagnostic_dir / "startup.log"
+        diagnostic_log.symlink_to(target_file)
+    else:
+        diagnostic_dir = tmp_path / "not-a-directory"
+        diagnostic_dir.write_text("retained parent\n", encoding="utf-8")
+        diagnostic_log = diagnostic_dir / "startup.log"
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=_safe_test_env(
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+        ),
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert target_dir.is_dir()
+    assert stat.S_IMODE(target_dir.stat().st_mode) == expected_dir_mode
+    assert target_file.read_bytes() == expected_content
+    assert stat.S_IMODE(target_file.stat().st_mode) == expected_file_mode
+
+
 def test_launch_agent_runner_forwards_sigterm_and_waits_for_worker(tmp_path: Path):
     ready_marker = tmp_path / "worker-ready"
     stopped_marker = tmp_path / "worker-stopped"
@@ -2303,6 +3105,397 @@ def test_launch_agent_runner_waits_for_writer_drain_after_signal(
                 os.kill(sanitizer_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.parametrize("signal_number", (signal.SIGTERM, signal.SIGINT))
+def test_launch_agent_runner_forces_cleanup_of_hung_writer_during_drain(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+):
+    drain_started = tmp_path / "hung-writer-drain-started"
+    sanitizer_pid_path = tmp_path / "hung-sanitizer-pid"
+    fake_sanitizer = tmp_path / "hung-sanitizer"
+    fake_sanitizer.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import os",
+                "import signal",
+                "import sys",
+                "import time",
+                f"drain_started = Path({str(drain_started)!r})",
+                (
+                    f"Path({str(sanitizer_pid_path)!r}).write_text("
+                    "str(os.getpid()), encoding='utf-8')"
+                ),
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+                "signal.signal(signal.SIGINT, signal.SIG_IGN)",
+                "for _ in sys.stdin:",
+                "    pass",
+                "drain_started.touch()",
+                "while True:",
+                "    time.sleep(1)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_sanitizer.chmod(0o755)
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "printf 'Authorization: Bearer raw-writer-secret\\n' >&2\n"
+        "exit 17\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_dir = tmp_path / "logs"
+    diagnostic_log = diagnostic_dir / "startup.log"
+    process = subprocess.Popen(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        env={
+            **_safe_test_env(),
+            "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+            "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+            "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(fake_sanitizer),
+        },
+    )
+    sanitizer_pid: int | None = None
+
+    try:
+        _wait_for_path(drain_started)
+        sanitizer_pid = int(sanitizer_pid_path.read_text(encoding="utf-8"))
+
+        process.send_signal(signal_number)
+
+        assert process.wait(timeout=4) == 17
+        for _ in range(100):
+            try:
+                os.kill(sanitizer_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("hung diagnostic sanitizer remained alive")
+        diagnostic = diagnostic_log.read_text(encoding="utf-8")
+        assert "raw-writer-secret" not in diagnostic
+        assert diagnostic.endswith(
+            "error: startup diagnostic writer drain required forced cleanup\n"
+        )
+        assert list(diagnostic_dir.glob(".sync-worker-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitized-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-chunk.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitizer-pid.*")) == []
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if sanitizer_pid is not None:
+            try:
+                os.kill(sanitizer_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_launch_agent_runner_cleans_sanitizer_when_writer_fails_first(
+    tmp_path: Path,
+):
+    sanitizer_pid_path = tmp_path / "writer-failure-sanitizer-pid"
+    fake_sanitizer = tmp_path / "writer-failure-sanitizer"
+    fake_sanitizer.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import os",
+                "import signal",
+                "import sys",
+                "import time",
+                (
+                    f"Path({str(sanitizer_pid_path)!r}).write_text("
+                    "str(os.getpid()), encoding='utf-8')"
+                ),
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+                "signal.signal(signal.SIGINT, signal.SIG_IGN)",
+                "for _ in sys.stdin:",
+                "    pass",
+                "while True:",
+                "    time.sleep(1)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_sanitizer.chmod(0o755)
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "printf 'Authorization: Bearer raw-writer-failure-secret\\n' >&2\n"
+        "exit 17\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_dd = fake_bin / "dd"
+    fake_dd.write_text(
+        "#!/bin/sh\n"
+        'while test ! -f "${CONTEXTWIKI_TEST_SANITIZER_STARTED}"; do\n'
+        "  /bin/sleep 0.01\n"
+        "done\n"
+        "exit 71\n",
+        encoding="utf-8",
+    )
+    fake_dd.chmod(0o755)
+    diagnostic_dir = tmp_path / "logs"
+    diagnostic_log = diagnostic_dir / "startup.log"
+    process = subprocess.Popen(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        env=_safe_test_env(
+            PATH=f"{fake_bin}:{os.environ['PATH']}",
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+            CONTEXTWIKI_TEST_SANITIZER_STARTED=str(sanitizer_pid_path),
+        ),
+    )
+    sanitizer_pid: int | None = None
+
+    try:
+        _wait_for_path(sanitizer_pid_path)
+        sanitizer_pid = int(sanitizer_pid_path.read_text(encoding="utf-8"))
+
+        assert process.wait(timeout=5) == 17
+        for _ in range(100):
+            try:
+                os.kill(sanitizer_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError(
+                "diagnostic sanitizer remained alive after writer failure"
+            )
+        diagnostic = diagnostic_log.read_text(encoding="utf-8")
+        assert "raw-writer-failure-secret" not in diagnostic
+        assert diagnostic.endswith(
+            "error: startup diagnostic writer failed and required forced cleanup\n"
+        )
+        assert list(diagnostic_dir.glob(".sync-worker-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitized-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-chunk.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitizer-pid.*")) == []
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if sanitizer_pid is not None:
+            try:
+                os.kill(sanitizer_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_launch_agent_runner_stops_worker_when_sanitizer_fails_first(
+    tmp_path: Path,
+):
+    worker_pid_path = tmp_path / "long-worker-pid"
+    worker_pgid_path = tmp_path / "long-worker-pgid"
+    worker_ready = tmp_path / "long-worker-ready"
+    worker_term_received = tmp_path / "long-worker-term-received"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import os",
+                "import signal",
+                "import time",
+                f"pid_path = Path({str(worker_pid_path)!r})",
+                f"pgid_path = Path({str(worker_pgid_path)!r})",
+                f"ready = Path({str(worker_ready)!r})",
+                f"term_received = Path({str(worker_term_received)!r})",
+                "pid_path.write_text(str(os.getpid()), encoding='utf-8')",
+                "pgid_path.write_text(str(os.getpgrp()), encoding='utf-8')",
+                (
+                    "signal.signal("
+                    "signal.SIGTERM, lambda *_: term_received.touch())"
+                ),
+                "signal.signal(signal.SIGINT, signal.SIG_IGN)",
+                "ready.touch()",
+                "while True:",
+                "    time.sleep(1)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    fake_sanitizer = tmp_path / "immediately-failing-sanitizer"
+    fake_sanitizer.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import time",
+                f"ready = Path({str(worker_ready)!r})",
+                "deadline = time.monotonic() + 5",
+                "while not ready.exists():",
+                "    if time.monotonic() >= deadline:",
+                "        raise SystemExit(74)",
+                "    time.sleep(0.01)",
+                "raise SystemExit(73)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_sanitizer.chmod(0o755)
+
+    diagnostic_dir = tmp_path / "logs"
+    diagnostic_log = diagnostic_dir / "startup.log"
+    process = subprocess.Popen(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        env=_safe_test_env(
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+        ),
+    )
+    worker_pid: int | None = None
+
+    try:
+        _wait_for_path(worker_ready)
+        worker_pid = int(worker_pid_path.read_text(encoding="utf-8"))
+        worker_pgid = int(worker_pgid_path.read_text(encoding="utf-8"))
+        assert worker_pgid == worker_pid
+
+        started = time.monotonic()
+        assert process.wait(timeout=5) == 73
+        assert time.monotonic() - started < 4
+        assert worker_term_received.exists()
+
+        for _ in range(100):
+            try:
+                os.kill(worker_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("long-lived worker remained after sanitizer failure")
+
+        assert diagnostic_log.read_text(encoding="utf-8") == (
+            "error: startup diagnostic sanitizer failed\n"
+        )
+        assert list(diagnostic_dir.glob(".sync-worker-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitized-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-chunk.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitizer-pid.*")) == []
+    finally:
+        if worker_pid is not None:
+            try:
+                os.killpg(worker_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def test_launch_agent_runner_fails_when_sanitizer_exits_zero_before_worker(
+    tmp_path: Path,
+):
+    worker_pid_path = tmp_path / "clean-worker-pid"
+    worker_ready = tmp_path / "clean-worker-ready"
+    worker_stopped = tmp_path / "clean-worker-stopped"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import os",
+                "import signal",
+                "import time",
+                f"pid_path = Path({str(worker_pid_path)!r})",
+                f"ready = Path({str(worker_ready)!r})",
+                f"stopped = Path({str(worker_stopped)!r})",
+                "pid_path.write_text(str(os.getpid()), encoding='utf-8')",
+                "def stop(*_):",
+                "    stopped.touch()",
+                "    raise SystemExit(0)",
+                "signal.signal(signal.SIGTERM, stop)",
+                "signal.signal(signal.SIGINT, signal.SIG_IGN)",
+                "ready.touch()",
+                "while True:",
+                "    time.sleep(1)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    fake_sanitizer = tmp_path / "early-success-sanitizer"
+    fake_sanitizer.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "from pathlib import Path",
+                "import time",
+                f"ready = Path({str(worker_ready)!r})",
+                "deadline = time.monotonic() + 5",
+                "while not ready.exists():",
+                "    if time.monotonic() >= deadline:",
+                "        raise SystemExit(74)",
+                "    time.sleep(0.01)",
+                "raise SystemExit(0)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_sanitizer.chmod(0o755)
+
+    diagnostic_dir = tmp_path / "logs"
+    diagnostic_log = diagnostic_dir / "startup.log"
+    process = subprocess.Popen(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        env=_safe_test_env(
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+        ),
+    )
+    worker_pid: int | None = None
+
+    try:
+        _wait_for_path(worker_ready)
+        worker_pid = int(worker_pid_path.read_text(encoding="utf-8"))
+
+        assert process.wait(timeout=5) == 70
+        assert worker_stopped.exists()
+        with pytest.raises(ProcessLookupError):
+            os.kill(worker_pid, 0)
+        assert diagnostic_log.read_text(encoding="utf-8") == (
+            "error: startup diagnostic pipeline stopped unexpectedly\n"
+        )
+        assert list(diagnostic_dir.glob(".sync-worker-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitized-pipe.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-chunk.*")) == []
+        assert list(diagnostic_dir.glob(".sync-worker-sanitizer-pid.*")) == []
+    finally:
+        if worker_pid is not None:
+            try:
+                os.killpg(worker_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(

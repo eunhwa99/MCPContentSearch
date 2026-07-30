@@ -473,7 +473,8 @@ def test_real_fastmcp_annotations_match_metadata_store_write_behavior(tmp_path):
         "source_github",
         "source_obsidian",
     }
-    assert store.get_source("source_github") is not None
+    for source_id in ("source_github", "source_obsidian"):
+        assert store.get_source(source_id) is None
     for name in ("list_sources", "get_sync_status"):
         annotations = tools[name].annotations
         assert annotations is None or annotations.readOnlyHint is not True

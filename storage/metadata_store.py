@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from errno import EPERM, ESRCH
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Iterable, Iterator, Optional
 
 from core.error_sanitizer import sanitize_error_text
@@ -114,12 +115,19 @@ class MetadataStore:
         self.unowned_running_job_grace_seconds = unowned_running_job_grace_seconds
         self._cached_process_id = 0
         self._cached_process_start_id = ""
+        self._schema_ready = False
+        self._schema_lock = RLock()
 
     def ensure_schema(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(
-                """
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._connect() as conn:
+                conn.executescript(
+                    """
                 CREATE TABLE IF NOT EXISTS sources (
                     source_id TEXT PRIMARY KEY,
                     source_type TEXT NOT NULL,
@@ -215,60 +223,61 @@ class MetadataStore:
                     recorded_at TEXT NOT NULL
                 );
                 """
-            )
-            # executescript may commit before running its statements. Acquire the
-            # migration write lock afterward so every check-and-alter stays atomic.
-            conn.execute("BEGIN IMMEDIATE")
-            self._ensure_columns(
-                conn,
-                "sources",
-                {
-                    "stale_cleanup_disabled_reason": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
-            self._ensure_columns(
-                conn,
-                "documents",
-                {
-                    "external_id": "TEXT NOT NULL DEFAULT ''",
-                    "canonical_url": "TEXT NOT NULL DEFAULT ''",
-                    "published_at": "TEXT NOT NULL DEFAULT ''",
-                    "modified_at": "TEXT NOT NULL DEFAULT ''",
-                    "indexed_at": "TEXT NOT NULL DEFAULT ''",
-                    "date_provenance": "TEXT NOT NULL DEFAULT ''",
-                    "last_seen_at": "TEXT NOT NULL DEFAULT ''",
-                    "last_seen_sync_id": "TEXT NOT NULL DEFAULT ''",
-                    "deleted_at": "TEXT NOT NULL DEFAULT ''",
-                    "version_id": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
-            self._ensure_columns(
-                conn,
-                "sync_jobs",
-                {
-                    "owner_id": "TEXT NOT NULL DEFAULT ''",
-                    "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
-                    "phase": "TEXT NOT NULL DEFAULT ''",
-                    "upstream_total_pages": "INTEGER NOT NULL DEFAULT 0",
-                    "upstream_fetched_pages": "INTEGER NOT NULL DEFAULT 0",
-                    "last_progress_at": "TEXT NOT NULL DEFAULT ''",
-                    "status_message": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
-            self._ensure_columns(
-                conn,
-                "sync_job_owners",
-                {
-                    "process_start_id": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
-            self._ensure_columns(
-                conn,
-                "chunks",
-                {
-                    "version_id": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
+                )
+                # executescript may commit before running its statements. Acquire the
+                # migration write lock afterward so every check-and-alter stays atomic.
+                conn.execute("BEGIN IMMEDIATE")
+                self._ensure_columns(
+                    conn,
+                    "sources",
+                    {
+                        "stale_cleanup_disabled_reason": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+                self._ensure_columns(
+                    conn,
+                    "documents",
+                    {
+                        "external_id": "TEXT NOT NULL DEFAULT ''",
+                        "canonical_url": "TEXT NOT NULL DEFAULT ''",
+                        "published_at": "TEXT NOT NULL DEFAULT ''",
+                        "modified_at": "TEXT NOT NULL DEFAULT ''",
+                        "indexed_at": "TEXT NOT NULL DEFAULT ''",
+                        "date_provenance": "TEXT NOT NULL DEFAULT ''",
+                        "last_seen_at": "TEXT NOT NULL DEFAULT ''",
+                        "last_seen_sync_id": "TEXT NOT NULL DEFAULT ''",
+                        "deleted_at": "TEXT NOT NULL DEFAULT ''",
+                        "version_id": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+                self._ensure_columns(
+                    conn,
+                    "sync_jobs",
+                    {
+                        "owner_id": "TEXT NOT NULL DEFAULT ''",
+                        "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
+                        "phase": "TEXT NOT NULL DEFAULT ''",
+                        "upstream_total_pages": "INTEGER NOT NULL DEFAULT 0",
+                        "upstream_fetched_pages": "INTEGER NOT NULL DEFAULT 0",
+                        "last_progress_at": "TEXT NOT NULL DEFAULT ''",
+                        "status_message": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+                self._ensure_columns(
+                    conn,
+                    "sync_job_owners",
+                    {
+                        "process_start_id": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+                self._ensure_columns(
+                    conn,
+                    "chunks",
+                    {
+                        "version_id": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+            self._schema_ready = True
 
     def upsert_source(self, source: SourceModel) -> SourceModel:
         self.ensure_schema()
@@ -590,29 +599,8 @@ class MetadataStore:
         claimed_at = _now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            running_source_rows = conn.execute(
-                """
-                SELECT DISTINCT source_id
-                FROM sync_jobs
-                WHERE status = ?
-                """,
-                (SyncJobStatus.RUNNING.value,),
-            ).fetchall()
-            for running_source_row in running_source_rows:
-                running_source_id = running_source_row["source_id"]
-                active_row = self._resolve_active_running_job(
-                    conn,
-                    running_source_id,
-                    claimed_at,
-                    failure_reason=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
-                )
-                if active_row is None:
-                    self._reconcile_source_after_inactive_job(
-                        conn,
-                        running_source_id,
-                        claimed_at,
-                        ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
-                    )
+            scoped_source_id_set = set(scoped_source_ids)
+            self._reconcile_global_running_jobs(conn, claimed_at)
             rows = conn.execute(
                 """
                 SELECT j.*
@@ -631,7 +619,6 @@ class MetadataStore:
                     SyncJobStatus.RUNNING.value,
                 ),
             ).fetchall()
-            scoped_source_id_set = set(scoped_source_ids)
             row = next(
                 (
                     candidate
@@ -676,6 +663,36 @@ class MetadataStore:
                 (row["job_id"],),
             ).fetchone()
         return self._job_from_row(claimed_row) if claimed_row else None
+
+    def _reconcile_global_running_jobs(
+        self,
+        conn: sqlite3.Connection,
+        checked_at: str,
+    ) -> None:
+        """Recover only definitively inactive owners before global single-flight."""
+        running_source_rows = conn.execute(
+            """
+            SELECT DISTINCT source_id
+            FROM sync_jobs
+            WHERE status = ?
+            """,
+            (SyncJobStatus.RUNNING.value,),
+        ).fetchall()
+        for running_source_row in running_source_rows:
+            running_source_id = running_source_row["source_id"]
+            active_row = self._resolve_active_running_job(
+                conn,
+                running_source_id,
+                checked_at,
+                failure_reason=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+            )
+            if active_row is None:
+                self._reconcile_source_after_inactive_job(
+                    conn,
+                    running_source_id,
+                    checked_at,
+                    ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
+                )
 
     def get_owned_running_sync_job(self, job_id: str) -> Optional[SyncJobModel]:
         """Return a running job only when this store's worker owner claimed it."""
@@ -1128,45 +1145,60 @@ class MetadataStore:
 
     def get_latest_sync_job(self, source_id: str) -> Optional[SyncJobModel]:
         self.ensure_schema()
-        checked_at = _now()
         with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            source_row = conn.execute(
-                "SELECT sync_status FROM sources WHERE source_id = ?",
-                (source_id,),
-            ).fetchone()
-            active_row = self._resolve_active_running_job(
+            row, reconciliation_required = self._read_latest_sync_job_candidate(
                 conn,
                 source_id,
-                checked_at,
-                failure_reason="Sync job timed out before status read completed",
             )
-            if active_row:
-                if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
-                    conn.execute(
-                        """
-                        UPDATE sources SET
-                            sync_status = ?,
-                            last_error = '',
-                            updated_at = ?
-                        WHERE source_id = ?
-                        """,
-                        (SyncStatus.RUNNING.value, checked_at, source_id),
-                    )
-                return self._job_from_row(active_row)
-            queued_row = self._get_queued_sync_job(conn, source_id)
-            if queued_row:
-                if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
-                    self._mark_source_sync_active(conn, source_id, checked_at)
-                return self._job_from_row(queued_row)
-            if source_row and source_row["sync_status"] == SyncStatus.RUNNING.value:
-                self._reconcile_source_after_inactive_job(
-                    conn,
-                    source_id,
-                    checked_at,
-                    "Sync job timed out before status read completed",
-                )
-            row = conn.execute(
+        if not reconciliation_required:
+            return self._job_from_row(row) if row else None
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._reconcile_latest_sync_job(
+                conn,
+                source_id,
+                _now(),
+            )
+        return self._job_from_row(row) if row else None
+
+    def _read_latest_sync_job_candidate(
+        self,
+        conn: sqlite3.Connection,
+        source_id: str,
+    ) -> tuple[sqlite3.Row | None, bool]:
+        source_row = conn.execute(
+            "SELECT sync_status FROM sources WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        running_rows = conn.execute(
+            """
+            SELECT * FROM sync_jobs
+            WHERE source_id = ? AND status = ?
+            ORDER BY started_at DESC, rowid DESC
+            """,
+            (source_id, SyncJobStatus.RUNNING.value),
+        ).fetchall()
+        if running_rows:
+            if len(running_rows) > 1 or any(
+                self._should_fail_active_running_job(conn, running_row)
+                for running_row in running_rows
+            ):
+                return None, True
+            if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
+                return None, True
+            return running_rows[0], False
+
+        queued_row = self._get_queued_sync_job(conn, source_id)
+        if queued_row:
+            if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
+                return None, True
+            return queued_row, False
+
+        if source_row and source_row["sync_status"] == SyncStatus.RUNNING.value:
+            return None, True
+        return (
+            conn.execute(
                 """
                 SELECT * FROM sync_jobs
                 WHERE source_id = ?
@@ -1174,8 +1206,51 @@ class MetadataStore:
                 LIMIT 1
                 """,
                 (source_id,),
-            ).fetchone()
-        return self._job_from_row(row) if row else None
+            ).fetchone(),
+            False,
+        )
+
+    def _reconcile_latest_sync_job(
+        self,
+        conn: sqlite3.Connection,
+        source_id: str,
+        checked_at: str,
+    ) -> sqlite3.Row | None:
+        source_row = conn.execute(
+            "SELECT sync_status FROM sources WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        active_row = self._resolve_active_running_job(
+            conn,
+            source_id,
+            checked_at,
+            failure_reason="Sync job timed out before status read completed",
+        )
+        if active_row:
+            if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
+                self._mark_source_sync_active(conn, source_id, checked_at)
+            return active_row
+        queued_row = self._get_queued_sync_job(conn, source_id)
+        if queued_row:
+            if not source_row or source_row["sync_status"] != SyncStatus.RUNNING.value:
+                self._mark_source_sync_active(conn, source_id, checked_at)
+            return queued_row
+        if source_row and source_row["sync_status"] == SyncStatus.RUNNING.value:
+            self._reconcile_source_after_inactive_job(
+                conn,
+                source_id,
+                checked_at,
+                "Sync job timed out before status read completed",
+            )
+        return conn.execute(
+            """
+            SELECT * FROM sync_jobs
+            WHERE source_id = ?
+            ORDER BY started_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (source_id,),
+        ).fetchone()
 
     def get_source_status_snapshot(self, source_id: str) -> dict[str, object]:
         self.ensure_schema()

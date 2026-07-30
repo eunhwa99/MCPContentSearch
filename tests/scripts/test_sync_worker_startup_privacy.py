@@ -95,6 +95,178 @@ def test_launch_agent_runner_sanitizes_startup_stderr_before_persisting(
         assert raw_value not in diagnostic
 
 
+def test_launch_agent_runner_redacts_folded_authorization_credentials(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write('Authorization: Bearer\\r\\n')",
+                "sys.stderr.write(' folded-startup-bearer-credential\\r\\n')",
+                "sys.stderr.write(",
+                "    'first clear diagnostic source_id=source_notion '",
+                "    'job_id=job-123\\r'",
+                ")",
+                "sys.stderr.write('Authorization: Basic\\r')",
+                "sys.stderr.write('\\tfolded-startup-basic-credential\\r')",
+                "sys.stderr.write(",
+                "    'second clear diagnostic phase=starting '",
+                "    'retry_count=26\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "folded-startup-bearer-credential" not in diagnostic
+    assert "folded-startup-basic-credential" not in diagnostic
+    assert "first clear diagnostic" in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
+    assert "second clear diagnostic" in diagnostic
+    assert "phase=starting" in diagnostic
+    assert "retry_count=26" in diagnostic
+
+
+def test_launch_agent_runner_redacts_multistage_folded_authorization_credentials(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write('Authorization:\\r\\n')",
+                "sys.stderr.write(' Bearer\\r\\n')",
+                "sys.stderr.write(' multistage-startup-bearer-credential\\r\\n')",
+                "sys.stderr.write(",
+                "    'first clear diagnostic source_id=source_notion '",
+                "    'job_id=job-123\\r'",
+                ")",
+                "sys.stderr.write('Authorization=\\r')",
+                "sys.stderr.write('\\tBasic\\r')",
+                "sys.stderr.write('\\tmultistage-startup-basic-credential\\r')",
+                "sys.stderr.write(",
+                "    'second clear diagnostic phase=starting '",
+                "    'retry_count=28\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "multistage-startup-bearer-credential" not in diagnostic
+    assert "multistage-startup-basic-credential" not in diagnostic
+    assert "first clear diagnostic" in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
+    assert "second clear diagnostic" in diagnostic
+    assert "phase=starting" in diagnostic
+    assert "retry_count=28" in diagnostic
+
+
+def test_launch_agent_runner_redacts_bare_name_folded_authorization_credentials(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write('Authorization\\r\\n')",
+                "sys.stderr.write(' Bearer\\r\\n')",
+                "sys.stderr.write(' bare-name-startup-bearer-credential\\r\\n')",
+                "sys.stderr.write(",
+                "    'first clear diagnostic source_id=source_notion '",
+                "    'job_id=job-123\\r'",
+                ")",
+                "sys.stderr.write('Authorization\\r')",
+                "sys.stderr.write('\\tBasic\\r')",
+                "sys.stderr.write('\\tbare-name-startup-basic-credential\\r')",
+                "sys.stderr.write(",
+                "    'second clear diagnostic phase=starting '",
+                "    'retry_count=34\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "bare-name-startup-bearer-credential" not in diagnostic
+    assert "bare-name-startup-basic-credential" not in diagnostic
+    assert "first clear diagnostic" in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
+    assert "second clear diagnostic" in diagnostic
+    assert "phase=starting" in diagnostic
+    assert "retry_count=34" in diagnostic
+
+
 def test_launch_agent_runner_redacts_oversized_cookie_header_and_folded_continuation(
     tmp_path: Path,
 ):
@@ -148,6 +320,225 @@ def test_launch_agent_runner_redacts_oversized_cookie_header_and_folded_continua
     assert "<redacted oversized diagnostic>" in diagnostic
     assert "source_id=source_notion" in diagnostic
     assert "job_id=job-123" in diagnostic
+
+
+def test_launch_agent_runner_redacts_cookie_separator_split_across_oversized_chunks(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write(",
+                "    'Set-Cookie'",
+                "    + (' ' * 65540)",
+                "    + ': source_id=cookie-source-secret\\n'",
+                ")",
+                "sys.stderr.write(",
+                "    '\\tjob_id=folded-cookie-secret; '",
+                "    'phase=folded-phase-secret\\n'",
+                ")",
+                "sys.stderr.write(",
+                "    'ordinary diagnostic, source_id=source_notion; '",
+                "    'job_id=job-123\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "cookie-source-secret" not in diagnostic
+    assert "folded-cookie-secret" not in diagnostic
+    assert "folded-phase-secret" not in diagnostic
+    assert "<redacted oversized diagnostic>" in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
+
+
+def test_launch_agent_runner_redacts_folded_credentials_when_indent_and_body_split_at_production_boundary(
+    tmp_path: Path,
+):
+    folded_secrets = (
+        "startup-split-authorization-credential-987654",
+        "startup-split-cookie-credential-987654",
+    )
+    messages = []
+    for header_prefix, folded_secret in (
+        ("Authorization: Bearer initial-credential-", folded_secrets[0]),
+        ("Cookie: session=initial-cookie; padding=", folded_secrets[1]),
+    ):
+        padding = "x" * (65535 - len(header_prefix))
+        messages.append(
+            f"{header_prefix}{padding}\r {folded_secret}\r"
+            "clear diagnostic source_id=source_notion job_id=job-123\n"
+        )
+
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                f"sys.stderr.write({''.join(messages)!r})",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert all(secret not in diagnostic for secret in folded_secrets)
+    assert diagnostic.count("<redacted oversized diagnostic>") == 2
+    assert diagnostic.count("clear diagnostic") == 2
+    assert diagnostic.count("source_id=source_notion") == 2
+    assert diagnostic.count("job_id=job-123") == 2
+
+
+def test_launch_agent_runner_redacts_folded_credentials_when_crlf_is_split_at_production_boundary(
+    tmp_path: Path,
+):
+    folded_secrets = (
+        "startup-boundary-crlf-authorization-credential-987654",
+        "startup-boundary-crlf-cookie-credential-987654",
+    )
+    messages = []
+    for header_prefix, folded_secret in (
+        ("Authorization: Bearer initial-credential-", folded_secrets[0]),
+        ("Cookie: session=initial-cookie; padding=", folded_secrets[1]),
+    ):
+        padding = "x" * (65536 - len(header_prefix))
+        messages.append(
+            f"{header_prefix}{padding}\r\n {folded_secret}\r\n"
+            "clear diagnostic source_id=source_notion job_id=job-123\n"
+        )
+
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                f"sys.stderr.write({''.join(messages)!r})",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert all(secret not in diagnostic for secret in folded_secrets)
+    assert diagnostic.count("<redacted oversized diagnostic>") == 2
+    assert diagnostic.count("clear diagnostic") == 2
+    assert diagnostic.count("source_id=source_notion") == 2
+    assert diagnostic.count("job_id=job-123") == 2
+
+
+def test_launch_agent_runner_redacts_name_only_cookie_header_and_folded_value(
+    tmp_path: Path,
+):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stderr.write('Set-Cookie\\n')",
+                "sys.stderr.write(",
+                "    '\\t: source_id=cookie-source-secret; '",
+                "    'job_id=cookie-job-secret\\n'",
+                ")",
+                "sys.stderr.write(",
+                "    'ordinary diagnostic, source_id=source_notion; '",
+                "    'job_id=job-123\\n'",
+                ")",
+                "raise SystemExit(23)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    diagnostic_log = tmp_path / "logs" / "startup.log"
+    env = {
+        **os.environ,
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
+        check=False,
+        env=env,
+        timeout=10,
+    )
+
+    diagnostic = diagnostic_log.read_text(encoding="utf-8")
+    assert result.returncode == 23
+    assert diagnostic_log.stat().st_size <= 4096
+    assert "cookie-source-secret" not in diagnostic
+    assert "cookie-job-secret" not in diagnostic
+    assert "source_id=source_notion" in diagnostic
+    assert "job_id=job-123" in diagnostic
+    assert "ordinary diagnostic" in diagnostic
 
 
 def test_launch_agent_runner_uses_uv_managed_sanitizer_without_path_python(
@@ -219,8 +610,9 @@ def test_launch_agent_runner_reports_safe_bounded_error_when_sanitizer_fails(
     )
     failing_sanitizer.chmod(0o755)
     diagnostic_log = tmp_path / "logs" / "startup.log"
-    diagnostic_log.parent.mkdir()
+    diagnostic_log.parent.mkdir(mode=0o700)
     diagnostic_log.write_text("x" * 1020, encoding="utf-8")
+    diagnostic_log.chmod(0o600)
     env = {
         **os.environ,
         "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),

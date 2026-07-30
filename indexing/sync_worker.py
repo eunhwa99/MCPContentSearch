@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 from datetime import datetime, timezone
 
 from app_runtime import build_ingestion_runtime
@@ -90,6 +91,30 @@ class BoundedWorkerLogFormatter(logging.Formatter):
 
 class ByteBoundedRotatingFileHandler(RotatingFileHandler):
     """Measure UTF-8 bytes so rotation never undercounts non-ASCII records."""
+
+    def _open(self):
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(self.baseFilename, flags, 0o600)
+        try:
+            file_stat = os.fstat(file_descriptor)
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_uid != os.getuid()
+                or stat.S_IMODE(file_stat.st_mode) != 0o600
+            ):
+                raise PermissionError("unsafe sync worker log file")
+            return open(
+                file_descriptor,
+                self.mode,
+                encoding=self.encoding,
+                errors=self.errors,
+                closefd=True,
+            )
+        except BaseException:
+            os.close(file_descriptor)
+            raise
 
     def shouldRollover(self, record: logging.LogRecord) -> bool:
         if self.maxBytes <= 0:
@@ -312,29 +337,70 @@ def _bounded_log_int(name: str, default: int, minimum: int, maximum: int) -> int
     return value
 
 
+def _prepare_private_log_path(log_path: Path) -> None:
+    if not log_path.is_absolute() or Path(os.path.normpath(log_path)) != log_path:
+        raise ValueError("sync worker log path must be canonical and absolute")
+
+    current = Path(log_path.anchor)
+    for component in log_path.parent.parts[1:]:
+        current /= component
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            current.mkdir(mode=0o700)
+            current_stat = current.lstat()
+        if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(
+            current_stat.st_mode
+        ):
+            raise ValueError("unsafe sync worker log directory")
+
+    directory_stat = log_path.parent.lstat()
+    if (
+        directory_stat.st_uid != os.getuid()
+        or stat.S_IMODE(directory_stat.st_mode) != 0o700
+    ):
+        raise PermissionError("unsafe sync worker log directory")
+
+    try:
+        file_stat = log_path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISLNK(file_stat.st_mode)
+        or not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.getuid()
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+    ):
+        raise PermissionError("unsafe sync worker log file")
+
+
 def _configure_logging() -> logging.Handler:
     log_path_value = os.getenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", "").strip()
     if not log_path_value:
         handler: logging.Handler = logging.StreamHandler()
     else:
         log_path = Path(log_path_value).expanduser()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = ByteBoundedRotatingFileHandler(
-            log_path,
-            maxBytes=_bounded_log_int(
-                "CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES",
-                DEFAULT_LOG_MAX_BYTES,
-                MIN_LOG_MAX_BYTES,
-                MAX_LOG_MAX_BYTES,
-            ),
-            backupCount=_bounded_log_int(
-                "CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT",
-                DEFAULT_LOG_BACKUP_COUNT,
-                1,
-                MAX_LOG_BACKUP_COUNT,
-            ),
-            encoding="utf-8",
-        )
+        previous_umask = os.umask(0o077)
+        try:
+            _prepare_private_log_path(log_path)
+            handler = ByteBoundedRotatingFileHandler(
+                log_path,
+                maxBytes=_bounded_log_int(
+                    "CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES",
+                    DEFAULT_LOG_MAX_BYTES,
+                    MIN_LOG_MAX_BYTES,
+                    MAX_LOG_MAX_BYTES,
+                ),
+                backupCount=_bounded_log_int(
+                    "CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT",
+                    DEFAULT_LOG_BACKUP_COUNT,
+                    1,
+                    MAX_LOG_BACKUP_COUNT,
+                ),
+                encoding="utf-8",
+            )
+        finally:
+            os.umask(previous_umask)
     handler.addFilter(WorkerLogPrivacyFilter())
     handler.setFormatter(BoundedWorkerLogFormatter(LOG_FORMAT))
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)

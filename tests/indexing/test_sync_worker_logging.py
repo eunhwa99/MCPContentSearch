@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
+import stat
 
 import httpx
+import pytest
 
 from environments.config import AppConfig, NotionConfig
 from fetching.notion import NotionAPIClient
@@ -17,6 +20,95 @@ from indexing.sync_worker import _configure_logging, _redact_worker_log_message
 class _RecordingCollection:
     def delete(self, **kwargs):
         return None
+
+
+def _close_test_logging(
+    root_logger: logging.Logger,
+    previous_handlers: list[logging.Handler],
+    previous_level: int,
+) -> None:
+    for handler in list(root_logger.handlers):
+        handler.close()
+    root_logger.handlers[:] = previous_handlers
+    root_logger.setLevel(previous_level)
+
+
+def test_worker_logging_recreates_private_runtime_directory_and_log(
+    monkeypatch,
+    tmp_path: Path,
+):
+    log_path = tmp_path / "deleted-after-install" / "sync-worker.log"
+    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    root_logger = logging.getLogger()
+    previous_handlers = list(root_logger.handlers)
+    previous_level = root_logger.level
+    previous_umask = os.umask(0o022)
+
+    try:
+        handler = _configure_logging()
+        handler.flush()
+
+        assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        assert log_path.parent.stat().st_uid == os.getuid()
+        assert log_path.stat().st_uid == os.getuid()
+    finally:
+        os.umask(previous_umask)
+        _close_test_logging(root_logger, previous_handlers, previous_level)
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ("symlink_directory", "symlink_file", "non_directory", "wrong_owner"),
+)
+def test_worker_logging_rejects_unsafe_runtime_log_paths_without_mutating_targets(
+    monkeypatch,
+    tmp_path: Path,
+    unsafe_kind: str,
+):
+    target_dir = tmp_path / "target"
+    target_dir.mkdir(mode=0o755)
+    target_file = target_dir / "target.log"
+    target_file.write_text("retained target\n", encoding="utf-8")
+    target_file.chmod(0o644)
+    expected_dir_mode = stat.S_IMODE(target_dir.stat().st_mode)
+    expected_file_mode = stat.S_IMODE(target_file.stat().st_mode)
+    expected_content = target_file.read_bytes()
+
+    if unsafe_kind == "symlink_directory":
+        log_dir = tmp_path / "linked-dir"
+        log_dir.symlink_to(target_dir, target_is_directory=True)
+        log_path = log_dir / "sync-worker.log"
+    elif unsafe_kind == "symlink_file":
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(mode=0o700)
+        log_path = log_dir / "sync-worker.log"
+        log_path.symlink_to(target_file)
+    elif unsafe_kind == "non_directory":
+        log_dir = tmp_path / "not-a-directory"
+        log_dir.write_text("retained parent\n", encoding="utf-8")
+        log_path = log_dir / "sync-worker.log"
+    else:
+        log_dir = tmp_path / "foreign-owned"
+        log_dir.mkdir(mode=0o700)
+        log_path = log_dir / "sync-worker.log"
+        monkeypatch.setattr(os, "getuid", lambda: target_dir.stat().st_uid + 1)
+
+    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    root_logger = logging.getLogger()
+    previous_handlers = list(root_logger.handlers)
+    previous_level = root_logger.level
+
+    try:
+        with pytest.raises((OSError, ValueError)):
+            _configure_logging()
+    finally:
+        _close_test_logging(root_logger, previous_handlers, previous_level)
+
+    assert target_dir.is_dir()
+    assert stat.S_IMODE(target_dir.stat().st_mode) == expected_dir_mode
+    assert target_file.read_bytes() == expected_content
+    assert stat.S_IMODE(target_file.stat().st_mode) == expected_file_mode
 
 
 def test_worker_log_redactor_removes_complete_multiword_credentials():
@@ -104,6 +196,103 @@ def test_worker_log_redactor_removes_colon_labeled_paths_and_keeps_fields():
     assert "file:<redacted>" in redacted
 
 
+def test_worker_log_redactor_removes_short_explicit_auth_credentials():
+    bearer_redacted = _redact_worker_log_message(
+        "Bearer abc123 while syncing, source_id=s diagnostic padding"
+    )
+    basic_redacted = _redact_worker_log_message(
+        "Basic Og== because retrying; job_id=j diagnostic padding"
+    )
+
+    assert "abc123" not in bearer_redacted
+    assert "Bearer <redacted-auth> while syncing," in bearer_redacted
+    assert "source_id=s" in bearer_redacted
+    assert "Og==" not in basic_redacted
+    assert "Basic <redacted-auth> because retrying;" in basic_redacted
+    assert "job_id=j" in basic_redacted
+
+
+def test_worker_log_redactor_removes_folded_authorization_credentials():
+    redacted = _redact_worker_log_message(
+        "Authorization: Bearer\r\n"
+        " folded-worker-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization: Basic\r"
+        "\tfolded-worker-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=26"
+    )
+
+    assert "folded-worker-bearer-credential" not in redacted
+    assert "folded-worker-basic-credential" not in redacted
+    assert "first clear diagnostic" in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "second clear diagnostic" in redacted
+    assert "phase=fetching_page_content" in redacted
+    assert "retry_count=26" in redacted
+
+
+def test_worker_log_redactor_removes_multistage_folded_authorization_credentials():
+    redacted = _redact_worker_log_message(
+        "Authorization:\r\n"
+        " Bearer\r\n"
+        " multistage-worker-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization=\r"
+        "\tBasic\r"
+        "\tmultistage-worker-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=28"
+    )
+
+    assert "multistage-worker-bearer-credential" not in redacted
+    assert "multistage-worker-basic-credential" not in redacted
+    assert "first clear diagnostic" in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "second clear diagnostic" in redacted
+    assert "phase=fetching_page_content" in redacted
+    assert "retry_count=28" in redacted
+
+
+def test_worker_log_redactor_removes_bare_name_folded_authorization_credentials():
+    redacted = _redact_worker_log_message(
+        "Authorization\r\n"
+        " Bearer\r\n"
+        " bare-name-worker-bearer-credential\r\n"
+        "first clear diagnostic source_id=source_notion job_id=job-123\r"
+        "Authorization\r"
+        "\tBasic\r"
+        "\tbare-name-worker-basic-credential\r"
+        "second clear diagnostic phase=fetching_page_content retry_count=34"
+    )
+
+    assert "bare-name-worker-bearer-credential" not in redacted
+    assert "bare-name-worker-basic-credential" not in redacted
+    assert "first clear diagnostic" in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "second clear diagnostic" in redacted
+    assert "phase=fetching_page_content" in redacted
+    assert "retry_count=34" in redacted
+
+
+def test_worker_log_redactor_preserves_lone_cr_clear_diagnostic_after_path():
+    sensitive_path = "/Users/tester/private vault/observability notes.md"
+    for path_prefix in ("path:", ""):
+        redacted = _redact_worker_log_message(
+            f"provider failure {path_prefix}{sensitive_path}\r"
+            "clear diagnostic source_id=source_notion "
+            "job_id=job-123 retry_count=25"
+        )
+
+        assert sensitive_path not in redacted
+        assert "observability notes.md" not in redacted
+        assert "clear diagnostic" in redacted
+        assert "source_id=source_notion" in redacted
+        assert "job_id=job-123" in redacted
+        assert "retry_count=25" in redacted
+
+
 def test_worker_log_redactor_removes_semicolon_cookie_headers_and_unc_paths():
     raw_values = (
         "session=alpha",
@@ -127,6 +316,66 @@ def test_worker_log_redactor_removes_semicolon_cookie_headers_and_unc_paths():
     assert "job_id=job-123" in redacted
     assert "source_id=source_notion" in redacted
     assert "<redacted>" in redacted
+
+
+def test_worker_log_redactor_removes_name_only_cookie_header_folded_lines():
+    redacted = _redact_worker_log_message(
+        "Cookie\r"
+        " source_id=folded-cookie-source-secret; "
+        "job_id=folded-cookie-job-secret\r"
+        "\tphase=folded-cookie-phase-secret\r"
+        "ordinary diagnostic, source_id=source_notion; job_id=job-123; "
+        "phase=fetching_page_content"
+    )
+
+    for secret in (
+        "folded-cookie-source-secret",
+        "folded-cookie-job-secret",
+        "folded-cookie-phase-secret",
+    ):
+        assert secret not in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "phase=fetching_page_content" in redacted
+
+
+def test_worker_log_redactor_removes_lone_cr_cookie_value_continuations():
+    redacted = _redact_worker_log_message(
+        "Cookie: initial-alpha-value\r"
+        " folded-alpha-value, folded-delta-value\r"
+        "\tfolded-beta-value\r"
+        "first clear diagnostic, source_id=source_notion; job_id=job-123\r"
+        "Set-Cookie: initial-delta-value\r"
+        "\tfolded-gamma-value\r"
+        "second clear diagnostic, phase=fetching_page_content"
+    )
+
+    for secret in (
+        "initial-alpha-value",
+        "folded-alpha-value",
+        "folded-delta-value",
+        "folded-beta-value",
+        "initial-delta-value",
+        "folded-gamma-value",
+    ):
+        assert secret not in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "phase=fetching_page_content" in redacted
+
+
+def test_worker_log_redactor_preserves_lone_cr_clear_diagnostic_without_comma():
+    redacted = _redact_worker_log_message(
+        "Cookie: initial-alpha-value\r"
+        "clear diagnostic source_id=source_notion "
+        "job_id=job-123 retry_count=24"
+    )
+
+    assert "initial-alpha-value" not in redacted
+    assert "clear diagnostic" in redacted
+    assert "source_id=source_notion" in redacted
+    assert "job_id=job-123" in redacted
+    assert "retry_count=24" in redacted
 
 
 def test_worker_log_redactor_removes_pre_sanitized_directory_path_tails():

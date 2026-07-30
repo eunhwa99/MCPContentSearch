@@ -123,13 +123,14 @@ def register_tools(
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
         try:
-            _refresh_registered_sources(metadata_store, source_registry)
+            configured_sources = _registry_source_snapshot(source_registry)
             if metadata_store is not None:
                 sources = metadata_store.list_sources()
             elif source_registry is not None:
-                sources = source_registry.list_sources()
+                sources = configured_sources
             else:
                 sources = []
+            sources = _merge_observed_sources(sources, configured_sources)
             sources = [
                 source
                 for source in sources
@@ -273,7 +274,8 @@ def register_tools(
                 return {"source": None, "job": None}
             return {"sources": []}
         try:
-            _refresh_registered_sources(metadata_store, source_registry)
+            configured_sources = _registry_source_snapshot(source_registry)
+            configured_by_id = _sources_by_id(configured_sources)
 
             if job_id:
                 requested_source_id = str(source_id or "")
@@ -304,6 +306,10 @@ def register_tools(
                 source = metadata_store.get_source(exact_source_id)
                 if source is None:
                     return {"source": None, "job": None}
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(exact_source_id),
+                )
                 return {
                     "source": _safe_source_payload(
                         source,
@@ -319,6 +325,10 @@ def register_tools(
 
             if source_id:
                 source = metadata_store.get_source(source_id)
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source_id),
+                )
                 if not source or not _source_id_is_public(
                     source_id,
                     metadata_store,
@@ -330,6 +340,10 @@ def register_tools(
                     }
                 latest_job = metadata_store.get_latest_sync_job(source_id)
                 source = metadata_store.get_source(source_id) or source
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source_id),
+                )
                 return {
                     "source": _safe_source_payload(
                         source,
@@ -346,7 +360,10 @@ def register_tools(
                 }
 
             statuses = []
-            for source in metadata_store.list_sources():
+            for source in _merge_observed_sources(
+                metadata_store.list_sources(),
+                configured_sources,
+            ):
                 if not _source_id_is_public(
                     source.source_id,
                     metadata_store,
@@ -355,6 +372,10 @@ def register_tools(
                     continue
                 latest_job = metadata_store.get_latest_sync_job(source.source_id)
                 source = metadata_store.get_source(source.source_id) or source
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source.source_id),
+                )
                 statuses.append(
                     {
                         "source": _safe_source_payload(
@@ -609,6 +630,88 @@ def _source_registry_ids(source_registry) -> frozenset[str] | None:
     )
 
 
+def _registry_source_snapshot(source_registry) -> list:
+    if source_registry is None:
+        return []
+    return list(source_registry.list_sources())
+
+
+def _sources_by_id(sources) -> dict[str, object]:
+    return {
+        str(source.source_id): source
+        for source in sources
+        if getattr(source, "source_id", "")
+    }
+
+
+def _merge_observed_sources(persisted_sources, configured_sources) -> list:
+    configured_by_id = _sources_by_id(configured_sources)
+    persisted_by_id = _sources_by_id(persisted_sources)
+    merged = [
+        _merge_observed_source(
+            source,
+            configured_by_id.get(getattr(source, "source_id", "")),
+        )
+        for source in persisted_sources
+    ]
+    for source_id, configured_source in configured_by_id.items():
+        if source_id not in persisted_by_id and _is_registerable_source(
+            configured_source
+        ):
+            merged.append(configured_source)
+    return merged
+
+
+def _merge_observed_source(persisted_source, configured_source):
+    """Overlay current connector configuration without mutating SQLite metadata."""
+    if persisted_source is None:
+        return configured_source
+    if configured_source is None or not hasattr(persisted_source, "model_copy"):
+        return persisted_source
+    config_fields = (
+        "source_type",
+        "name",
+        "enabled",
+    )
+    updates = {
+        field: getattr(configured_source, field)
+        for field in config_fields
+        if hasattr(configured_source, field)
+    }
+    if hasattr(configured_source, "auth_ref"):
+        updates["auth_ref"] = normalize_auth_ref(configured_source.auth_ref)
+    configured_enabled = getattr(
+        configured_source,
+        "enabled",
+        getattr(persisted_source, "enabled", True),
+    )
+    configured_error = getattr(configured_source, "last_error", "")
+    if not configured_enabled and configured_error:
+        updates.update(
+            {
+                "sync_status": SyncStatus.FAILED,
+                "last_error": configured_error,
+                "stale_cleanup_disabled_reason": getattr(
+                    configured_source,
+                    "stale_cleanup_disabled_reason",
+                    "",
+                ),
+            }
+        )
+    elif configured_enabled and not getattr(persisted_source, "enabled", True):
+        updates.update(
+            {
+                "last_error": configured_error,
+                "stale_cleanup_disabled_reason": getattr(
+                    configured_source,
+                    "stale_cleanup_disabled_reason",
+                    "",
+                ),
+            }
+        )
+    return persisted_source.model_copy(update=updates)
+
+
 def _ordered_public_source_ids(
     metadata_store,
     source_registry,
@@ -629,6 +732,10 @@ def _public_bulk_sync_requires_filtering(source_registry, ordered_public_source_
     return len(ordered_public_source_ids) != len(source_registry.list_sources())
 
 
+def _is_registerable_source(source) -> bool:
+    return all(hasattr(source, attr) for attr in REGISTERABLE_SOURCE_ATTRS)
+
+
 def _refresh_registered_sources(metadata_store, source_registry) -> None:
     if metadata_store is None or source_registry is None:
         return
@@ -636,7 +743,7 @@ def _refresh_registered_sources(metadata_store, source_registry) -> None:
     if not callable(register_source):
         return
     for source in source_registry.list_sources():
-        if all(hasattr(source, attr) for attr in REGISTERABLE_SOURCE_ATTRS):
+        if _is_registerable_source(source):
             register_source(source)
 
 
