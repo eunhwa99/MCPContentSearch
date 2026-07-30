@@ -5,6 +5,8 @@ import httpx
 import pytest
 
 from core.exceptions import APIError
+from core.models import DocumentModel
+from core.utils import ContentHasher
 from environments.config import AppConfig, NotionConfig
 from fetching.notion import (
     NotionAPIClient,
@@ -1257,3 +1259,368 @@ def test_fetch_notion_target_restores_page_error_when_database_fallback_is_not_a
 
     with pytest.raises(APIError, match="page not found"):
         asyncio.run(fetch_notion_target("secret", AppConfig(), page_id))
+
+
+def _notion_search_page(
+    page_id: str,
+    *,
+    title: str = "Page",
+    created_time: str = "2026-06-01T00:00:00Z",
+    last_edited_time: str | None = "2026-06-01T00:00:00Z",
+) -> dict:
+    page = {
+        "id": page_id,
+        "url": f"https://notion.so/{page_id}",
+        "created_time": created_time,
+        "properties": {"title": {"title": [{"plain_text": title}]}},
+    }
+    if last_edited_time is not None:
+        page["last_edited_time"] = last_edited_time
+    return page
+
+
+def _existing_notion_document(
+    page_id: str,
+    *,
+    content: str = "stored content",
+    modified_at: str = "2026-06-01T00:00:00Z",
+    deleted_at: str = "",
+    content_hash: str | None = None,
+) -> DocumentModel:
+    resolved_hash = content_hash
+    if resolved_hash is None:
+        resolved_hash = ContentHasher.hash_content(content) if content else ""
+    return DocumentModel(
+        id=f"notion_{page_id}",
+        document_id=page_id,
+        external_id=page_id,
+        source_id="source_notion",
+        title="Page",
+        content=content,
+        url=f"https://notion.so/{page_id}",
+        platform="Notion",
+        modified_at=modified_at,
+        published_at=modified_at,
+        deleted_at=deleted_at,
+        content_hash=resolved_hash,
+    )
+
+
+def _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls):
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_search_pages(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        return pages
+
+    async def fake_fetch_block_content(
+        self,
+        client,
+        block_id,
+        depth=0,
+        strict=False,
+        stop_checker=None,
+    ):
+        fetch_calls.append(block_id)
+        return f"fresh content for {block_id}"
+
+    monkeypatch.setattr(
+        "fetching.notion.httpx.AsyncClient",
+        lambda *args, **kwargs: FakeAsyncClient(),
+    )
+    monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
+    monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
+
+
+def _progress_advanced_for_page(events, *, current_page: int, total_pages: int) -> bool:
+    for event in events:
+        if event.get("current_page") != current_page:
+            continue
+        if event.get("total_pages") != total_pages:
+            continue
+        if event.get("event") == "page_fetch_skipped":
+            return True
+        if event.get("event") == "page_fetch_completed" and event.get("skipped") is True:
+            return True
+    return False
+
+
+def test_fetch_notion_pages_skips_block_fetch_for_unchanged_existing_document(monkeypatch):
+    fetch_calls = []
+    events = []
+    page_id = "page-unchanged"
+    pages = [_notion_search_page(page_id, title="Unchanged")]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="stored body for unchanged page",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    async def capture(event):
+        events.append(event)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            progress_callback=capture,
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == []
+    assert len(documents) == 1
+    assert documents[0].external_id == page_id
+    assert documents[0].content == "stored body for unchanged page"
+    assert _progress_advanced_for_page(events, current_page=1, total_pages=1)
+
+
+def test_fetch_notion_pages_fetches_when_modified_at_differs(monkeypatch):
+    fetch_calls = []
+    page_id = "page-changed"
+    pages = [
+        _notion_search_page(
+            page_id,
+            title="Changed",
+            last_edited_time="2026-06-02T00:00:00Z",
+        )
+    ]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="stale stored body",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == [page_id]
+    assert documents[0].content == f"fresh content for {page_id}"
+
+
+def test_fetch_notion_pages_fetches_when_existing_document_is_deleted(monkeypatch):
+    fetch_calls = []
+    page_id = "page-deleted"
+    pages = [_notion_search_page(page_id, title="Deleted")]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="tombstoned body",
+            modified_at="2026-06-01T00:00:00Z",
+            deleted_at="2026-06-03T00:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == [page_id]
+    assert documents[0].content == f"fresh content for {page_id}"
+
+
+def test_fetch_notion_pages_fetches_when_existing_content_is_empty(monkeypatch):
+    fetch_calls = []
+    page_id = "page-empty"
+    pages = [_notion_search_page(page_id, title="Empty")]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="",
+            modified_at="2026-06-01T00:00:00Z",
+            content_hash="",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == [page_id]
+    assert documents[0].content == f"fresh content for {page_id}"
+
+
+def test_fetch_notion_pages_fetches_when_existing_document_is_missing(monkeypatch):
+    fetch_calls = []
+    page_id = "page-missing"
+    pages = [_notion_search_page(page_id, title="Missing")]
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents={},
+        )
+    )
+
+    assert fetch_calls == [page_id]
+    assert documents[0].content == f"fresh content for {page_id}"
+
+
+def test_fetch_notion_pages_skips_when_created_time_fallback_matches(monkeypatch):
+    fetch_calls = []
+    events = []
+    page_id = "page-created-fallback"
+    pages = [
+        _notion_search_page(
+            page_id,
+            title="Created Fallback",
+            created_time="2026-05-15T12:00:00Z",
+            last_edited_time=None,
+        )
+    ]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="created-time stored body",
+            modified_at="2026-05-15T12:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    async def capture(event):
+        events.append(event)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            progress_callback=capture,
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == []
+    assert documents[0].content == "created-time stored body"
+    assert _progress_advanced_for_page(events, current_page=1, total_pages=1)
+
+
+def test_fetch_notion_pages_skip_progress_includes_page_counters(monkeypatch):
+    fetch_calls = []
+    events = []
+    pages = [
+        _notion_search_page("page-a", title="A"),
+        _notion_search_page(
+            "page-b",
+            title="B",
+            last_edited_time="2026-06-02T00:00:00Z",
+        ),
+    ]
+    existing = {
+        "page-a": _existing_notion_document(
+            "page-a",
+            content="reuse A",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    async def capture(event):
+        events.append(event)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            progress_callback=capture,
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == ["page-b"]
+    assert [doc.external_id for doc in documents] == ["page-a", "page-b"]
+    assert documents[0].content == "reuse A"
+    assert documents[1].content == "fresh content for page-b"
+    assert _progress_advanced_for_page(events, current_page=1, total_pages=2)
+    assert any(
+        event.get("event") == "page_fetch_completed"
+        and event.get("current_page") == 2
+        and event.get("skipped") is not True
+        for event in events
+    )
+
+
+
+def test_fetch_notion_pages_invokes_existing_documents_loader_after_search(monkeypatch):
+    """Loader runs after search with searched page ids only (not a preloaded corpus)."""
+    fetch_calls = []
+    call_order = []
+    page_ids = ["page-keep", "page-other"]
+    pages = [
+        _notion_search_page(page_ids[0], title="Keep"),
+        _notion_search_page(
+            page_ids[1],
+            title="Other",
+            last_edited_time="2026-06-02T00:00:00Z",
+        ),
+    ]
+    existing = {
+        page_ids[0]: _existing_notion_document(
+            page_ids[0],
+            content="reuse keep",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    }
+
+    async def tracking_search(
+        self,
+        client,
+        progress_callback=None,
+        progress_stop_signal=None,
+        progress_stop_checker=None,
+    ):
+        call_order.append("search")
+        return pages
+
+    def loader(ids):
+        call_order.append(("loader", tuple(ids)))
+        return {pid: existing[pid] for pid in ids if pid in existing}
+
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+    monkeypatch.setattr(NotionAPIClient, "search_pages", tracking_search)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents_loader=loader,
+        )
+    )
+
+    assert call_order[0] == "search"
+    assert ("loader", tuple(page_ids)) in call_order
+    assert call_order.index("search") < call_order.index(("loader", tuple(page_ids)))
+    assert fetch_calls == [page_ids[1]]
+    assert documents[0].content == "reuse keep"

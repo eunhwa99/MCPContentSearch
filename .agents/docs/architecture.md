@@ -512,7 +512,14 @@ retrieval:
 Stable identity and version expectations stay source-aware:
 
 - Notion: page id drives stable identity; creation/edit times become
-  `published_at`/`modified_at` with `date_provenance="notion"`.
+  `published_at`/`modified_at` with `date_provenance="notion"`. During fetch,
+  Notion skips `fetch_block_content` when an active stored document already has
+  non-empty content and a canonical `modified_at` that matches the page
+  `last_edited_time` (or `created_time` when edit time is absent), reusing the
+  stored body instead of re-downloading unchanged pages. Existing documents are
+  loaded after search for the searched page ids only (no full-corpus browse
+  hydrate); skipped pages still return in the fetch snapshot so stale cleanup
+  can refresh `last_seen` and tombstone only truly missing remotes.
 - Tistory: `blog_name:post_id` drives stable identity; the upstream publication
   time becomes `published_at` with `date_provenance="tistory"` when present.
 - GitHub: repository path drives stable identity, while blob SHA is revision

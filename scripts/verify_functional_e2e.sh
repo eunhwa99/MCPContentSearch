@@ -31,6 +31,7 @@ RETAINED_FUNCTIONAL_TESTS=(
   tests/e2e/test_durable_sync_worker_flow.py
   tests/e2e/test_obsidian_connector_flow.py
   tests/e2e/test_phase_b_connectors_flow.py
+  tests/e2e/test_notion_fetch_skip_flow.py
 )
 
 if [[ "$USE_UV" == "1" ]]; then
