@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Bash 5.2 enables replacement-string match expansion by default, which can
+# reintroduce @@...@@ tokens when an XML-escaped replacement contains "&".
+shopt -u patsub_replacement 2>/dev/null || true
+
 LABEL="com.eunaverse.contextwiki.sync-worker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
