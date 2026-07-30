@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import math
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -10,7 +9,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import Field, StrictFloat
+from pydantic import Field
 
 from core.models import (
     DocumentSortBy,
@@ -21,13 +20,6 @@ from core.models import (
     SyncStatus,
 )
 from indexing.background_tasks import safe_error_message
-from indexing.ingestion_service import (
-    DEFAULT_SYNC_WAIT_POLL_INTERVAL_SECONDS,
-    DEFAULT_SYNC_WAIT_TIMEOUT_SECONDS,
-    MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS,
-    MAX_SYNC_WAIT_TIMEOUT_SECONDS,
-    MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS,
-)
 from search import debug_redaction
 
 if TYPE_CHECKING:
@@ -127,14 +119,6 @@ def register_tools(
             "results": [],
         }
 
-    def _wait_for_sync_all_error_payload(message: str) -> dict:
-        return {
-            "status": "error",
-            "message": message,
-            "summary": _public_bulk_wait_summary({}, []),
-            "results": [],
-        }
-
     @mcp.tool()
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
@@ -199,7 +183,14 @@ def register_tools(
     async def sync_all() -> dict:
         """Start or reuse all source syncs in the background and return launch outcomes immediately.
 
-        Poll get_sync_status(source_id) for each source before treating its sync as complete.
+        Keep only started/already_running source_id and job_id targets.
+        Do not poll skipped or failed launches; report them immediately.
+        Poll each exact job with separate short
+        get_sync_status(source_id=..., job_id=...) requests using a 2-second initial interval:
+        wait 2, 4, 8, then 10 seconds maximum between attempts as capped backoff.
+        Stop at a 5-minute deadline or after
+        three consecutive status errors or missing exact jobs.
+        Report still-running job IDs without cancelling them.
         """
         if ingestion_service is None:
             return _sync_all_error_payload("ingestion service is not configured")
@@ -266,101 +257,61 @@ def register_tools(
             logger.error("Sync all error: %s", message)
             return _sync_all_error_payload(message)
 
-    @mcp.tool()
-    async def wait_for_sync_all(
-        timeout_seconds: StrictFloat = DEFAULT_SYNC_WAIT_TIMEOUT_SECONDS,
-        poll_interval_seconds: StrictFloat = DEFAULT_SYNC_WAIT_POLL_INTERVAL_SECONDS,
-    ) -> dict:
-        """Start or reuse all source syncs and wait for their exact jobs to finish."""
-        try:
-            timeout_seconds, poll_interval_seconds = _validate_public_sync_wait_options(
-                timeout_seconds,
-                poll_interval_seconds,
-            )
-        except ValueError as exc:
-            return _wait_for_sync_all_error_payload(str(exc))
-        if ingestion_service is None:
-            return _wait_for_sync_all_error_payload(
-                "ingestion service is not configured"
-            )
-        wait_callable = getattr(ingestion_service, "wait_for_sync_all", None)
-        if not callable(wait_callable):
-            return _wait_for_sync_all_error_payload(
-                "ingestion service does not support completion waiting"
-            )
-        try:
-            _refresh_registered_sources(metadata_store, source_registry)
-            public_source_ids = _ordered_public_source_ids(
-                metadata_store,
-                source_registry,
-                allowed_source_ids,
-            )
-            public_bulk_sync_requires_filtering = _public_bulk_sync_requires_filtering(
-                source_registry,
-                public_source_ids,
-            )
-            wait_kwargs = {
-                "timeout_seconds": timeout_seconds,
-                "poll_interval_seconds": poll_interval_seconds,
-            }
-            if public_bulk_sync_requires_filtering:
-                wait_signature = inspect.signature(wait_callable)
-                if "source_ids" not in wait_signature.parameters:
-                    return _wait_for_sync_all_error_payload(
-                        "ingestion service does not support public bulk sync filtering"
-                    )
-                wait_kwargs["source_ids"] = public_source_ids
-            result = await wait_callable(**wait_kwargs)
-            sync_results = []
-            for item in result.get("results", []):
-                source_id = str(item.get("source_id", ""))
-                if not _source_id_is_public(
-                    source_id,
-                    metadata_store,
-                    allowed_source_ids,
-                ):
-                    continue
-                source = metadata_store.get_source(source_id) if metadata_store is not None else None
-                sync_results.append(
-                    {
-                        "source_id": source_id,
-                        "launch_outcome": item.get("launch_outcome", ""),
-                        "completion_outcome": item.get("completion_outcome", ""),
-                        "message": _redact_public_error_text(item.get("message", "")),
-                        "source": (
-                            _safe_source_payload(
-                                source,
-                                metadata_store=metadata_store,
-                                source_registry=source_registry,
-                            )
-                            if source
-                            else None
-                        ),
-                        "job": _safe_sync_job_payload(item.get("job")) if item.get("job") else None,
-                    }
-                )
-            summary = _public_bulk_wait_summary(result.get("summary", {}), sync_results)
-            return {
-                "status": _public_bulk_wait_status(
-                    sync_results,
-                    result.get("status", "completed"),
-                    upstream_result_count=len(result.get("results", [])),
-                ),
-                "summary": summary,
-                "results": sync_results,
-            }
-        except Exception as exc:
-            message = safe_error_message(exc)
-            logger.error("Wait for sync all error: %s", message)
-            return _wait_for_sync_all_error_payload(message)
+    @_metadata_read_tool(mcp)
+    async def get_sync_status(source_id: str = "", job_id: str = "") -> dict:
+        """Check one source, all sources when source_id is empty, or one exact job in a short request.
 
-    @mcp.tool()
-    async def get_sync_status(source_id: str = "") -> dict:
-        """source 및 sync job 상태 조회"""
+        Pass source_id and job_id together to poll an exact sync_all job. Use paced, bounded,
+        separate requests; a client deadline stops observation, not the sync.
+        """
         if metadata_store is None:
+            if job_id:
+                return {"source": None, "job": None}
             return {"sources": []}
         try:
             _refresh_registered_sources(metadata_store, source_registry)
+
+            if job_id:
+                requested_source_id = str(source_id or "")
+                if not requested_source_id or not _source_id_is_public(
+                    requested_source_id,
+                    metadata_store,
+                    allowed_source_ids,
+                ):
+                    return {"source": None, "job": None}
+                source = metadata_store.get_source(requested_source_id)
+                if source is None:
+                    return {"source": None, "job": None}
+                exact_job = metadata_store.get_sync_job(job_id)
+                if exact_job is None:
+                    return {"source": None, "job": None}
+                job_source_id = str(
+                    _model_payload(exact_job).get("source_id")
+                    or getattr(exact_job, "source_id", "")
+                )
+                exact_source_id = requested_source_id
+                if requested_source_id != job_source_id:
+                    return {"source": None, "job": None}
+
+                metadata_store.get_latest_sync_job(exact_source_id)
+                exact_job = metadata_store.get_sync_job(job_id)
+                if exact_job is None:
+                    return {"source": None, "job": None}
+                source = metadata_store.get_source(exact_source_id)
+                if source is None:
+                    return {"source": None, "job": None}
+                return {
+                    "source": _safe_source_payload(
+                        source,
+                        metadata_store=metadata_store,
+                        source_registry=source_registry,
+                    ),
+                    "job": (
+                        _safe_sync_job_payload(exact_job, include_progress_hints=True)
+                        if exact_job
+                        else None
+                    ),
+                }
 
             if source_id:
                 source = metadata_store.get_source(source_id)
@@ -418,6 +369,13 @@ def register_tools(
         except Exception as exc:
             message = safe_error_message(exc)
             logger.error("Get sync status error: %s", message)
+            if job_id:
+                return {
+                    "status": "error",
+                    "message": message,
+                    "source": None,
+                    "job": None,
+                }
             if source_id:
                 return {
                     "status": "error",
@@ -794,83 +752,6 @@ def _public_bulk_sync_summary(upstream_summary: dict, sync_results: list[dict]) 
     }
     if "requested_at" in upstream_summary:
         summary["requested_at"] = upstream_summary["requested_at"]
-    return summary
-
-
-def _validate_public_sync_wait_options(
-    timeout_seconds: float,
-    poll_interval_seconds: float,
-) -> tuple[float, float]:
-    if isinstance(timeout_seconds, bool) or isinstance(poll_interval_seconds, bool):
-        raise ValueError(
-            "timeout_seconds and poll_interval_seconds must be numeric"
-        )
-    try:
-        normalized_timeout = float(timeout_seconds)
-        normalized_poll_interval = float(poll_interval_seconds)
-    except (TypeError, ValueError):
-        raise ValueError(
-            "timeout_seconds and poll_interval_seconds must be numeric"
-        ) from None
-    if not math.isfinite(normalized_timeout) or not (
-        0 < normalized_timeout <= MAX_SYNC_WAIT_TIMEOUT_SECONDS
-    ):
-        raise ValueError(
-            f"timeout_seconds must be greater than 0 and at most "
-            f"{MAX_SYNC_WAIT_TIMEOUT_SECONDS:g}"
-        )
-    if not math.isfinite(normalized_poll_interval) or not (
-        MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS
-        <= normalized_poll_interval
-        <= MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS
-    ):
-        raise ValueError(
-            f"poll_interval_seconds must be between "
-            f"{MIN_SYNC_WAIT_POLL_INTERVAL_SECONDS:g} and "
-            f"{MAX_SYNC_WAIT_POLL_INTERVAL_SECONDS:g}"
-        )
-    return normalized_timeout, normalized_poll_interval
-
-
-def _public_bulk_wait_status(
-    sync_results: list[dict],
-    fallback_status: str,
-    *,
-    upstream_result_count: int = 0,
-) -> str:
-    outcomes = {item.get("completion_outcome", "") for item in sync_results}
-    if not outcomes:
-        if upstream_result_count > 0:
-            return "completed"
-        return fallback_status or "completed"
-    if outcomes.issubset({"succeeded", "skipped"}):
-        return "completed"
-    if "failed" in outcomes and outcomes.issubset({"failed", "skipped"}):
-        return "failed"
-    if "timed_out" in outcomes and outcomes.issubset({"timed_out", "skipped"}):
-        return "timed_out"
-    return "partial"
-
-
-def _public_bulk_wait_summary(upstream_summary: dict, sync_results: list[dict]) -> dict:
-    summary = {
-        "total_sources": len(sync_results),
-        "succeeded": sum(
-            1 for item in sync_results if item.get("completion_outcome") == "succeeded"
-        ),
-        "failed": sum(
-            1 for item in sync_results if item.get("completion_outcome") == "failed"
-        ),
-        "skipped": sum(
-            1 for item in sync_results if item.get("completion_outcome") == "skipped"
-        ),
-        "timed_out": sum(
-            1 for item in sync_results if item.get("completion_outcome") == "timed_out"
-        ),
-    }
-    for key in ("requested_at", "completed_at"):
-        if key in upstream_summary:
-            summary[key] = upstream_summary[key]
     return summary
 
 

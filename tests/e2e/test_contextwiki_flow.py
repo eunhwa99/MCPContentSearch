@@ -130,6 +130,41 @@ async def _wait_for_sync_completion(mcp, source_id: str, attempts: int = 500) ->
     raise AssertionError(f"Timed out waiting for {source_id} sync completion: {latest}")
 
 
+def _exact_sync_poll_targets(launch_result: dict) -> dict[str, str]:
+    return {
+        item["source_id"]: item["job"]["job_id"]
+        for item in launch_result["results"]
+        if item["launch_outcome"] in {"started", "already_running"}
+        and item.get("job")
+        and item["job"].get("job_id")
+    }
+
+
+async def _wait_for_exact_sync_completion(
+    mcp: FastMCP,
+    targets: dict[str, str],
+    attempts: int = 500,
+) -> dict[str, dict]:
+    latest_by_source: dict[str, dict] = {}
+    for _ in range(attempts):
+        for source_id, job_id in targets.items():
+            latest_by_source[source_id] = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": source_id, "job_id": job_id},
+            )
+        if all(
+            (latest_by_source[source_id].get("job") or {}).get("status")
+            in {"succeeded", "failed"}
+            for source_id in targets
+        ):
+            return latest_by_source
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"Timed out waiting for exact sync completion: {latest_by_source}"
+    )
+
+
 pytestmark = pytest.mark.e2e
 
 
@@ -228,7 +263,9 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     assert unsupported["evidence_status"] == "insufficient"
 
 
-def test_contextwiki_fastmcp_sync_all_returns_before_connectors_finish(tmp_path):
+def test_contextwiki_fastmcp_sync_all_shows_all_running_then_exact_polling_reaches_terminal(
+    tmp_path,
+):
     class BlockingE2EConnector(SourceConnector):
         def __init__(
             self,
@@ -332,26 +369,31 @@ def test_contextwiki_fastmcp_sync_all_returns_before_connectors_finish(tmp_path)
             assert not first_finished.is_set()
             assert not second_finished.is_set()
 
-            first_running = await _call_tool_json_async(
+            running = await _call_tool_json_async(
                 mcp,
                 "get_sync_status",
-                {"source_id": "source_e2e_first"},
+                {"source_id": ""},
             )
-            second_running = await _call_tool_json_async(
-                mcp,
-                "get_sync_status",
-                {"source_id": "source_e2e_second"},
-            )
-            assert first_running["latest_job"]["status"] == "running"
-            assert second_running["latest_job"]["status"] == "running"
+            running_jobs = {
+                item["source"]["source_id"]: item["latest_job"]
+                for item in running["sources"]
+            }
+            assert {
+                source_id: job["status"]
+                for source_id, job in running_jobs.items()
+            } == {
+                "source_e2e_first": "running",
+                "source_e2e_second": "running",
+            }
 
+            exact_targets = _exact_sync_poll_targets(sync_all_result)
             first_release.set()
             second_release.set()
-            first_terminal, second_terminal = await asyncio.gather(
-                _wait_for_sync_completion(mcp, "source_e2e_first"),
-                _wait_for_sync_completion(mcp, "source_e2e_second"),
+            terminal_by_source = await _wait_for_exact_sync_completion(
+                mcp,
+                exact_targets,
             )
-            return first_terminal, second_terminal, first_finished, second_finished
+            return exact_targets, terminal_by_source, first_finished, second_finished
         finally:
             first_release.set()
             second_release.set()
@@ -361,27 +403,40 @@ def test_contextwiki_fastmcp_sync_all_returns_before_connectors_finish(tmp_path)
                     return_exceptions=True,
                 )
 
-    first_terminal, second_terminal, first_finished, second_finished = asyncio.run(run_flow())
+    exact_targets, terminal_by_source, first_finished, second_finished = asyncio.run(
+        run_flow()
+    )
+    terminal_jobs = {
+        source_id: payload["job"]
+        for source_id, payload in terminal_by_source.items()
+    }
 
     assert first_finished.is_set()
     assert second_finished.is_set()
-    assert first_terminal["source"]["sync_status"] == "succeeded"
-    assert first_terminal["latest_job"]["status"] == "succeeded"
-    assert second_terminal["source"]["sync_status"] == "succeeded"
-    assert second_terminal["latest_job"]["status"] == "succeeded"
+    assert {
+        source_id: job["status"]
+        for source_id, job in terminal_jobs.items()
+    } == {
+        "source_e2e_first": "succeeded",
+        "source_e2e_second": "succeeded",
+    }
+    assert {
+        source_id: job["job_id"]
+        for source_id, job in terminal_jobs.items()
+    } == exact_targets
 
 
-def test_contextwiki_fastmcp_wait_for_sync_all_returns_exact_terminal_jobs(tmp_path):
+def test_contextwiki_fastmcp_sync_all_polling_returns_exact_terminal_jobs(tmp_path):
     async def run_flow():
         registry = SourceRegistry([FakeConnector(), OtherSourceConnector()])
-        store = MetadataStore(tmp_path / "wait-for-sync-all-success.sqlite3")
+        store = MetadataStore(tmp_path / "sync-all-poll-success.sqlite3")
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
-        mcp = FastMCP("wait-for-sync-all-success-e2e")
+        mcp = FastMCP("sync-all-poll-success-e2e")
         register_tools(
             mcp,
             ingestion_service=ingestion,
@@ -389,53 +444,185 @@ def test_contextwiki_fastmcp_wait_for_sync_all_returns_exact_terminal_jobs(tmp_p
             source_registry=registry,
         )
 
-        result = await _call_tool_json_async(
+        launched = await _call_tool_json_async(mcp, "sync_all")
+        targets = _exact_sync_poll_targets(launched)
+        terminal_by_source = await _wait_for_exact_sync_completion(
             mcp,
-            "wait_for_sync_all",
-            {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+            targets,
         )
-        status_by_source = {
-            source_id: await _call_tool_json_async(
-                mcp,
-                "get_sync_status",
-                {"source_id": source_id},
-            )
-            for source_id in ("source_fake_docs", "source_other")
-        }
-        return result, status_by_source
+        return launched, targets, terminal_by_source
 
-    result, status_by_source = asyncio.run(run_flow())
+    launched, targets, terminal_by_source = asyncio.run(run_flow())
 
-    assert result["status"] == "completed"
-    assert result["summary"]["total_sources"] == 2
-    assert result["summary"]["succeeded"] == 2
-    assert result["summary"]["failed"] == 0
-    assert result["summary"]["timed_out"] == 0
+    assert launched["status"] == "accepted"
+    assert launched["summary"]["total_sources"] == 2
+    assert launched["summary"]["started"] == 2
     assert {
         (
             item["source_id"],
             item["launch_outcome"],
-            item["completion_outcome"],
             item["job"]["status"],
         )
-        for item in result["results"]
+        for item in launched["results"]
     } == {
-        ("source_fake_docs", "started", "succeeded", "succeeded"),
-        ("source_other", "started", "succeeded", "succeeded"),
+        ("source_fake_docs", "started", "running"),
+        ("source_other", "started", "running"),
     }
-    for item in result["results"]:
-        latest_job = status_by_source[item["source_id"]]["latest_job"]
-        assert item["job"]["job_id"] == latest_job["job_id"]
-        assert latest_job["status"] == "succeeded"
+    for item in launched["results"]:
+        exact_job = terminal_by_source[item["source_id"]]["job"]
+        assert item["job"]["job_id"] == exact_job["job_id"]
+        assert exact_job["status"] == "succeeded"
+    assert targets == {
+        item["source_id"]: item["job"]["job_id"]
+        for item in launched["results"]
+    }
 
 
-def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_path):
+def test_contextwiki_fastmcp_exact_job_polling_survives_latest_job_supersession(
+    tmp_path,
+):
+    class SupersedingConnector(SourceConnector):
+        def __init__(
+            self,
+            entered: list[asyncio.Event],
+            release: list[asyncio.Event],
+        ):
+            self.source = SourceModel(
+                source_id="source_superseded",
+                source_type=SourceType.NOTION,
+                name="Superseded Source",
+                enabled=True,
+                auth_ref="env:FAKE",
+                sync_status=SyncStatus.IDLE,
+            )
+            self.entered = entered
+            self.release = release
+            self.run_index = 0
+
+        async def fetch_documents(self):
+            run_index = self.run_index
+            self.run_index += 1
+            self.entered[run_index].set()
+            await self.release[run_index].wait()
+            return []
+
+    async def run_flow():
+        entered = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        connector = SupersedingConnector(entered, release)
+        registry = SourceRegistry([connector])
+        store = MetadataStore(tmp_path / "exact-job-supersession.sqlite3")
+        ingestion = IngestionService(
+            metadata_store=store,
+            source_registry=registry,
+            chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+            indexer=RecordingIndexer(),
+        )
+        mcp = FastMCP("exact-job-supersession-e2e")
+        register_tools(
+            mcp,
+            ingestion_service=ingestion,
+            metadata_store=store,
+            source_registry=registry,
+        )
+
+        try:
+            launch_a = await _call_tool_json_async(mcp, "sync_all")
+            job_a = launch_a["results"][0]["job"]
+            await asyncio.wait_for(entered[0].wait(), timeout=1)
+            task_a = ingestion._background_sync_tasks[connector.source.source_id]
+            release[0].set()
+            await asyncio.wait_for(task_a, timeout=1)
+
+            launch_b = await _call_tool_json_async(mcp, "sync_all")
+            job_b = launch_b["results"][0]["job"]
+            await asyncio.wait_for(entered[1].wait(), timeout=1)
+
+            exact_a = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {
+                    "source_id": connector.source.source_id,
+                    "job_id": job_a["job_id"],
+                },
+            )
+            latest = await _call_tool_json_async(
+                mcp,
+                "get_sync_status",
+                {"source_id": connector.source.source_id},
+            )
+            return job_a, job_b, exact_a, latest
+        finally:
+            for signal in release:
+                signal.set()
+            if ingestion._background_sync_tasks:
+                await asyncio.gather(
+                    *ingestion._background_sync_tasks.values(),
+                    return_exceptions=True,
+                )
+
+    job_a, job_b, exact_a, latest = asyncio.run(run_flow())
+
+    assert job_a["job_id"] != job_b["job_id"]
+    assert exact_a["source"]["source_id"] == "source_superseded"
+    assert exact_a["job"]["job_id"] == job_a["job_id"]
+    assert exact_a["job"]["status"] == "succeeded"
+    assert latest["latest_job"]["job_id"] == job_b["job_id"]
+    assert latest["latest_job"]["status"] == "running"
+
+
+def test_contextwiki_fastmcp_exact_job_status_recovers_stale_real_sqlite_job(
+    tmp_path,
+):
+    store = MetadataStore(
+        tmp_path / "exact-job-stale-recovery.sqlite3",
+        running_job_timeout_seconds=0,
+        unowned_running_job_grace_seconds=0,
+    )
+    store.upsert_source(
+        SourceModel(
+            source_id="source_stale_exact",
+            source_type=SourceType.NOTION,
+            name="Stale Exact Source",
+            enabled=True,
+            auth_ref="env:FAKE",
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    stale_job, started = store.begin_sync_job("source_stale_exact")
+    assert started is True
+    assert stale_job.status.value == "running"
+
+    mcp = FastMCP("exact-job-stale-recovery-e2e")
+    register_tools(mcp, metadata_store=store)
+
+    exact = _call_tool_json(
+        mcp,
+        "get_sync_status",
+        {
+            "source_id": "source_stale_exact",
+            "job_id": stale_job.job_id,
+        },
+    )
+
+    assert exact["source"]["sync_status"] == "failed"
+    assert exact["job"]["job_id"] == stale_job.job_id
+    assert exact["job"]["status"] == "failed"
+    assert exact["job"]["error_message"] == (
+        "Sync job timed out before status read completed"
+    )
+    assert store.get_sync_job(stale_job.job_id).status.value == "failed"
+
+
+def test_contextwiki_fastmcp_sync_all_reuses_job_then_exact_polling_observes_it(
+    tmp_path,
+):
     class ReusableBlockingConnector(SourceConnector):
         def __init__(self, entered: asyncio.Event, release: asyncio.Event):
             self.source = SourceModel(
-                source_id="source_wait_reused",
+                source_id="source_poll_reused",
                 source_type=SourceType.NOTION,
-                name="Reusable Wait Source",
+                name="Reusable Poll Source",
                 enabled=True,
                 auth_ref="env:FAKE",
                 sync_status=SyncStatus.IDLE,
@@ -464,7 +651,7 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_
         release = asyncio.Event()
         reused = asyncio.Event()
         registry = SourceRegistry([ReusableBlockingConnector(entered, release)])
-        store = MetadataStore(tmp_path / "wait-for-sync-all-reuse.sqlite3")
+        store = MetadataStore(tmp_path / "sync-all-poll-reuse.sqlite3")
         ingestion = ReuseObservingIngestionService(
             metadata_store=store,
             source_registry=registry,
@@ -472,7 +659,7 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_
             indexer=RecordingIndexer(),
             reused=reused,
         )
-        mcp = FastMCP("wait-for-sync-all-reuse-e2e")
+        mcp = FastMCP("sync-all-poll-reuse-e2e")
         register_tools(
             mcp,
             ingestion_service=ingestion,
@@ -484,20 +671,17 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_
             launched = await _call_tool_json_async(
                 mcp,
                 "sync_source",
-                {"source_id": "source_wait_reused"},
+                {"source_id": "source_poll_reused"},
             )
             await asyncio.wait_for(entered.wait(), timeout=1)
-            wait_call = asyncio.create_task(
-                _call_tool_json_async(
-                    mcp,
-                    "wait_for_sync_all",
-                    {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
-                )
-            )
+            bulk_launch = await _call_tool_json_async(mcp, "sync_all")
             await asyncio.wait_for(reused.wait(), timeout=1)
             release.set()
-            completed = await asyncio.wait_for(wait_call, timeout=1)
-            return launched, completed
+            terminal_by_source = await _wait_for_exact_sync_completion(
+                mcp,
+                _exact_sync_poll_targets(bulk_launch),
+            )
+            return launched, bulk_launch, terminal_by_source
         finally:
             release.set()
             if ingestion._background_sync_tasks:
@@ -506,17 +690,19 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reuses_the_exact_running_job(tmp_
                     return_exceptions=True,
                 )
 
-    launched, completed = asyncio.run(run_flow())
-    completed_item = completed["results"][0]
+    launched, bulk_launch, terminal_by_source = asyncio.run(run_flow())
+    bulk_item = bulk_launch["results"][0]
+    terminal_item = terminal_by_source["source_poll_reused"]
 
-    assert completed["status"] == "completed"
-    assert completed_item["launch_outcome"] == "already_running"
-    assert completed_item["completion_outcome"] == "succeeded"
-    assert completed_item["job"]["status"] == "succeeded"
-    assert completed_item["job"]["job_id"] == launched["job_id"]
+    assert bulk_launch["status"] == "accepted"
+    assert bulk_item["launch_outcome"] == "already_running"
+    assert bulk_item["job"]["status"] == "running"
+    assert bulk_item["job"]["job_id"] == launched["job_id"]
+    assert terminal_item["job"]["status"] == "succeeded"
+    assert terminal_item["job"]["job_id"] == launched["job_id"]
 
 
-def test_contextwiki_wait_for_sync_all_does_not_skip_running_job_after_source_is_disabled(
+def test_contextwiki_sync_all_polling_keeps_running_job_after_source_is_disabled(
     tmp_path,
 ):
     class DisabledAfterLaunchConnector(SourceConnector):
@@ -542,14 +728,14 @@ def test_contextwiki_wait_for_sync_all_does_not_skip_running_job_after_source_is
         release = asyncio.Event()
         connector = DisabledAfterLaunchConnector(entered, release)
         registry = SourceRegistry([connector])
-        store = MetadataStore(tmp_path / "wait-for-disabled-running.sqlite3")
+        store = MetadataStore(tmp_path / "sync-all-poll-disabled-running.sqlite3")
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
-        mcp = FastMCP("wait-for-disabled-running-e2e")
+        mcp = FastMCP("sync-all-poll-disabled-running-e2e")
         register_tools(
             mcp,
             ingestion_service=ingestion,
@@ -566,19 +752,14 @@ def test_contextwiki_wait_for_sync_all_does_not_skip_running_job_after_source_is
             await asyncio.wait_for(entered.wait(), timeout=1)
             connector.source = connector.source.model_copy(update={"enabled": False})
 
-            wait_call = asyncio.create_task(
-                _call_tool_json_async(
-                    mcp,
-                    "wait_for_sync_all",
-                    {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
-                )
-            )
-            await asyncio.sleep(0.15)
-            assert not wait_call.done()
+            bulk_launch = await _call_tool_json_async(mcp, "sync_all")
 
             release.set()
-            completed = await asyncio.wait_for(wait_call, timeout=1)
-            return launched, completed
+            terminal_by_source = await _wait_for_exact_sync_completion(
+                mcp,
+                _exact_sync_poll_targets(bulk_launch),
+            )
+            return launched, bulk_launch, terminal_by_source
         finally:
             release.set()
             if ingestion._background_sync_tasks:
@@ -587,22 +768,24 @@ def test_contextwiki_wait_for_sync_all_does_not_skip_running_job_after_source_is
                     return_exceptions=True,
                 )
 
-    launched, completed = asyncio.run(run_flow())
-    completed_item = completed["results"][0]
+    launched, bulk_launch, terminal_by_source = asyncio.run(run_flow())
+    bulk_item = bulk_launch["results"][0]
+    terminal_item = terminal_by_source["source_disabled_after_launch"]
 
-    assert completed["status"] == "completed"
-    assert completed["summary"]["succeeded"] == 1
-    assert completed["summary"]["skipped"] == 0
-    assert completed_item["launch_outcome"] == "already_running"
-    assert completed_item["completion_outcome"] == "succeeded"
-    assert completed_item["job"]["status"] == "succeeded"
-    assert completed_item["job"]["job_id"] == launched["job_id"]
+    assert bulk_launch["status"] == "accepted"
+    assert bulk_launch["summary"]["already_running"] == 1
+    assert bulk_launch["summary"]["skipped"] == 0
+    assert bulk_item["launch_outcome"] == "already_running"
+    assert bulk_item["job"]["status"] == "running"
+    assert bulk_item["job"]["job_id"] == launched["job_id"]
+    assert terminal_item["job"]["status"] == "succeeded"
+    assert terminal_item["job"]["job_id"] == launched["job_id"]
 
 
-def test_contextwiki_fastmcp_wait_for_sync_all_reports_failure_and_disabled_skip(tmp_path):
+def test_contextwiki_fastmcp_sync_all_polling_reports_failure_and_disabled_skip(tmp_path):
     class FailingE2EConnector(SourceConnector):
         source = SourceModel(
-            source_id="source_wait_failing",
+            source_id="source_poll_failing",
             source_type=SourceType.GITHUB,
             name="Failing Source",
             enabled=True,
@@ -615,7 +798,7 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reports_failure_and_disabled_skip
 
     class DisabledE2EConnector(SourceConnector):
         source = SourceModel(
-            source_id="source_wait_disabled",
+            source_id="source_poll_disabled",
             source_type=SourceType.OBSIDIAN,
             name="Disabled Source",
             enabled=False,
@@ -631,14 +814,14 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reports_failure_and_disabled_skip
         registry = SourceRegistry(
             [FakeConnector(), FailingE2EConnector(), DisabledE2EConnector()]
         )
-        store = MetadataStore(tmp_path / "wait-for-sync-all-mixed.sqlite3")
+        store = MetadataStore(tmp_path / "sync-all-poll-mixed.sqlite3")
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
-        mcp = FastMCP("wait-for-sync-all-mixed-e2e")
+        mcp = FastMCP("sync-all-poll-mixed-e2e")
         register_tools(
             mcp,
             ingestion_service=ingestion,
@@ -646,44 +829,64 @@ def test_contextwiki_fastmcp_wait_for_sync_all_reports_failure_and_disabled_skip
             source_registry=registry,
         )
 
-        return await _call_tool_json_async(
+        launched = await _call_tool_json_async(mcp, "sync_all")
+        targets = _exact_sync_poll_targets(launched)
+        terminal_by_source = await _wait_for_exact_sync_completion(
             mcp,
-            "wait_for_sync_all",
-            {"timeout_seconds": 2, "poll_interval_seconds": 0.1},
+            targets,
         )
+        disabled_status = await _call_tool_json_async(
+            mcp,
+            "get_sync_status",
+            {"source_id": "source_poll_disabled"},
+        )
+        return launched, targets, terminal_by_source, disabled_status
 
-    result = asyncio.run(run_flow())
-    outcomes = {
-        item["source_id"]: (
-            item["launch_outcome"],
-            item["completion_outcome"],
-            item["job"]["status"],
-        )
-        for item in result["results"]
+    launched, targets, terminal_by_source, disabled_status = asyncio.run(run_flow())
+    launch_outcomes = {
+        item["source_id"]: item["launch_outcome"]
+        for item in launched["results"]
+    }
+    terminal_jobs = {
+        source_id: payload["job"]
+        for source_id, payload in terminal_by_source.items()
     }
 
-    assert result["status"] == "partial"
-    assert result["summary"]["succeeded"] == 1
-    assert result["summary"]["failed"] == 1
-    assert result["summary"]["skipped"] == 1
-    assert result["summary"]["timed_out"] == 0
-    assert outcomes == {
-        "source_fake_docs": ("started", "succeeded", "succeeded"),
-        "source_wait_failing": ("started", "failed", "failed"),
-        "source_wait_disabled": ("skipped", "skipped", "failed"),
+    assert launched["status"] == "accepted"
+    assert launched["summary"]["started"] == 2
+    assert launched["summary"]["skipped"] == 1
+    assert launch_outcomes == {
+        "source_fake_docs": "started",
+        "source_poll_failing": "started",
+        "source_poll_disabled": "skipped",
     }
-    serialized_result = json.dumps(result)
+    assert set(targets) == {"source_fake_docs", "source_poll_failing"}
+    assert {
+        source_id: job["status"]
+        for source_id, job in terminal_jobs.items()
+    } == {
+        "source_fake_docs": "succeeded",
+        "source_poll_failing": "failed",
+    }
+    assert disabled_status["latest_job"]["status"] == "failed"
+    serialized_result = json.dumps(
+        {
+            "launched": launched,
+            "terminal": terminal_by_source,
+            "disabled": disabled_status,
+        }
+    )
     assert "do-not-expose" not in serialized_result
     assert "<redacted>" in serialized_result
 
 
-def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_path):
-    class BlockingWaitConnector(SourceConnector):
+def test_contextwiki_fastmcp_short_status_request_does_not_cancel_background_job(tmp_path):
+    class BlockingPollingConnector(SourceConnector):
         def __init__(self, entered: asyncio.Event, release: asyncio.Event):
             self.source = SourceModel(
-                source_id="source_wait_blocking",
+                source_id="source_poll_blocking",
                 source_type=SourceType.NOTION,
-                name="Blocking Wait Source",
+                name="Blocking Poll Source",
                 enabled=True,
                 auth_ref="env:FAKE",
                 sync_status=SyncStatus.IDLE,
@@ -696,13 +899,13 @@ def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_p
             await self.release.wait()
             return [
                 DocumentModel(
-                    id="doc_wait_blocking",
+                    id="doc_poll_blocking",
                     source_id=self.source.source_id,
-                    title="Wait completion",
-                    content="The background sync survives an observer timeout.",
-                    url="https://example.com/wait",
+                    title="Poll completion",
+                    content="The background sync survives separate status requests.",
+                    url="https://example.com/poll",
                     platform="Notion",
-                    path="wait.md",
+                    path="poll.md",
                     updated_at="2026-07-29T00:00:00Z",
                 )
             ]
@@ -710,15 +913,15 @@ def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_p
     async def run_flow():
         entered = asyncio.Event()
         release = asyncio.Event()
-        registry = SourceRegistry([BlockingWaitConnector(entered, release)])
-        store = MetadataStore(tmp_path / "wait-for-sync-all-timeout.sqlite3")
+        registry = SourceRegistry([BlockingPollingConnector(entered, release)])
+        store = MetadataStore(tmp_path / "sync-all-short-poll.sqlite3")
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
-        mcp = FastMCP("wait-for-sync-all-timeout-e2e")
+        mcp = FastMCP("sync-all-short-poll-e2e")
         register_tools(
             mcp,
             ingestion_service=ingestion,
@@ -727,39 +930,33 @@ def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_p
         )
 
         try:
-            wait_call = asyncio.create_task(
+            launched = await _call_tool_json_async(mcp, "sync_all")
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            running = await asyncio.wait_for(
                 _call_tool_json_async(
                     mcp,
-                    "wait_for_sync_all",
-                    {"timeout_seconds": 0.05, "poll_interval_seconds": 0.1},
-                )
+                    "get_sync_status",
+                    {"source_id": ""},
+                ),
+                timeout=0.5,
             )
-            await asyncio.wait_for(entered.wait(), timeout=1)
-            result = await asyncio.wait_for(wait_call, timeout=1)
-            running_status = await _call_tool_json_async(
-                mcp,
-                "get_sync_status",
-                {"source_id": "source_wait_blocking"},
-            )
-            background_task = ingestion._background_sync_tasks["source_wait_blocking"]
+            running_item = running["sources"][0]
+            background_task = ingestion._background_sync_tasks["source_poll_blocking"]
 
-            assert result["status"] == "timed_out"
-            assert result["summary"]["timed_out"] == 1
-            assert result["results"][0]["completion_outcome"] == "timed_out"
-            assert result["results"][0]["job"]["status"] == "running"
-            assert result["results"][0]["job"]["job_id"] == (
-                running_status["latest_job"]["job_id"]
+            assert launched["status"] == "accepted"
+            assert running_item["latest_job"]["status"] == "running"
+            assert launched["results"][0]["job"]["job_id"] == (
+                running_item["latest_job"]["job_id"]
             )
-            assert running_status["latest_job"]["status"] == "running"
             assert not background_task.cancelled()
             assert not background_task.done()
 
             release.set()
-            terminal_status = await _wait_for_sync_completion(
+            terminal_by_source = await _wait_for_exact_sync_completion(
                 mcp,
-                "source_wait_blocking",
+                _exact_sync_poll_targets(launched),
             )
-            return result, terminal_status
+            return launched, terminal_by_source
         finally:
             release.set()
             if ingestion._background_sync_tasks:
@@ -768,11 +965,12 @@ def test_contextwiki_fastmcp_wait_for_sync_all_timeout_does_not_cancel_job(tmp_p
                     return_exceptions=True,
                 )
 
-    result, terminal_status = asyncio.run(run_flow())
+    launched, terminal_by_source = asyncio.run(run_flow())
+    terminal_item = terminal_by_source["source_poll_blocking"]
 
-    assert result["results"][0]["job"]["status"] == "running"
-    assert terminal_status["latest_job"]["status"] == "succeeded"
-    assert terminal_status["source"]["sync_status"] == "succeeded"
+    assert launched["results"][0]["job"]["status"] == "running"
+    assert terminal_item["job"]["status"] == "succeeded"
+    assert terminal_item["source"]["sync_status"] == "succeeded"
 
 
 def test_context_search_applies_source_filter_before_result_limit(tmp_path):

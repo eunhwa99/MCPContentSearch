@@ -80,6 +80,10 @@ class FakeMetadataStore:
             )
             for source_id in self.sources
         }
+        self.jobs_by_id = {
+            job.model_dump()["job_id"]: job
+            for job in self.jobs.values()
+        }
         self.chunk = ChunkModel(
             chunk_id="chunk-1",
             document_id="doc-1",
@@ -110,7 +114,9 @@ class FakeMetadataStore:
         )
 
     def set_job(self, source_id, job_payload):
-        self.jobs[source_id] = Dumpable(job_payload, **job_payload)
+        job = Dumpable(job_payload, **job_payload)
+        self.jobs[source_id] = job
+        self.jobs_by_id[job.job_id] = job
 
     def register_source(self, source):
         self.sources[source.source_id] = source
@@ -124,6 +130,9 @@ class FakeMetadataStore:
 
     def get_latest_sync_job(self, source_id):
         return self.jobs.get(source_id)
+
+    def get_sync_job(self, job_id):
+        return self.jobs_by_id.get(job_id)
 
     def get_source_status_snapshot(self, source_id):
         return {
@@ -162,7 +171,6 @@ class FakeIngestionService:
         self.metadata_store = metadata_store
         self.calls: dict[str, int] = {}
         self.job_numbers: dict[str, int] = {}
-        self.wait_calls: list[dict] = []
 
     async def start_sync_source(self, source_id):
         self.calls[source_id] = self.calls.get(source_id, 0) + 1
@@ -184,6 +192,25 @@ class FakeIngestionService:
         return Dumpable(job_payload, **job_payload)
 
     async def sync_all(self):
+        results = []
+        for source_id in ("source_github", "source_obsidian"):
+            job_payload = {
+                "job_id": f"job-{source_id}",
+                "source_id": source_id,
+                "status": "running",
+                "started_at": "2026-06-15T00:00:00+00:00",
+                "finished_at": "",
+                "error_message": "",
+            }
+            self.metadata_store.set_job(source_id, job_payload)
+            results.append(
+                {
+                    "source_id": source_id,
+                    "launch_outcome": "started",
+                    "message": "",
+                    "job": Dumpable(job_payload, **job_payload),
+                }
+            )
         return {
             "status": "accepted",
             "summary": {
@@ -194,145 +221,7 @@ class FakeIngestionService:
                 "skipped": 0,
                 "requested_at": "2026-06-15T00:00:00+00:00",
             },
-            "results": [
-                {
-                    "source_id": "source_github",
-                    "launch_outcome": "started",
-                    "message": "",
-                    "job": Dumpable(
-                        {
-                            "job_id": "job-source_github",
-                            "source_id": "source_github",
-                            "status": "running",
-                            "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "",
-                            "error_message": "",
-                        }
-                    ),
-                },
-                {
-                    "source_id": "source_obsidian",
-                    "launch_outcome": "started",
-                    "message": "",
-                    "job": Dumpable(
-                        {
-                            "job_id": "job-source_obsidian",
-                            "source_id": "source_obsidian",
-                            "status": "running",
-                            "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "",
-                            "error_message": "",
-                        }
-                    ),
-                },
-            ],
-        }
-
-    async def wait_for_sync_all(
-        self,
-        source_ids=None,
-        timeout_seconds=300.0,
-        poll_interval_seconds=0.25,
-    ):
-        self.wait_calls.append(
-            {
-                "source_ids": source_ids,
-                "timeout_seconds": timeout_seconds,
-                "poll_interval_seconds": poll_interval_seconds,
-            }
-        )
-        return {
-            "status": "completed",
-            "summary": {
-                "total_sources": 2,
-                "succeeded": 2,
-                "failed": 0,
-                "skipped": 0,
-                "timed_out": 0,
-                "requested_at": "2026-06-15T00:00:00+00:00",
-                "completed_at": "2026-06-15T00:00:01+00:00",
-            },
-            "results": [
-                {
-                    "source_id": source_id,
-                    "launch_outcome": "started",
-                    "completion_outcome": "succeeded",
-                    "message": "",
-                    "job": Dumpable(
-                        {
-                            "job_id": f"job-{source_id}",
-                            "source_id": source_id,
-                            "status": "succeeded",
-                            "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "2026-06-15T00:00:01+00:00",
-                            "error_message": "",
-                        }
-                    ),
-                }
-                for source_id in ("source_github", "source_obsidian")
-            ],
-        }
-
-
-class FakeMixedWaitIngestionService(FakeIngestionService):
-    async def wait_for_sync_all(
-        self,
-        source_ids=None,
-        timeout_seconds=300.0,
-        poll_interval_seconds=0.25,
-    ):
-        self.wait_calls.append(
-            {
-                "source_ids": source_ids,
-                "timeout_seconds": timeout_seconds,
-                "poll_interval_seconds": poll_interval_seconds,
-            }
-        )
-        return {
-            "status": "failed",
-            "summary": {
-                "total_sources": 2,
-                "succeeded": 0,
-                "failed": 1,
-                "skipped": 1,
-                "timed_out": 0,
-                "requested_at": "2026-06-15T00:00:00+00:00",
-                "completed_at": "2026-06-15T00:00:01+00:00",
-            },
-            "results": [
-                {
-                    "source_id": "source_github",
-                    "launch_outcome": "started",
-                    "completion_outcome": "failed",
-                    "message": "Sync failed. See server logs for details.",
-                    "job": Dumpable(
-                        {
-                            "job_id": "job-source_github",
-                            "source_id": "source_github",
-                            "status": "failed",
-                            "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "2026-06-15T00:00:01+00:00",
-                            "error_message": "Sync failed. See server logs for details.",
-                        }
-                    ),
-                },
-                {
-                    "source_id": "source_obsidian",
-                    "launch_outcome": "skipped",
-                    "completion_outcome": "skipped",
-                    "message": "Source is disabled.",
-                    "job": Dumpable(
-                        {
-                            "job_id": "job-source_obsidian",
-                            "source_id": "source_obsidian",
-                            "status": "failed",
-                            "started_at": "2026-06-15T00:00:00+00:00",
-                            "finished_at": "2026-06-15T00:00:01+00:00",
-                            "error_message": "Source is disabled.",
-                        }
-                    ),
-                },
-            ],
+            "results": results,
         }
 
 
@@ -481,6 +370,50 @@ def test_search_tool_descriptions_explain_when_the_llm_should_select_each_tool()
     fetch_context_description = tools["fetch_context"].description.lower()
     assert "optionally drill" in fetch_context_description
     assert "after its id is known" in fetch_context_description
+
+    sync_all_description = tools["sync_all"].description.lower()
+    assert "started" in sync_all_description
+    assert "already_running" in sync_all_description
+    assert "do not poll skipped or failed launches" in sync_all_description
+    assert "2, 4, 8, then 10 seconds maximum" in sync_all_description
+    assert "5-minute deadline" in sync_all_description
+    assert "three consecutive status errors or missing exact jobs" in sync_all_description
+    assert "still-running job ids without cancelling them" in sync_all_description
+
+    get_sync_status_description = tools["get_sync_status"].description.lower()
+    assert "all sources when source_id is empty" in get_sync_status_description
+    assert "short request" in get_sync_status_description
+    assert "source_id and job_id" in get_sync_status_description
+    assert "exact sync_all job" in get_sync_status_description
+
+
+def test_public_fastmcp_tool_inventory_uses_short_sync_status_polling_workflow():
+    registered_tools = {
+        tool.name
+        for tool in asyncio.run(build_contract_mcp().list_tools())
+    }
+
+    assert registered_tools == {
+        "list_sources",
+        "sync_source",
+        "sync_all",
+        "get_sync_status",
+        "search_context",
+        "search_documents",
+        "list_documents",
+        "fetch_context",
+    }
+
+
+def test_get_sync_status_real_fastmcp_schema_supports_optional_exact_job_id():
+    tools = {
+        tool.name: tool
+        for tool in asyncio.run(build_contract_mcp().list_tools())
+    }
+
+    status_properties = tools["get_sync_status"].inputSchema["properties"]
+    assert status_properties["source_id"]["default"] == ""
+    assert status_properties["job_id"]["default"] == ""
 
 
 def test_date_filters_and_document_listing_have_typed_real_fastmcp_schemas():
@@ -700,6 +633,37 @@ def test_real_fastmcp_hides_secret_like_invalid_filter_input():
     assert "Date filters must be valid ISO 8601 timestamps" in message
     assert "/Users/eunhwa/private" not in message
     assert "super-secret-value" not in message
+    assert "input_value" not in message
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("source_id", {"token": "super-secret-sync-status-value"}),
+        ("job_id", ["token=super-secret-sync-status-value"]),
+    ],
+)
+def test_real_fastmcp_redacts_secret_like_non_string_sync_status_ids(
+    field_name,
+    malformed_value,
+):
+    arguments = {
+        "source_id": "source_github",
+        "job_id": "job-source_github",
+    }
+    arguments[field_name] = malformed_value
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            build_contract_mcp().call_tool(
+                "get_sync_status",
+                arguments,
+            )
+        )
+
+    message = str(exc_info.value)
+    assert field_name in message
+    assert "super-secret-sync-status-value" not in message
     assert "input_value" not in message
 
 
@@ -1014,149 +978,132 @@ def test_sync_source_contract_returns_error_without_background_launcher():
     }
 
 
-def test_sync_all_contract_uses_real_fastmcp_call_tool():
-    payload = call_tool_json(build_contract_mcp(), "sync_all")
+def test_sync_all_contract_shows_all_running_then_polls_exact_jobs_to_terminal():
+    harness = build_contract_harness()
+    mcp = harness["mcp"]
+    metadata_store = harness["metadata_store"]
 
-    assert payload["status"] == "accepted"
-    assert payload["summary"]["total_sources"] == 2
-    assert payload["summary"]["started"] == 2
-    assert [item["source_id"] for item in payload["results"]] == [
+    launched = call_tool_json(mcp, "sync_all")
+    running = call_tool_json(mcp, "get_sync_status", {"source_id": ""})
+
+    assert launched["status"] == "accepted"
+    assert launched["summary"]["total_sources"] == 2
+    assert launched["summary"]["started"] == 2
+    assert [item["source_id"] for item in launched["results"]] == [
         "source_github",
         "source_obsidian",
     ]
-
-
-def test_wait_for_sync_all_contract_returns_terminal_results_through_real_fastmcp():
-    harness = build_contract_harness()
-
-    payload = call_tool_json(
-        harness["mcp"],
-        "wait_for_sync_all",
-        {"timeout_seconds": 12.5, "poll_interval_seconds": 0.1},
-    )
-
-    assert payload["status"] == "completed"
-    assert payload["summary"] == {
-        "total_sources": 2,
-        "succeeded": 2,
-        "failed": 0,
-        "skipped": 0,
-        "timed_out": 0,
-        "requested_at": "2026-06-15T00:00:00+00:00",
-        "completed_at": "2026-06-15T00:00:01+00:00",
+    exact_targets = {
+        item["source_id"]: item["job"]["job_id"]
+        for item in launched["results"]
+        if item["launch_outcome"] in {"started", "already_running"}
     }
-    assert [
-        (
-            item["source_id"],
-            item["launch_outcome"],
-            item["completion_outcome"],
-            item["job"]["status"],
-        )
-        for item in payload["results"]
-    ] == [
-        ("source_github", "started", "succeeded", "succeeded"),
-        ("source_obsidian", "started", "succeeded", "succeeded"),
-    ]
-    assert harness["ingestion_service"].wait_calls == [
-        {
-            "source_ids": None,
-            "timeout_seconds": 12.5,
-            "poll_interval_seconds": 0.1,
-        }
-    ]
-
-
-def test_wait_for_sync_all_contract_preserves_failed_and_skipped_outcomes():
-    source_registry = FakeSourceRegistry()
-    metadata_store = FakeMetadataStore(source_registry)
-    ingestion_service = FakeMixedWaitIngestionService(metadata_store)
-    mcp = FastMCP("public-mixed-wait-contract-test")
-    register_tools(
-        mcp,
-        ingestion_service=ingestion_service,
-        metadata_store=metadata_store,
-        source_registry=source_registry,
-    )
-
-    payload = call_tool_json(mcp, "wait_for_sync_all")
-
-    assert payload["status"] == "failed"
-    assert payload["summary"]["failed"] == 1
-    assert payload["summary"]["skipped"] == 1
-    assert [
-        (
-            item["source_id"],
-            item["launch_outcome"],
-            item["completion_outcome"],
-            item["job"]["status"],
-        )
-        for item in payload["results"]
-    ] == [
-        ("source_github", "started", "failed", "failed"),
-        ("source_obsidian", "skipped", "skipped", "failed"),
-    ]
-
-
-@pytest.mark.parametrize(
-    ("arguments", "expected_fragment"),
-    [
-        ({"timeout_seconds": 0}, "timeout_seconds"),
-        ({"timeout_seconds": 601}, "timeout_seconds"),
-        ({"poll_interval_seconds": 0.099}, "poll_interval_seconds"),
-        ({"poll_interval_seconds": 6}, "poll_interval_seconds"),
-    ],
-)
-def test_wait_for_sync_all_contract_rejects_unbounded_wait_parameters(
-    arguments,
-    expected_fragment,
-):
-    harness = build_contract_harness()
-
-    payload = call_tool_json(harness["mcp"], "wait_for_sync_all", arguments)
-
-    assert payload["status"] == "error"
-    assert expected_fragment in payload["message"]
-    assert payload["summary"]["total_sources"] == 0
-    assert payload["results"] == []
-    assert harness["ingestion_service"].wait_calls == []
-
-
-@pytest.mark.parametrize(
-    ("arguments", "field_name"),
-    [
-        ({"timeout_seconds": True}, "timeout_seconds"),
-        ({"poll_interval_seconds": True}, "poll_interval_seconds"),
-    ],
-)
-def test_wait_for_sync_all_contract_rejects_booleans_before_any_launch_side_effect(
-    arguments,
-    field_name,
-):
-    harness = build_contract_harness()
-    metadata_store = harness["metadata_store"]
-    ingestion_service = harness["ingestion_service"]
-    jobs_before = {
-        source_id: job.model_dump()
-        for source_id, job in metadata_store.jobs.items()
+    running_jobs = {
+        item["source"]["source_id"]: item["latest_job"]
+        for item in running["sources"]
     }
-
-    with pytest.raises(ToolError) as exc_info:
-        asyncio.run(
-            harness["mcp"].call_tool(
-                "wait_for_sync_all",
-                arguments,
-            )
-        )
-
-    assert field_name in str(exc_info.value)
-    assert "valid number" in str(exc_info.value)
-    assert ingestion_service.wait_calls == []
-    assert ingestion_service.calls == {}
-    assert ingestion_service.job_numbers == {}
     assert {
-        source_id: job.model_dump()
-        for source_id, job in metadata_store.jobs.items()
-    } == jobs_before
+        source_id: job["status"]
+        for source_id, job in running_jobs.items()
+    } == {
+        "source_github": "running",
+        "source_obsidian": "running",
+    }
+
+    for source_id, job in running_jobs.items():
+        metadata_store.set_job(
+            source_id,
+            {
+                **job,
+                "status": "succeeded",
+                "finished_at": "2026-06-15T00:00:01+00:00",
+            },
+        )
+
+    terminal_by_source = {
+        source_id: call_tool_json(
+            mcp,
+            "get_sync_status",
+            {"source_id": source_id, "job_id": job_id},
+        )
+        for source_id, job_id in exact_targets.items()
+    }
+    assert {
+        source_id: payload["job"]["status"]
+        for source_id, payload in terminal_by_source.items()
+    } == {
+        "source_github": "succeeded",
+        "source_obsidian": "succeeded",
+    }
+    assert {
+        source_id: payload["job"]["job_id"]
+        for source_id, payload in terminal_by_source.items()
+    } == exact_targets
+
+
+def test_get_sync_status_exact_job_contract_does_not_misattribute_newer_latest_job():
+    harness = build_contract_harness()
+    mcp = harness["mcp"]
+    metadata_store = harness["metadata_store"]
+
+    launched = call_tool_json(mcp, "sync_all")
+    launched_job = launched["results"][0]["job"]
+    source_id = launched["results"][0]["source_id"]
+    metadata_store.set_job(
+        source_id,
+        {
+            **launched_job,
+            "status": "succeeded",
+            "finished_at": "2026-06-15T00:00:01+00:00",
+        },
+    )
+    metadata_store.set_job(
+        source_id,
+        {
+            "job_id": f"{launched_job['job_id']}-newer",
+            "source_id": source_id,
+            "status": "running",
+            "started_at": "2026-06-15T00:00:02+00:00",
+            "finished_at": "",
+            "error_message": "",
+        },
+    )
+
+    exact = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"source_id": source_id, "job_id": launched_job["job_id"]},
+    )
+    latest = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"source_id": source_id},
+    )
+    mismatched = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"source_id": "source_obsidian", "job_id": launched_job["job_id"]},
+    )
+    missing = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"source_id": source_id, "job_id": "job-does-not-exist"},
+    )
+    missing_source = call_tool_json(
+        mcp,
+        "get_sync_status",
+        {"job_id": launched_job["job_id"]},
+    )
+
+    assert set(exact) == {"source", "job"}
+    assert exact["source"]["source_id"] == source_id
+    assert exact["job"]["job_id"] == launched_job["job_id"]
+    assert exact["job"]["status"] == "succeeded"
+    assert latest["latest_job"]["job_id"] == f"{launched_job['job_id']}-newer"
+    assert latest["latest_job"]["status"] == "running"
+    assert mismatched == {"source": None, "job": None}
+    assert missing == {"source": None, "job": None}
+    assert missing_source == {"source": None, "job": None}
 
 
 def test_get_sync_status_contract_uses_real_fastmcp_call_tool():

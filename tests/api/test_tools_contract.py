@@ -529,6 +529,45 @@ class RecoveringStatusMetadataStore(FakeMetadataStore):
         return self.job
 
 
+class RecoveringExactStatusMetadataStore(FakeMetadataStore):
+    def __init__(self):
+        super().__init__()
+        self.source = Dumpable(
+            {"source_id": "source_fake", "sync_status": "running"},
+            source_id="source_fake",
+        )
+        self.recovered_source = Dumpable(
+            {"source_id": "source_fake", "sync_status": "failed"},
+            source_id="source_fake",
+        )
+        self.running_job = Dumpable(
+            {
+                "job_id": "job-stale",
+                "source_id": "source_fake",
+                "status": "running",
+            }
+        )
+        self.failed_job = Dumpable(
+            {
+                "job_id": "job-stale",
+                "source_id": "source_fake",
+                "status": "failed",
+                "error_message": "Sync job timed out before status observation",
+            }
+        )
+        self.recovered = False
+
+    def get_latest_sync_job(self, source_id):
+        assert source_id == "source_fake"
+        self.recovered = True
+        self.source = self.recovered_source
+        return self.failed_job
+
+    def get_sync_job(self, job_id):
+        assert job_id == "job-stale"
+        return self.failed_job if self.recovered else self.running_job
+
+
 class FakeContextSearch:
     async def search_context(self, query, filters=None, top_k=10, include_debug=False):
         debug_payload = {}
@@ -1841,7 +1880,6 @@ def test_contextwiki_mcp_tools_are_registered():
         "list_sources",
         "sync_source",
         "sync_all",
-        "wait_for_sync_all",
         "get_sync_status",
         "search_context",
         "search_documents",
@@ -2236,6 +2274,78 @@ def test_get_sync_status_returns_source_after_status_recovery():
     assert all_sources["sources"][0]["latest_job"]["status"] == "failed"
 
 
+def test_get_sync_status_exact_job_triggers_stale_running_job_recovery():
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=RecoveringExactStatusMetadataStore(),
+    )
+
+    exact = asyncio.run(
+        mcp.tools["get_sync_status"]("source_fake", "job-stale")
+    )
+
+    assert exact["source"]["sync_status"] == "failed"
+    assert exact["job"]["job_id"] == "job-stale"
+    assert exact["job"]["status"] == "failed"
+    assert exact["job"]["error_message"] == (
+        "Sync job timed out before status observation"
+    )
+
+
+def test_get_sync_status_exact_job_mode_is_additive_and_never_crosses_source_boundary(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    for source_id in ("source_github", "source_notion", "source_private"):
+        store.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+                auth_ref="env:GITHUB_TOKEN",
+                sync_status=SyncStatus.RUNNING,
+            )
+        )
+    public_job = store.create_sync_job("source_github")
+    hidden_job = store.create_sync_job("source_private")
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        metadata_store=store,
+        source_registry=FakeSourceRegistry(RETAINED_SOURCE_IDS),
+    )
+
+    exact = asyncio.run(
+        mcp.tools["get_sync_status"]("source_github", public_job.job_id)
+    )
+    mismatched = asyncio.run(
+        mcp.tools["get_sync_status"]("source_notion", public_job.job_id)
+    )
+    missing = asyncio.run(
+        mcp.tools["get_sync_status"]("source_github", "job-does-not-exist")
+    )
+    hidden = asyncio.run(
+        mcp.tools["get_sync_status"]("source_private", hidden_job.job_id)
+    )
+    missing_source = asyncio.run(
+        mcp.tools["get_sync_status"]("", public_job.job_id)
+    )
+    latest = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
+    all_sources = asyncio.run(mcp.tools["get_sync_status"]())
+
+    assert set(exact) == {"source", "job"}
+    assert exact["source"]["source_id"] == "source_github"
+    assert exact["job"]["job_id"] == public_job.job_id
+    assert mismatched == {"source": None, "job": None}
+    assert missing == {"source": None, "job": None}
+    assert hidden == {"source": None, "job": None}
+    assert missing_source == {"source": None, "job": None}
+    assert set(latest) == {"source", "latest_job"}
+    assert set(all_sources) == {"sources"}
+
+
 def test_get_sync_status_exposes_running_phase_hints(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
@@ -2267,6 +2377,9 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
     )
 
     status = asyncio.run(mcp.tools["get_sync_status"]("source_notion"))
+    exact = asyncio.run(
+        mcp.tools["get_sync_status"]("source_notion", job.job_id)
+    )
 
     assert status["latest_job"]["status"] == "running"
     assert status["latest_job"]["phase"] == "fetching_page_content"
@@ -2275,6 +2388,16 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
     assert status["latest_job"]["last_progress_at"] == "2026-06-15T10:35:53+00:00"
     assert (
         status["latest_job"]["status_message"]
+        == "Fetching Notion page content 18/265 before indexing begins."
+    )
+    assert exact["job"]["job_id"] == job.job_id
+    assert exact["job"]["status"] == "running"
+    assert exact["job"]["phase"] == "fetching_page_content"
+    assert exact["job"]["upstream_total_pages"] == 265
+    assert exact["job"]["upstream_fetched_pages"] == 18
+    assert exact["job"]["last_progress_at"] == "2026-06-15T10:35:53+00:00"
+    assert (
+        exact["job"]["status_message"]
         == "Fetching Notion page content 18/265 before indexing begins."
     )
 

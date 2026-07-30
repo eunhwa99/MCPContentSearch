@@ -140,7 +140,6 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "list_sources",
         "sync_source",
         "sync_all",
-        "wait_for_sync_all",
         "get_sync_status",
         "search_context",
         "search_documents",
