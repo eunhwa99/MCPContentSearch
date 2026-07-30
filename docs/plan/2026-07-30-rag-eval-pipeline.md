@@ -263,4 +263,4 @@ Workers must not commit/push/open PRs, inspect secrets, or touch user Chroma/SQL
 | Final review pass 2 | completed | Bugs: default min_result_count=0 for no_answer | security/perf clean |
 | Final min_result fix | completed | from_mapping defaults min_result_count=0 when no_answer | RED then GREEN |
 | Final review pass 3 | completed | All three lenses clean | bugs/security/perf: no actionable findings |
-| PR delivery | in_progress | Commit, push, open main-base PR | pending |
+| PR delivery | completed | Pushed `feature/rag-eval-pipeline`; opened main-base PR | https://github.com/eunaverse/MCPContentSearch/pull/90 |
