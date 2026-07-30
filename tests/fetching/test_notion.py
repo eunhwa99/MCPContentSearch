@@ -14,10 +14,12 @@ from fetching.notion import (
     _StopRequested,
     _await_request_with_stop,
     _emit_progress,
+    _should_skip_notion_block_fetch,
     fetch_notion_pages,
     fetch_notion_target,
     parse_notion_object_id,
 )
+from storage.metadata_store import MetadataStore
 
 
 pytestmark = pytest.mark.unit
@@ -1386,6 +1388,73 @@ def test_fetch_notion_pages_skips_block_fetch_for_unchanged_existing_document(mo
     assert documents[0].external_id == page_id
     assert documents[0].content == "stored body for unchanged page"
     assert _progress_advanced_for_page(events, current_page=1, total_pages=1)
+
+
+def test_should_skip_notion_block_fetch_uses_public_canonical_document_timestamp(
+    monkeypatch,
+):
+    """Skip equality must go through MetadataStore.canonical_document_timestamp."""
+    existing = _existing_notion_document(
+        "page-public-ts",
+        content="reuse me",
+        modified_at="2026-06-01T00:00:00Z",
+    )
+    page = _notion_search_page(
+        "page-public-ts",
+        title="Public TS",
+        last_edited_time="2026-06-01T00:00:00Z",
+    )
+    assert _should_skip_notion_block_fetch(existing, page) is True
+
+    def force_blank(_value: str) -> str:
+        return ""
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "canonical_document_timestamp",
+        staticmethod(force_blank),
+        raising=False,
+    )
+
+    assert _should_skip_notion_block_fetch(existing, page) is False
+
+
+def test_fetch_notion_pages_skip_path_uses_public_canonical_timestamp(monkeypatch):
+    """Behavioral: monkeypatching the public helper must change skip outcome."""
+    fetch_calls = []
+    page_id = "page-public-helper"
+    pages = [_notion_search_page(page_id, title="Helper")]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="stored via public helper",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    def force_blank(_value: str) -> str:
+        return ""
+
+    monkeypatch.setattr(
+        MetadataStore,
+        "canonical_document_timestamp",
+        staticmethod(force_blank),
+        raising=False,
+    )
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == [page_id], (
+        "skip path must consult MetadataStore.canonical_document_timestamp"
+    )
+    assert documents[0].content == f"fresh content for {page_id}"
 
 
 def test_fetch_notion_pages_fetches_when_modified_at_differs(monkeypatch):

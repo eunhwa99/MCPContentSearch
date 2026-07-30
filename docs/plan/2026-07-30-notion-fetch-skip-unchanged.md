@@ -96,6 +96,21 @@ unchanged page bodies.
 | PR #91 review fix verify_all | completed | Full suite green outside sandbox | `./scripts/verify_all.sh` exit 0; 1236 pytest items; functional E2E 51 passed; quality eval layer included in full suite (n/a scope for this fix) |
 | PR #91 review fix functional smoke | completed | Fake/temp Notion skip path | Matrix below |
 | PR #91 review fix harness review | completed | Fresh three-lens pass clean | R1 bugs/contracts, R2 security, R3 reliability: all `NO ACTIONABLE FINDINGS` |
+| PR #91 batch+public-ts plan | completed | Scope batch hydrate + public timestamp helper | continue PR branch; deferred yellows now in scope |
+| PR #91 batch+public-ts RED | completed | 11 focused tests fail before production | exit `1`; missing `canonical_document_timestamp` / `get_documents_for_fetch_reuse`; loader still N×`get_document`; skip still private helper |
+| PR #91 batch+public-ts GREEN | completed | Public timestamp + batch hydrate wired | `canonical_document_timestamp`; `get_documents_for_fetch_reuse`; connector batch once; notion uses public helper; Bandit-safe placeholder SQL; focused 19 passed |
+| PR #91 batch+public-ts verify_all | completed | Full suite green | `./scripts/verify_all.sh` exit 0; 1243 pytest; E2E 51; eval layer n/a for this fix |
+| PR #91 batch+public-ts smoke | completed | Fake/temp Notion skip + store batch | Matrix below |
+| PR #91 batch+public-ts harness review | completed | Fresh three-lens pass clean | R1/R2/R3: all `NO ACTIONABLE FINDINGS` |
+
+### Functional smoke matrix (batch hydrate + public timestamp)
+
+| Feature | Caller | Data mode | Expected | Evidence | Result |
+| --- | --- | --- | --- | --- | --- |
+| Batch fetch-reuse hydrate | MetadataStore + connector | temp SQLite | one IN-query; no N× get_document | unit+integration focused suite | pass |
+| Public timestamp equality | notion skip | fake pages | skip uses `canonical_document_timestamp` | unit monkeypatch tests | pass |
+| Second-sync skip + stale cleanup | E2E | temp Chroma/SQLite | skip + tombstone peer | `test_notion_fetch_skip_flow` | pass |
+| Live Notion | MCP sync | live | n/a | blocked/gated | blocked/gated |
 
 ### Functional smoke matrix (PR #91 review fix)
 
@@ -147,3 +162,44 @@ unchanged page bodies.
   `tests/fetching/test_notion.py` and `tests/fetching/test_connectors.py`
 - Expected failure: skipped fallback doc has empty/`None`-derived `modified_at`
   instead of created-time; loader map misses `page_id` when `external_id` differs
+
+## PR #91 Follow-up: Batch Hydrate + Public Timestamp (2026-07-30)
+
+### User Request
+
+Address the remaining review findings on PR #91:
+1. Replace per-id `get_document` N+1 hydrate with a batched id→skip fields read.
+2. Stop fetch-layer calls to private `MetadataStore._canonical_document_timestamp`;
+   expose a public helper.
+
+### Branch Preflight
+
+- Continue `feature/notion-fetch-skip-unchanged-edited` (user asked to fix PR #91).
+- Worktree clean at `2d37801`; fetched `origin/main` + feature branch.
+
+### Scope
+
+- Add public `MetadataStore.canonical_document_timestamp` (private method may
+  delegate) and switch `fetching/notion.py` skip equality to it.
+- Add batched store read for Notion fetch-reuse fields
+  (`document_id`, `content`, `modified_at`, `content_hash`, `deleted_at`) keyed
+  by searched page ids; connector loader uses that instead of N×`get_document`.
+- Cover unit (store + notion/connectors), integration (connector+store skip
+  path), and keep deterministic E2E Notion skip flow green.
+- Update architecture wording if hydrate semantics change.
+
+### Non-Goals
+
+- Live Notion; MCP contract changes; other connectors; unbounded parallel fetch.
+
+### Worker Ownership
+
+| Worker | Owned files | Acceptance |
+| --- | --- | --- |
+| tests | `tests/storage/test_metadata_store.py`, `tests/fetching/test_connectors.py`, `tests/fetching/test_notion.py`, `tests/fetching/test_notion_fetch_skip_integration.py`, optionally `tests/e2e/test_notion_fetch_skip_flow.py` | RED: public timestamp API; batch hydrate once; no N× get_document |
+| store-fetch | `storage/metadata_store.py`, `fetching/connectors.py`, `fetching/notion.py` | Public helper + batch API + loader wiring |
+| docs | this plan; `.agents/docs/architecture.md` if needed | Record progress / hydrate wording |
+
+### Deferred (still)
+
+None from the prior yellow list after this follow-up.

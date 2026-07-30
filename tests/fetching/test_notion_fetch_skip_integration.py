@@ -99,6 +99,7 @@ def test_notion_connector_skips_block_fetch_for_unchanged_stored_page(monkeypatc
 
     list_calls: list[object] = []
     get_calls: list[str] = []
+    batch_calls: list[list[str]] = []
     original_list = store.list_documents
     original_get = store.get_document
 
@@ -110,8 +111,17 @@ def test_notion_connector_skips_block_fetch_for_unchanged_stored_page(monkeypatc
         get_calls.append(document_id)
         return original_get(document_id)
 
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
     store.list_documents = tracking_list_documents  # type: ignore[method-assign]
     store.get_document = tracking_get_document  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
 
     original_fetch = __import__("fetching.notion", fromlist=["fetch_notion_pages"]).fetch_notion_pages
 
@@ -133,7 +143,8 @@ def test_notion_connector_skips_block_fetch_for_unchanged_stored_page(monkeypatc
     assert documents[0].document_id == page_id
     assert documents[0].content == stored_content
     assert list_calls == [], "must not browse full corpus via list_documents"
-    assert get_calls == [page_id]
+    assert get_calls == [], "hydrate must use batch API, not per-id get_document"
+    assert batch_calls == [[page_id]]
     loader = captured.get("existing_documents_loader")
     assert callable(loader)
     loaded = loader([page_id])
@@ -269,6 +280,7 @@ def test_notion_connector_does_not_browse_unrelated_stored_documents(monkeypatch
     fetch_calls: list[str] = []
     list_calls: list[object] = []
     get_calls: list[str] = []
+    batch_calls: list[list[str]] = []
     original_list = store.list_documents
     original_get = store.get_document
 
@@ -280,8 +292,17 @@ def test_notion_connector_does_not_browse_unrelated_stored_documents(monkeypatch
         get_calls.append(document_id)
         return original_get(document_id)
 
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
     store.list_documents = tracking_list_documents  # type: ignore[method-assign]
     store.get_document = tracking_get_document  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
 
     class FakeAsyncClient:
         async def __aenter__(self):
@@ -334,5 +355,6 @@ def test_notion_connector_does_not_browse_unrelated_stored_documents(monkeypatch
     assert [doc.document_id for doc in documents] == [kept_id]
     assert documents[0].content == "kept body"
     assert list_calls == []
-    assert get_calls == [kept_id]
-    assert unrelated_id not in get_calls
+    assert get_calls == [], "hydrate must use batch API, not per-id get_document"
+    assert batch_calls == [[kept_id]]
+    assert unrelated_id not in {doc_id for call in batch_calls for doc_id in call}

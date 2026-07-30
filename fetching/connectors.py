@@ -78,15 +78,10 @@ class NotionSourceConnector(SourceConnector):
         """Load stored Notion docs for searched page ids only (no full-corpus browse)."""
         if self.metadata_store is None:
             return {}
-        existing: dict[str, DocumentModel] = {}
-        for page_id in page_ids:
-            if not page_id:
-                continue
-            full = self.metadata_store.get_document(page_id)
-            if full is None:
-                continue
-            existing[page_id] = full
-        return existing
+        ids = [page_id for page_id in page_ids if page_id]
+        if not ids:
+            return {}
+        return self.metadata_store.get_documents_for_fetch_reuse(ids)
 
     async def fetch_documents(self) -> list[DocumentModel]:
         documents = await fetch_notion_pages(

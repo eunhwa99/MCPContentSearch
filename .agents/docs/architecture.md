@@ -517,9 +517,13 @@ Stable identity and version expectations stay source-aware:
   non-empty content and a canonical `modified_at` that matches the page
   `last_edited_time` (or `created_time` when edit time is absent), reusing the
   stored body instead of re-downloading unchanged pages. Existing documents are
-  loaded after search for the searched page ids only (no full-corpus browse
-  hydrate); skipped pages still return in the fetch snapshot so stale cleanup
-  can refresh `last_seen` and tombstone only truly missing remotes.
+  loaded after search for the searched page ids only via one batched
+  metadata read of skip/reuse fields (`content`, `modified_at`,
+  `content_hash`, `deleted_at`) rather than per-id full-row gets or a
+  full-corpus browse; skip equality uses the public
+  `MetadataStore.canonical_document_timestamp` helper. Skipped pages still
+  return in the fetch snapshot so stale cleanup can refresh `last_seen` and
+  tombstone only truly missing remotes.
 - Tistory: `blog_name:post_id` drives stable identity; the upstream publication
   time becomes `published_at` with `date_provenance="tistory"` when present.
 - GitHub: repository path drives stable identity, while blob SHA is revision

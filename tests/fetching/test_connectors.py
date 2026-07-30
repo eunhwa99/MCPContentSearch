@@ -134,6 +134,7 @@ def test_notion_connector_loader_gets_document_for_requested_ids_only(tmp_path):
     store.upsert_document(unrelated)
     list_calls = []
     get_calls = []
+    batch_calls = []
     original_list = store.list_documents
     original_get = store.get_document
 
@@ -145,16 +146,71 @@ def test_notion_connector_loader_gets_document_for_requested_ids_only(tmp_path):
         get_calls.append(document_id)
         return original_get(document_id)
 
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
     store.list_documents = tracking_list  # type: ignore[method-assign]
     store.get_document = tracking_get  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
 
     connector = NotionSourceConnector("secret", AppConfig(), metadata_store=store)
     loaded = connector._load_existing_documents_for_page_ids(["page-kept"])
 
     assert list_calls == []
-    assert get_calls == ["page-kept"]
+    assert get_calls == [], "loader must not hydrate via per-id get_document"
+    assert batch_calls == [["page-kept"]]
     assert set(loaded) == {"page-kept"}
     assert loaded["page-kept"].content == "kept body"
+
+
+def test_notion_connector_loader_batches_multiple_page_ids_once(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    for page_id in ("page-a", "page-b", "page-c"):
+        store.upsert_document(
+            DocumentModel(
+                id=f"notion_{page_id}",
+                document_id=page_id,
+                external_id=page_id,
+                source_id="source_notion",
+                title=page_id,
+                content=f"body-{page_id}",
+                url=f"https://notion.so/{page_id}",
+                platform="Notion",
+                modified_at="2026-06-01T00:00:00Z",
+            )
+        )
+    get_calls = []
+    batch_calls = []
+    original_get = store.get_document
+
+    def tracking_get(document_id):
+        get_calls.append(document_id)
+        return original_get(document_id)
+
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
+    store.get_document = tracking_get  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
+
+    connector = NotionSourceConnector("secret", AppConfig(), metadata_store=store)
+    loaded = connector._load_existing_documents_for_page_ids(
+        ["page-a", "page-b", "page-c"]
+    )
+
+    assert get_calls == []
+    assert batch_calls == [["page-a", "page-b", "page-c"]]
+    assert set(loaded) == {"page-a", "page-b", "page-c"}
 
 
 def test_notion_connector_loader_exposes_doc_under_page_id_when_external_id_differs():
@@ -174,9 +230,14 @@ def test_notion_connector_loader_exposes_doc_under_page_id_when_external_id_diff
 
     class FakeStore:
         def get_document(self, document_id: str):
-            if document_id == page_id:
-                return kept
-            return None
+            raise AssertionError("loader must use get_documents_for_fetch_reuse")
+
+        def get_documents_for_fetch_reuse(self, document_ids):
+            result = {}
+            for document_id in document_ids:
+                if document_id == page_id:
+                    result[document_id] = kept
+            return result
 
     connector = NotionSourceConnector(
         "secret",

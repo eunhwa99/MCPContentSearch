@@ -436,8 +436,8 @@ def _should_skip_notion_block_fetch(
         return False
     if existing.deleted_at:
         return False
-    stored = MetadataStore._canonical_document_timestamp(existing.modified_at or "")
-    remote = MetadataStore._canonical_document_timestamp(_page_remote_modified_at(page))
+    stored = MetadataStore.canonical_document_timestamp(existing.modified_at or "")
+    remote = MetadataStore.canonical_document_timestamp(_page_remote_modified_at(page))
     if not stored or not remote:
         return False
     return stored == remote
