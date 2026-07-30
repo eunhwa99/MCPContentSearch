@@ -85,9 +85,7 @@ class NotionSourceConnector(SourceConnector):
             full = self.metadata_store.get_document(page_id)
             if full is None:
                 continue
-            key = full.external_id or full.document_id or page_id
-            if key:
-                existing[key] = full
+            existing[page_id] = full
         return existing
 
     async def fetch_documents(self) -> list[DocumentModel]:

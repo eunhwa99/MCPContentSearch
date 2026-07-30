@@ -1268,15 +1268,15 @@ def _notion_search_page(
     created_time: str = "2026-06-01T00:00:00Z",
     last_edited_time: str | None = "2026-06-01T00:00:00Z",
 ) -> dict:
-    page = {
+    # Always include last_edited_time (including None/"") so tests mirror Notion
+    # payloads where the key is present but empty, matching skip/build fallback.
+    return {
         "id": page_id,
         "url": f"https://notion.so/{page_id}",
         "created_time": created_time,
+        "last_edited_time": last_edited_time,
         "properties": {"title": {"title": [{"plain_text": title}]}},
     }
-    if last_edited_time is not None:
-        page["last_edited_time"] = last_edited_time
-    return page
 
 
 def _existing_notion_document(
@@ -1493,11 +1493,12 @@ def test_fetch_notion_pages_skips_when_created_time_fallback_matches(monkeypatch
     fetch_calls = []
     events = []
     page_id = "page-created-fallback"
+    created_time = "2026-05-15T12:00:00Z"
     pages = [
         _notion_search_page(
             page_id,
             title="Created Fallback",
-            created_time="2026-05-15T12:00:00Z",
+            created_time=created_time,
             last_edited_time=None,
         )
     ]
@@ -1505,7 +1506,7 @@ def test_fetch_notion_pages_skips_when_created_time_fallback_matches(monkeypatch
         page_id: _existing_notion_document(
             page_id,
             content="created-time stored body",
-            modified_at="2026-05-15T12:00:00Z",
+            modified_at=created_time,
         )
     }
     _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
@@ -1524,7 +1525,48 @@ def test_fetch_notion_pages_skips_when_created_time_fallback_matches(monkeypatch
 
     assert fetch_calls == []
     assert documents[0].content == "created-time stored body"
+    # Skip equality used created_time; persisted timestamps must match that fallback
+    # (not empty from page.get("last_edited_time") when the key is present as None).
+    assert documents[0].modified_at == created_time
+    assert documents[0].updated_at == created_time
     assert _progress_advanced_for_page(events, current_page=1, total_pages=1)
+
+
+def test_fetch_notion_pages_skips_when_empty_last_edited_time_falls_back_to_created(
+    monkeypatch,
+):
+    fetch_calls = []
+    page_id = "page-empty-edited"
+    created_time = "2026-05-20T08:30:00Z"
+    pages = [
+        _notion_search_page(
+            page_id,
+            title="Empty Edited",
+            created_time=created_time,
+            last_edited_time="",
+        )
+    ]
+    existing = {
+        page_id: _existing_notion_document(
+            page_id,
+            content="empty-edited stored body",
+            modified_at=created_time,
+        )
+    }
+    _install_notion_page_fetch_fakes(monkeypatch, pages, fetch_calls)
+
+    documents = asyncio.run(
+        fetch_notion_pages(
+            "secret",
+            AppConfig(),
+            existing_documents=existing,
+        )
+    )
+
+    assert fetch_calls == []
+    assert documents[0].content == "empty-edited stored body"
+    assert documents[0].modified_at == created_time
+    assert documents[0].updated_at == created_time
 
 
 def test_fetch_notion_pages_skip_progress_includes_page_counters(monkeypatch):

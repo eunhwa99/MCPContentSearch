@@ -413,9 +413,9 @@ class NotionPageProcessor:
             url=page.get("url", ""),
             canonical_url=page.get("url", ""),
             date=page.get("created_time", ""),
-            updated_at=page.get("last_edited_time", page.get("created_time", "")),
+            updated_at=_page_remote_modified_at(page),
             published_at=page.get("created_time", ""),
-            modified_at=page.get("last_edited_time", page.get("created_time", "")),
+            modified_at=_page_remote_modified_at(page),
             date_provenance="notion",
             content_hash=content_hash,
         )

@@ -157,6 +157,40 @@ def test_notion_connector_loader_gets_document_for_requested_ids_only(tmp_path):
     assert loaded["page-kept"].content == "kept body"
 
 
+def test_notion_connector_loader_exposes_doc_under_page_id_when_external_id_differs():
+    """Lookup uses Notion page_id; loader must key by that id even if external_id differs."""
+    page_id = "page-kept"
+    kept = DocumentModel(
+        id="notion_page-kept",
+        document_id=page_id,
+        external_id="legacy-external-other",
+        source_id="source_notion",
+        title="Kept",
+        content="kept body under mismatched external_id",
+        url=f"https://notion.so/{page_id}",
+        platform="Notion",
+        modified_at="2026-06-01T00:00:00Z",
+    )
+
+    class FakeStore:
+        def get_document(self, document_id: str):
+            if document_id == page_id:
+                return kept
+            return None
+
+    connector = NotionSourceConnector(
+        "secret",
+        AppConfig(),
+        metadata_store=FakeStore(),  # type: ignore[arg-type]
+    )
+    loaded = connector._load_existing_documents_for_page_ids([page_id])
+
+    assert page_id in loaded
+    assert loaded[page_id].content == "kept body under mismatched external_id"
+    assert loaded[page_id].document_id == page_id
+    assert loaded[page_id].external_id == "legacy-external-other"
+
+
 def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):
     async def fake_fetch_tistory_posts(
         blog_name,
