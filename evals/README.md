@@ -1,12 +1,20 @@
 # ContextWiki Local Evaluations
 
-This directory contains deterministic evaluation scaffolding for ContextWiki.
-Inside this deterministic quality eval layer, Phase D currently covers two
-local-first check families:
+This directory contains deterministic evaluation scaffolding for ContextWiki
+and the public Aurora Relay RAG evaluation dataset.
+
+Inside this deterministic quality eval layer, current local-first check families
+include:
 
 - payload-level answer grounding checks
 - fixture-based retrieval and answer evaluation over temporary local SQLite
   state
+- public synthetic RAG dataset (`evals/datasets/rag_v1`) with train/dev/test
+  splits
+- standard ranking and citation metrics (Hit/MRR/Recall/nDCG, citation
+  precision/recall, insufficient accuracy, stale/inactive block rate)
+- offline retrieval benchmark runner comparing lexical baseline vs optional
+  `--live` embedding modes
 
 Within the broader repository verification architecture, this directory is the
 deterministic quality eval layer. It is narrower than the full functional E2E
@@ -14,13 +22,15 @@ gate: it does not exercise live APIs, user Chroma data, user SQLite data, or
 the manual live smoke path.
 
 These checks do not call live APIs, user Chroma data, user SQLite data, or
-LLMs.
+LLMs unless an operator explicitly passes `--live` to the retrieval benchmark.
 
 Run the focused eval tests with:
 
 ```bash
 uv run pytest -q tests/evals
 ```
+
+## ContextWiki fixture suite
 
 The first evaluator, `evals.answer_quality`, checks local answer payloads for:
 
@@ -38,47 +48,41 @@ The first evaluator, `evals.answer_quality`, checks local answer payloads for:
 - expected source ids
 - required chunk presence
 - forbidden chunk absence
+- additive `quality_metrics` with numerator/denominator and N/A handling
 
-The fixture suites now also report:
-
-- group-level breakdowns for repo-specific, generic-behavior, code-format,
-  markdown-format, obsidian-format, and mixed-language queries
-- deterministic reviewer-visible JSON artifacts when the runner is given an
-  output directory
-- optional non-deterministic runtime latency summaries for retrieval and answer
-  passes
-
-Run the D1 fixture runner with:
+Run the ContextWiki fixture runner with:
 
 ```bash
 uv run --locked python scripts/run_contextwiki_eval.py
+uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
 ```
 
-Write reviewer-visible artifacts with:
+## Aurora Relay RAG dataset and benchmark
+
+Public synthetic dataset card: `evals/datasets/rag_v1/README.md`.
+
+Policy:
+
+- Use **test** labels only for final scoring and CI. Do not tune retrieval logic
+  against the test split.
+- Fixture lexical scores are regression evidence, not production embedding
+  performance.
+- Live embedding/vector/hybrid modes require explicit `--live` and a positive
+  `--max-budget` estimated spend ceiling.
 
 ```bash
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
+uv run --locked python scripts/run_retrieval_benchmark.py \
+  --split test \
+  --output-dir artifacts/rag-evals
 ```
 
-This seeds temporary fixture documents into temp SQLite, swaps in a local
-fixture `VectorIndexRetriever`, executes retained retrieval plus answer-eval
-coverage without the normal live indexing/vector setup, and returns a JSON
-summary without live LLM rewrite.
-When `--output-dir` is supplied, the runner writes:
+Artifacts:
 
-- `summary.json`
-- `retrieval_suite.json`
-- `answer_suite.json`
-- optional `runtime_metrics.json` when `--include-latency` is supplied
+- `benchmark_summary.json`
+- `benchmark_summary.csv`
+- `benchmark_report.md` / `rag_report.md`
 
-The first three files are deterministic CI reviewer evidence for Issue `#32`.
-`runtime_metrics.json` is informational and may vary across runs because it
-captures wall-clock timing.
+Unrun live providers are recorded as `skipped`/`not_run` with null metrics, never
+as zero-quality scores.
 
-Phase split used by the roadmap:
-
-- `D1`: local retrieval/answer eval foundation
-- `D2`: mixed-query metrics, latency summaries, and reviewer-visible artifacts
-- `J1`: deterministic non-LLM retrieval quality
-- `J2`: LLM-assisted answer quality
+See `docs/evaluation.md` for metric definitions and interpretation limits.

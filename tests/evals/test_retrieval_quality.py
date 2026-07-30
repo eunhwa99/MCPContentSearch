@@ -35,6 +35,52 @@ def test_retrieval_payload_passes_when_expected_top_chunk_and_source_match():
     assert result.score == 1.0
 
 
+def test_no_answer_cases_fail_when_results_are_non_empty():
+    case = RetrievalQualityCase(
+        case_id="no-answer",
+        query="ZZZ_NOANSWER_TOKEN",
+        group="no-answer",
+        min_result_count=0,
+        no_answer=True,
+    )
+    nonempty = evaluate_search_payload(
+        {"results": [{"chunk_id": "spurious", "source_id": "src"}]},
+        case,
+    )
+    assert nonempty.passed is False
+    assert "no_answer_empty_results" in nonempty.failures
+
+    empty = evaluate_search_payload({"results": []}, case)
+    assert empty.passed is True
+    assert empty.checks["no_answer_empty_results"] is True
+
+
+def test_from_mapping_defaults_min_result_count_zero_for_no_answer():
+    case = RetrievalQualityCase.from_mapping(
+        {
+            "case_id": "mapped-no-answer",
+            "query": "ZZZ_NOANSWER_MAPPED",
+            "no_answer": True,
+        }
+    )
+    assert case.no_answer is True
+    assert case.min_result_count == 0
+    result = evaluate_search_payload({"results": []}, case)
+    assert result.passed is True
+    assert result.checks["min_result_count"] is True
+    assert result.checks["no_answer_empty_results"] is True
+
+    explicit = RetrievalQualityCase.from_mapping(
+        {
+            "case_id": "mapped-no-answer-explicit",
+            "query": "ZZZ_NOANSWER_EXPLICIT",
+            "no_answer": True,
+            "min_result_count": 0,
+        }
+    )
+    assert explicit.min_result_count == 0
+
+
 def test_retained_retrieval_eval_selects_only_documents_inside_date_filter(tmp_path):
     store = MetadataStore(tmp_path / "date-filter-eval.sqlite3")
     retriever_documents = []
@@ -248,6 +294,12 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
         assert latency["total"] > 0
         assert latency["max"] >= latency["min"] >= 0
         assert latency["average"] >= 0
+        assert "p95" in latency
+        assert latency["p95"] >= latency["min"]
+
+    report = (output_dir / "rag_report.md").read_text(encoding="utf-8")
+    assert "P95 ms:" in report
+    assert "P95 ms: N/A" not in report
 
     assert (output_dir / "summary.json").is_file()
     assert (output_dir / "retrieval_suite.json").is_file()

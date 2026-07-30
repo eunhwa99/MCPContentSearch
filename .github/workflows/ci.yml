@@ -81,12 +81,26 @@ jobs:
           uv run --locked python scripts/run_contextwiki_eval.py \
             --output-dir artifacts/contextwiki-evals
 
+      - name: Run deterministic RAG retrieval benchmark
+        run: |
+          uv run --locked python scripts/run_retrieval_benchmark.py \
+            --split test \
+            --output-dir artifacts/rag-evals
+
       - name: Upload ContextWiki eval artifacts
         if: ${{ always() && hashFiles('artifacts/contextwiki-evals/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: contextwiki-evals
           path: artifacts/contextwiki-evals
+          if-no-files-found: warn
+
+      - name: Upload RAG eval artifacts
+        if: ${{ always() && hashFiles('artifacts/rag-evals/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-evals
+          path: artifacts/rag-evals
           if-no-files-found: warn
 
       - name: Run functional E2E gate

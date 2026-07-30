@@ -47,3 +47,9 @@ def test_run_contextwiki_eval_executes_from_repo_root_without_pythonpath(tmp_pat
     assert (output_dir / "summary.json").is_file()
     assert (output_dir / "retrieval_suite.json").is_file()
     assert (output_dir / "answer_suite.json").is_file()
+    assert (output_dir / "rag_report.md").is_file()
+    report = (output_dir / "rag_report.md").read_text(encoding="utf-8")
+    assert "not production" in report.lower()
+    suite = json.loads((output_dir / "retrieval_suite.json").read_text(encoding="utf-8"))
+    assert "quality_metrics" in suite
+    assert "hit_at_k" in suite["quality_metrics"]

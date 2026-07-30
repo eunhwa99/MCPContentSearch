@@ -91,3 +91,42 @@ def test_contextwiki_eval_runner_reports_document_sort_suite():
     assert results["published-asc-tie-and-null-last"]["details"][
         "document_ids"
     ] == EXPECTED_ASC_DOCUMENT_ORDER
+
+
+def test_rag_report_includes_document_sort_suite_failures(tmp_path):
+    from evals.contextwiki_eval import _write_artifacts
+
+    summary = {
+        "passed": False,
+        "retrieval_suite": {
+            "passed": True,
+            "results": [],
+            "quality_metrics": {},
+            "group_breakdown": {},
+        },
+        "answer_suite": {
+            "passed": True,
+            "results": [],
+            "quality_metrics": {},
+            "group_breakdown": {},
+        },
+        "document_sort_suite": {
+            "passed": False,
+            "results": [
+                {
+                    "case_id": "published-desc-only-failing",
+                    "passed": False,
+                    "failures": ["document_order"],
+                }
+            ],
+        },
+        "runtime_metrics": {
+            "retrieval_suite": {"latency_ms": {"average": 1.0, "p95": 1.0}},
+        },
+    }
+
+    _write_artifacts(tmp_path, summary)
+    report = (tmp_path / "rag_report.md").read_text(encoding="utf-8")
+    assert "published-desc-only-failing" in report
+    assert "document_order" in report
+    assert "- None" not in report.split("## Failures", 1)[1].split("##", 1)[0]

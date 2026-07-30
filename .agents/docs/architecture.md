@@ -721,6 +721,11 @@ The maintained verification model is layered and test-first:
 - Retained eval runner: `PYTHONPATH=. python scripts/run_contextwiki_eval.py`
   or the repo wrapper that invokes it, used when a work item changes retrieval
   or answer quality on a modeled local eval surface.
+- Public synthetic RAG eval dataset and offline benchmark:
+  `evals/datasets/rag_v1` plus
+  `PYTHONPATH=. python scripts/run_retrieval_benchmark.py --split test`
+  (live embedding modes require explicit `--live`; fixture lexical scores are
+  not production embedding performance). See `docs/evaluation.md`.
 - Deterministic reviewer-visible eval artifacts should stay separate from
   optional runtime or latency metrics such as `runtime_metrics.json` so repeated
   runs remain comparable.

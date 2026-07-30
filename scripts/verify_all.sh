@@ -62,6 +62,9 @@ if uv_workspace_healthy; then
   echo "== Deterministic quality eval layer =="
   uv run --locked python scripts/run_contextwiki_eval.py \
     --output-dir artifacts/contextwiki-evals
+  uv run --locked python scripts/run_retrieval_benchmark.py \
+    --split test \
+    --output-dir artifacts/rag-evals
 else
   echo "uv workspace dependencies are unhealthy; cannot run required ruff, mypy, bandit, or coverage gates." >&2
   echo "Running closest dependency-free pytest fallback before failing the full gate." >&2

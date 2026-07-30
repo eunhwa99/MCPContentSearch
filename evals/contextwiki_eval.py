@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import tempfile
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from evals.document_sort_quality import (
     evaluate_document_sort_suite,
     load_cases as load_document_sort_cases,
 )
+from evals.reporting import render_rag_report
 from evals.retrieval_quality import (
     evaluate_search_suite,
     load_cases as load_retrieval_cases,
@@ -256,57 +258,63 @@ def _run_retrieval_cases(
     search_service: ContextSearchService,
     retrieval_cases,
 ) -> tuple[dict[str, dict], dict[str, float]]:
-    payloads: dict[str, dict] = {}
-    latency_ms: dict[str, float] = {}
-    for case in retrieval_cases:
-        started = time.perf_counter()
-        filters = SearchFilters.model_validate(case.filters) if case.filters else None
-        payloads[case.case_id] = asyncio.run(
-            search_service.search_context(
+    async def _run_all() -> tuple[dict[str, dict], dict[str, float]]:
+        payloads: dict[str, dict] = {}
+        latency_ms: dict[str, float] = {}
+        for case in retrieval_cases:
+            started = time.perf_counter()
+            filters = SearchFilters.model_validate(case.filters) if case.filters else None
+            payloads[case.case_id] = await search_service.search_context(
                 case.query,
                 filters=filters,
                 top_k=case.top_k,
             )
-        )
-        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
-    return payloads, latency_ms
+            latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+        return payloads, latency_ms
+
+    return asyncio.run(_run_all())
 
 
 def _run_answer_cases(
     answer_service: CitationAnswerService,
     answer_cases,
 ) -> tuple[dict[str, dict], dict[str, float]]:
-    payloads: dict[str, dict] = {}
-    latency_ms: dict[str, float] = {}
-    for case in answer_cases:
-        started = time.perf_counter()
-        payloads[case.case_id] = asyncio.run(
-            answer_service.answer_with_citations(case.question, top_k=case.top_k)
-        )
-        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
-    return payloads, latency_ms
+    async def _run_all() -> tuple[dict[str, dict], dict[str, float]]:
+        payloads: dict[str, dict] = {}
+        latency_ms: dict[str, float] = {}
+        for case in answer_cases:
+            started = time.perf_counter()
+            payloads[case.case_id] = await answer_service.answer_with_citations(
+                case.question,
+                top_k=case.top_k,
+            )
+            latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+        return payloads, latency_ms
+
+    return asyncio.run(_run_all())
 
 
 def _run_document_sort_cases(
     search_service: ContextSearchService,
     document_sort_cases,
 ) -> tuple[dict[str, dict], dict[str, float]]:
-    payloads: dict[str, dict] = {}
-    latency_ms: dict[str, float] = {}
-    for case in document_sort_cases:
-        started = time.perf_counter()
-        filters = SearchFilters.model_validate(case.filters) if case.filters else None
-        payloads[case.case_id] = asyncio.run(
-            search_service.search_documents(
+    async def _run_all() -> tuple[dict[str, dict], dict[str, float]]:
+        payloads: dict[str, dict] = {}
+        latency_ms: dict[str, float] = {}
+        for case in document_sort_cases:
+            started = time.perf_counter()
+            filters = SearchFilters.model_validate(case.filters) if case.filters else None
+            payloads[case.case_id] = await search_service.search_documents(
                 case.query,
                 filters=filters,
                 sort_by=case.sort_by,
                 sort_order=case.sort_order,
                 top_k=case.top_k,
             )
-        )
-        latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
-    return payloads, latency_ms
+            latency_ms[case.case_id] = (time.perf_counter() - started) * 1000.0
+        return payloads, latency_ms
+
+    return asyncio.run(_run_all())
 
 
 def _write_artifacts(output_dir: Path, summary: dict) -> None:
@@ -341,6 +349,42 @@ def _write_artifacts(output_dir: Path, summary: dict) -> None:
         + "\n",
         encoding="utf-8",
     )
+    retrieval_metrics = summary["retrieval_suite"].get("quality_metrics") or {}
+    answer_metrics = summary["answer_suite"].get("quality_metrics") or {}
+    failures = [
+        {"case_id": item["case_id"], "reasons": item.get("failures") or []}
+        for item in summary["retrieval_suite"].get("results", [])
+        if not item.get("passed", True)
+    ] + [
+        {"case_id": item["case_id"], "reasons": item.get("failures") or []}
+        for item in summary["document_sort_suite"].get("results", [])
+        if not item.get("passed", True)
+    ] + [
+        {"case_id": item["case_id"], "reasons": item.get("failures") or []}
+        for item in summary["answer_suite"].get("results", [])
+        if not item.get("passed", True)
+    ]
+    report = render_rag_report(
+        {
+            "dataset_version": "contextwiki-fixtures",
+            "retrieval_config": {"mode": "lexical-fixture", "live": False},
+            "fixture_metrics": retrieval_metrics,
+            "answer_metrics": answer_metrics,
+            "live_metrics": None,
+            "group_breakdown": summary["retrieval_suite"].get("group_breakdown") or {},
+            "failures": failures,
+            "latency_ms": (summary.get("runtime_metrics") or {})
+            .get("retrieval_suite", {})
+            .get("latency_ms", {}),
+            "baseline_delta": None,
+            "limitations": [
+                "Fixture lexical results are not production embedding performance.",
+                "ContextWiki fixture metrics are regression evidence for labeled contracts.",
+                "Retrieval and citation metrics use separate scorable denominators.",
+            ],
+        }
+    )
+    (output_dir / "rag_report.md").write_text(report, encoding="utf-8")
     if "runtime_metrics" in summary:
         runtime_metrics_path.write_text(
             json.dumps(summary["runtime_metrics"], ensure_ascii=False, indent=2) + "\n",
@@ -352,11 +396,14 @@ def _write_artifacts(output_dir: Path, summary: dict) -> None:
 
 def _latency_summary(latencies_ms: list[float]) -> dict[str, float]:
     if not latencies_ms:
-        return {"total": 0.0, "average": 0.0, "min": 0.0, "max": 0.0}
+        return {"total": 0.0, "average": 0.0, "min": 0.0, "max": 0.0, "p95": 0.0}
 
+    ordered = sorted(latencies_ms)
+    index = max(0, min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1))
     return {
-        "total": float(sum(latencies_ms)),
-        "average": float(sum(latencies_ms) / len(latencies_ms)),
-        "min": float(min(latencies_ms)),
-        "max": float(max(latencies_ms)),
+        "total": float(sum(ordered)),
+        "average": float(sum(ordered) / len(ordered)),
+        "min": float(ordered[0]),
+        "max": float(ordered[-1]),
+        "p95": float(ordered[index]),
     }

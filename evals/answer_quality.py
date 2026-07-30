@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from evals.metrics import aggregate_suite_metrics, metric_payload
+
 
 SECRET_LIKE_RE = re.compile(
     r"("
@@ -123,6 +125,7 @@ def evaluate_answer_suite(
     cases: list[AnswerQualityCase],
 ) -> dict[str, Any]:
     if not cases:
+        empty = metric_payload(numerator=0.0, denominator=0)
         return {
             "passed": False,
             "total": 0,
@@ -130,6 +133,12 @@ def evaluate_answer_suite(
             "average_score": 0.0,
             "group_breakdown": {},
             "results": [],
+            "quality_metrics": {
+                "scorable_case_count": 0,
+                "citation_precision": dict(empty),
+                "citation_recall": dict(empty),
+                "insufficient_status_accuracy": dict(empty),
+            },
         }
     raw_results = [
         evaluate_answer_payload(payloads_by_case_id.get(case.case_id, {}), case)
@@ -148,6 +157,41 @@ def evaluate_answer_suite(
         "average_score": average_score,
         "group_breakdown": _group_breakdown(cases, raw_results),
         "results": [result.as_dict() for result in raw_results],
+        "quality_metrics": _answer_quality_metrics(payloads_by_case_id, cases),
+    }
+
+
+def _answer_quality_metrics(
+    payloads_by_case_id: dict[str, dict[str, Any]],
+    cases: list[AnswerQualityCase],
+) -> dict[str, Any]:
+    case_results: list[dict[str, Any]] = []
+    for case in cases:
+        payload = payloads_by_case_id.get(case.case_id, {})
+        citations = _as_list(payload.get("citations"))
+        cited = sorted(_citation_chunk_ids(citations))
+        case_results.append(
+            {
+                "case_id": case.case_id,
+                "no_answer": case.expected_status == "insufficient",
+                "relevant_chunk_ids": [],
+                "ranked_chunk_ids": [],
+                "forbidden_inactive_chunk_ids": [],
+                "cited_chunk_ids": cited,
+                "required_citation_chunk_ids": list(case.required_citation_chunk_ids),
+                "expected_status": case.expected_status,
+                "evidence_status": str(
+                    payload.get("evidence_status") or payload.get("status") or ""
+                ),
+            }
+        )
+    metrics = aggregate_suite_metrics(case_results, k=5)
+    citation_scorable = int(metrics["citation_recall"]["denominator"] or 0)
+    return {
+        "scorable_case_count": citation_scorable,
+        "citation_precision": metrics["citation_precision"],
+        "citation_recall": metrics["citation_recall"],
+        "insufficient_status_accuracy": metrics["insufficient_status_accuracy"],
     }
 
 

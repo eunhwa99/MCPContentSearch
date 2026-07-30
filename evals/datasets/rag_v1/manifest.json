@@ -1,0 +1,12 @@
+{
+  "dataset_version": "rag_v1",
+  "name": "Aurora Relay synthetic project knowledge base",
+  "splits": ["train", "dev", "test"],
+  "policy": "Test labels must not be used for retrieval tuning. Use train/dev for local iteration only. Fixture lexical scores are not production embedding performance.",
+  "source_id": "source_aurora_docs",
+  "non_goals": [
+    "No agent execution harness",
+    "No LLM cost product surface",
+    "No personal or company documents"
+  ]
+}

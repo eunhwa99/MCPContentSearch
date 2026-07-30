@@ -10,6 +10,8 @@ def test_verify_all_defines_explicit_verification_layers():
     assert 'tests/contracts/test_public_mcp_contracts.py' in script
     assert "scripts/run_contextwiki_eval.py" in script
     assert "artifacts/contextwiki-evals" in script
+    assert "scripts/run_retrieval_benchmark.py" in script
+    assert "artifacts/rag-evals" in script
 
 
 def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
@@ -20,6 +22,8 @@ def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
     assert 'IS_TESTING: "1"' in workflow
     assert "tests/contracts/test_public_mcp_contracts.py" in workflow
     assert "scripts/run_contextwiki_eval.py" in workflow
+    assert "scripts/run_retrieval_benchmark.py" in workflow
+    assert "artifacts/rag-evals" in workflow
     assert "./scripts/verify_functional_e2e.sh" in workflow
 
 
@@ -28,6 +32,7 @@ def test_ci_artifact_upload_is_guarded_when_eval_output_is_missing():
     workflow = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "hashFiles('artifacts/contextwiki-evals/**') != ''" in workflow
+    assert "hashFiles('artifacts/rag-evals/**') != ''" in workflow
     assert "if-no-files-found: warn" in workflow
 
 

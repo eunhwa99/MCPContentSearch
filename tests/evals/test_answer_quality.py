@@ -252,3 +252,40 @@ def test_mixed_language_case_fails_for_english_only_answer():
 
     assert not result.passed
     assert "expected_terms_present" in result.failures
+
+
+def test_answer_suite_scorable_case_count_uses_citation_labels():
+    cases = [
+        AnswerQualityCase(
+            case_id="with-citation",
+            question="citation?",
+            required_citation_chunk_ids=("chunk-1",),
+            expected_status="grounded",
+        ),
+        AnswerQualityCase(
+            case_id="insufficient",
+            question="missing?",
+            expected_status="insufficient",
+            min_citation_count=0,
+        ),
+    ]
+    payloads = {
+        "with-citation": {
+            "answer": "ok",
+            "evidence_status": "grounded",
+            "citations": [{"chunk_id": "chunk-1"}],
+            "used_chunks": ["chunk-1"],
+        },
+        "insufficient": {
+            "answer": "",
+            "evidence_status": "insufficient",
+            "citations": [],
+            "used_chunks": [],
+        },
+    }
+    suite = evaluate_answer_suite(payloads, cases)
+    metrics = suite["quality_metrics"]
+    assert metrics["scorable_case_count"] == 1
+    assert metrics["citation_recall"]["denominator"] == 1
+    assert metrics["citation_recall"]["value"] == 1.0
+    assert metrics["insufficient_status_accuracy"]["denominator"] == 1
