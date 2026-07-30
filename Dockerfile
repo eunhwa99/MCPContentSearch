@@ -32,6 +32,7 @@ COPY search ./search
 COPY storage ./storage
 COPY scripts ./scripts
 COPY sample_vault ./sample_vault
+COPY app_runtime.py ./app_runtime.py
 COPY main.py ./main.py
 
 RUN chown -R appuser:appuser /app /home/appuser

@@ -164,7 +164,7 @@ class NotionAPIClient:
     ) -> str:
         """블록 컨텐츠 재귀 추출"""
         if depth > self.app_config.notion_max_depth:
-            logger.warning(f"Max depth reached for block {block_id}")
+            logger.warning("Max Notion block depth reached; skipping nested content")
             return ""
         
         try:
@@ -503,10 +503,9 @@ async def fetch_notion_pages(
                     raise
                 except Exception:
                     logger.error(
-                        "Notion page fetch failed at %s/%s for page %s",
+                        "Notion page fetch failed at %s/%s",
                         idx,
                         len(raw_pages),
-                        page_id,
                     )
                     raise
                 document = processor.build_document(page, content)

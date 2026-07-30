@@ -102,5 +102,6 @@ newer foreign retry must override the stale local cancelled handoff.
 - `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
 - `.agents/docs/adr/0009-exact-sync-job-status-observation.md`
+- `.agents/docs/adr/0010-durable-all-source-sync-worker.md`
 - `docs/contextwiki-core-understanding.md`
 - `docs/plan/2026-06-15-notion-cancel-sync-stuck.md`

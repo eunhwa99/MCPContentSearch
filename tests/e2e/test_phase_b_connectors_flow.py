@@ -12,6 +12,7 @@ from environments.config import AppConfig
 from fetching.connectors import GitHubSourceConnector, SourceConnector, SourceRegistry
 from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
+from indexing.sync_worker import SyncWorker
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
 from storage.metadata_store import MetadataStore
@@ -99,6 +100,13 @@ async def _wait_for_exact_sync_completion(
     raise AssertionError(
         f"Timed out waiting for exact sync completion: {latest_by_source}"
     )
+
+
+async def _run_next_queued_sync(ingestion: IngestionService):
+    claimed = ingestion.metadata_store.claim_next_sync_job()
+    assert claimed is not None
+    assert claimed.status == SyncJobStatus.RUNNING
+    return await ingestion.run_claimed_sync_job(claimed.job_id)
 
 
 class FakeRetainedSourceConnector(SourceConnector):
@@ -633,6 +641,7 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
         sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": source_id})
+        await _run_next_queued_sync(ingestion)
         status = await _wait_for_sync_completion(mcp, source_id)
         return listed, sync_job, status
 
@@ -670,7 +679,7 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
         "source_notion",
         "source_tistory",
     ]
-    assert sync_job["status"] == "running"
+    assert sync_job["status"] == "queued"
     assert sync_job["source_id"] == source_id
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
@@ -730,6 +739,7 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
         sync_job = await _call_tool_json_async(mcp, "sync_source", {"source_id": "source_github"})
+        await _run_next_queued_sync(ingestion)
         status = await _wait_for_sync_completion(mcp, "source_github")
         return listed, sync_job, status
 
@@ -780,7 +790,7 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
     )
 
     assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
-    assert sync_job["status"] == "running"
+    assert sync_job["status"] == "queued"
     assert sync_job["source_id"] == "source_github"
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
@@ -816,20 +826,22 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
 
 
 def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path):
-    http = BlockingOwnerMultiRepoGitHubHTTP()
-    connector = GitHubSourceConnector(
+    config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
+    metadata_path = tmp_path / "contextwiki.sqlite3"
+    mcp_connector = GitHubSourceConnector(
         repositories=("eunaverse",),
-        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
-        http_client=http,
+        config=config,
+        http_client=OwnerMultiRepoGitHubHTTP(),
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(metadata_path)
     indexer = RecordingIndexer()
-    registry = SourceRegistry([connector])
+    registry = SourceRegistry([mcp_connector])
     ingestion = IngestionService(
         metadata_store=store,
         source_registry=registry,
         chunker=DocumentChunker(max_chars=80, overlap_chars=0),
         indexer=indexer,
+        durable_dispatch=True,
     )
     context_search = ContextSearchService(
         metadata_store=store,
@@ -850,9 +862,32 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
         source_registry=registry,
     )
 
+    http = BlockingOwnerMultiRepoGitHubHTTP()
+    worker_connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=config,
+        http_client=http,
+    )
+    worker_store = MetadataStore(metadata_path)
+    worker_ingestion = IngestionService(
+        metadata_store=worker_store,
+        source_registry=SourceRegistry([worker_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+        register_source_config=False,
+        durable_dispatch=True,
+    )
+    worker = SyncWorker(
+        worker_ingestion,
+        worker_store,
+        source_ids=("source_github",),
+        poll_interval_seconds=0.1,
+    )
+
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
         launched = await _call_tool_json_async(mcp, "sync_all")
+        worker_task = asyncio.create_task(worker.run_once())
         await asyncio.wait_for(http.discovery_started.wait(), timeout=1)
         running = await _call_tool_json_async(
             mcp,
@@ -860,6 +895,7 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
             {"source_id": ""},
         )
         http.release_discovery.set()
+        completed = await asyncio.wait_for(worker_task, timeout=3)
         terminal_by_source = await _wait_for_exact_sync_completion(
             mcp,
             {
@@ -868,9 +904,9 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
                 if item["launch_outcome"] in {"started", "already_running"}
             },
         )
-        return listed, launched, running, terminal_by_source
+        return listed, launched, running, terminal_by_source, completed
 
-    listed, launched, running, terminal_by_source = asyncio.run(run_flow())
+    listed, launched, running, terminal_by_source, completed = asyncio.run(run_flow())
     alpha_document_id = "github:eunaverse/alpha:README.md"
     beta_document_id = "github:eunaverse/beta:docs/guide.md"
     alpha_search = _call_tool_json(
@@ -923,8 +959,10 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
     launched_result = launched["results"][0]
     assert launched_result["source_id"] == "source_github"
     assert launched_result["launch_outcome"] == "started"
-    assert launched_result["job"]["status"] == "running"
+    assert launched_result["job"]["status"] == "queued"
     launched_job_id = launched_result["job"]["job_id"]
+    assert completed.job_id == launched_job_id
+    assert completed.status == SyncJobStatus.SUCCEEDED
 
     running_item = running["sources"][0]
     assert running_item["source"]["source_id"] == "source_github"
@@ -950,23 +988,29 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
     assert beta_answer["used_chunks"] == [
         beta_search["results"][0]["chunk_id"]
     ]
+    assert worker_connector.cleanup_document_id_prefixes == (
+        "github:eunaverse/alpha:",
+        "github:eunaverse/beta:",
+    )
 
 
 def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_path):
-    http = OwnerEmptyAndPopulatedGitHubHTTP()
-    connector = GitHubSourceConnector(
+    config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
+    metadata_path = tmp_path / "contextwiki.sqlite3"
+    mcp_connector = GitHubSourceConnector(
         repositories=("eunaverse",),
-        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
-        http_client=http,
+        config=config,
+        http_client=OwnerEmptyAndPopulatedGitHubHTTP(),
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(metadata_path)
     indexer = RecordingIndexer()
-    registry = SourceRegistry([connector])
+    registry = SourceRegistry([mcp_connector])
     ingestion = IngestionService(
         metadata_store=store,
         source_registry=registry,
         chunker=DocumentChunker(max_chars=80, overlap_chars=0),
         indexer=indexer,
+        durable_dispatch=True,
     )
     context_search = ContextSearchService(
         metadata_store=store,
@@ -987,6 +1031,28 @@ def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_pat
         source_registry=registry,
     )
 
+    http = OwnerEmptyAndPopulatedGitHubHTTP()
+    worker_connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=config,
+        http_client=http,
+    )
+    worker_store = MetadataStore(metadata_path)
+    worker_ingestion = IngestionService(
+        metadata_store=worker_store,
+        source_registry=SourceRegistry([worker_connector]),
+        chunker=DocumentChunker(max_chars=80, overlap_chars=0),
+        indexer=indexer,
+        register_source_config=False,
+        durable_dispatch=True,
+    )
+    worker = SyncWorker(
+        worker_ingestion,
+        worker_store,
+        source_ids=("source_github",),
+        poll_interval_seconds=0.1,
+    )
+
     async def run_flow():
         listed = await _call_tool_json_async(mcp, "list_sources")
         sync_job = await _call_tool_json_async(
@@ -994,10 +1060,11 @@ def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_pat
             "sync_source",
             {"source_id": "source_github"},
         )
+        completed = await worker.run_once()
         status = await _wait_for_sync_completion(mcp, "source_github")
-        return listed, sync_job, status
+        return listed, sync_job, status, completed
 
-    listed, sync_job, status = asyncio.run(run_flow())
+    listed, sync_job, status, completed = asyncio.run(run_flow())
     document_id = "github:eunaverse/populated:README.md"
     search_result = _call_tool_json(
         mcp,
@@ -1022,7 +1089,9 @@ def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_pat
     )
 
     assert [source["source_id"] for source in listed["sources"]] == ["source_github"]
-    assert sync_job["status"] == "running"
+    assert sync_job["status"] == "queued"
+    assert completed.job_id == sync_job["job_id"]
+    assert completed.status == SyncJobStatus.SUCCEEDED
     assert status["source"]["sync_status"] == "succeeded"
     assert status["latest_job"]["status"] == "succeeded"
     assert status["latest_job"]["processed_documents"] == 1
@@ -1031,11 +1100,11 @@ def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_pat
     assert fetched["document"]["document_id"] == document_id
     assert answer["evidence_status"] == "grounded"
     assert answer["used_chunks"] == [search_result["results"][0]["chunk_id"]]
-    assert connector.cleanup_document_id_prefixes == (
+    assert worker_connector.cleanup_document_id_prefixes == (
         "github:eunaverse/empty:",
         "github:eunaverse/populated:",
     )
-    assert connector.supports_stale_cleanup is True
+    assert worker_connector.supports_stale_cleanup is True
     assert not any("/repos/eunaverse/empty/commits/" in url for url in http.urls)
 
 

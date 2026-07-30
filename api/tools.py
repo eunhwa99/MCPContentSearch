@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated
@@ -11,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from core.error_sanitizer import sanitize_error_text
 from core.models import (
     DocumentSortBy,
     SearchFilters,
@@ -19,6 +19,7 @@ from core.models import (
     SourceType,
     SyncStatus,
 )
+from core.sync_lifecycle import normalize_auth_ref, normalize_sync_job_phase
 from indexing.background_tasks import safe_error_message
 from search import debug_redaction
 
@@ -30,7 +31,6 @@ if TYPE_CHECKING:
     from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
-SAFE_PUBLIC_ENV_REF_RE = re.compile(r"^env:[A-Z_][A-Z0-9_]*$")
 REGISTERABLE_SOURCE_ATTRS = (
     "source_id",
     "source_type",
@@ -123,13 +123,14 @@ def register_tools(
     async def list_sources() -> dict:
         """등록된 ContextWiki source 목록 조회"""
         try:
-            _refresh_registered_sources(metadata_store, source_registry)
+            configured_sources = _registry_source_snapshot(source_registry)
             if metadata_store is not None:
                 sources = metadata_store.list_sources()
             elif source_registry is not None:
-                sources = source_registry.list_sources()
+                sources = configured_sources
             else:
                 sources = []
+            sources = _merge_observed_sources(sources, configured_sources)
             sources = [
                 source
                 for source in sources
@@ -156,13 +157,13 @@ def register_tools(
 
     @mcp.tool()
     async def sync_source(source_id: str) -> dict:
-        """특정 source sync를 시작하거나 기존 running job을 재사용한다."""
+        """특정 source sync를 durable queue에 넣거나 기존 active job을 재사용한다."""
         if ingestion_service is None:
             return {"status": "error", "message": "ingestion service is not configured"}
-        if not hasattr(ingestion_service, "start_sync_source"):
+        if not hasattr(ingestion_service, "enqueue_sync_source"):
             return {
                 "status": "error",
-                "message": "ingestion service does not support background sync launch",
+                "message": "ingestion service does not support durable sync enqueue",
             }
         if not _source_id_is_public(
             source_id,
@@ -172,7 +173,7 @@ def register_tools(
             message = safe_error_message(ValueError(f"Unknown source: {source_id}"))
             return {"status": "error", "message": message}
         try:
-            job = await ingestion_service.start_sync_source(source_id)
+            job = await ingestion_service.enqueue_sync_source(source_id)
             return _safe_sync_job_payload(job)
         except Exception as exc:
             message = safe_error_message(exc)
@@ -181,7 +182,7 @@ def register_tools(
 
     @mcp.tool()
     async def sync_all() -> dict:
-        """Start or reuse all source syncs in the background and return launch outcomes immediately.
+        """Enqueue or reuse all source syncs and return launch outcomes immediately.
 
         Keep only started/already_running source_id and job_id targets.
         Do not poll skipped or failed launches; report them immediately.
@@ -205,7 +206,11 @@ def register_tools(
                 source_registry,
                 public_source_ids,
             )
-            sync_all_callable = ingestion_service.sync_all
+            if not hasattr(ingestion_service, "enqueue_all"):
+                return _sync_all_error_payload(
+                    "ingestion service does not support durable bulk sync enqueue"
+                )
+            sync_all_callable = ingestion_service.enqueue_all
             if public_bulk_sync_requires_filtering:
                 sync_all_signature = inspect.signature(sync_all_callable)
                 if "source_ids" not in sync_all_signature.parameters:
@@ -269,7 +274,8 @@ def register_tools(
                 return {"source": None, "job": None}
             return {"sources": []}
         try:
-            _refresh_registered_sources(metadata_store, source_registry)
+            configured_sources = _registry_source_snapshot(source_registry)
+            configured_by_id = _sources_by_id(configured_sources)
 
             if job_id:
                 requested_source_id = str(source_id or "")
@@ -300,6 +306,10 @@ def register_tools(
                 source = metadata_store.get_source(exact_source_id)
                 if source is None:
                     return {"source": None, "job": None}
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(exact_source_id),
+                )
                 return {
                     "source": _safe_source_payload(
                         source,
@@ -315,6 +325,10 @@ def register_tools(
 
             if source_id:
                 source = metadata_store.get_source(source_id)
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source_id),
+                )
                 if not source or not _source_id_is_public(
                     source_id,
                     metadata_store,
@@ -326,6 +340,10 @@ def register_tools(
                     }
                 latest_job = metadata_store.get_latest_sync_job(source_id)
                 source = metadata_store.get_source(source_id) or source
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source_id),
+                )
                 return {
                     "source": _safe_source_payload(
                         source,
@@ -342,7 +360,10 @@ def register_tools(
                 }
 
             statuses = []
-            for source in metadata_store.list_sources():
+            for source in _merge_observed_sources(
+                metadata_store.list_sources(),
+                configured_sources,
+            ):
                 if not _source_id_is_public(
                     source.source_id,
                     metadata_store,
@@ -351,6 +372,10 @@ def register_tools(
                     continue
                 latest_job = metadata_store.get_latest_sync_job(source.source_id)
                 source = metadata_store.get_source(source.source_id) or source
+                source = _merge_observed_source(
+                    source,
+                    configured_by_id.get(source.source_id),
+                )
                 statuses.append(
                     {
                         "source": _safe_source_payload(
@@ -605,6 +630,88 @@ def _source_registry_ids(source_registry) -> frozenset[str] | None:
     )
 
 
+def _registry_source_snapshot(source_registry) -> list:
+    if source_registry is None:
+        return []
+    return list(source_registry.list_sources())
+
+
+def _sources_by_id(sources) -> dict[str, object]:
+    return {
+        str(source.source_id): source
+        for source in sources
+        if getattr(source, "source_id", "")
+    }
+
+
+def _merge_observed_sources(persisted_sources, configured_sources) -> list:
+    configured_by_id = _sources_by_id(configured_sources)
+    persisted_by_id = _sources_by_id(persisted_sources)
+    merged = [
+        _merge_observed_source(
+            source,
+            configured_by_id.get(getattr(source, "source_id", "")),
+        )
+        for source in persisted_sources
+    ]
+    for source_id, configured_source in configured_by_id.items():
+        if source_id not in persisted_by_id and _is_registerable_source(
+            configured_source
+        ):
+            merged.append(configured_source)
+    return merged
+
+
+def _merge_observed_source(persisted_source, configured_source):
+    """Overlay current connector configuration without mutating SQLite metadata."""
+    if persisted_source is None:
+        return configured_source
+    if configured_source is None or not hasattr(persisted_source, "model_copy"):
+        return persisted_source
+    config_fields = (
+        "source_type",
+        "name",
+        "enabled",
+    )
+    updates = {
+        field: getattr(configured_source, field)
+        for field in config_fields
+        if hasattr(configured_source, field)
+    }
+    if hasattr(configured_source, "auth_ref"):
+        updates["auth_ref"] = normalize_auth_ref(configured_source.auth_ref)
+    configured_enabled = getattr(
+        configured_source,
+        "enabled",
+        getattr(persisted_source, "enabled", True),
+    )
+    configured_error = getattr(configured_source, "last_error", "")
+    if not configured_enabled and configured_error:
+        updates.update(
+            {
+                "sync_status": SyncStatus.FAILED,
+                "last_error": configured_error,
+                "stale_cleanup_disabled_reason": getattr(
+                    configured_source,
+                    "stale_cleanup_disabled_reason",
+                    "",
+                ),
+            }
+        )
+    elif configured_enabled and not getattr(persisted_source, "enabled", True):
+        updates.update(
+            {
+                "last_error": configured_error,
+                "stale_cleanup_disabled_reason": getattr(
+                    configured_source,
+                    "stale_cleanup_disabled_reason",
+                    "",
+                ),
+            }
+        )
+    return persisted_source.model_copy(update=updates)
+
+
 def _ordered_public_source_ids(
     metadata_store,
     source_registry,
@@ -625,6 +732,10 @@ def _public_bulk_sync_requires_filtering(source_registry, ordered_public_source_
     return len(ordered_public_source_ids) != len(source_registry.list_sources())
 
 
+def _is_registerable_source(source) -> bool:
+    return all(hasattr(source, attr) for attr in REGISTERABLE_SOURCE_ATTRS)
+
+
 def _refresh_registered_sources(metadata_store, source_registry) -> None:
     if metadata_store is None or source_registry is None:
         return
@@ -632,7 +743,7 @@ def _refresh_registered_sources(metadata_store, source_registry) -> None:
     if not callable(register_source):
         return
     for source in source_registry.list_sources():
-        if all(hasattr(source, attr) for attr in REGISTERABLE_SOURCE_ATTRS):
+        if _is_registerable_source(source):
             register_source(source)
 
 
@@ -647,7 +758,7 @@ def _model_payload(model) -> dict:
 def _redact_public_error_text(value):
     if not value:
         return value
-    return safe_error_message(ValueError(str(value)))
+    return sanitize_error_text(value)
 
 
 def _redact_public_query_text(value: str):
@@ -658,8 +769,9 @@ def _safe_auth_ref(value):
     if not value:
         return value
     auth_ref = str(value)
-    if SAFE_PUBLIC_ENV_REF_RE.match(auth_ref):
-        return auth_ref
+    normalized = normalize_auth_ref(auth_ref)
+    if normalized:
+        return normalized
     return "<redacted>"
 
 
@@ -686,8 +798,16 @@ def _safe_sync_job_payload(job, *, include_progress_hints: bool = False) -> dict
             "status_message",
         ):
             payload.pop(key, None)
-    elif "status_message" in payload:
-        payload["status_message"] = _redact_public_error_text(payload["status_message"])
+    else:
+        normalized_phase = normalize_sync_job_phase(payload.get("phase"))
+        if normalized_phase:
+            payload["phase"] = normalized_phase
+        else:
+            payload.pop("phase", None)
+        if "status_message" in payload:
+            payload["status_message"] = _redact_public_error_text(
+                payload["status_message"]
+            )
     if "error_message" in payload:
         payload["error_message"] = _redact_public_error_text(payload["error_message"])
     return payload

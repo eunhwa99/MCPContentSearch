@@ -134,7 +134,7 @@ class ContentIndexer:
                             ]
                         }
                     )
-                    logger.info(
+                    logger.debug(
                         "Deleted managed indexed document: %s from %s",
                         document_id,
                         source_id,
@@ -143,7 +143,7 @@ class ContentIndexer:
                 self.collection.delete(
                     where={"$and": [{"doc_id": document_id}, {"contextwiki_managed": {"$ne": "true"}}]}
                 )
-                logger.info(f"Deleted indexed document: {document_id}")
+                logger.debug("Deleted indexed document: %s", document_id)
     
     def _update_status(self, **kwargs):
         for key, value in kwargs.items():

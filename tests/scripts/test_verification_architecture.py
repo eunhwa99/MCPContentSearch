@@ -39,3 +39,38 @@ def test_pyproject_live_marker_is_truthful_about_current_suite():
         '    "live: reserved for future opt-in live external API smoke tests; '
         'no retained automated tests currently use this marker",'
     ) in pyproject
+
+
+def test_dockerfile_copies_shared_worker_runtime_import_boundary():
+    repo_root = Path(__file__).resolve().parents[2]
+    dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+    worker_module = (repo_root / "indexing" / "sync_worker.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from app_runtime import build_ingestion_runtime" in worker_module
+    assert "COPY app_runtime.py ./app_runtime.py" in dockerfile
+    assert "COPY indexing ./indexing" in dockerfile
+
+
+def test_readme_docker_worker_uses_bounded_local_log_driver():
+    repo_root = Path(__file__).resolve().parents[2]
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+
+    assert "docker run -d --name contextwiki-sync-worker" in readme
+    assert "--log-driver local" in readme
+    assert "--log-opt max-size=5m" in readme
+    assert "--log-opt max-file=3" in readme
+
+
+def test_docs_require_both_processes_to_reload_source_configuration():
+    repo_root = Path(__file__).resolve().parents[2]
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    architecture = (repo_root / ".agents" / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Both FastMCP and the durable worker snapshot source configuration" in readme
+    assert "fully restart the MCP" in readme
+    assert "./scripts/restart_sync_worker_launch_agent.sh" in readme
+    assert "Operators must restart both processes" in architecture

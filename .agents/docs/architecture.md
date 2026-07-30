@@ -9,10 +9,14 @@ maintained design reference beyond the README.
 
 ## Runtime Structure
 
-`MCPContentSearch` is a Python FastMCP server.
+`MCPContentSearch` has a Python FastMCP process and a separately supervised
+Python sync-worker process.
 
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
+- Durable sync worker: `python -m indexing.sync_worker` runs the generic
+  single-job worker loop. On macOS, a user LaunchAgent keeps it alive
+  independently of the MCP process.
 - MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
   `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
   `search_context`, `search_documents`, `list_documents`, and `fetch_context`.
@@ -30,12 +34,108 @@ maintained design reference beyond the README.
 - Persistence: SQLite metadata via `storage/metadata_store.py` plus ChromaDB via
   `chromadb.PersistentClient`, defaulting to local user storage unless tests
   provide temporary paths.
+- Process supervision: the version-controlled LaunchAgent template and helper
+  scripts under `deploy/launchd/` and `scripts/` render absolute runtime paths
+  but do not persist source credentials.
+
+FastMCP and the durable worker each build their own configuration, connector
+registry, and ingestion dependencies once at process startup. They do not
+hot-reload `.env` or source targets. Operators must restart both processes
+after source configuration changes so enqueue eligibility and worker dispatch
+cannot disagree.
 
 SQLite access is operation-scoped. Each metadata operation owns a short-lived
 connection, uses the connection transaction boundary for commit or rollback,
 and closes the connection deterministically before returning. Long-running MCP
-processes must not rely on Python garbage collection to release SQLite file
-descriptors.
+or worker processes must not rely on Python garbage collection to release
+SQLite file descriptors.
+
+The LaunchAgent is only a process supervisor. It is not a queue, scheduler
+database, or lifecycle authority. SQLite remains authoritative when either
+process restarts. Its long-lived Python logs use a bounded rotating file
+handler under the local application directory. A small launch wrapper captures
+`uv`, import, and uncaught startup stderr before Python logging is available
+through a bounded streaming writer that retains only the latest diagnostic
+bytes during execution. Once full, the writer compacts to a half-size retained
+tail before resuming appends, amortizing compaction work under sustained
+output. Before any startup output reaches that bounded file, a fail-closed
+line-stream sanitizer removes credentials, complete Cookie/Set-Cookie values,
+provider URLs, POSIX paths, and Windows drive, UNC, or extended paths. launchd
+stdout/stderr are not used as unbounded persistent logs. The sanitizer runs
+through the same validated absolute `uv` and repository environment as the
+worker, so the LaunchAgent does not depend on a separate system `python3`.
+Sanitizer import/runtime failure appends only a fixed bounded diagnostic and
+never the rejected raw stream. The wrapper latches `SIGINT`/`SIGTERM` received
+during worker startup, replays the first pending signal to the worker process
+group as soon as its PID is known, and waits interrupt-safely for both worker
+and diagnostic-writer cleanup before exiting. Signals received while the
+writer drains do not orphan it or delete its temporary chunk early. The
+retained Python log filter suppresses dependency INFO noise and redacts
+credentials, provider URLs, local paths, and formatter-added stack or
+exception context before rotating output is written.
+The installer owns and secures the default log directory to mode `0700`. It
+creates a new custom log directory privately, but it never silently changes an
+existing custom directory: that directory must use a canonical absolute path
+without symbolic-link components, have mode `0700`, be owned by the current
+user, and be writable and searchable by that user, or installation fails
+before `launchctl` is called.
+
+An identical LaunchAgent install checks live service state: a loaded service is
+left untouched, while an unloaded service is bootstrapped from the existing
+plist. An explicit changed-config restart is transactional at the plist/service
+boundary. If the replacement cannot bootstrap, the installer restores the
+previous plist and its prior loaded state. A loaded service with a missing
+plist requires explicit `--restart` before replacement bootout. Since no prior
+plist is available in that state, replacement bootstrap failure leaves the
+service unloaded and cannot restore its earlier configuration automatically.
+During a changed-config transaction, catchable `SIGTERM`/`SIGINT` is latched
+until the tracked `launchctl` child finishes and commit or rollback completes.
+The previous snapshot is retained until that outcome is known, and incomplete
+rollback preserves the snapshot for diagnosis. `SIGKILL` cannot run shell
+cleanup and is outside this guarantee without a separate durable transaction
+journal.
+Install, restart, and uninstall share one exclusive per-label operation lock.
+The lock spans the first live-service/plist state read through the final
+mutation, commit, or rollback, so concurrently invoked helpers cannot apply a
+decision made from a stale snapshot. While a helper waits for `launchctl`, the
+lock atomically publishes both the helper and child PID/process-start
+identities. A killed helper therefore cannot make the lock recoverable while
+its already-running service mutation remains alive; dead or PID-reused child
+identity is required before reclaim. Outside that window, a dead lock owner is
+reclaimed only when its PID is absent or its recorded process start no longer
+matches. Malformed or otherwise unpublished ownership younger than a
+conservative 60-second grace is never deleted, and the current helper fails
+after its shorter bounded wait. This protects an owner still publishing its
+identity. A later helper may recover an ownerless or partially published
+directory only after that portable mtime grace has elapsed. The exclusive
+`.reclaim` directory used to serialize that recovery publishes its own PID and
+process-start identity under the same rules. A crashed recovery with a dead
+published owner is reclaimable immediately; an ownerless or partially
+published recovery marker is reclaimable only after the same mtime grace,
+while fresh or live markers remain protected. Symbolic-link, non-directory, or
+foreign-owned recovery markers are rejected without touching their targets.
+The status helper remains read-only and does not take this lock.
+
+LaunchAgent removal targets the stable `gui/<uid>/<label>` service identifier,
+not the plist path, so a loaded service remains removable after its plist is
+missing.
+
+Persistent worker INFO logs are limited to project aggregate counts and
+source/job lifecycle. Third-party INFO is suppressed. Per-document, per-chunk,
+Notion page, and Notion block identifiers are absent or DEBUG-only because
+source identity—especially Obsidian identity—can contain local filesystem
+paths. A common handler privacy filter redacts HTTP(S) URLs, token-like values,
+and paths from retained context. It applies the centralized credential
+sanitizer to the complete record first, so multiword Authorization
+Bearer/Basic, Cookie, and API-key values cannot leave trailing fragments.
+The same shared sanitizer runs before error text is persisted in SQLite and
+again at the MCP response boundary, so job/source status cannot expose token,
+provider URL, or local-path details that the worker log would redact. Cookie
+and Set-Cookie values remain fail-closed through their complete header and
+folded-continuation boundary, including oversized lines and cookie names that
+look like diagnostic fields. Diagnostic fields are retained only after an
+unambiguous non-folded line boundary. Unlabelled Windows UNC and extended paths
+are treated as local paths.
 
 The current architecture does not include a production Web Console, Auto Wiki
 generation, generic website/docs crawling, dynamic web fallback, or legacy
@@ -82,7 +182,13 @@ Keep these design assumptions aligned with implementation:
 MCP client
   -> FastMCP server in main.py
   -> api/tools.py registered tool handler
-  -> service boundary in indexing/search/storage/fetching
+  -> enqueue/reuse sync jobs in SQLite or query search/status services
+
+macOS LaunchAgent
+  -> generic indexing.sync_worker process
+  -> atomically claim the oldest queued SQLite job
+  -> service boundary in indexing/storage/fetching
+  -> connector fetch plus Chroma/SQLite indexing lifecycle
 ```
 
 Source status flow:
@@ -108,13 +214,13 @@ stale_cleanup_disabled_reason
 Those fields explain recent source health, retained indexed volume, and whether
 cleanup is intentionally disabled for safety.
 
-When a sync job is actively running, `get_sync_status` may additionally expose
-progress hints that explain whether the system is still upstream
-discovery/fetch-bound or already indexing. Exact-job mode exposes them under
-`job`; the latest-one-source and all-source modes expose them under
-`latest_job`. Those hints are intentionally running-only and are suppressed
-again once the selected job reaches a terminal state. Maintained
-reviewer-facing hints now include:
+When a sync job is queued or actively running, `get_sync_status` exposes its
+authoritative SQLite state. Running jobs may additionally expose progress hints
+that explain whether the worker is still upstream discovery/fetch-bound or
+already indexing. Exact-job mode exposes them under `job`; the
+latest-one-source and all-source modes expose them under `latest_job`. Those
+hints are intentionally running-only and are suppressed again once the selected
+job reaches a terminal state. Maintained reviewer-facing hints include:
 
 ```text
 phase
@@ -126,6 +232,19 @@ status_message
 
 Those running-job hints are intentionally limited to `get_sync_status`; they
 do not broaden the public `sync_source` or `sync_all` response shapes.
+
+Persisted source `auth_ref` values are references, not secret storage. The only
+retained nonempty form is `env:UPPER_CASE_NAME`; direct source upsert or
+registration normalizes every other form to empty before SQLite writes. Public
+payload formatting independently rejects noncanonical references so legacy or
+bypassed rows cannot expose raw credential material.
+
+Persisted job phases use the finite lifecycle vocabulary `starting`,
+`discovering_pages`, `fetching_page_content`, `indexing_documents`, `completed`,
+and `failed`, plus empty when no phase is set. Storage writes normalize every
+other value to empty, and the MCP boundary omits a noncanonical running phase.
+Free-form diagnostic text belongs only in the separately sanitized
+`status_message` and `error_message` fields.
 
 The numeric hint semantics are phase-aware but should remain monotonic within a
 running sync:
@@ -140,26 +259,48 @@ fetching_page_content:
   upstream_fetched_pages = page bodies fetched so far
 ```
 
-Running-job ownership is part of that status story. A source reports as
-effectively blocked when SQLite still sees an active sync owner/heartbeat for
-that source, which prevents overlapping syncs from starting.
+Queued jobs are deliberately unowned. They remain pending when no worker is
+available and must not be reconciled as failed merely because no running owner
+exists.
+
+Running-job ownership is part of the status story. A source reports as
+effectively blocked when SQLite sees either an active queued job or an active
+worker owner/heartbeat for the running job. That guard prevents overlapping
+same-source syncs.
 
 That blocked state is intentionally recoverable rather than permanent. Recovery
 distinguishes stale jobs, unowned-job grace, dead owners, and the container
 PID-reuse case where an old and new container can both appear as PID `1`.
-During that same-PID edge case, reclaim falls back to the running job's own
-heartbeat staleness window instead of reclaiming immediately from a transient
-owner mismatch.
+Workers persist a process-start identity with each owner heartbeat. On Linux,
+that identity includes the boot id, PID namespace, and process start ticks, so
+a changed start identity is definitive evidence of PID reuse only within the
+same boot and PID namespace. Likewise, an owner PID reported as absent is
+definitive only when the observer is in that same scope. A cross-namespace or
+otherwise unknown scope—including a missing, legacy, malformed, or
+cross-platform process-start identity observed from Linux or macOS—falls back
+to the running job's heartbeat staleness window instead of reclaiming a
+potentially live owner immediately.
+Linux identities are valid only when all four `linux-v2` fields are present and
+the start ticks are a positive ASCII-decimal integer. Darwin identities require
+exactly the prefix, positive ASCII-decimal seconds, and ASCII-decimal
+microseconds from 0 through 999999. Recognized but malformed identities remain
+unknown rather than becoming definitive process mismatches. Numeric fields use
+canonical decimal spelling without leading zeroes; Darwin microseconds may be
+the exact value `0`.
 
 Source sync flow:
 
 ```text
 sync_source
-  -> IngestionService.start_sync_source() for MCP callers
+  -> IngestionService.enqueue_sync_source() for MCP callers
   -> SourceRegistry connector lookup
-  -> MetadataStore source registration and sync job guard
-  -> normally return a running-job payload immediately
-  -> background IngestionService worker fetch/index lifecycle
+  -> MetadataStore atomic enqueue/reuse
+  -> return a queued or already-running job immediately
+
+LaunchAgent worker
+  -> MetadataStore atomic oldest-job claim
+  -> queued -> running with worker owner, pid, and heartbeat
+  -> blocking IngestionService execution for that exact claimed job
   -> Notion, Tistory, GitHub, or Obsidian connector fetch
   -> DocumentChunker
   -> ContentIndexer and Chroma collection
@@ -167,10 +308,13 @@ sync_source
   -> get_sync_status(source_id, job_id) reads that exact job's completion
 ```
 
-If the source already has an active job, `sync_source` returns that existing
-running job instead of starting another one. A disabled source, background-task
-launch failure, or replayed terminal failure may return a failed terminal job
-without entering the normal background lifecycle.
+If the source already has a queued or running job, `sync_source` returns that
+exact active job instead of creating a duplicate. Under the same SQLite write
+transaction, a new disabled-source request is inserted directly as terminal
+failed rather than becoming claimable queue work. A disabled source or enqueue
+failure may therefore return a failed terminal result without entering the
+worker lifecycle. The MCP process never silently falls back to an in-process
+long-running task when the worker is unavailable.
 
 Retained sync safety rule:
 
@@ -183,9 +327,9 @@ Bulk source sync flow:
 ```text
 sync_all
   -> enumerate retained configured sources
-  -> launch or reuse selected source background jobs concurrently
-  -> preserve per-source running-job guards in SQLite
-  -> return before fetching and indexing finish
+  -> enqueue or reuse one durable job per selected source
+  -> preserve per-source queued/running guards in SQLite
+  -> return before the worker claims or completes those jobs
   -> report each launch as started, already_running, skipped, or failed
   -> aggregate launch acceptance as accepted, partial, or failed
   -> caller keeps each started or already_running {source_id, job_id} as a
@@ -215,6 +359,27 @@ When `job_id` is omitted, `get_sync_status(source_id)` retains the existing
 latest-one-source response with `latest_job`, and omitting both arguments
 retains the existing all-source response. Those modes describe current state;
 they are not used to attribute completion to a retained `sync_all` job.
+
+ADR 0009 governs exact-job completion observation through short, paced
+`get_sync_status(source_id, job_id)` requests. ADR 0010 separately governs
+durable execution ownership: SQLite queue/claim/heartbeat state and the
+LaunchAgent-supervised worker, not the observing MCP caller, own execution.
+
+The generic worker claims one job at a time across Notion, Tistory, GitHub, and
+Obsidian. This conservative default avoids concurrent writes through shared
+Chroma and connector state. Source-specific fetching remains inside each
+connector; the durable ownership model is common to every retained source.
+
+MCP and worker shutdown have different semantics:
+
+- MCP shutdown does not own or cancel a worker job.
+- A graceful worker `SIGINT`/`SIGTERM` finalizes its in-flight job as failed
+  without authorizing tombstones from a partial snapshot.
+- An abrupt worker death leaves a running owner/heartbeat record. Existing
+  orphan recovery marks that work failed after the owner is no longer live; v1
+  does not automatically resume a partially executed job.
+- A later caller may enqueue a fresh sync after the failed/orphaned job is
+  reconciled.
 
 Retrieval and answer flow:
 
@@ -269,9 +434,10 @@ internal helper answer flows
   retained MCP surface is still configured source sync through `sync_source`.
   Obsidian is a configured local-vault Markdown source, not a live Obsidian app
   or plugin integration.
-- `indexing`: document indexing lifecycle, deterministic chunking, content
-  hash/chunk-id comparison, Chroma mutation, index status updates, and
-  background sync execution under per-source concurrency guards.
+- `indexing`: durable worker polling/dispatch, document indexing lifecycle,
+  deterministic chunking, content hash/chunk-id comparison, Chroma mutation,
+  index status updates, and worker-owned execution under SQLite queue, claim,
+  heartbeat, and per-source concurrency guards.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
   active-result validation, and internal citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, normalized
@@ -281,7 +447,12 @@ internal helper answer flows
 - `core`: stable shared data models, exception classes, and utility functions.
 - `environments`: configuration defaults, Chroma setup, API version constants,
   and environment-token access.
-- `main.py`: dependency composition and server startup only.
+- shared runtime composition: builds the same config, source registry, chunker,
+  indexer, and metadata store for either process without importing an executing
+  FastMCP transport.
+- `main.py`: FastMCP composition and server startup only.
+- `deploy/launchd` and LaunchAgent helper scripts: macOS user-process
+  supervision and diagnostics. They are not ingestion or persistence layers.
 
 New behavior should start in the module that owns the relevant responsibility.
 Avoid adding cross-module shortcuts in `api/tools.py` when a service boundary is
@@ -405,7 +576,8 @@ ContextWiki is easiest to reason about as four layers:
 ```text
 MCP client
 -> FastMCP tool surface
--> ingestion/search services
+-> durable SQLite job handoff or search services
+-> generic worker and ingestion services
 -> SQLite metadata plus Chroma retrieval storage
 ```
 
@@ -444,9 +616,9 @@ Contract intent:
   candidate gate, and bounded candidate expansion happens before final
   `top_k` truncation when early semantic candidates are out of range.
 - `sync_all` is an aggregate orchestration helper, not a separate ingestion
-  stack. It starts or reuses retained-source background jobs concurrently,
-  preserves each source's existing running-job guard, and returns after launch
-  decisions instead of waiting for ingestion to finish. Per-source
+  stack. It enqueues or reuses retained-source durable jobs, preserves each
+  source's queued/running guard, and returns after acceptance decisions instead
+  of waiting for worker claim or ingestion completion. Per-source
   `launch_outcome` values are `started`, `already_running`, `skipped`, or
   `failed`; the aggregate launch status is `accepted`, `partial`, or `failed`.
   Completion-seeking callers retain `{source_id, job_id}` only from
@@ -514,8 +686,11 @@ Contract intent:
   because default embeddings may send queries to an external provider;
   `list_documents` and `fetch_context` advertise `openWorldHint=False`.
   `list_sources` and `get_sync_status` do not advertise read-only/idempotent
-  hints because their registration refresh can persist configured source
-  metadata. Sync tools also remain mutating operations.
+  hints even though observation overlays configured registry state in memory
+  without persisting that overlay. `get_sync_status` may still reconcile
+  running-job lifecycle through `get_latest_sync_job` / schema init, so
+  read-only or idempotent hints would remain inaccurate. Sync tools also
+  remain mutating operations.
 
 Retained debug-oriented answer inspection surfaces should stay documented and
 stable enough for local evaluation and reviewer use:

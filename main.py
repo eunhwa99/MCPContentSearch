@@ -2,10 +2,11 @@ import logging
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
+from app_runtime import build_ingestion_runtime
 from environments.config import AppConfig, setup_chroma
 from environments.runtime_env import get_env_secret
 from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
-from llama_index.core import StorageContext, Settings
+from llama_index.core import StorageContext
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from indexing.indexer import ContentIndexer
@@ -33,32 +34,25 @@ def create_app() -> FastMCP:
     # 설정 로드
     config = AppConfig()
 
-    # ChromaDB 설정
-    chroma_collection = setup_chroma(config)
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-    # LlamaIndex 설정
-    Settings.cache_dir = config.cache_dir
-
-    # 기본 서비스
-    indexer = ContentIndexer(config, chroma_collection, storage_context)
-    metadata_store = MetadataStore(config.metadata_db_path)
-
-    # ContextWiki source/sync/search 서비스
-    source_registry = build_source_registry(
+    runtime = build_ingestion_runtime(
         config=config,
         notion_api_key=NOTION_API_KEY,
         tistory_blog_name=TISTORY_BLOG_NAME,
         github_token=get_env_secret(config.github_token_env_var),
+        setup_chroma_fn=setup_chroma,
+        vector_store_cls=ChromaVectorStore,
+        storage_context_cls=StorageContext,
+        indexer_cls=ContentIndexer,
+        metadata_store_cls=MetadataStore,
+        source_registry_builder=build_source_registry,
+        chunker_cls=DocumentChunker,
+        ingestion_service_cls=IngestionService,
     )
-    retained_source_ids = [source.source_id for source in source_registry.list_sources()]
-    ingestion_service = IngestionService(
-        metadata_store=metadata_store,
-        source_registry=source_registry,
-        chunker=DocumentChunker(),
-        indexer=indexer,
-    )
+    indexer = runtime.indexer
+    metadata_store = runtime.metadata_store
+    source_registry = runtime.source_registry
+    ingestion_service = runtime.ingestion_service
+    retained_source_ids = list(runtime.retained_source_ids)
     recovered_count = metadata_store.recover_orphaned_running_jobs(
         started_before=process_started_at,
         error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
