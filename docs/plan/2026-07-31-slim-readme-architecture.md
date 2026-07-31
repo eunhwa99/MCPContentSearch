@@ -151,4 +151,4 @@ git diff --cached --check
 | Review-fix (pass3) | done | Docker recreate; missing-plist; config/Docker wording; tombstone diagram; phase table; ADR deadline clock; list_documents fields; error field contract | README + architecture |
 | Review pass 4 | done clean | All three NO ACTIONABLE FINDINGS | [Pass4 correctness](64c0f61d-999a-464e-8fb5-e46d6d10aa55) / [Pass4 security](ded0bebb-56e2-485f-b732-35f5dd7fd8f1) / [Pass4 ops](a3554dd8-7c6f-4b61-a109-1bddc4aa7254) |
 | PR delivery | done | Commit `eae7391`, PR opened | https://github.com/eunaverse/MCPContentSearch/pull/92 |
-| CI fix | in_progress | Restore README/architecture docs-contract phrases for pytest | isolated worktree `.worktrees/slim-ci-fix` |
+| CI fix | done | Restored docs-contract phrases; focused tests pass; pushed | `b0ca47a` |
