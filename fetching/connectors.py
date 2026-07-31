@@ -164,10 +164,12 @@ class GitHubSourceConnector(SourceConnector):
         token: str = "",
         http_client=None,
         allow_stale_cleanup: bool = True,
+        metadata_store=None,
     ):
         self.repositories = tuple(repositories)
         self.config = config
         self.allow_stale_cleanup = allow_stale_cleanup
+        self.metadata_store = metadata_store
         self.progress_callback = None
         self.progress_stop_signal = None
         self.progress_stop_checker = None
@@ -199,6 +201,21 @@ class GitHubSourceConnector(SourceConnector):
         self.source = self.source.model_copy(
             update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
         )
+        # Pin bound method so connector/fetcher identity checks stay stable.
+        self._load_existing_documents_for_page_ids = (
+            self._load_existing_documents_for_page_ids
+        )
+
+    def _load_existing_documents_for_page_ids(
+        self, page_ids: list[str] | tuple[str, ...]
+    ) -> dict[str, DocumentModel]:
+        """Load stored GitHub docs for planned document ids only (no full-corpus browse)."""
+        if self.metadata_store is None:
+            return {}
+        ids = [page_id for page_id in page_ids if page_id]
+        if not ids:
+            return {}
+        return self.metadata_store.get_documents_for_fetch_reuse(ids)
 
     async def fetch_documents(self) -> list[DocumentModel]:
         if not self.source.enabled:
@@ -215,7 +232,9 @@ class GitHubSourceConnector(SourceConnector):
             self.fetcher.progress_stop_checker = getattr(
                 self, "progress_stop_checker", None
             )
-            documents = await self.fetcher.fetch_documents()
+            documents = await self.fetcher.fetch_documents(
+                existing_documents_loader=self._load_existing_documents_for_page_ids,
+            )
         except Exception:
             self.stale_cleanup_disabled_reason = (
                 "Stale cleanup is disabled because the latest GitHub fetch did not complete."
@@ -258,10 +277,11 @@ class GitHubSourceConnector(SourceConnector):
 class ObsidianSourceConnector(SourceConnector):
     supports_stale_cleanup = True
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, metadata_store=None):
         self.vault_path = config.obsidian_vault_path
         self.max_files = config.obsidian_max_files
         self.max_file_bytes = config.obsidian_max_file_bytes
+        self.metadata_store = metadata_store
         self.progress_callback = None
         self.progress_stop_signal = None
         self.source = SourceModel(
@@ -288,6 +308,17 @@ class ObsidianSourceConnector(SourceConnector):
             }
         )
 
+    def _load_existing_documents_for_page_ids(
+        self, page_ids: list[str] | tuple[str, ...]
+    ) -> dict[str, DocumentModel]:
+        """Load stored Obsidian docs for listed note ids only (no full-corpus browse)."""
+        if self.metadata_store is None:
+            return {}
+        ids = [page_id for page_id in page_ids if page_id]
+        if not ids:
+            return {}
+        return self.metadata_store.get_documents_for_fetch_reuse(ids)
+
     async def fetch_documents(self) -> list[DocumentModel]:
         self.refresh_source_state()
         if not self.source.enabled:
@@ -300,6 +331,7 @@ class ObsidianSourceConnector(SourceConnector):
                 max_file_bytes=self.max_file_bytes,
                 progress_callback=self.progress_callback,
                 progress_stop_signal=getattr(self, "progress_stop_signal", None),
+                existing_documents_loader=self._load_existing_documents_for_page_ids,
             )
         except Exception:
             self.supports_stale_cleanup = False

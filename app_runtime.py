@@ -2,7 +2,13 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from environments.config import AppConfig, setup_chroma
-from fetching.connectors import NotionSourceConnector, SourceRegistry, build_source_registry
+from fetching.connectors import (
+    GitHubSourceConnector,
+    NotionSourceConnector,
+    ObsidianSourceConnector,
+    SourceRegistry,
+    build_source_registry,
+)
 from indexing.chunker import DocumentChunker
 from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
@@ -22,16 +28,21 @@ class IngestionRuntime:
     retained_source_ids: tuple[str, ...]
 
 
-def _wire_notion_metadata_store(
+def _wire_connector_metadata_stores(
     source_registry: SourceRegistry,
     metadata_store: MetadataStore,
 ) -> None:
-    try:
-        connector = source_registry.get_connector("source_notion")
-    except ValueError:
-        return
-    if isinstance(connector, NotionSourceConnector):
-        connector.metadata_store = metadata_store
+    for source_id, connector_type in (
+        ("source_notion", NotionSourceConnector),
+        ("source_obsidian", ObsidianSourceConnector),
+        ("source_github", GitHubSourceConnector),
+    ):
+        try:
+            connector = source_registry.get_connector(source_id)
+        except ValueError:
+            continue
+        if isinstance(connector, connector_type):
+            connector.metadata_store = metadata_store
 
 
 def build_ingestion_runtime(
@@ -63,7 +74,7 @@ def build_ingestion_runtime(
         tistory_blog_name=tistory_blog_name,
         github_token=github_token,
     )
-    _wire_notion_metadata_store(source_registry, metadata_store)
+    _wire_connector_metadata_stores(source_registry, metadata_store)
     ingestion_service = ingestion_service_cls(
         metadata_store=metadata_store,
         source_registry=source_registry,

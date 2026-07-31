@@ -1,5 +1,7 @@
+import asyncio
 import base64
 import binascii
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 import inspect
 import json
@@ -237,10 +239,16 @@ class GitHubRepositoryFetcher:
         self.progress_stop_signal = None
         self.progress_stop_checker = None
 
-    async def fetch_documents(self) -> list[DocumentModel]:
+    async def fetch_documents(
+        self,
+        existing_documents: Mapping[str, DocumentModel] | None = None,
+        existing_documents_loader: Callable[[Sequence[str]], Mapping[str, DocumentModel]]
+        | None = None,
+    ) -> list[DocumentModel]:
         self.snapshot_complete = True
         self.repository_specs = []
         documents: list[DocumentModel] = []
+        known_documents: dict[str, DocumentModel] = dict(existing_documents or {})
         progress_callback = self.progress_callback
         progress_stop_signal = getattr(self, "progress_stop_signal", None)
         progress_stop_checker = getattr(self, "progress_stop_checker", None)
@@ -269,13 +277,50 @@ class GitHubRepositoryFetcher:
                 stop_signal=progress_stop_signal,
             ):
                 raise _StopRequested
+
+            if existing_documents_loader is not None:
+                document_ids = [
+                    self._document_id_for_entry(spec, entry)
+                    for spec, _snapshot, entries in planned
+                    for entry in entries
+                ]
+                loaded = await asyncio.to_thread(
+                    existing_documents_loader, document_ids
+                )
+                known_documents.update(dict(loaded or {}))
+
             current_page = 0
             for spec, snapshot, entries in planned:
                 for entry in entries:
+                    current_page += 1
+                    document_id = self._document_id_for_entry(spec, entry)
+                    existing = known_documents.get(document_id)
+                    if _should_skip_github_blob_fetch(existing, entry.get("sha", "")):
+                        assert existing is not None
+                        documents.append(
+                            self._to_document(
+                                spec,
+                                snapshot,
+                                entry,
+                                existing.content,
+                                content_hash=existing.content_hash or "",
+                            )
+                        )
+                        if await _emit_progress(
+                            progress_callback,
+                            {
+                                "event": "page_fetch_skipped",
+                                "current_page": current_page,
+                                "total_pages": total_pages,
+                                "page_id": document_id,
+                            },
+                            stop_signal=progress_stop_signal,
+                        ):
+                            raise _StopRequested
+                        continue
                     content = await self._fetch_blob_text(
                         spec, entry["sha"], entry["size"]
                     )
-                    current_page += 1
                     if content is None:
                         self.snapshot_complete = False
                         if await _emit_progress(
@@ -526,12 +571,22 @@ class GitHubRepositoryFetcher:
         lower = path.lower()
         return any(lower.endswith(extension) for extension in TEXT_EXTENSIONS)
 
+    def _document_id_for_entry(
+        self,
+        spec: GitHubRepositorySpec,
+        entry: dict[str, Any],
+    ) -> str:
+        identity_owner, identity_repo = _repository_identity(spec)
+        return f"github:{identity_owner}/{identity_repo}:{entry['path']}"
+
     def _to_document(
         self,
         spec: GitHubRepositorySpec,
         snapshot: GitHubRepositorySnapshot,
         entry: dict[str, Any],
         content: str,
+        *,
+        content_hash: str = "",
     ) -> DocumentModel:
         path = entry["path"]
         identity_owner, identity_repo = _repository_identity(spec)
@@ -550,6 +605,7 @@ class GitHubRepositoryFetcher:
             path=path,
             updated_at=entry.get("sha", ""),
             version_id=entry.get("sha", ""),
+            content_hash=content_hash,
         )
 
     def _headers(self) -> dict[str, str]:
@@ -939,6 +995,22 @@ def _ensure_unique_repository_specs(specs: list[GitHubRepositorySpec]) -> None:
 
 def _repository_identity(spec: GitHubRepositorySpec) -> tuple[str, str]:
     return spec.owner.lower(), spec.repo.lower()
+
+
+def _should_skip_github_blob_fetch(
+    existing: DocumentModel | None,
+    sha: str,
+) -> bool:
+    """Reuse stored content when active doc version_id matches tree blob SHA."""
+    if existing is None:
+        return False
+    if not existing.content:
+        return False
+    if existing.deleted_at:
+        return False
+    if not sha:
+        return False
+    return existing.version_id == sha
 
 
 def _valid_owner_repo_ref(owner: str, repo: str, ref: str) -> bool:

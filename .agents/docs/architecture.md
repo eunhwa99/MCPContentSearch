@@ -273,9 +273,9 @@ fetch_context(document_id="", chunk_id="") -> dict
 | Source | Stable identity | Dates / version | Notes |
 | --- | --- | --- | --- |
 | Notion | page id | `published_at`/`modified_at`, `date_provenance="notion"` | Skip `fetch_block_content` when active stored doc has content and canonical `modified_at` matches page `last_edited_time` (or `created_time`); batched skip/reuse fields only; skipped pages still in snapshot for `last_seen` / cleanup |
-| Tistory | `blog_name:post_id` | `published_at`, `date_provenance="tistory"` | — |
-| GitHub | repository path | blob SHA → `version_id` only (not a mod timestamp) | Prefix-scoped stale cleanup (below) |
-| Obsidian | relative note path | mtime → `modified_at`, `date_provenance="filesystem"`; `obsidian://open` as citation URL | Local vault Markdown; not a live Obsidian app |
+| Tistory | `blog_name:post_id` | `published_at`, `date_provenance="tistory"` | No cheap remote change token before HTML body download (`published_at` only after fetch); fetch-before-index skip is intentionally out of scope |
+| GitHub | repository path | blob SHA → `version_id` only (not a mod timestamp) | Skip `_fetch_blob_text` when active stored doc has content and `version_id` matches tree blob SHA; batched skip/reuse fields only; skipped blobs still in snapshot for `last_seen` / prefix cleanup |
+| Obsidian | relative note path | mtime → `modified_at`, `date_provenance="filesystem"`; `obsidian://open` as citation URL | Skip note byte read when active stored doc has content and canonical `modified_at` matches filesystem mtime; batched skip/reuse fields include title and citation `line_start`; skipped notes still in snapshot for `last_seen` / cleanup; local vault Markdown, not a live Obsidian app |
 
 Lifecycle fields: `external_id`, `document_id`, `canonical_url`, `version_id`,
 `published_at`, `modified_at`, `indexed_at`, `date_provenance`, `last_seen_at`,

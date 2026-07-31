@@ -2770,3 +2770,304 @@ def test_github_fetch_aborts_mid_owner_resolve_via_inactive_job_stop():
     assert not any("/commits/" in url for url in http.urls)
     assert connector.fetcher.repository_specs == []
     assert connector.fetcher.snapshot_complete is False
+
+
+def _existing_github_document(
+    document_id: str,
+    *,
+    content: str,
+    version_id: str,
+    deleted_at: str = "",
+    content_hash: str | None = None,
+    path: str = "",
+):
+    from core.models import DocumentModel
+    from core.utils import ContentHasher
+
+    resolved_hash = content_hash
+    if resolved_hash is None:
+        resolved_hash = ContentHasher.hash_content(content) if content else ""
+    return DocumentModel(
+        id=document_id,
+        document_id=document_id,
+        external_id=document_id,
+        source_id="source_github",
+        title=document_id,
+        content=content,
+        url=f"https://github.com/example/{path}",
+        canonical_url=f"https://github.com/example/{path}",
+        platform="GitHub",
+        path=path,
+        version_id=version_id,
+        deleted_at=deleted_at,
+        content_hash=resolved_hash,
+    )
+
+
+def _github_blob_urls(client) -> list[str]:
+    return [url for url, _ in client.json_urls if "/git/blobs/" in url]
+
+
+def _progress_advanced_for_github_page(
+    events, *, current_page: int, total_pages: int
+) -> bool:
+    for event in events:
+        if event.get("current_page") != current_page:
+            continue
+        if event.get("total_pages") != total_pages:
+            continue
+        if event.get("event") == "page_fetch_skipped":
+            return True
+        if event.get("event") == "page_fetch_completed" and event.get("skipped") is True:
+            return True
+    return False
+
+
+class SingleBlobGitHubHTTP:
+    """Minimal fake: one text blob under eunhwa99/MCPContentSearch@main."""
+
+    def __init__(self, *, path="README.md", body=b"# Stored\n", sha_label="blob-readme"):
+        self.json_urls = []
+        self.path = path
+        self.body = body
+        self.sha_label = sha_label
+        self.sha = _sha(sha_label)
+
+    async def get_json(self, url, headers=None):
+        url = _labelled_url(url)
+        self.json_urls.append((url, headers or {}))
+        if "/commits/main" in url:
+            return {
+                "sha": _sha("commit-main"),
+                "commit": {"tree": {"sha": _sha("tree-main")}},
+            }
+        if "/git/trees/tree-main" in url:
+            return {
+                "tree": [
+                    {
+                        "path": self.path,
+                        "type": "blob",
+                        "sha": self.sha,
+                        "size": len(self.body),
+                    }
+                ]
+            }
+        if f"/git/blobs/{self.sha_label}" in url:
+            return _blob_payload(self.body)
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+def test_fetch_github_skip_unchanged_blob_reuses_stored_content():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP()
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    stored_body = "# Stored reused body\n"
+    existing = {
+        document_id: _existing_github_document(
+            document_id,
+            content=stored_body,
+            version_id=client.sha,
+            path="README.md",
+        )
+    }
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+    fetcher.progress_callback = capture
+
+    documents = asyncio.run(
+        fetcher.fetch_documents(existing_documents=existing)
+    )
+
+    assert _github_blob_urls(client) == []
+    assert len(documents) == 1
+    assert documents[0].document_id == document_id
+    assert documents[0].content == stored_body
+    assert documents[0].version_id == client.sha
+    assert documents[0].content_hash == existing[document_id].content_hash
+    assert fetcher.snapshot_complete is True
+    assert _progress_advanced_for_github_page(events, current_page=1, total_pages=1)
+
+
+def test_fetch_github_fetch_skip_still_fetches_when_version_id_differs():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP(body=b"# Fresh\n")
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    existing = {
+        document_id: _existing_github_document(
+            document_id,
+            content="# Stale\n",
+            version_id=_sha("blob-old"),
+            path="README.md",
+        )
+    }
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+
+    documents = asyncio.run(
+        fetcher.fetch_documents(existing_documents=existing)
+    )
+
+    assert any(
+        f"/git/blobs/{client.sha_label}" in url for url in _github_blob_urls(client)
+    )
+    assert documents[0].content == "# Fresh\n"
+    assert documents[0].version_id == client.sha
+
+
+def test_fetch_github_fetch_skip_still_fetches_when_existing_missing():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP(body=b"# New\n")
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+
+    documents = asyncio.run(fetcher.fetch_documents(existing_documents={}))
+
+    assert any("/git/blobs/" in url for url in _github_blob_urls(client))
+    assert documents[0].content == "# New\n"
+
+
+def test_fetch_github_fetch_skip_still_fetches_when_tombstoned():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP(body=b"# Revived\n")
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    existing = {
+        document_id: _existing_github_document(
+            document_id,
+            content="# Tombstoned\n",
+            version_id=client.sha,
+            path="README.md",
+            deleted_at="2026-06-03T00:00:00Z",
+        )
+    }
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+
+    documents = asyncio.run(
+        fetcher.fetch_documents(existing_documents=existing)
+    )
+
+    assert any("/git/blobs/" in url for url in _github_blob_urls(client))
+    assert documents[0].content == "# Revived\n"
+
+
+def test_fetch_github_fetch_skip_still_fetches_when_content_empty():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP(body=b"# Nonempty\n")
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    existing = {
+        document_id: _existing_github_document(
+            document_id,
+            content="",
+            version_id=client.sha,
+            path="README.md",
+            content_hash="",
+        )
+    }
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+
+    documents = asyncio.run(
+        fetcher.fetch_documents(existing_documents=existing)
+    )
+
+    assert any("/git/blobs/" in url for url in _github_blob_urls(client))
+    assert documents[0].content == "# Nonempty\n"
+
+
+def test_fetch_github_fetch_reuse_loader_after_tree_planning(monkeypatch):
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = SingleBlobGitHubHTTP(body=b"# Keep\n")
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    existing = {
+        document_id: _existing_github_document(
+            document_id,
+            content="# Reused\n",
+            version_id=client.sha,
+            path="README.md",
+        )
+    }
+    call_order: list[object] = []
+
+    original_fetch_tree = GitHubRepositoryFetcher._fetch_tree
+
+    async def tracking_fetch_tree(self, spec, snapshot):
+        call_order.append("tree")
+        return await original_fetch_tree(self, spec, snapshot)
+
+    def loader(ids):
+        call_order.append(("loader", tuple(ids)))
+        return {doc_id: existing[doc_id] for doc_id in ids if doc_id in existing}
+
+    monkeypatch.setattr(GitHubRepositoryFetcher, "_fetch_tree", tracking_fetch_tree)
+
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        http_client=client,
+    )
+
+    documents = asyncio.run(
+        fetcher.fetch_documents(existing_documents_loader=loader)
+    )
+
+    assert call_order[0] == "tree"
+    assert ("loader", (document_id,)) in call_order
+    assert call_order.index("tree") < call_order.index(("loader", (document_id,)))
+    assert _github_blob_urls(client) == []
+    assert documents[0].content == "# Reused\n"
+
+
+def test_should_skip_github_blob_fetch_reuse_helper():
+    from fetching.github import _should_skip_github_blob_fetch
+
+    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    sha = _sha("blob-readme")
+    existing = _existing_github_document(
+        document_id,
+        content="# Body\n",
+        version_id=sha,
+        path="README.md",
+    )
+
+    assert _should_skip_github_blob_fetch(existing, sha) is True
+    assert _should_skip_github_blob_fetch(existing, _sha("blob-other")) is False
+    assert _should_skip_github_blob_fetch(None, sha) is False
+    assert (
+        _should_skip_github_blob_fetch(
+            _existing_github_document(
+                document_id,
+                content="",
+                version_id=sha,
+                path="README.md",
+                content_hash="",
+            ),
+            sha,
+        )
+        is False
+    )
