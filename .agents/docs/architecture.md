@@ -1,12 +1,5 @@
 # Architecture
 
-## Purpose
-
-Maintained design reference for slim `MCPContentSearch`. Harness planning and
-review use it to keep changes inside the focused MCP retrieval scope and to
-catch contract or data-safety regressions. Prefer diagrams and short constraint
-bullets over essays; do not invent behavior beyond current implementation.
-
 ## Runtime Structure
 
 ```mermaid
@@ -21,22 +14,50 @@ flowchart LR
   Worker --> Index[fetch + index lifecycle]
 ```
 
-| Concern | Rule |
+Two processes share one SQLite DB and one Chroma store:
+
+| Node | Meaning |
 | --- | --- |
-| Config | FastMCP and worker each snapshot config/connectors at startup. Operators must restart both processes after `.env` / source-target changes — LaunchAgent: restart script; Docker worker: recreate with `docker stop`/`rm` + same `docker run ... --env-file` (`docker restart` keeps old env) |
-| SQLite connections | Operation-scoped: short-lived connection, transaction commit/rollback, deterministic close (no GC reliance) |
-| Authority | SQLite = lifecycle + citation gate; Chroma = retrieval accelerator only |
-| LaunchAgent | Process supervisor only — not a queue, scheduler DB, or lifecycle authority |
+| MCP client → FastMCP | Claude/Cursor calls MCP tools (`sync_*`, `search_*`, …) |
+| LaunchAgent / Docker → Worker | Supervises `indexing.sync_worker` so sync keeps running after the MCP client stops |
+| SQLite jobs + lifecycle | Same `MetadataStore`: job queue (enqueue/claim/status) **and** document/chunk/tombstone lifecycle |
+| search / MetadataStore reads | FastMCP read path: active-gate search, `list_documents`, `fetch_context`, status |
+| fetch + index lifecycle | Worker write path: fetch source → chunk → write Chroma → update SQLite → terminal job status |
+| Chroma vectors | Semantic candidate store only; SQLite decides what is still active/citeable |
 
-### LaunchAgent constraints (compressed)
+### Workflow
 
-- Fail-closed privacy sanitizer on startup stderr (credentials, Cookie/Set-Cookie, provider URLs, local paths); same sanitizer before SQLite error text and MCP responses
-- Sanitizer import/runtime failure appends only a fixed bounded diagnostic — never the rejected raw stream
-- launchd stdout/stderr are not used as unbounded persistent logs; retained Python logs rotate and stay privacy-filtered
-- Installer secures default log dir `0700` (custom dirs must already meet ownership/mode or install fails)
-- Exclusive per-label install/restart/uninstall lock; PID + process-start reclaim rules; status helper is read-only and unlocked
-- Uninstall targets `gui/<uid>/<label>`, not plist path
-- Identical-config install: leave loaded service; bootstrap unloaded. If the rendered plist changed, plain install **stops with guidance** and does not silently apply — use explicit `--restart` (transactional; restores prior plist on bootstrap failure). A loaded service with a **missing** plist also needs explicit `--restart`; with no prior plist to restore, bootstrap failure leaves the service unloaded
+1. Client asks FastMCP to sync → FastMCP **enqueues** (or reuses) a job in SQLite and returns.
+2. Worker **claims** the job, runs fetch + index, writes Chroma + SQLite lifecycle, marks the job succeeded/failed.
+3. Client asks FastMCP to search → FastMCP pulls Chroma candidates, applies the **active gate**, returns evidence.
+4. Client can **status**-poll the exact job with `get_sync_status(source_id, job_id)`.
+
+LaunchAgent/Docker only keep the worker process alive. They are not the queue;
+SQLite is. After `.env` or source-target changes, restart FastMCP **and** the
+worker (LaunchAgent restart script, or Docker recreate with the same
+`docker run ... --env-file` — `docker restart` keeps the old env).
+
+### Job queue: enqueue / claim / status
+
+| Term | Who | Meaning |
+| --- | --- | --- |
+| **enqueue** | FastMCP (`sync_source` / `sync_all`) | Insert a new sync job as `queued`, or return the existing queued/running job for that source (no duplicate). Returns immediately — does not wait for fetch/index. |
+| **claim** | Worker | Atomically take the next `queued` job → `running`, attach owner/pid/heartbeat, then execute fetch + index for that job. |
+| **status** | FastMCP (`get_sync_status`) | Read the job (or source's latest job) from SQLite: `queued` / `running` / `succeeded` / `failed`. Exact-job mode uses both `source_id` and `job_id`. |
+
+### Document / chunk / tombstone lifecycle
+
+SQLite tracks what content exists and whether it may be cited — separate from Chroma vectors:
+
+| Unit | Role |
+| --- | --- |
+| **document** | One synced page/note/file (identity, timestamps, active vs deleted). Sync unit. |
+| **chunk** | Search/citation unit carved from a document (text + citation metadata). |
+| **tombstone** | Soft-delete marker (`deleted_at`, …) for content that disappeared from a **complete successful** cleanup-capable sync. Stale Chroma hits for tombstoned docs must not be returned as evidence. Failed/partial syncs must not tombstone absences. |
+
+### Active-gate search
+
+Chroma only proposes semantic **candidates**. Before results go to the client, SQLite checks each hit is still an **active** (non-tombstoned) document/chunk and passes date/source filters. That check is the **active gate**. Without it, search could cite deleted or out-of-range content just because an old vector still exists.
 
 ## Module Map
 
@@ -55,31 +76,26 @@ flowchart LR
 New behavior starts in the owning module; avoid cross-module shortcuts in
 `api/tools.py` when a service boundary fits.
 
-### MetadataStore extraction caution
-
-`storage/metadata_store.py` centralizes SQLite concerns. Future extraction must
-preserve the public interface, method signatures, transaction semantics,
-exception behavior, SQL schema, and MCP payloads. Move one boundary at a time;
-verify with temp-SQLite storage tests then sync/retrieval/E2E. Do not inspect or
-migrate user databases during internal extraction.
-
 ## Core Mental Model
+
+End-to-end data path: **sync writes** into stores, then **search reads** through
+the active gate. Chroma sits in the middle.
 
 ```mermaid
 flowchart TD
-  Sync[Configured source sync] --> Identity[Normalized identity + content hashes]
-  Identity --> Chunk[Deterministic chunking]
-  Chunk --> ChromaCand[Chroma semantic candidates]
-  ChromaCand --> Gate[SQLite active-document / date gate]
-  Gate --> Evidence[Chunk evidence / grouped browse / citation helpers]
+  subgraph syncWrite [Sync — write path]
+    Sync[Configured source sync] --> Identity[Stable document identity + content hash]
+    Identity --> Chunk[Deterministic chunking]
+    Chunk --> WriteChroma[Write / update Chroma vectors]
+    Chunk --> WriteSQL[Write SQLite document / chunk lifecycle]
+  end
+  subgraph searchRead [Search — read path]
+    Cand[Chroma semantic candidates] --> Gate[SQLite active-document / date gate]
+    Gate --> Evidence[Chunk evidence / grouped browse / citation helpers]
+  end
+  WriteChroma -.-> Cand
+  WriteSQL -.-> Gate
 ```
-
-- Source sync is the only retained ingestion entrypoint.
-- SQLite is lifecycle + citation-safe evidence authority; Chroma is not.
-- `search_context` = chunk evidence; `search_documents` = grouped browse with
-  `matched_context`; `list_documents` = query-less date browse (no Chroma).
-- `CitationAnswerService` is internal, on validated evidence — not a separate stack.
-- Deterministic local query normalization only (no LLM query rewrite).
 
 ## Sync / Job Ownership
 
@@ -96,7 +112,7 @@ sequenceDiagram
   Q-->>W: running + owner/pid/heartbeat
   W->>S: blocking sync for claimed job
   S->>Q: documents/chunks + terminal status
-  Note over S,Q: Tombstones only on complete successful cleanup-capable sync
+  Note over S,Q: Soft-delete missing docs only after a full successful sync on cleanup-capable sources
   MCP->>Q: get_sync_status(source_id, job_id) exact job
 ```
 
@@ -120,44 +136,27 @@ sequenceDiagram
 Tombstones only after a **complete successful** cleanup-capable snapshot.
 Failed, partial, or bound-truncated snapshots must not tombstone absences.
 
-### Public job status vs phases
+**cleanup-capable:** the source can prove a full remote/vault inventory for this
+sync (Notion search, GitHub tree, Obsidian walk when bounds are not exceeded).
+Tistory is not — its id-scan cannot prove “everything that exists” — so it never
+tombstones absences.
 
-Public `job.status` (what observers poll): `queued` → `running` → terminal
-`succeeded` or `failed`. Do **not** treat phase names as status.
+### Job status (and optional phase)
 
-Running-only progress hints on `get_sync_status` use a separate `phase` field
-(suppressed again once `job.status` is terminal):
-
-| Phase | `upstream_total_pages` | `upstream_fetched_pages` |
-| --- | --- | --- |
-| `starting` | — | — |
-| `discovering_pages` | discovered so far | `0` |
-| `fetching_page_content` | final discovered count | bodies fetched so far |
-| `indexing_documents` | (final) | (final) |
-
-Persisted phases also include terminal markers `completed` / `failed` (else
-empty). Free-form text only in sanitized `status_message` / `error_message`.
+- **`job.status`:** `queued` → `running` → `succeeded` | `failed` (what clients poll).
+- **`phase`:** optional running-only progress hint (`starting`, `discovering_pages`,
+  …). Not a substitute for `status`. Detail / polling policy: ADR 0009.
 
 ### `sync_source` / `sync_all`
 
-- `sync_source`: enqueue/reuse; return queued or already-running immediately.
-  Disabled source → terminal failed in the same write transaction. No silent
-  in-process long-running fallback when the worker is down.
-- Worker claims **one** job at a time across all sources (shared Chroma/connector safety).
+- `sync_source`: enqueue or reuse active job; return immediately (not wait for
+  fetch/index). Disabled source → terminal `failed` in the same write.
+- Worker claims work from SQLite (see Runtime Structure); MCP does not run
+  long sync in-process when the worker is down.
 - `sync_all`: launch acceptance only (`started` / `already_running` / `skipped` /
-  `failed`; aggregate `accepted` / `partial` / `failed`). Completion via paced
-  exact `get_sync_status(source_id, job_id)` — not `latest_job`.
-- Observation (ADR 0009): paced exact `get_sync_status(source_id, job_id)` reads
-  the `job` payload — never substitute a newer `latest_job` on errors or when
-  attributing completion. Stop a target when exact `job.status` is terminal
-  `succeeded` or `failed`. Start 2s, backoff cap 10s, one overall 5-minute
-  deadline measured from the start of completion observation after `sync_all`
-  returns; also stop after 3 consecutive status errors or missing exact `job`;
-  a successful exact-job response resets that target's consecutive error count;
-  deadline reports still-running IDs without cancelling — observation may
-  **resume later with the same exact IDs**. Server does not push or auto-poll.
-- Omitting `job_id` keeps latest-one-source / all-source shapes for current-state
-  inspection only.
+  `failed`). Completion = client polls exact
+  `get_sync_status(source_id, job_id)` until terminal — not `latest_job`.
+  Timing/backoff: ADR 0009.
 
 ## Retrieval
 

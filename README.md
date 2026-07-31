@@ -35,8 +35,6 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 | `list_documents(...)` | Browse active docs by date (no semantic query; cursor pagination) |
 | `fetch_context(document_id="", chunk_id="")` | Fetch stored document/chunks by ID |
 
-`matched_context` is specific to `search_documents`. Date/source `filters` (and sort/pagination options) are documented in [Architecture](.agents/docs/architecture.md).
-
 | Source | `source_id` |
 |--------|-------------|
 | Notion | `source_notion` |
@@ -52,7 +50,10 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 | Refresh Notion | `sync_source("source_notion")` |
 | Refresh everything | `sync_all()`, then exact-job `get_sync_status` |
 | Find evidence on X | `search_context(...)` |
-| Newest docs from July | `list_documents(filters=..., sort_by="indexed_at")` |
+| Show each matching document about X | `search_documents(...)` |
+| Newest docs from July (by index time) | `list_documents(filters={"indexed_from": "2026-07-01"}, sort_by="indexed_at", sort_order="desc")` |
+| Show docs by publication date | `list_documents(sort_by="published_at", sort_order="desc")` |
+| Open the document / chunk you just found | `fetch_context(document_id="...")` or `fetch_context(chunk_id="...")` |
 
 ---
 
@@ -63,10 +64,11 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 ```bash
 uv sync --locked
 cp .env.example .env
+./scripts/install_sync_worker_launch_agent.sh   # macOS: background sync worker
 uv run --locked python main.py
 ```
 
-This starts **only** the FastMCP process. Durable sync also needs the [sync worker](#durable-sync-worker). Queued jobs stay queued until a worker claims them.
+This starts the FastMCP process. The LaunchAgent worker claims queued sync jobs. Without a worker, jobs stay `queued`. (Dev alternative: run `uv run --locked python -m indexing.sync_worker` in another terminal — see [Durable sync worker](#durable-sync-worker).)
 
 **Docker** (MCP stdio + separate worker; share `.env` and the same named volume):
 
@@ -81,8 +83,6 @@ docker run -d --name contextwiki-sync-worker --restart unless-stopped \
   --env-file .env -v contextwiki_data:/home/appuser/.mcp_content_search \
   contextwiki /app/.venv/bin/python -m indexing.sync_worker
 ```
-
-Bound Docker logs (`max-size` / `max-file`) — the container worker is not behind the LaunchAgent stderr sanitizer. `unless-stopped` restarts after a crash; `docker stop` leaves it stopped. Graceful stop fails the in-flight job; abrupt crash uses SQLite owner/heartbeat recovery.
 
 For Obsidian in Docker: `-v "/path/to/vault:/vault:ro"` and `CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/vault`.
 
@@ -112,13 +112,13 @@ GITHUB_TOKEN=...                  # private repos / higher rate limits
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
 ```
 
-GitHub targets: `owner`, `owner/repo`, or `owner/repo@ref` (comma/newline separated). Do not combine an owner with one of its repos. See [Architecture](.agents/docs/architecture.md) for resolution rules.
+GitHub targets (comma/newline separated): `owner` = that account’s visible repos on each default branch; `owner/repo` = one repo at `CONTEXTWIKI_GITHUB_DEFAULT_REF` (default `main`); `owner/repo@ref` = one repo at that ref. Do not list an `owner` together with one of its repos — overlapping targets are rejected.
 
 ---
 
 ## Client setup
 
-### Claude Desktop (local uv, recommended on macOS)
+### Claude Desktop (local uv)
 
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -176,12 +176,9 @@ Add the same local uv block to `.cursor/mcp.json`.
 
 ## After connecting
 
-1. **One source:** `sync_source("source_notion")` → if `queued`/`running`, keep `{source_id, job_id}` and poll exact-job `get_sync_status` until `succeeded` or `failed`. Immediate tool `failed` uses `error_message`; tool `error` uses `message`; after observation ends in `failed`, inspect `job.error_message`.
-2. **All sources:** `sync_all()` once → check each `results[].launch_outcome` (`started` / `already_running` / `skipped` / `failed`). Retain `{source_id, job_id}` only for `started` and `already_running`.
-3. **Observe:** paced exact-job status calls (not `latest_job`). Bounded observation policy (intervals, deadline, error handling): [Architecture](.agents/docs/architecture.md).
-4. **Search/browse:** `search_context`, `search_documents`, or `list_documents` on succeeded sources.
-
-`sync_all()` top-level status is launch acceptance (`accepted` / `partial` / `failed`), not sync completion.
+1. Sync one source (`sync_source`) or all (`sync_all`).
+2. Poll `get_sync_status` with the returned `source_id` + `job_id` until it finishes.
+3. Search or browse with `search_context`, `search_documents`, or `list_documents`.
 
 **Example prompt:**
 ```text
@@ -194,30 +191,34 @@ find my projects about DynamoDB and organize it with STAR method. Answer in Engl
 
 ## Durable sync worker
 
-FastMCP queues jobs; a separate worker claims them. Credentials stay in `.env`; the LaunchAgent plist holds only absolute paths.
+`main.py` alone starts the MCP server. Sync jobs still need a **separate worker** that claims and runs them.
 
-**Foreground (dev):** `uv run --locked python -m indexing.sync_worker`
-
-**macOS LaunchAgent:**
+**Usual setup on macOS:** install the LaunchAgent once.
 
 ```bash
-./scripts/install_sync_worker_launch_agent.sh --dry-run   # preview
-./scripts/install_sync_worker_launch_agent.sh             # install/start
-./scripts/status_sync_worker_launch_agent.sh
-./scripts/restart_sync_worker_launch_agent.sh
-./scripts/uninstall_sync_worker_launch_agent.sh
+./scripts/install_sync_worker_launch_agent.sh --dry-run   # optional path preview
+./scripts/install_sync_worker_launch_agent.sh             # install + start
 ```
 
-Use `--restart` when the rendered plist changed. Logs: `~/.mcp_content_search/logs/sync-worker.log` (and `sync-worker-startup.log`). Installing the LaunchAgent starts a persistent process that can access configured sources and the local SQLite/Chroma stores.
+Use the others only when needed:
 
-**Runtime**
+```bash
+./scripts/status_sync_worker_launch_agent.sh              # is it running?
+./scripts/restart_sync_worker_launch_agent.sh             # after .env / source-target changes
+./scripts/uninstall_sync_worker_launch_agent.sh           # remove it
+```
 
-- Stopping FastMCP/MCP client does **not** stop a worker-owned job.
-- Stopping/uninstalling the worker stops execution (graceful → in-flight `failed`; abrupt → owner/heartbeat recovery). After recovery, wait until the orphaned job is terminal `failed`, then enqueue a **fresh** sync — v1 does not auto-resume partial work.
-- `queued` = accepted, unclaimed; `running` = worker-owned; `succeeded`/`failed` = terminal.
-- One job at a time across all sources.
+Logs: `~/.mcp_content_search/logs/sync-worker.log` (and `sync-worker-startup.log`).
 
-Installer lock/sanitizer/log-rotation details: [Architecture](.agents/docs/architecture.md).
+**Foreground (dev):** run the same worker in a terminal instead of LaunchAgent. Closing the terminal stops it.
+
+```bash
+uv run --locked python -m indexing.sync_worker
+```
+
+With Docker, the Quick Start `contextwiki-sync-worker` container is this worker.
+
+Closing the MCP client does not stop an in-flight sync if the worker is still up. Stopping the worker fails the current job; request a fresh sync afterward.
 
 ---
 
