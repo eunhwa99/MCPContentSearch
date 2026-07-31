@@ -6038,3 +6038,133 @@ def test_get_documents_for_fetch_reuse_omits_missing_ids(tmp_path):
 
     assert set(loaded) == {"page-only"}
     assert loaded["page-only"].content == "only-body"
+
+
+def test_update_sync_job_dual_writes_upstream_progress_to_legacy_page_columns(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_notion",
+            source_type=SourceType.NOTION,
+            name="Notion",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_notion")
+    assert started is True
+
+    updated = store.update_sync_job(
+        job.job_id,
+        upstream_total=12,
+        upstream_done=5,
+        phase="fetching_page_content",
+        status_message="Fetching upstream items 5/12 before indexing begins.",
+    )
+
+    assert updated.upstream_total == 12
+    assert updated.upstream_done == 5
+    with store._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT upstream_total, upstream_done,
+                   upstream_total_pages, upstream_fetched_pages
+            FROM sync_jobs WHERE job_id = ?
+            """,
+            (job.job_id,),
+        ).fetchone()
+    assert row["upstream_total"] == 12
+    assert row["upstream_done"] == 5
+    assert row["upstream_total_pages"] == 12
+    assert row["upstream_fetched_pages"] == 5
+
+
+def test_sync_job_read_prefers_primary_upstream_fields_even_when_zero(
+    tmp_path,
+):
+    """Primary zeros are intentional (e.g. search_completed); do not resurface legacy."""
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_source(
+        SourceModel(
+            source_id="source_github",
+            source_type=SourceType.GITHUB,
+            name="GitHub",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_github")
+    assert started is True
+
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs SET
+                upstream_total = 0,
+                upstream_done = 0,
+                upstream_total_pages = 9,
+                upstream_fetched_pages = 4
+            WHERE job_id = ?
+            """,
+            (job.job_id,),
+        )
+
+    loaded = store.get_sync_job(job.job_id)
+    assert loaded is not None
+    assert loaded.upstream_total == 0
+    assert loaded.upstream_done == 0
+    dumped = loaded.model_dump()
+    assert "upstream_total_pages" not in dumped
+    assert "upstream_fetched_pages" not in dumped
+
+
+def test_ensure_schema_backfills_upstream_progress_from_legacy_page_columns(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    store = MetadataStore(db_path)
+    store.upsert_source(
+        SourceModel(
+            source_id="source_tistory",
+            source_type=SourceType.TISTORY,
+            name="Tistory",
+            enabled=True,
+            sync_status=SyncStatus.IDLE,
+        )
+    )
+    job, started = store.begin_sync_job("source_tistory")
+    assert started is True
+
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE sync_jobs SET
+                upstream_total = 0,
+                upstream_done = 0,
+                upstream_total_pages = 7,
+                upstream_fetched_pages = 3
+            WHERE job_id = ?
+            """,
+            (job.job_id,),
+        )
+
+    # Migrate backfill runs once per process on first ensure_schema (not when
+    # _schema_ready is already true on the same store instance).
+    upgraded = MetadataStore(db_path)
+    upgraded.ensure_schema()
+
+    with upgraded._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT upstream_total, upstream_done,
+                   upstream_total_pages, upstream_fetched_pages
+            FROM sync_jobs WHERE job_id = ?
+            """,
+            (job.job_id,),
+        ).fetchone()
+    assert row["upstream_total"] == 7
+    assert row["upstream_done"] == 3
+    assert row["upstream_total_pages"] == 7
+    assert row["upstream_fetched_pages"] == 3
+    loaded = upgraded.get_sync_job(job.job_id)
+    assert loaded is not None
+    assert loaded.upstream_total == 7
+    assert loaded.upstream_done == 3

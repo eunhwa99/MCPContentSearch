@@ -103,8 +103,8 @@ class FakeLeakyJobIngestion:
                 "source_id": source_id,
                 "status": "failed",
                 "phase": "fetching_page_content",
-                "upstream_total_pages": 265,
-                "upstream_fetched_pages": 18,
+                "upstream_total": 265,
+                "upstream_done": 18,
                 "last_progress_at": "2026-06-15T10:35:53+00:00",
                 "status_message": "Fetching Notion page content 18/265 before indexing begins.",
                 "error_message": (
@@ -135,8 +135,8 @@ class FakeLeakyJobIngestion:
                             "source_id": "source_github",
                             "status": "failed",
                             "phase": "fetching_page_content",
-                            "upstream_total_pages": 265,
-                            "upstream_fetched_pages": 18,
+                            "upstream_total": 265,
+                            "upstream_done": 18,
                             "last_progress_at": "2026-06-15T10:35:53+00:00",
                             "status_message": (
                                 "Fetching Notion page content 18/265 before indexing begins."
@@ -908,6 +908,8 @@ def test_sync_source_redacts_returned_job_error_payload():
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
     assert "phase" not in result
+    assert "upstream_total" not in result
+    assert "upstream_done" not in result
     assert "upstream_total_pages" not in result
     assert "upstream_fetched_pages" not in result
     assert "last_progress_at" not in result
@@ -1342,6 +1344,8 @@ def test_sync_all_redacts_returned_job_error_payload(tmp_path):
     assert "super-secret-value" not in payload
     assert "ghp_secretcredential" not in payload
     assert "phase" not in result["results"][0]["job"]
+    assert "upstream_total" not in result["results"][0]["job"]
+    assert "upstream_done" not in result["results"][0]["job"]
     assert "upstream_total_pages" not in result["results"][0]["job"]
     assert "upstream_fetched_pages" not in result["results"][0]["job"]
     assert "last_progress_at" not in result["results"][0]["job"]
@@ -3265,8 +3269,8 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
         job.job_id,
         total_documents=265,
         phase="fetching_page_content",
-        upstream_total_pages=265,
-        upstream_fetched_pages=18,
+        upstream_total=265,
+        upstream_done=18,
         last_progress_at="2026-06-15T10:35:53+00:00",
         status_message="Fetching Notion page content 18/265 before indexing begins.",
     )
@@ -3285,8 +3289,10 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
 
     assert status["latest_job"]["status"] == "running"
     assert status["latest_job"]["phase"] == "fetching_page_content"
-    assert status["latest_job"]["upstream_total_pages"] == 265
-    assert status["latest_job"]["upstream_fetched_pages"] == 18
+    assert status["latest_job"]["upstream_total"] == 265
+    assert status["latest_job"]["upstream_done"] == 18
+    assert "upstream_total_pages" not in status["latest_job"]
+    assert "upstream_fetched_pages" not in status["latest_job"]
     assert status["latest_job"]["last_progress_at"] == "2026-06-15T10:35:53+00:00"
     assert (
         status["latest_job"]["status_message"]
@@ -3295,8 +3301,10 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
     assert exact["job"]["job_id"] == job.job_id
     assert exact["job"]["status"] == "running"
     assert exact["job"]["phase"] == "fetching_page_content"
-    assert exact["job"]["upstream_total_pages"] == 265
-    assert exact["job"]["upstream_fetched_pages"] == 18
+    assert exact["job"]["upstream_total"] == 265
+    assert exact["job"]["upstream_done"] == 18
+    assert "upstream_total_pages" not in exact["job"]
+    assert "upstream_fetched_pages" not in exact["job"]
     assert exact["job"]["last_progress_at"] == "2026-06-15T10:35:53+00:00"
     assert (
         exact["job"]["status_message"]
@@ -3320,8 +3328,8 @@ def test_get_sync_status_redacts_progress_status_message(tmp_path):
     store.update_sync_job(
         job.job_id,
         phase="fetching_page_content",
-        upstream_total_pages=10,
-        upstream_fetched_pages=3,
+        upstream_total=10,
+        upstream_done=3,
         last_progress_at="2026-06-15T10:35:53+00:00",
         status_message=(
             "fetching /Users/eunhwa/private/vault.md with token supersecretvalue123456"
@@ -3358,8 +3366,8 @@ def test_get_sync_status_hides_progress_hints_for_terminal_jobs(tmp_path):
     store.update_sync_job(
         job.job_id,
         phase="fetching_page_content",
-        upstream_total_pages=10,
-        upstream_fetched_pages=3,
+        upstream_total=10,
+        upstream_done=3,
         last_progress_at="2026-06-15T10:35:53+00:00",
         status_message="Fetching Notion page content 3/10 before indexing begins.",
     )
@@ -3386,6 +3394,8 @@ def test_get_sync_status_hides_progress_hints_for_terminal_jobs(tmp_path):
 
     assert status["latest_job"]["status"] == "succeeded"
     assert "phase" not in status["latest_job"]
+    assert "upstream_total" not in status["latest_job"]
+    assert "upstream_done" not in status["latest_job"]
     assert "upstream_total_pages" not in status["latest_job"]
     assert "upstream_fetched_pages" not in status["latest_job"]
     assert "last_progress_at" not in status["latest_job"]

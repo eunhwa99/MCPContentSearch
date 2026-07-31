@@ -789,11 +789,14 @@ def _safe_sync_job_payload(job, *, include_progress_hints: bool = False) -> dict
     payload = _model_payload(job)
     if include_progress_hints and payload.get("status") != "running":
         include_progress_hints = False
+    # Public contract uses source-neutral names only; never expose legacy *_pages keys.
+    payload.pop("upstream_total_pages", None)
+    payload.pop("upstream_fetched_pages", None)
     if not include_progress_hints:
         for key in (
             "phase",
-            "upstream_total_pages",
-            "upstream_fetched_pages",
+            "upstream_total",
+            "upstream_done",
             "last_progress_at",
             "status_message",
         ):
