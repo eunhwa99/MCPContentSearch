@@ -17,11 +17,12 @@ from core.models import SyncJobStatus
 from environments.config import AppConfig
 from environments.runtime_env import get_env_secret
 from environments.token import NOTION_API_KEY, TISTORY_BLOG_NAME
+from indexing.ingestion_service import WORKER_STOPPED_SYNC_ERROR
 from storage.metadata_store import ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 
 logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
-MIN_POLL_INTERVAL_SECONDS = 0.1
+MIN_POLL_INTERVAL_SECONDS = 0.05
 MAX_POLL_INTERVAL_SECONDS = 60.0
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_LOG_BACKUP_COUNT = 3
@@ -166,6 +167,12 @@ class WorkerLogPrivacyFilter(logging.Filter):
         return True
 
 
+DEFAULT_MAX_CONCURRENT_JOBS = 2
+MIN_MAX_CONCURRENT_JOBS = 1
+MAX_MAX_CONCURRENT_JOBS = 8
+MAX_CONCURRENT_ENV_VAR = "CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT"
+
+
 def _poll_interval(value: str | float) -> float:
     try:
         interval = float(value)
@@ -179,8 +186,46 @@ def _poll_interval(value: str | float) -> float:
     return interval
 
 
+def _max_concurrent_jobs(value: str | int) -> int:
+    """Parse and bound sync worker concurrency; fail closed on invalid values."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(
+            "max_concurrent_jobs must be an integer between "
+            f"{MIN_MAX_CONCURRENT_JOBS} and {MAX_MAX_CONCURRENT_JOBS}"
+        )
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw or raw.lower() in {"true", "false"} or not raw.lstrip("-").isdigit():
+            raise ValueError(
+                "max_concurrent_jobs must be an integer between "
+                f"{MIN_MAX_CONCURRENT_JOBS} and {MAX_MAX_CONCURRENT_JOBS}"
+            )
+        try:
+            parsed = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "max_concurrent_jobs must be an integer between "
+                f"{MIN_MAX_CONCURRENT_JOBS} and {MAX_MAX_CONCURRENT_JOBS}"
+            ) from exc
+    else:
+        parsed = value
+    if not MIN_MAX_CONCURRENT_JOBS <= parsed <= MAX_MAX_CONCURRENT_JOBS:
+        raise ValueError(
+            "max_concurrent_jobs must be an integer between "
+            f"{MIN_MAX_CONCURRENT_JOBS} and {MAX_MAX_CONCURRENT_JOBS}"
+        )
+    return parsed
+
+
+def _default_max_concurrent_jobs() -> int:
+    raw = os.getenv(MAX_CONCURRENT_ENV_VAR)
+    if raw is None:
+        return DEFAULT_MAX_CONCURRENT_JOBS
+    return _max_concurrent_jobs(raw)
+
+
 class SyncWorker:
-    """Run queued source syncs serially in a process independent from FastMCP."""
+    """Run queued source syncs with bounded concurrency independent from FastMCP."""
 
     def __init__(
         self,
@@ -189,11 +234,14 @@ class SyncWorker:
         *,
         source_ids: tuple[str, ...] | list[str] | None = None,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        max_concurrent_jobs: int = DEFAULT_MAX_CONCURRENT_JOBS,
     ):
         self.ingestion_service = ingestion_service
         self.metadata_store = metadata_store
         self.source_ids = tuple(source_ids) if source_ids is not None else None
         self.poll_interval_seconds = _poll_interval(poll_interval_seconds)
+        self.max_concurrent_jobs = _max_concurrent_jobs(max_concurrent_jobs)
+        self.metadata_store.max_concurrent_sync_jobs = self.max_concurrent_jobs
 
     async def run_once(self):
         """Claim and finish at most one queued job."""
@@ -202,45 +250,109 @@ class SyncWorker:
             return None
         return await self._execute_claimed_job(job)
 
-    async def run(self, stop_event: asyncio.Event | None = None) -> None:
-        """Poll until stopped, cancelling and failing an in-flight job gracefully."""
-        stop_event = stop_event or asyncio.Event()
-        while not stop_event.is_set():
-            job = self.metadata_store.claim_next_sync_job(self.source_ids)
-            if job is None:
-                try:
-                    await asyncio.wait_for(
-                        stop_event.wait(),
-                        timeout=self.poll_interval_seconds,
-                    )
-                except TimeoutError:
-                    continue
-                break
+    async def _cancel_in_flight(self, in_flight: set[asyncio.Task]) -> None:
+        for task in in_flight:
+            if not task.done():
+                task.cancel()
+        if not in_flight:
+            return
+        results = await asyncio.gather(*in_flight, return_exceptions=True)
+        in_flight.clear()
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                continue
+            if isinstance(result, BaseException):
+                raise result
 
-            job_task = asyncio.create_task(
-                self._execute_claimed_job(job),
-                name=f"durable-sync:{job.source_id}:{job.job_id}",
-            )
-            stop_task = asyncio.create_task(
-                stop_event.wait(),
-                name="durable-sync-worker-stop",
-            )
-            done, _ = await asyncio.wait(
-                {job_task, stop_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if stop_task in done and stop_event.is_set() and not job_task.done():
-                job_task.cancel()
-            if not stop_task.done():
-                stop_task.cancel()
-            await asyncio.gather(stop_task, return_exceptions=True)
-            try:
-                await job_task
-            except asyncio.CancelledError:
-                if not stop_event.is_set():
-                    raise
-            if stop_event.is_set():
-                break
+    async def _await_cancel_in_flight(self, in_flight: set[asyncio.Task]) -> None:
+        """Cancel in-flight jobs and join even if this awaiter is cancelled."""
+        drain = asyncio.create_task(self._cancel_in_flight(in_flight))
+        current = asyncio.current_task()
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            while not drain.done():
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    continue
+            raise
+        except Exception:
+            if current is not None and current.cancelling():
+                while not drain.done():
+                    try:
+                        await asyncio.shield(drain)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        continue
+                raise asyncio.CancelledError from None
+            raise
+
+    async def run(self, stop_event: asyncio.Event | None = None) -> None:
+        """Poll until stopped, running up to N claimed jobs concurrently."""
+        stop_event = stop_event or asyncio.Event()
+        in_flight: set[asyncio.Task] = set()
+        try:
+            while not stop_event.is_set() or in_flight:
+                while (
+                    not stop_event.is_set()
+                    and len(in_flight) < self.max_concurrent_jobs
+                ):
+                    job = self.metadata_store.claim_next_sync_job(self.source_ids)
+                    if job is None:
+                        break
+                    in_flight.add(
+                        asyncio.create_task(
+                            self._execute_claimed_job(job),
+                            name=f"durable-sync:{job.source_id}:{job.job_id}",
+                        )
+                    )
+
+                if stop_event.is_set():
+                    await self._await_cancel_in_flight(in_flight)
+                    break
+
+                if not in_flight:
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(),
+                            timeout=self.poll_interval_seconds,
+                        )
+                    except TimeoutError:
+                        continue
+                    break
+
+                stop_task = asyncio.create_task(
+                    stop_event.wait(),
+                    name="durable-sync-worker-stop",
+                )
+                try:
+                    done, _ = await asyncio.wait(
+                        in_flight | {stop_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if not stop_task.done():
+                        stop_task.cancel()
+                        await asyncio.gather(stop_task, return_exceptions=True)
+
+                for task in in_flight & done:
+                    in_flight.discard(task)
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        if not stop_event.is_set():
+                            await self._await_cancel_in_flight(in_flight)
+                            raise
+
+                if stop_event.is_set():
+                    await self._await_cancel_in_flight(in_flight)
+                    break
+        finally:
+            await self._await_cancel_in_flight(in_flight)
 
     async def _execute_claimed_job(self, job):
         logger.info(
@@ -251,6 +363,20 @@ class SyncWorker:
         try:
             result = await self.ingestion_service.run_claimed_sync_job(job.job_id)
         except asyncio.CancelledError:
+            try:
+                current = self.metadata_store.get_sync_job(job.job_id)
+                if current is not None and current.status == SyncJobStatus.RUNNING:
+                    self.metadata_store.complete_failed_sync(
+                        job_id=job.job_id,
+                        source_id=job.source_id,
+                        error_message=WORKER_STOPPED_SYNC_ERROR,
+                    )
+            except Exception as finalize_exc:
+                logger.error(
+                    "Failed to finalize cancelled sync job %s: %s",
+                    job.job_id,
+                    safe_error_message(finalize_exc),
+                )
             raise
         except Exception as exc:
             logger.error(
@@ -285,12 +411,14 @@ class SyncWorker:
 def create_worker(*, poll_interval_seconds: float) -> SyncWorker:
     process_started_at = datetime.now(timezone.utc).isoformat()
     config = AppConfig()
+    max_concurrent_jobs = _default_max_concurrent_jobs()
     runtime = build_ingestion_runtime(
         config=config,
         notion_api_key=NOTION_API_KEY,
         tistory_blog_name=TISTORY_BLOG_NAME,
         github_token=get_env_secret(config.github_token_env_var),
     )
+    runtime.metadata_store.max_concurrent_sync_jobs = max_concurrent_jobs
     recovered_count = runtime.metadata_store.recover_orphaned_running_jobs(
         started_before=process_started_at,
         error_message=ORPHANED_SYNC_JOB_RECOVERY_MESSAGE,
@@ -303,6 +431,7 @@ def create_worker(*, poll_interval_seconds: float) -> SyncWorker:
         runtime.metadata_store,
         source_ids=runtime.retained_source_ids,
         poll_interval_seconds=poll_interval_seconds,
+        max_concurrent_jobs=max_concurrent_jobs,
     )
 
 

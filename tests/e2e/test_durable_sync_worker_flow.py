@@ -1408,3 +1408,129 @@ def test_running_worker_job_is_reused_and_survives_mcp_request_cancellation(tmp_
     assert duplicate["job_id"] == accepted["job_id"]
     assert completed.job_id == accepted["job_id"]
     assert completed.status == SyncJobStatus.SUCCEEDED
+
+
+def test_durable_worker_runs_two_enqueued_sources_concurrently_when_max_concurrent_is_two(
+    tmp_path,
+):
+    metadata_path = tmp_path / "parallel-durable-worker.sqlite3"
+    source_ids = ("source_notion", "source_tistory")
+    mcp_connectors = [
+        RecordingConnector(source_id, RETAINED_SOURCE_TYPES[source_id])
+        for source_id in source_ids
+    ]
+    mcp_registry = SourceRegistry(mcp_connectors)
+    mcp_store = MetadataStore(
+        metadata_path,
+        sync_owner_id="mcp",
+        max_concurrent_sync_jobs=2,
+    )
+    mcp_ingestion = IngestionService(
+        metadata_store=mcp_store,
+        source_registry=mcp_registry,
+        chunker=DocumentChunker(max_chars=160, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    mcp = FastMCP("durable-parallel-worker-e2e")
+    register_tools(
+        mcp,
+        ingestion_service=mcp_ingestion,
+        metadata_store=mcp_store,
+        source_registry=mcp_registry,
+    )
+
+    async def run_flow():
+        started = {source_id: asyncio.Event() for source_id in source_ids}
+        release = {source_id: asyncio.Event() for source_id in source_ids}
+        accepted = {}
+        for source_id in source_ids:
+            accepted[source_id] = await _call_tool_json(
+                mcp,
+                "sync_source",
+                {"source_id": source_id},
+            )
+            assert accepted[source_id]["status"] == "queued"
+
+        worker_connectors = [
+            BlockingConnector(
+                source_id,
+                RETAINED_SOURCE_TYPES[source_id],
+                entered=started[source_id],
+                release=release[source_id],
+            )
+            for source_id in source_ids
+        ]
+        worker_store = MetadataStore(
+            metadata_path,
+            sync_owner_id="worker",
+            max_concurrent_sync_jobs=2,
+        )
+        worker = SyncWorker(
+            IngestionService(
+                metadata_store=worker_store,
+                source_registry=SourceRegistry(worker_connectors),
+                chunker=DocumentChunker(max_chars=160, overlap_chars=0),
+                indexer=RecordingIndexer(),
+                register_source_config=False,
+            ),
+            worker_store,
+            source_ids=source_ids,
+            poll_interval_seconds=0.05,
+            max_concurrent_jobs=2,
+        )
+        stop_event = asyncio.Event()
+        worker_task = asyncio.create_task(worker.run(stop_event))
+
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in started.values())),
+            timeout=2,
+        )
+        overlapping_statuses = {
+            source_id: await _call_tool_json(
+                mcp,
+                "get_sync_status",
+                {
+                    "source_id": source_id,
+                    "job_id": accepted[source_id]["job_id"],
+                },
+            )
+            for source_id in source_ids
+        }
+        for event in release.values():
+            event.set()
+
+        async def wait_terminal(source_id: str):
+            job_id = accepted[source_id]["job_id"]
+            deadline = asyncio.get_running_loop().time() + 2
+            while asyncio.get_running_loop().time() < deadline:
+                status = await _call_tool_json(
+                    mcp,
+                    "get_sync_status",
+                    {"source_id": source_id, "job_id": job_id},
+                )
+                if status["job"]["status"] in {"succeeded", "failed"}:
+                    return status
+                await asyncio.sleep(0.02)
+            raise TimeoutError(source_id)
+
+        terminal = {
+            source_id: await wait_terminal(source_id) for source_id in source_ids
+        }
+        stop_event.set()
+        await asyncio.wait_for(worker_task, timeout=2)
+        return accepted, overlapping_statuses, terminal
+
+    accepted, overlapping_statuses, terminal = asyncio.run(run_flow())
+
+    assert all(
+        overlapping_statuses[source_id]["job"]["status"] == "running"
+        for source_id in source_ids
+    )
+    assert all(
+        terminal[source_id]["job"]["status"] == "succeeded"
+        for source_id in source_ids
+    )
+    assert all(
+        terminal[source_id]["job"]["job_id"] == accepted[source_id]["job_id"]
+        for source_id in source_ids
+    )

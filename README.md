@@ -453,11 +453,19 @@ Runtime behavior:
 - Stopping `uv run --locked python main.py` or closing its MCP client does not
   stop a job already owned by the LaunchAgent worker.
 - Stopping or uninstalling the worker stops sync execution. A graceful stop
-  records the in-flight job as failed; after an abrupt stop, the existing
-  owner/heartbeat recovery marks orphaned work failed before a fresh retry.
+  records every in-flight claimed job as failed; after an abrupt stop, the
+  existing owner/heartbeat recovery marks orphaned work failed before a fresh
+  retry.
 - `queued` means SQLite accepted the request but no worker has claimed it yet.
   `running` means the worker owns it. `succeeded` and `failed` are terminal.
-- The worker intentionally executes one job at a time across all sources.
+- The worker may run up to `N` distinct-source jobs at once. Set
+  `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` in the repository-local `.env`
+  (integer `1`–`8`; default `2`). Invalid values fail closed at worker
+  startup. `1` restores global single-flight. `N` bounds SQLite `RUNNING`
+  claims; connector fetch can overlap inside one worker, and Chroma mutations
+  are serialized within that process only. Run one LaunchAgent sync_worker
+  process per store—extra worker PIDs can oversubscribe writes. Restart the
+  LaunchAgent worker after changing the value.
 
 Worker logs are written to:
 

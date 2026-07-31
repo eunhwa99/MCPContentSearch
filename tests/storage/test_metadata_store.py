@@ -4977,7 +4977,11 @@ def test_two_requesters_racing_enqueue_reuse_one_queued_job(tmp_path):
 
 def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
     db_path = tmp_path / "contextwiki.sqlite3"
-    requester = MetadataStore(db_path, sync_owner_id="requester")
+    requester = MetadataStore(
+        db_path,
+        sync_owner_id="requester",
+        max_concurrent_sync_jobs=1,
+    )
     for source_id in ("source_a", "source_b"):
         requester.upsert_source(
             SourceModel(
@@ -4990,8 +4994,16 @@ def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
         requester.enqueue_sync_job(source_id)
 
     workers = [
-        MetadataStore(db_path, sync_owner_id="worker-a"),
-        MetadataStore(db_path, sync_owner_id="worker-b"),
+        MetadataStore(
+            db_path,
+            sync_owner_id="worker-a",
+            max_concurrent_sync_jobs=1,
+        ),
+        MetadataStore(
+            db_path,
+            sync_owner_id="worker-b",
+            max_concurrent_sync_jobs=1,
+        ),
     ]
     for worker in workers:
         worker.ensure_schema()
@@ -5031,6 +5043,167 @@ def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
     assert second_job.job_id != first_job.job_id
     assert second_job.source_id != first_job.source_id
     assert second_job.status == SyncJobStatus.RUNNING
+
+
+def test_claim_allows_two_running_jobs_for_distinct_sources_when_max_concurrent_is_two(
+    tmp_path,
+):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(
+        db_path,
+        sync_owner_id="requester",
+        max_concurrent_sync_jobs=2,
+    )
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+        requester.enqueue_sync_job(source_id)
+
+    worker = MetadataStore(
+        db_path,
+        sync_owner_id="worker",
+        max_concurrent_sync_jobs=2,
+    )
+    first = worker.claim_next_sync_job(["source_a", "source_b"])
+    second = worker.claim_next_sync_job(["source_a", "source_b"])
+
+    assert first is not None
+    assert second is not None
+    assert first.status == SyncJobStatus.RUNNING
+    assert second.status == SyncJobStatus.RUNNING
+    assert first.job_id != second.job_id
+    assert first.source_id != second.source_id
+    assert {
+        requester.get_latest_sync_job("source_a").status,
+        requester.get_latest_sync_job("source_b").status,
+    } == {SyncJobStatus.RUNNING}
+
+
+def test_claim_blocks_third_job_while_max_concurrent_running_slots_are_full(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(
+        db_path,
+        sync_owner_id="requester",
+        max_concurrent_sync_jobs=2,
+    )
+    for source_id in ("source_a", "source_b", "source_c"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+        requester.enqueue_sync_job(source_id)
+
+    worker = MetadataStore(
+        db_path,
+        sync_owner_id="worker",
+        max_concurrent_sync_jobs=2,
+    )
+    first = worker.claim_next_sync_job(["source_a", "source_b", "source_c"])
+    second = worker.claim_next_sync_job(["source_a", "source_b", "source_c"])
+    third = worker.claim_next_sync_job(["source_a", "source_b", "source_c"])
+
+    assert first is not None
+    assert second is not None
+    assert first.source_id != second.source_id
+    assert third is None
+    running_count = sum(
+        1
+        for source_id in ("source_a", "source_b", "source_c")
+        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
+    )
+    queued_count = sum(
+        1
+        for source_id in ("source_a", "source_b", "source_c")
+        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.QUEUED
+    )
+    assert running_count == 2
+    assert queued_count == 1
+
+
+def test_two_workers_can_claim_different_sources_when_max_concurrent_is_two(tmp_path):
+    db_path = tmp_path / "contextwiki.sqlite3"
+    requester = MetadataStore(
+        db_path,
+        sync_owner_id="requester",
+        max_concurrent_sync_jobs=2,
+    )
+    for source_id in ("source_a", "source_b"):
+        requester.upsert_source(
+            SourceModel(
+                source_id=source_id,
+                source_type=SourceType.GITHUB,
+                name=source_id,
+                enabled=True,
+            )
+        )
+        requester.enqueue_sync_job(source_id)
+
+    workers = [
+        MetadataStore(
+            db_path,
+            sync_owner_id="worker-a",
+            max_concurrent_sync_jobs=2,
+        ),
+        MetadataStore(
+            db_path,
+            sync_owner_id="worker-b",
+            max_concurrent_sync_jobs=2,
+        ),
+    ]
+    for worker in workers:
+        worker.ensure_schema()
+    barrier = Barrier(2)
+
+    def claim(worker):
+        barrier.wait()
+        return worker.claim_next_sync_job(["source_a", "source_b"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, workers))
+
+    claimed = [result for result in results if result is not None]
+    assert len(claimed) == 2
+    assert {job.source_id for job in claimed} == {"source_a", "source_b"}
+    assert all(job.status == SyncJobStatus.RUNNING for job in claimed)
+    assert sum(
+        1
+        for source_id in ("source_a", "source_b")
+        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
+    ) == 2
+
+
+@pytest.mark.parametrize("invalid_value", (0, 9, -1))
+def test_metadata_store_rejects_invalid_max_concurrent_sync_jobs(
+    tmp_path,
+    invalid_value,
+):
+    with pytest.raises(ValueError, match="max_concurrent_sync_jobs"):
+        MetadataStore(
+            tmp_path / "contextwiki.sqlite3",
+            max_concurrent_sync_jobs=invalid_value,
+        )
+
+
+@pytest.mark.parametrize("invalid_value", (0, 9, True))
+def test_metadata_store_rejects_invalid_max_concurrent_sync_jobs_assignment(
+    tmp_path,
+    invalid_value,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    assert store.max_concurrent_sync_jobs == 1
+    with pytest.raises(ValueError, match="max_concurrent_sync_jobs"):
+        store.max_concurrent_sync_jobs = invalid_value
+    assert store.max_concurrent_sync_jobs == 1
 
 
 @pytest.mark.parametrize(

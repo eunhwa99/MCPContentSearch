@@ -15,8 +15,10 @@ Python sync-worker process.
 - MCP server: `main.py` creates a `FastMCP` server named
   `content-search-server`.
 - Durable sync worker: `python -m indexing.sync_worker` runs the generic
-  single-job worker loop. On macOS, a user LaunchAgent keeps it alive
-  independently of the MCP process.
+  bounded-concurrency worker loop. The supported ops model is one LaunchAgent
+  (or equivalent) sync_worker process against a given Chroma/SQLite store. On
+  macOS, a user LaunchAgent keeps that single worker alive independently of the
+  MCP process.
 - MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
   `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
   `search_context`, `search_documents`, `list_documents`, and `fetch_context`.
@@ -186,9 +188,10 @@ MCP client
 
 macOS LaunchAgent
   -> generic indexing.sync_worker process
-  -> atomically claim the oldest queued SQLite job
+  -> atomically claim queued SQLite jobs while COUNT(RUNNING) < N
+  -> up to N concurrent asyncio tasks for distinct sources
   -> service boundary in indexing/storage/fetching
-  -> connector fetch plus Chroma/SQLite indexing lifecycle
+  -> overlapping connector fetch; in-process Chroma mutation lock
 ```
 
 Source status flow:
@@ -298,12 +301,13 @@ sync_source
   -> return a queued or already-running job immediately
 
 LaunchAgent worker
-  -> MetadataStore atomic oldest-job claim
+  -> MetadataStore atomic claim while COUNT(RUNNING) < N
   -> queued -> running with worker owner, pid, and heartbeat
-  -> blocking IngestionService execution for that exact claimed job
-  -> Notion, Tistory, GitHub, or Obsidian connector fetch
+  -> fill up to N asyncio tasks for distinct-source claimed jobs
+  -> Notion, Tistory, GitHub, or Obsidian connector fetch (may overlap)
   -> DocumentChunker
-  -> ContentIndexer and Chroma collection
+  -> ContentIndexer in-process mutation lock serializes Chroma writes
+     inside that worker PID
   -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
   -> get_sync_status(source_id, job_id) reads that exact job's completion
 ```
@@ -365,16 +369,25 @@ ADR 0009 governs exact-job completion observation through short, paced
 durable execution ownership: SQLite queue/claim/heartbeat state and the
 LaunchAgent-supervised worker, not the observing MCP caller, own execution.
 
-The generic worker claims one job at a time across Notion, Tistory, GitHub, and
-Obsidian. This conservative default avoids concurrent writes through shared
-Chroma and connector state. Source-specific fetching remains inside each
-connector; the durable ownership model is common to every retained source.
+The generic worker may run up to `N` distinct-source jobs concurrently across
+Notion, Tistory, GitHub, and Obsidian. Default `N` is 2 via
+`CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`, fail-closed at
+startup). `N=1` restores the previous global single-flight behavior. SQLite
+claim remains authoritative with a `COUNT(RUNNING) < N` gate, and enqueue still
+allows at most one active queued/running job per `source_id`. Within one
+worker process, connector fetch may overlap while `ContentIndexer`'s
+in-process mutation lock serializes Chroma mutations. That lock is not
+cross-process: the supported ops model is one LaunchAgent sync_worker process
+per store. Multiple worker PIDs against the same Chroma/SQLite can oversubscribe
+writes even when each process respects `N`. Source-specific fetching remains
+inside each connector; the durable ownership model is common to every retained
+source.
 
 MCP and worker shutdown have different semantics:
 
 - MCP shutdown does not own or cancel a worker job.
-- A graceful worker `SIGINT`/`SIGTERM` finalizes its in-flight job as failed
-  without authorizing tombstones from a partial snapshot.
+- A graceful worker `SIGINT`/`SIGTERM` finalizes all in-flight claimed jobs as
+  failed without authorizing tombstones from a partial snapshot.
 - An abrupt worker death leaves a running owner/heartbeat record. Existing
   orphan recovery marks that work failed after the owner is no longer live; v1
   does not automatically resume a partially executed job.
@@ -437,7 +450,7 @@ internal helper answer flows
 - `indexing`: durable worker polling/dispatch, document indexing lifecycle,
   deterministic chunking, content hash/chunk-id comparison, Chroma mutation,
   index status updates, and worker-owned execution under SQLite queue, claim,
-  heartbeat, and per-source concurrency guards.
+  heartbeat, bounded global RUNNING budget, and per-source concurrency guards.
 - `search`: query orchestration, ranking, metadata fallback, SQLite-backed
   active-result validation, and internal citation answer support.
 - `storage`: SQLite source/job/document/chunk lifecycle metadata, normalized

@@ -108,15 +108,42 @@ class MetadataStore:
         running_job_timeout_seconds: int = 24 * 60 * 60,
         sync_owner_id: str | None = None,
         unowned_running_job_grace_seconds: int = 60,
+        max_concurrent_sync_jobs: int = 1,
     ):
+        # Default stays single-flight for non-worker MetadataStore callers.
+        # The durable sync worker raises this to CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT
+        # (default 2) in create_worker.
         self.db_path = Path(db_path)
         self.running_job_timeout_seconds = running_job_timeout_seconds
         self.sync_owner_id = sync_owner_id or str(uuid.uuid4())
         self.unowned_running_job_grace_seconds = unowned_running_job_grace_seconds
+        self._max_concurrent_sync_jobs = self._validate_max_concurrent_sync_jobs(
+            max_concurrent_sync_jobs
+        )
         self._cached_process_id = 0
         self._cached_process_start_id = ""
         self._schema_ready = False
         self._schema_lock = RLock()
+
+    @staticmethod
+    def _validate_max_concurrent_sync_jobs(value: int) -> int:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 8
+        ):
+            raise ValueError(
+                "max_concurrent_sync_jobs must be an integer between 1 and 8"
+            )
+        return value
+
+    @property
+    def max_concurrent_sync_jobs(self) -> int:
+        return self._max_concurrent_sync_jobs
+
+    @max_concurrent_sync_jobs.setter
+    def max_concurrent_sync_jobs(self, value: int) -> None:
+        self._max_concurrent_sync_jobs = self._validate_max_concurrent_sync_jobs(value)
 
     def ensure_schema(self):
         if self._schema_ready:
@@ -589,8 +616,11 @@ class MetadataStore:
         self,
         source_ids: Iterable[str] | None = None,
     ) -> Optional[SyncJobModel]:
-        """Atomically claim the oldest queued job for this worker owner."""
+        """Atomically claim the oldest queued job under the concurrency budget."""
         self.ensure_schema()
+        max_concurrent = self._validate_max_concurrent_sync_jobs(
+            self.max_concurrent_sync_jobs
+        )
         scoped_source_ids = tuple(
             dict.fromkeys(str(source_id) for source_id in source_ids or () if source_id)
         )
@@ -601,6 +631,16 @@ class MetadataStore:
             conn.execute("BEGIN IMMEDIATE")
             scoped_source_id_set = set(scoped_source_ids)
             self._reconcile_global_running_jobs(conn, claimed_at)
+            running_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM sync_jobs
+                WHERE status = ?
+                """,
+                (SyncJobStatus.RUNNING.value,),
+            ).fetchone()["count"]
+            if running_count >= max_concurrent:
+                return None
             rows = conn.execute(
                 """
                 SELECT j.*
@@ -610,7 +650,8 @@ class MetadataStore:
                   AND NOT EXISTS (
                       SELECT 1
                       FROM sync_jobs active
-                      WHERE active.status = ?
+                      WHERE active.source_id = j.source_id
+                        AND active.status = ?
                 )
                 ORDER BY j.started_at, j.rowid
                 """,
@@ -669,7 +710,7 @@ class MetadataStore:
         conn: sqlite3.Connection,
         checked_at: str,
     ) -> None:
-        """Recover only definitively inactive owners before global single-flight."""
+        """Recover only definitively inactive owners before the concurrency claim gate."""
         running_source_rows = conn.execute(
             """
             SELECT DISTINCT source_id

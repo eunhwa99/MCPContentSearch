@@ -45,7 +45,7 @@ File names should be numbered and descriptive:
 | [0007](0007-sync-source-background-launch-contract.md) | accepted; completion attribution superseded by [0009](0009-exact-sync-job-status-observation.md), MCP-process execution ownership superseded by [0010](0010-durable-all-source-sync-worker.md) | Public MCP `sync_source` background-launch contract and internal blocking execution split |
 | [0008](0008-background-sync-all-and-deterministic-retrieval.md) | deterministic retrieval and launch aggregation accepted; completion attribution superseded by [0009](0009-exact-sync-job-status-observation.md), MCP-process execution ownership superseded by [0010](0010-durable-all-source-sync-worker.md) | Public `sync_all` launch aggregation and removal of LLM query rewrite |
 | [0009](0009-exact-sync-job-status-observation.md) | accepted | Exact sync-job status observation through paced, bounded short MCP requests |
-| [0010](0010-durable-all-source-sync-worker.md) | accepted | Durable SQLite execution ownership plus LaunchAgent-supervised all-source sync worker |
+| [0010](0010-durable-all-source-sync-worker.md) | accepted | Durable SQLite execution ownership plus LaunchAgent-supervised all-source sync worker (bounded cross-source concurrency) |
 
 ## When to Add or Update ADRs
 
