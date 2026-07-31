@@ -136,7 +136,7 @@ GitHub targets: `owner`, `owner/repo`, or `owner/repo@ref` (comma/newline separa
 }
 ```
 
-Use `which uv` for the path. Put secrets in the repo `.env` (not plaintext in the config). If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or other source env vars in `claude_desktop_config.json` or a parent shell, clear those stale values too — leftover client/shell env bypasses `.env`. Fully restart Claude Desktop after changes. After `.env` edits, also restart the worker (`./scripts/restart_sync_worker_launch_agent.sh`).
+Use `which uv` for the path. Put secrets in the repo `.env` (not plaintext in the config). If you previously set `OPENAI_API_KEY`, `NOTION_API_KEY`, `GITHUB_TOKEN`, or other source env vars in `claude_desktop_config.json` or a parent shell, clear those stale values too — leftover client/shell env bypasses `.env`. Both FastMCP and the durable worker snapshot source configuration at process startup, so fully restart the MCP client and run `./scripts/restart_sync_worker_launch_agent.sh` after `.env` or source-target changes.
 
 ### Claude Desktop (Docker)
 
@@ -243,12 +243,12 @@ Do not paste `.env`, tokens, or indexed content into diagnostics.
 ## Verification
 
 ```bash
-./scripts/demo.sh                           # local sample flow (no credentials)
+./scripts/demo.sh                           # Run the local sample flow
 ./scripts/demo.sh --query "your question"
 ./scripts/verify_all.sh                     # full developer checks
 ```
 
-`demo.sh` uses the bundled Obsidian sample vault, temp SQLite/Chroma, and mock embeddings. Automated verification does not run live GitHub owner sync.
+`demo.sh` needs no credentials. It uses the bundled Obsidian sample vault, temporary SQLite and Chroma storage, and mock embeddings. Automated verification does not run live GitHub owner sync.
 
 ---
 

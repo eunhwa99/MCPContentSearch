@@ -23,7 +23,7 @@ flowchart LR
 
 | Concern | Rule |
 | --- | --- |
-| Config | FastMCP and worker each snapshot config/connectors at startup; after `.env` / source-target changes restart MCP **and** the worker — LaunchAgent: restart script; Docker worker: recreate with `docker stop`/`rm` + same `docker run ... --env-file` (`docker restart` keeps old env) |
+| Config | FastMCP and worker each snapshot config/connectors at startup. Operators must restart both processes after `.env` / source-target changes — LaunchAgent: restart script; Docker worker: recreate with `docker stop`/`rm` + same `docker run ... --env-file` (`docker restart` keeps old env) |
 | SQLite connections | Operation-scoped: short-lived connection, transaction commit/rollback, deterministic close (no GC reliance) |
 | Authority | SQLite = lifecycle + citation gate; Chroma = retrieval accelerator only |
 | LaunchAgent | Process supervisor only — not a queue, scheduler DB, or lifecycle authority |
