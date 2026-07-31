@@ -196,4 +196,4 @@ unchanged second-pass paths).
 | Improvement after/delta | completed | unchanged (body-fetch 1→0) | delta table still valid post-fix |
 | Functional smoke (post-fix) | completed | skip flows + frontmatter E2E | functional E2E **58 passed** |
 | Harness review pass 3 | completed | All three lenses clean | R1/R2/R3 `NO ACTIONABLE FINDINGS` |
-| PR delivery | in_progress | commit, push, main-base PR | |
+| PR delivery | completed | commit, push, main-base PR | `a03254e`; https://github.com/eunaverse/MCPContentSearch/pull/95 |
