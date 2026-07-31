@@ -43,7 +43,10 @@ async def _should_stop(stop_checker) -> bool:
             result = await result
     except _StopRequested:
         raise
-    except Exception:
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ == "_InactiveJobStop":
+            raise
         logger.debug("Ignoring stop checker failure")
         return False
     return bool(result)
@@ -78,6 +81,13 @@ async def _await_request_with_stop(request_coro, stop_checker):
                 return await request_task
             await _raise_if_stop_requested(stop_checker)
     except _StopRequested:
+        request_task.cancel()
+        await _drain_request_task(request_task)
+        raise
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ != "_InactiveJobStop":
+            raise
         request_task.cancel()
         await _drain_request_task(request_task)
         raise
@@ -452,7 +462,10 @@ async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) ->
             result = await result
     except _StopRequested:
         raise
-    except Exception:
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ == "_InactiveJobStop":
+            raise
         logger.debug("Ignoring progress callback failure")
         return False
     return stop_signal is not None and result is stop_signal
@@ -601,6 +614,9 @@ async def fetch_notion_pages(
     except _StopRequested:
         raise
     except Exception as e:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(e).__name__ == "_InactiveJobStop":
+            raise
         message = safe_error_message(e)
         logger.error("Unexpected error: %s", message)
         raise FetchError(f"Failed to fetch Notion pages: {message}")

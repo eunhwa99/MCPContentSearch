@@ -116,6 +116,8 @@ class TistorySourceConnector(SourceConnector):
     def __init__(self, blog_name: str, config: AppConfig):
         self.blog_name = blog_name
         self.config = config
+        self.progress_callback = None
+        self.progress_stop_signal = None
         self.source = SourceModel(
             source_id="source_tistory",
             source_type=SourceType.TISTORY,
@@ -133,6 +135,8 @@ class TistorySourceConnector(SourceConnector):
             self.config.connection_limit,
             self.config.request_timeout,
             self.config.tistory_log_interval,
+            progress_callback=self.progress_callback,
+            progress_stop_signal=getattr(self, "progress_stop_signal", None),
         )
         return [
             doc.model_copy(
@@ -164,6 +168,9 @@ class GitHubSourceConnector(SourceConnector):
         self.repositories = tuple(repositories)
         self.config = config
         self.allow_stale_cleanup = allow_stale_cleanup
+        self.progress_callback = None
+        self.progress_stop_signal = None
+        self.progress_stop_checker = None
         self.fetcher = GitHubRepositoryFetcher(
             self.repositories,
             config,
@@ -201,6 +208,13 @@ class GitHubSourceConnector(SourceConnector):
         self.supports_stale_cleanup = False
         self.cleanup_document_id_prefixes = ()
         try:
+            self.fetcher.progress_callback = self.progress_callback
+            self.fetcher.progress_stop_signal = getattr(
+                self, "progress_stop_signal", None
+            )
+            self.fetcher.progress_stop_checker = getattr(
+                self, "progress_stop_checker", None
+            )
             documents = await self.fetcher.fetch_documents()
         except Exception:
             self.stale_cleanup_disabled_reason = (
@@ -248,6 +262,8 @@ class ObsidianSourceConnector(SourceConnector):
         self.vault_path = config.obsidian_vault_path
         self.max_files = config.obsidian_max_files
         self.max_file_bytes = config.obsidian_max_file_bytes
+        self.progress_callback = None
+        self.progress_stop_signal = None
         self.source = SourceModel(
             source_id="source_obsidian",
             source_type=SourceType.OBSIDIAN,
@@ -282,6 +298,8 @@ class ObsidianSourceConnector(SourceConnector):
                 self.vault_path,
                 max_files=self.max_files,
                 max_file_bytes=self.max_file_bytes,
+                progress_callback=self.progress_callback,
+                progress_stop_signal=getattr(self, "progress_stop_signal", None),
             )
         except Exception:
             self.supports_stale_cleanup = False

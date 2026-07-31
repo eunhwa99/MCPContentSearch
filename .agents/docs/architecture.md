@@ -1,917 +1,328 @@
 # Architecture
 
-## Purpose
-
-This document maps the current slim `MCPContentSearch` architecture. Harness
-planning and review use it to keep changes inside the focused MCP retrieval
-scope and to catch contract or data-safety regressions. It is the single
-maintained design reference beyond the README.
-
 ## Runtime Structure
 
-`MCPContentSearch` has a Python FastMCP process and a separately supervised
-Python sync-worker process.
+```mermaid
+flowchart LR
+  Client[MCP client] --> FastMCP[FastMCP in main.py]
+  LaunchAgent[LaunchAgent / Docker] --> Worker["indexing.sync_worker"]
+  FastMCP --> SQLite[(SQLite jobs + lifecycle)]
+  Worker --> SQLite
+  FastMCP --> Chroma[(Chroma vectors)]
+  Worker --> Chroma
+  FastMCP --> Search[search / MetadataStore reads]
+  Worker --> Index[fetch + index lifecycle]
+```
 
-- MCP server: `main.py` creates a `FastMCP` server named
-  `content-search-server`.
-- Durable sync worker: `python -m indexing.sync_worker` runs the generic
-  single-job worker loop. On macOS, a user LaunchAgent keeps it alive
-  independently of the MCP process.
-- MCP tools: `api/tools.py` registers the retained ContextWiki MCP tools:
-  `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
-  `search_context`, `search_documents`, `list_documents`, and `fetch_context`.
-- Configuration: `environments/config.py` contains `AppConfig`, source
-  connector settings, metadata DB path, and Chroma setup.
-- Secrets/environment loading: `environments/token.py` and runtime environment
-  helpers. Raw tokens must not be persisted or logged.
-- Shared models/errors/utilities: `core/`.
-- Fetching: `fetching/` owns Notion, Tistory, GitHub, and Obsidian source
-  fetching and connector registration.
-- Indexing: `indexing/` chunks documents, detects unchanged/reindexed content,
-  writes vectors to Chroma/LlamaIndex, and coordinates lifecycle metadata.
-- Search: `search/` provides SQLite-gated chunk retrieval, grouped
-  document-browsing retrieval, ranking, and citation answer scaffolding.
-- Persistence: SQLite metadata via `storage/metadata_store.py` plus ChromaDB via
-  `chromadb.PersistentClient`, defaulting to local user storage unless tests
-  provide temporary paths.
-- Process supervision: the version-controlled LaunchAgent template and helper
-  scripts under `deploy/launchd/` and `scripts/` render absolute runtime paths
-  but do not persist source credentials.
+Two processes share one SQLite DB and one Chroma store:
 
-FastMCP and the durable worker each build their own configuration, connector
-registry, and ingestion dependencies once at process startup. They do not
-hot-reload `.env` or source targets. Operators must restart both processes
-after source configuration changes so enqueue eligibility and worker dispatch
-cannot disagree.
+| Node | Meaning |
+| --- | --- |
+| MCP client → FastMCP | Claude/Cursor calls MCP tools (`sync_*`, `search_*`, …) |
+| LaunchAgent / Docker → Worker | Supervises `indexing.sync_worker` so sync keeps running after the MCP client stops |
+| SQLite jobs + lifecycle | Same `MetadataStore`: job queue (enqueue/claim/status) **and** document/chunk/tombstone lifecycle |
+| search / MetadataStore reads | FastMCP read path: active-gate search, `list_documents`, `fetch_context`, status |
+| fetch + index lifecycle | Worker write path: fetch source → chunk → write Chroma → update SQLite → terminal job status |
+| Chroma vectors | Semantic candidate store only; SQLite decides what is still active/citeable |
 
-SQLite access is operation-scoped. Each metadata operation owns a short-lived
-connection, uses the connection transaction boundary for commit or rollback,
-and closes the connection deterministically before returning. Long-running MCP
-or worker processes must not rely on Python garbage collection to release
-SQLite file descriptors.
+### Workflow
 
-The LaunchAgent is only a process supervisor. It is not a queue, scheduler
-database, or lifecycle authority. SQLite remains authoritative when either
-process restarts. Its long-lived Python logs use a bounded rotating file
-handler under the local application directory. A small launch wrapper captures
-`uv`, import, and uncaught startup stderr before Python logging is available
-through a bounded streaming writer that retains only the latest diagnostic
-bytes during execution. Once full, the writer compacts to a half-size retained
-tail before resuming appends, amortizing compaction work under sustained
-output. Before any startup output reaches that bounded file, a fail-closed
-line-stream sanitizer removes credentials, complete Cookie/Set-Cookie values,
-provider URLs, POSIX paths, and Windows drive, UNC, or extended paths. launchd
-stdout/stderr are not used as unbounded persistent logs. The sanitizer runs
-through the same validated absolute `uv` and repository environment as the
-worker, so the LaunchAgent does not depend on a separate system `python3`.
-Sanitizer import/runtime failure appends only a fixed bounded diagnostic and
-never the rejected raw stream. The wrapper latches `SIGINT`/`SIGTERM` received
-during worker startup, replays the first pending signal to the worker process
-group as soon as its PID is known, and waits interrupt-safely for both worker
-and diagnostic-writer cleanup before exiting. Signals received while the
-writer drains do not orphan it or delete its temporary chunk early. The
-retained Python log filter suppresses dependency INFO noise and redacts
-credentials, provider URLs, local paths, and formatter-added stack or
-exception context before rotating output is written.
-The installer owns and secures the default log directory to mode `0700`. It
-creates a new custom log directory privately, but it never silently changes an
-existing custom directory: that directory must use a canonical absolute path
-without symbolic-link components, have mode `0700`, be owned by the current
-user, and be writable and searchable by that user, or installation fails
-before `launchctl` is called.
+1. Client asks FastMCP to sync → FastMCP **enqueues** (or reuses) a job in SQLite and returns.
+2. Worker **claims** the job, runs fetch + index, writes Chroma + SQLite lifecycle, marks the job succeeded/failed.
+3. Client asks FastMCP to search → FastMCP pulls Chroma candidates, applies the **active gate**, returns evidence.
+4. Client can **status**-poll the exact job with `get_sync_status(source_id, job_id)`.
 
-An identical LaunchAgent install checks live service state: a loaded service is
-left untouched, while an unloaded service is bootstrapped from the existing
-plist. An explicit changed-config restart is transactional at the plist/service
-boundary. If the replacement cannot bootstrap, the installer restores the
-previous plist and its prior loaded state. A loaded service with a missing
-plist requires explicit `--restart` before replacement bootout. Since no prior
-plist is available in that state, replacement bootstrap failure leaves the
-service unloaded and cannot restore its earlier configuration automatically.
-During a changed-config transaction, catchable `SIGTERM`/`SIGINT` is latched
-until the tracked `launchctl` child finishes and commit or rollback completes.
-The previous snapshot is retained until that outcome is known, and incomplete
-rollback preserves the snapshot for diagnosis. `SIGKILL` cannot run shell
-cleanup and is outside this guarantee without a separate durable transaction
-journal.
-Install, restart, and uninstall share one exclusive per-label operation lock.
-The lock spans the first live-service/plist state read through the final
-mutation, commit, or rollback, so concurrently invoked helpers cannot apply a
-decision made from a stale snapshot. While a helper waits for `launchctl`, the
-lock atomically publishes both the helper and child PID/process-start
-identities. A killed helper therefore cannot make the lock recoverable while
-its already-running service mutation remains alive; dead or PID-reused child
-identity is required before reclaim. Outside that window, a dead lock owner is
-reclaimed only when its PID is absent or its recorded process start no longer
-matches. Malformed or otherwise unpublished ownership younger than a
-conservative 60-second grace is never deleted, and the current helper fails
-after its shorter bounded wait. This protects an owner still publishing its
-identity. A later helper may recover an ownerless or partially published
-directory only after that portable mtime grace has elapsed. The exclusive
-`.reclaim` directory used to serialize that recovery publishes its own PID and
-process-start identity under the same rules. A crashed recovery with a dead
-published owner is reclaimable immediately; an ownerless or partially
-published recovery marker is reclaimable only after the same mtime grace,
-while fresh or live markers remain protected. Symbolic-link, non-directory, or
-foreign-owned recovery markers are rejected without touching their targets.
-The status helper remains read-only and does not take this lock.
+LaunchAgent/Docker only keep the worker process alive. They are not the queue;
+SQLite is. Operators must restart both processes after `.env` or source-target
+changes: restart FastMCP **and** the worker (LaunchAgent restart script, or
+Docker recreate with the same `docker run ... --env-file` — `docker restart`
+keeps the old env).
 
-LaunchAgent removal targets the stable `gui/<uid>/<label>` service identifier,
-not the plist path, so a loaded service remains removable after its plist is
-missing.
+### Job queue: enqueue / claim / status
 
-Persistent worker INFO logs are limited to project aggregate counts and
-source/job lifecycle. Third-party INFO is suppressed. Per-document, per-chunk,
-Notion page, and Notion block identifiers are absent or DEBUG-only because
-source identity—especially Obsidian identity—can contain local filesystem
-paths. A common handler privacy filter redacts HTTP(S) URLs, token-like values,
-and paths from retained context. It applies the centralized credential
-sanitizer to the complete record first, so multiword Authorization
-Bearer/Basic, Cookie, and API-key values cannot leave trailing fragments.
-The same shared sanitizer runs before error text is persisted in SQLite and
-again at the MCP response boundary, so job/source status cannot expose token,
-provider URL, or local-path details that the worker log would redact. Cookie
-and Set-Cookie values remain fail-closed through their complete header and
-folded-continuation boundary, including oversized lines and cookie names that
-look like diagnostic fields. Diagnostic fields are retained only after an
-unambiguous non-folded line boundary. Unlabelled Windows UNC and extended paths
-are treated as local paths.
+| Term | Who | Meaning |
+| --- | --- | --- |
+| **enqueue** | FastMCP (`sync_source` / `sync_all`) | Insert a new sync job as `queued`, or return the existing queued/running job for that source (no duplicate). Returns immediately — does not wait for fetch/index. |
+| **claim** | Worker | Atomically take the next `queued` job → `running`, attach owner/pid/heartbeat, then execute fetch + index for that job. |
+| **status** | FastMCP (`get_sync_status`) | Read the job (or source's latest job) from SQLite: `queued` / `running` / `succeeded` / `failed`. Exact-job mode uses both `source_id` and `job_id`. |
 
-The current architecture does not include a production Web Console, Auto Wiki
-generation, generic website/docs crawling, dynamic web fallback, or legacy
-live-search/indexing MCP tools.
+### Document / chunk / tombstone lifecycle
+
+SQLite tracks what content exists and whether it may be cited — separate from Chroma vectors:
+
+| Unit | Role |
+| --- | --- |
+| **document** | One synced page/note/file (identity, timestamps, active vs deleted). Sync unit. |
+| **chunk** | Search/citation unit carved from a document (text + citation metadata). |
+| **tombstone** | Soft-delete marker (`deleted_at`, …) for content that disappeared from a **complete successful** cleanup-capable sync. Stale Chroma hits for tombstoned docs must not be returned as evidence. Failed/partial syncs must not tombstone absences. |
+
+### Active-gate search
+
+Chroma only proposes semantic **candidates**. Before results go to the client, SQLite checks each hit is still an **active** (non-tombstoned) document/chunk and passes date/source filters. That check is the **active gate**. Without it, search could cite deleted or out-of-range content just because an old vector still exists.
+
+## Module Map
+
+| Module | Owns |
+| --- | --- |
+| `api/` | MCP tool contracts, formatting, caller-visible errors |
+| `fetching/` | Notion, Tistory, GitHub, Obsidian connectors |
+| `indexing/` | Worker claim/dispatch, chunking, Chroma mutation, sync lifecycle |
+| `search/` | Retrieval, ranking, SQLite active gates, CitationAnswerService |
+| `storage/` | SQLite source/job/document/chunk/tombstone metadata |
+| `core/` | Shared models, exceptions, utilities |
+| `environments/` | AppConfig, Chroma setup, token/env access |
+| `main.py` | FastMCP composition/startup only |
+| `deploy/launchd`, `scripts/` | macOS supervision helpers (not ingestion/persistence) |
+
+New behavior starts in the owning module; avoid cross-module shortcuts in
+`api/tools.py` when a service boundary fits.
 
 ## Core Mental Model
 
-The shortest accurate description of the current system is:
+End-to-end data path: **sync writes** into stores, then **search reads** through
+the active gate. Chroma sits in the middle.
 
-```text
-configured source sync
--> normalized document identity and content hashes
--> deterministic chunking
--> Chroma semantic retrieval candidates
--> SQLite active-document validation
--> chunk evidence, grouped document browsing, or citation-gated answer helpers
+```mermaid
+flowchart TD
+  subgraph syncWrite [Sync — write path]
+    Sync[Configured source sync] --> Identity[Stable document identity + content hash]
+    Identity --> Chunk[Deterministic chunking]
+    Chunk --> WriteChroma[Write / update Chroma vectors]
+    Chunk --> WriteSQL[Write SQLite document / chunk lifecycle]
+  end
+  subgraph searchRead [Search — read path]
+    Cand[Chroma semantic candidates] --> Gate[SQLite active-document / date gate]
+    Gate --> Evidence[Chunk evidence / grouped browse / citation helpers]
+  end
+  WriteChroma -.-> Cand
+  WriteSQL -.-> Gate
 ```
 
-Keep these design assumptions aligned with implementation:
+## Sync / Job Ownership
 
-- Source sync is the only supported ingestion entrypoint for retained sources.
-- SQLite is the lifecycle source of truth for source status, sync jobs,
-  document/chunk activity, and citation-safe evidence gating.
-- Chroma is the retrieval accelerator, not the final authority on whether a hit
-  is still active or citeable.
-- `search_context` is the primary chunk-level evidence surface.
-- `search_documents` is the grouped browsing surface built from the same
-  validated retrieval path. It returns one row per document and exposes the
-  selected best-matching chunk's full text as `matched_context`.
-- `list_documents` is the query-less browsing surface over all active public
-  SQLite documents. It uses deterministic normalized-date ordering and opaque
-  keyset pagination rather than Chroma retrieval.
-- `search_context` remains a separate chunk-level contract; its preview
-  behavior is unchanged.
-- `CitationAnswerService.answer_with_citations(...)` is an internal helper
-  answer surface built on top of validated evidence, not a separate retrieval
-  stack.
-- Search uses deterministic local query normalization and retrieval variants.
-  There is no LLM query-rewrite step.
+```mermaid
+sequenceDiagram
+  participant MCP as FastMCP / sync_* tools
+  participant Q as SQLite job queue
+  participant W as sync_worker
+  participant S as Connectors + indexer
 
-## Data Flow
-
-```text
-MCP client
-  -> FastMCP server in main.py
-  -> api/tools.py registered tool handler
-  -> enqueue/reuse sync jobs in SQLite or query search/status services
-
-macOS LaunchAgent
-  -> generic indexing.sync_worker process
-  -> atomically claim the oldest queued SQLite job
-  -> service boundary in indexing/storage/fetching
-  -> connector fetch plus Chroma/SQLite indexing lifecycle
+  MCP->>Q: enqueue or reuse active job
+  Note over Q: Queued jobs are unowned
+  W->>Q: claim oldest queued job
+  Q-->>W: running + owner/pid/heartbeat
+  W->>S: blocking sync for claimed job
+  S->>Q: documents/chunks + terminal status
+  Note over S,Q: Soft-delete missing docs only after a full successful sync on cleanup-capable sources
+  MCP->>Q: get_sync_status(source_id, job_id) exact job
 ```
 
-Source status flow:
+### Ownership & recovery
+
+- Queued jobs stay pending when no worker is available; do not fail them for
+  lack of a running owner.
+- Running jobs carry owner/heartbeat; same-source sync is blocked while queued
+  or live-owned.
+- Recovery: stale jobs, unowned grace, dead owners; **PID-reuse caution**
+  (especially Docker PID 1). Process-start identity (Linux `linux-v2` /
+  Darwin) is definitive only in-scope; unknown/malformed/cross-namespace falls
+  back to heartbeat staleness.
+- MCP shutdown does not cancel worker jobs. Graceful worker signal → fail
+  in-flight job **without** tombstones. Abrupt death → orphan recovery marks
+  failed; v1 does not auto-resume partial work. After the orphaned job is
+  terminal `failed`, callers enqueue a **fresh** sync.
+
+### Tombstone safety
+
+Tombstones only after a **complete successful** cleanup-capable snapshot.
+Failed, partial, or bound-truncated snapshots must not tombstone absences.
+
+**cleanup-capable:** the source can prove a full remote/vault inventory for this
+sync (Notion search, GitHub tree, Obsidian walk when bounds are not exceeded).
+Tistory is not — its id-scan cannot prove “everything that exists” — so it never
+tombstones absences.
+
+### Job status (and optional phase)
+
+- **`job.status`:** `queued` → `running` → `succeeded` | `failed` (what clients poll).
+- **`phase`:** optional running-only progress hint (`starting`, `discovering_pages`,
+  `fetching_page_content`, `indexing_documents`, …). Not a substitute for
+  `status`. Detail / polling policy: ADR 0009.
+
+### Running progress hints (`get_sync_status` only)
+
+While a job is `running`, exact-job / latest-job payloads may also expose:
+
+| Hint | Meaning |
+| --- | --- |
+| `upstream_total` | Source-neutral list/scan size so far (Notion pages, GitHub selected blobs, Obsidian notes, Tistory scan ids) |
+| `upstream_done` | Items fetched, skipped, or otherwise completed so far |
+| `last_progress_at` | Public liveness stamp for status polls (advances on coalesced progress writes) |
+| `status_message` | Short sanitized, source-neutral text (e.g. “Fetching upstream items 25/100…”) |
 
 ```text
-list_sources / get_sync_status
-  -> MetadataStore SQLite source/job metadata
+discovering_pages:     upstream_total = discovered so far; upstream_done = 0
+fetching_page_content: upstream_total = final list/scan size; upstream_done = completed items
 ```
 
-Reviewer-facing source/status fields should remain understandable from the
-maintained docs. Current status payloads are expected to center on fields such
-as:
+- Public MCP uses **only** `upstream_total` / `upstream_done`. Legacy SQLite
+  columns `upstream_total_pages` / `upstream_fetched_pages` may be dual-written
+  for older DBs but are **not** exposed. Reads prefer the new columns whenever
+  they exist (including intentional `0`); one-time schema migrate backfills
+  legacy → new.
+- Hint writes are coalesced: full counter/`status_message` about every 25 items
+  (and always on the last item); `last_progress_at` + heartbeat more often
+  (~every 5) so polls do not look stuck and orphan detection stays fresh.
+- Connectors emit Notion-shaped progress events; ingestion maps them for all
+  sources. Cooperative cancel: stop signal / `_InactiveJobStop` re-raises
+  through emit helpers; Tistory cancels `create_task` fan-out in `finally`
+  (including `CancelledError`); GitHub checks stop during owner-resolve
+  pagination and between repo planning steps. Inactive-job stop must not be
+  swallowed by stop-checker helpers.
 
-```text
-latest_success_at
-latest_failure_at
-document_count
-chunk_count
-latest_failure_reason
-stale_cleanup_disabled_reason
+Hints are suppressed again once the job is terminal. They do not widen
+`sync_source` / `sync_all` response shapes.
+
+### `sync_source` / `sync_all`
+
+- `sync_source`: enqueue or reuse active job; return immediately (not wait for
+  fetch/index). Disabled source → terminal `failed` in the same write.
+- Worker claims work from SQLite (see Runtime Structure); MCP does not run
+  long sync in-process when the worker is down.
+- `sync_all`: launch acceptance only (`started` / `already_running` / `skipped` /
+  `failed`). Completion = client polls exact
+  `get_sync_status(source_id, job_id)` until terminal — not `latest_job`.
+  Timing/backoff: ADR 0009.
+
+## Retrieval
+
+```mermaid
+flowchart TD
+  SC[search_context] --> CSS[ContextSearchService]
+  SD[search_documents] --> CSS
+  CSS --> Norm[Deterministic query normalize]
+  Norm --> Cand[Chroma / LlamaIndex candidates]
+  Cand --> Val[SQLite active + inclusive date gate]
+  Val --> Rank[Rank / select]
+  Rank --> ChunkOut[Chunk payload]
+  Rank --> DocOut["Grouped docs + matched_context"]
+  LD[list_documents] --> MS[MetadataStore active listing]
+  MS --> Browse[Date-ordered keyset pages]
+  FC[fetch_context] --> Hydrate[MetadataStore hydrate doc/chunks]
+  CA[CitationAnswerService] --> CSS
 ```
-
-Those fields explain recent source health, retained indexed volume, and whether
-cleanup is intentionally disabled for safety.
-
-When a sync job is queued or actively running, `get_sync_status` exposes its
-authoritative SQLite state. Running jobs may additionally expose progress hints
-that explain whether the worker is still upstream discovery/fetch-bound or
-already indexing. Exact-job mode exposes them under `job`; the
-latest-one-source and all-source modes expose them under `latest_job`. Those
-hints are intentionally running-only and are suppressed again once the selected
-job reaches a terminal state. Maintained reviewer-facing hints include:
-
-```text
-phase
-upstream_total_pages
-upstream_fetched_pages
-last_progress_at
-status_message
-```
-
-Those running-job hints are intentionally limited to `get_sync_status`; they
-do not broaden the public `sync_source` or `sync_all` response shapes.
-
-Persisted source `auth_ref` values are references, not secret storage. The only
-retained nonempty form is `env:UPPER_CASE_NAME`; direct source upsert or
-registration normalizes every other form to empty before SQLite writes. Public
-payload formatting independently rejects noncanonical references so legacy or
-bypassed rows cannot expose raw credential material.
-
-Persisted job phases use the finite lifecycle vocabulary `starting`,
-`discovering_pages`, `fetching_page_content`, `indexing_documents`, `completed`,
-and `failed`, plus empty when no phase is set. Storage writes normalize every
-other value to empty, and the MCP boundary omits a noncanonical running phase.
-Free-form diagnostic text belongs only in the separately sanitized
-`status_message` and `error_message` fields.
-
-The numeric hint semantics are phase-aware but should remain monotonic within a
-running sync:
-
-```text
-discovering_pages:
-  upstream_total_pages = discovered-page count so far
-  upstream_fetched_pages = 0
-
-fetching_page_content:
-  upstream_total_pages = final discovered page count
-  upstream_fetched_pages = page bodies fetched so far
-```
-
-Queued jobs are deliberately unowned. They remain pending when no worker is
-available and must not be reconciled as failed merely because no running owner
-exists.
-
-Running-job ownership is part of the status story. A source reports as
-effectively blocked when SQLite sees either an active queued job or an active
-worker owner/heartbeat for the running job. That guard prevents overlapping
-same-source syncs.
-
-That blocked state is intentionally recoverable rather than permanent. Recovery
-distinguishes stale jobs, unowned-job grace, dead owners, and the container
-PID-reuse case where an old and new container can both appear as PID `1`.
-Workers persist a process-start identity with each owner heartbeat. On Linux,
-that identity includes the boot id, PID namespace, and process start ticks, so
-a changed start identity is definitive evidence of PID reuse only within the
-same boot and PID namespace. Likewise, an owner PID reported as absent is
-definitive only when the observer is in that same scope. A cross-namespace or
-otherwise unknown scope—including a missing, legacy, malformed, or
-cross-platform process-start identity observed from Linux or macOS—falls back
-to the running job's heartbeat staleness window instead of reclaiming a
-potentially live owner immediately.
-Linux identities are valid only when all four `linux-v2` fields are present and
-the start ticks are a positive ASCII-decimal integer. Darwin identities require
-exactly the prefix, positive ASCII-decimal seconds, and ASCII-decimal
-microseconds from 0 through 999999. Recognized but malformed identities remain
-unknown rather than becoming definitive process mismatches. Numeric fields use
-canonical decimal spelling without leading zeroes; Darwin microseconds may be
-the exact value `0`.
-
-Source sync flow:
-
-```text
-sync_source
-  -> IngestionService.enqueue_sync_source() for MCP callers
-  -> SourceRegistry connector lookup
-  -> MetadataStore atomic enqueue/reuse
-  -> return a queued or already-running job immediately
-
-LaunchAgent worker
-  -> MetadataStore atomic oldest-job claim
-  -> queued -> running with worker owner, pid, and heartbeat
-  -> blocking IngestionService execution for that exact claimed job
-  -> Notion, Tistory, GitHub, or Obsidian connector fetch
-  -> DocumentChunker
-  -> ContentIndexer and Chroma collection
-  -> MetadataStore SQLite source/job/document/chunk/tombstone metadata
-  -> get_sync_status(source_id, job_id) reads that exact job's completion
-```
-
-If the source already has a queued or running job, `sync_source` returns that
-exact active job instead of creating a duplicate. Under the same SQLite write
-transaction, a new disabled-source request is inserted directly as terminal
-failed rather than becoming claimable queue work. A disabled source or enqueue
-failure may therefore return a failed terminal result without entering the
-worker lifecycle. The MCP process never silently falls back to an in-process
-long-running task when the worker is unavailable.
-
-Retained sync safety rule:
-
-- Tombstoning stale documents is allowed only for cleanup-capable sources after
-  a complete successful snapshot. Failed or incomplete syncs must not tombstone
-  documents simply because they were absent from a partial fetch.
-
-Bulk source sync flow:
-
-```text
-sync_all
-  -> enumerate retained configured sources
-  -> enqueue or reuse one durable job per selected source
-  -> preserve per-source queued/running guards in SQLite
-  -> return before the worker claims or completes those jobs
-  -> report each launch as started, already_running, skipped, or failed
-  -> aggregate launch acceptance as accepted, partial, or failed
-  -> caller keeps each started or already_running {source_id, job_id} as a
-     completion target
-  -> caller reports skipped and failed launches without treating them as
-     pending work
-  -> caller issues short, separate
-     get_sync_status(source_id=..., job_id=...) requests
-  -> caller reads the exact job rather than a newer latest_job
-  -> caller repeats with paced, capped backoff while a target job remains
-     non-terminal and the observation bounds allow
-  -> succeeded or failed is the terminal per-source completion result
-```
-
-The retained observation policy starts at a 2-second interval, backs off with a
-10-second cap, and has one overall 5-minute deadline measured from the start of
-completion observation after `sync_all` returns. A target stops after three
-consecutive status errors or responses with no exact `job`; a successful
-exact-job response resets its consecutive error count. At the deadline, the
-caller reports still-running `{source_id, job_id}` values without cancelling
-their background syncs and may resume observation later with the same IDs. Each
-status invocation is an independent MCP request initiated by the client or
-agent. The server does not automatically schedule later calls or push a
-completion notification.
-
-When `job_id` is omitted, `get_sync_status(source_id)` retains the existing
-latest-one-source response with `latest_job`, and omitting both arguments
-retains the existing all-source response. Those modes describe current state;
-they are not used to attribute completion to a retained `sync_all` job.
-
-ADR 0009 governs exact-job completion observation through short, paced
-`get_sync_status(source_id, job_id)` requests. ADR 0010 separately governs
-durable execution ownership: SQLite queue/claim/heartbeat state and the
-LaunchAgent-supervised worker, not the observing MCP caller, own execution.
-
-The generic worker claims one job at a time across Notion, Tistory, GitHub, and
-Obsidian. This conservative default avoids concurrent writes through shared
-Chroma and connector state. Source-specific fetching remains inside each
-connector; the durable ownership model is common to every retained source.
-
-MCP and worker shutdown have different semantics:
-
-- MCP shutdown does not own or cancel a worker job.
-- A graceful worker `SIGINT`/`SIGTERM` finalizes its in-flight job as failed
-  without authorizing tombstones from a partial snapshot.
-- An abrupt worker death leaves a running owner/heartbeat record. Existing
-  orphan recovery marks that work failed after the owner is no longer live; v1
-  does not automatically resume a partially executed job.
-- A later caller may enqueue a fresh sync after the failed/orphaned job is
-  reconciled.
-
-Retrieval and answer flow:
-
-```text
-search_context
-  -> ContextSearchService
-  -> deterministic query normalization and retrieval variants
-  -> Chroma/LlamaIndex candidate retrieval
-  -> SQLite active-hit and inclusive normalized-date validation
-  -> deterministic ranking and result selection
-  -> chunk-level structured search result payload
-
-search_documents
-  -> ContextSearchService
-  -> same deterministic validated retrieval path
-  -> Chroma/LlamaIndex candidate retrieval
-  -> SQLite active-hit and inclusive normalized-date validation
-  -> group by document_id
-  -> choose highest-ranked representative chunk per document
-  -> optionally sort the bounded semantic matches by normalized document time
-  -> expose that chunk text as matched_context
-  -> grouped document-browsing payload
-
-list_documents
-  -> MetadataStore active public document listing
-  -> inclusive normalized-date and source filtering
-  -> deterministic normalized-date ordering with nulls last
-  -> opaque keyset cursor pagination
-  -> browse-safe metadata payload without content or local paths
-
-fetch_context
-  -> MetadataStore direct document/chunk hydration
-  -> optional drill-down to stored document content and chunks, or one chunk
-
-internal helper answer flows
-  -> CitationAnswerService
-  -> search_context_for_answer / search_context
-  -> MetadataStore-validated evidence chunks
-  -> citation-gated answer payload
-```
-
-## Module Responsibilities
-
-- `api`: MCP-facing tool contracts, parameter defaults, result formatting, and
-  caller-visible error messages. It delegates sync and search orchestration to
-  services, while using `MetadataStore` directly for limited source/status
-  reads, `list_documents`, and `fetch_context` document/chunk hydration.
-- `fetching`: Notion, Tistory, GitHub, and Obsidian content retrieval plus
-  source connector registration. It owns API-specific or filesystem-specific
-  parsing, bounded fetch behavior, and partial failure handling. Internal
-  Notion/GitHub target parsing helpers are implementation utilities only; the
-  retained MCP surface is still configured source sync through `sync_source`.
-  Obsidian is a configured local-vault Markdown source, not a live Obsidian app
-  or plugin integration.
-- `indexing`: durable worker polling/dispatch, document indexing lifecycle,
-  deterministic chunking, content hash/chunk-id comparison, Chroma mutation,
-  index status updates, and worker-owned execution under SQLite queue, claim,
-  heartbeat, and per-source concurrency guards.
-- `search`: query orchestration, ranking, metadata fallback, SQLite-backed
-  active-result validation, and internal citation answer support.
-- `storage`: SQLite source/job/document/chunk lifecycle metadata, normalized
-  document times, tombstones, sync-job ownership, active retrieval/date checks,
-  deterministic document listing, and direct stored document/chunk hydration
-  used by `fetch_context`.
-- `core`: stable shared data models, exception classes, and utility functions.
-- `environments`: configuration defaults, Chroma setup, API version constants,
-  and environment-token access.
-- shared runtime composition: builds the same config, source registry, chunker,
-  indexer, and metadata store for either process without importing an executing
-  FastMCP transport.
-- `main.py`: FastMCP composition and server startup only.
-- `deploy/launchd` and LaunchAgent helper scripts: macOS user-process
-  supervision and diagnostics. They are not ingestion or persistence layers.
-
-New behavior should start in the module that owns the relevant responsibility.
-Avoid adding cross-module shortcuts in `api/tools.py` when a service boundary is
-more appropriate.
-
-## MetadataStore Maintainability Boundary
-
-`storage/metadata_store.py` currently centralizes several SQLite concerns in one
-large class. That is a known maintainability risk, but it is not permission to
-replace the store, alter its public methods, or change the database schema in a
-single redesign. A safe future extraction should preserve these responsibility
-boundaries:
-
-- connection setup plus operation-scoped transaction, commit/rollback, and
-  deterministic close behavior
-- source registration/status plus sync-job ownership, heartbeat, recovery, and
-  terminal lifecycle
-- document and chunk lifecycle reads/writes, including tombstones and the
-  active-document/active-chunk gates used before retrieval evidence is returned
-
-Move one boundary at a time behind the existing `MetadataStore` interface.
-Each stage must preserve current method signatures, transaction semantics,
-exception behavior, SQL schema, and caller-visible MCP payloads. Verify every
-stage first with focused storage tests against temporary SQLite databases, then
-with the affected sync/retrieval contract and functional E2E tests. Do not
-inspect or migrate user databases as part of an internal extraction; any later
-schema or user-data migration requires a separate explicit plan with rollback
-and compatibility coverage.
-
-## Incremental Indexing and Tombstone Safety
-
-The retained ingestion model depends on stable document identity plus cautious
-cleanup:
-
-- Source connectors should preserve stable document identity fields such as
-  source-specific external ids, canonical URLs, and version or freshness
-  markers when available.
-- Indexing compares content hashes and chunk ids so unchanged documents can skip
-  unnecessary vector rewrites.
-- Reappeared or reactivated documents should return to the active set through a
-  normal successful sync rather than through ad hoc metadata repair.
-- Tombstone and stale-cleanup behavior is safety-gated. Missing documents may be
-  marked stale only after a cleanup-capable source completes a full successful
-  snapshot. Failed, partial, or byte/file-limit-truncated snapshots must not
-  tombstone documents simply because they were absent from that incomplete run.
-
-## Source Identity and Chunking Model
-
-The retained indexing model distinguishes document management from chunk
-retrieval:
-
-- `DocumentModel` is the sync and lifecycle unit.
-- Chunks are the search and citation unit.
-- Chunk metadata carries the reviewer-visible citation context used by
-  `search_context`, `search_documents`, and internal helper-answer flows.
-
-Stable identity and version expectations stay source-aware:
-
-- Notion: page id drives stable identity; creation/edit times become
-  `published_at`/`modified_at` with `date_provenance="notion"`. During fetch,
-  Notion skips `fetch_block_content` when an active stored document already has
-  non-empty content and a canonical `modified_at` that matches the page
-  `last_edited_time` (or `created_time` when edit time is absent), reusing the
-  stored body instead of re-downloading unchanged pages. Existing documents are
-  loaded after search for the searched page ids only via one batched
-  metadata read of skip/reuse fields (`content`, `modified_at`,
-  `content_hash`, `deleted_at`) rather than per-id full-row gets or a
-  full-corpus browse; skip equality uses the public
-  `MetadataStore.canonical_document_timestamp` helper. Skipped pages still
-  return in the fetch snapshot so stale cleanup can refresh `last_seen` and
-  tombstone only truly missing remotes.
-- Tistory: `blog_name:post_id` drives stable identity; the upstream publication
-  time becomes `published_at` with `date_provenance="tistory"` when present.
-- GitHub: repository path drives stable identity, while blob SHA is revision
-  metadata in `version_id`, never a normalized modification timestamp.
-- Obsidian: relative note path drives stable identity, while the
-  `obsidian://open` URL stays the citation-friendly canonical URL and filesystem
-  mtime becomes `modified_at` with `date_provenance="filesystem"`.
-
-The lifecycle fields that matter for reviewer understanding are:
-
-```text
-external_id
-document_id
-canonical_url
-version_id
-published_at
-modified_at
-indexed_at
-date_provenance
-last_seen_at
-last_seen_sync_id
-deleted_at
-```
-
-Current chunking remains deterministic and source-aware:
-
-- heading-based markdown chunking when structure exists
-- deterministic plain-text fallback windows when structure does not
-- line-range-preserving code chunking for citeable code evidence
-
-Representative citation metadata per chunk should remain understandable from the
-maintained docs:
-
-```text
-chunk_id
-document_id
-source_id
-title
-url
-path
-chunk_index
-line_start
-line_end
-content_hash
-version_id
-updated_at
-published_at
-modified_at
-indexed_at
-date_provenance
-```
-
-That deterministic chunking plus stable identity is what makes unchanged-doc
-skip behavior, reappeared-document recovery, and citation stability predictable
-across syncs.
-
-## Four-Layer View
-
-ContextWiki is easiest to reason about as four layers:
-
-```text
-MCP client
--> FastMCP tool surface
--> durable SQLite job handoff or search services
--> generic worker and ingestion services
--> SQLite metadata plus Chroma retrieval storage
-```
-
-That division is intentional:
-
-- MCP clients interact with tools, not storage internals.
-- Service boundaries own ingestion, retrieval, ranking, and answer assembly.
-- Chroma finds semantically relevant candidates.
-- SQLite decides whether those candidates are still active, valid, and safe to
-  return as evidence.
 
 ## MCP Tool Contract
 
-Current tools:
+```text
+list_sources() -> dict
+sync_source(source_id: str) -> dict
+sync_all() -> dict
+get_sync_status(source_id: str = "", job_id: str = "") -> dict
+search_context(query, filters=None, top_k=10, include_debug=False) -> dict
+search_documents(query, filters=None, sort_by="relevance", sort_order="desc", top_k=10) -> dict
+list_documents(filters=None, sort_by="indexed_at", sort_order="desc", page_size=20, cursor=None) -> dict
+fetch_context(document_id="", chunk_id="") -> dict
+```
 
-- `list_sources() -> dict`
-- `sync_source(source_id: str) -> dict`
-- `sync_all() -> dict`
-- `get_sync_status(source_id: str = "", job_id: str = "") -> dict`
-- `search_context(query: str, filters: SearchFilters | None = None, top_k: int = 10, include_debug: bool = False) -> dict`
-- `search_documents(query: str, filters: SearchFilters | None = None, sort_by: SearchSortBy = "relevance", sort_order: SortOrder = "desc", top_k: int = 10) -> dict`
-- `list_documents(filters: SearchFilters | None = None, sort_by: DocumentSortBy = "indexed_at", sort_order: SortOrder = "desc", page_size: int = 20, cursor: str | None = None) -> dict`
-- `fetch_context(document_id: str = "", chunk_id: str = "") -> dict`
+**Intent (short):**
 
-Contract intent:
+- Filters: `source_id` / `source_ids` (union if both), inclusive UTC date bounds
+  (`published_*`, `modified_*`, `indexed_*`); offset-free timestamps = UTC;
+  date-only values start at midnight UTC; unknown fields rejected.
+- `search_context`: chunk evidence; date gate in SQLite; optional `debug`
+  (`{}` when `include_debug=False` except `no_matching_sources` exception).
+- `search_documents`: same path, one row/doc, best chunk text as
+  `matched_context` (not `preview`); optional date sort within semantic set.
+- `list_documents`: no query; SQLite browse; `page_size` 1–50; opaque
+  `next_cursor` must be reused unchanged with the same filters/sort; public
+  rows expose only `document_id`, `source_id`, `title`, `url`, `canonical_url`,
+  `platform`, `published_at`, `modified_at`, `indexed_at`, `date_provenance`
+  — no content/local paths.
+- Public search results expose normalized timestamps + `date_provenance` (not
+  legacy `date` / `updated_at` reinterpretation).
+- `auth_ref` only `env:UPPER_CASE_NAME`; other forms normalize to empty; public
+  formatting rejects noncanonical refs.
+- Status fields: `latest_success_at`, `latest_failure_at`, `document_count`,
+  `chunk_count`, `latest_failure_reason`, `stale_cleanup_disabled_reason`.
+- Tool annotations: retrieval tools are not read-only/idempotent (schema init /
+  heartbeat); `search_*` `openWorldHint=True` (default embeddings may egress);
+  `list_documents` / `fetch_context` `openWorldHint=False`.
+- Keep names, params, return shapes, and error vocabulary stable unless the
+  user requested a contract change; never leak secrets or full local paths.
 
-- `SearchFilters` exposes `source_id`, `source_ids`, `published_from`,
-  `published_to`, `modified_from`, `modified_to`, `indexed_from`, and
-  `indexed_to`. Date/time bounds are inclusive, normalized to UTC, and
-  validated as ordered ranges. Offset-free timestamps are treated as UTC and
-  date-only values start at midnight UTC. `source_id` and `source_ids` are
-  single-source and multi-source alternatives; if both are supplied, all
-  nonblank ids form one deduplicated union. Unknown filter fields are rejected.
-- `search_context` remains the relevance-ordered chunk-level evidence and
-  citation surface. Date filtering is part of the SQLite-authoritative
-  candidate gate, and bounded candidate expansion happens before final
-  `top_k` truncation when early semantic candidates are out of range.
-- `sync_all` is an aggregate orchestration helper, not a separate ingestion
-  stack. It enqueues or reuses retained-source durable jobs, preserves each
-  source's queued/running guard, and returns after acceptance decisions instead
-  of waiting for worker claim or ingestion completion. Per-source
-  `launch_outcome` values are `started`, `already_running`, `skipped`, or
-  `failed`; the aggregate launch status is `accepted`, `partial`, or `failed`.
-  Completion-seeking callers retain `{source_id, job_id}` only from
-  `started`/`already_running` results, report `skipped`/`failed` launches
-  immediately, and do not poll a retained result that lacks a job ID.
-- `get_sync_status(source_id, job_id)` returns the exact public sync job under
-  `job`; it must not substitute a newer `latest_job`. Completion observers use
-  short separate requests with a 2-second initial interval, capped backoff up
-  to 10 seconds, and one overall 5-minute deadline. They stop a target after
-  three consecutive status errors or missing exact jobs, report observation
-  uncertainty without substituting latest state, and report still-running job
-  IDs at the deadline without cancellation. Observation may resume later with
-  the same exact IDs. Repeating requests is client or agent behavior, not
-  automatic client scheduling, server-side waiting, or server push.
-- Existing calls that omit `job_id` keep their response shapes:
-  `get_sync_status(source_id)` returns one source plus `latest_job`, while
-  `get_sync_status()` returns all public sources plus each `latest_job`. These
-  modes are current-state inspection, not exact completion attribution.
-- `search_documents` is document-oriented: it uses the same retained-source
-  retrieval path but returns one representative chunk-backed row per document
-  for browsing. Its public result contract intentionally replaces the earlier
-  `preview` field with the representative chunk's full text in
-  `matched_context`. It defaults to relevance and can sort its bounded semantic
-  matches by `published_at`, `modified_at`, or `indexed_at`, ascending or
-  descending, with document-id tie breaking and null timestamps last. It does
-  not promise a global date ordering over documents outside the retrieved
-  semantic candidate set.
-- `list_documents` is the global active-document date-browsing contract. It
-  takes no semantic query, supports the same source/date filters, sorts by
-  `published_at`, `modified_at`, or `indexed_at`, and returns `documents` plus
-  an opaque `next_cursor`. MCP `page_size` is bounded to 1 through 50; cursors
-  must be reused unchanged with the same filters and sort settings. Its public
-  document rows include only `document_id`, `source_id`, `title`, `url`,
-  `canonical_url`, `platform`, the three normalized timestamps, and
-  `date_provenance`.
-- Public `search_context` and `search_documents` results also expose the three
-  normalized timestamp fields plus `date_provenance`; they do not reinterpret
-  legacy `date` or `updated_at`.
-- `fetch_context(document_id)` remains an optional drill-down when the caller
-  needs the selected document's stored content and chunks. Direct
-  `fetch_context(chunk_id=...)` lookup remains supported.
-- Internal `CitationAnswerService.answer_with_citations(...)` reuses
-  `search_context_for_answer` / `search_context`, so deterministic retrieval
-  semantics stay aligned across search and helper-answer flows.
-- `search_context` returns a `debug` key on configured search-service paths.
-  On the normal path, `include_debug=False` leaves that key as `{}`, while
-  `include_debug=True` populates it with structured retrieval detail. The
-  current service-unconfigured fallback returns only `query` and `results`.
-- The current public exception is `search_context`'s `no_matching_sources`
-  fast path, which still returns a small populated `debug` object even when
-  `include_debug=False`.
-- Internal helper-answer flows keep `include_debug` as a true opt-in debug
-  surface, do not mirror the `no_matching_sources` exception path, and do not
-  guarantee debug fields on default or service-unconfigured paths.
-- Retrieval policy keeps vector retrieval, metadata fallback, SQLite
-  validation, and rerank/debug reporting as distinct, inspectable concerns.
-- When the active FastMCP-compatible decorator supports annotations,
-  `search_context`, `search_documents`, `list_documents`, and `fetch_context`
-  advertise `readOnlyHint=False`, `destructiveHint=False`, and
-  `idempotentHint=False`. Their caller-visible purpose is retrieval, but the
-  shared metadata-store path can initialize additive SQLite schema and refresh
-  sync-owner heartbeat metadata, so read-only or idempotent hints would be
-  inaccurate.
-  `search_context` and `search_documents` advertise `openWorldHint=True`
-  because default embeddings may send queries to an external provider;
-  `list_documents` and `fetch_context` advertise `openWorldHint=False`.
-  `list_sources` and `get_sync_status` do not advertise read-only/idempotent
-  hints even though observation overlays configured registry state in memory
-  without persisting that overlay. `get_sync_status` may still reconcile
-  running-job lifecycle through `get_latest_sync_job` / schema init, so
-  read-only or idempotent hints would remain inaccurate. Sync tools also
-  remain mutating operations.
+## Identity & Chunking
 
-Retained debug-oriented answer inspection surfaces should stay documented and
-stable enough for local evaluation and reviewer use:
+| Source | Stable identity | Dates / version | Notes |
+| --- | --- | --- | --- |
+| Notion | page id | `published_at`/`modified_at`, `date_provenance="notion"` | Skip `fetch_block_content` when active stored doc has content and canonical `modified_at` matches page `last_edited_time` (or `created_time`); batched skip/reuse fields only; skipped pages still in snapshot for `last_seen` / cleanup |
+| Tistory | `blog_name:post_id` | `published_at`, `date_provenance="tistory"` | — |
+| GitHub | repository path | blob SHA → `version_id` only (not a mod timestamp) | Prefix-scoped stale cleanup (below) |
+| Obsidian | relative note path | mtime → `modified_at`, `date_provenance="filesystem"`; `obsidian://open` as citation URL | Local vault Markdown; not a live Obsidian app |
 
-- `search_context` debug explains deterministic retrieval and ranking decisions.
-- Current reviewer-facing search debug commonly includes retrieval query and
-  result-selection surfaces such as `retrieval_queries` and
-  `selected_results[]`.
-- Deterministic intent policy should remain readable in debug output when
-  present. The current retained intent vocabulary includes `strict_lookup`,
-  `broad_topic`, `list`, and `comparison`, and that intent is reused by
-  ranking and grounded answer rendering.
-- `CitationAnswerService.answer_with_citations(...)` exposes helper-answer
-  inspection surfaces such as `citations`, `used_chunks`, `debug`, and
-  `debug_markdown` when the current implementation returns them.
-- Public debug payloads may also surface deterministic intent and retrieval
-  inspection sections such as `intent.*`, `retrieval_queries`, and
-  `selected_results[]` so reviewers can explain why a grounded result set was
-  chosen.
-- Eval and reviewer workflows should be able to explain why a retrieval or
-  answer path was chosen without reading raw vector-store internals.
+Lifecycle fields: `external_id`, `document_id`, `canonical_url`, `version_id`,
+`published_at`, `modified_at`, `indexed_at`, `date_provenance`, `last_seen_at`,
+`last_seen_sync_id`, `deleted_at`.
 
-When changing a tool:
+Chunking: heading markdown → plain-text windows → line-range code chunks.
+Citation metadata per chunk includes `chunk_id`, `document_id`, `source_id`,
+`title`, `url`, `path`, `chunk_index`, `line_start`/`line_end`, hashes, version,
+timestamps, `date_provenance`.
 
-- Keep names, parameters, return types, and error vocabulary stable unless the
-  user requested a contract change.
-- Update README or client-facing docs when behavior changes.
-- Ensure exceptions do not expose tokens, filesystem secrets, or full local data
-  paths unnecessarily.
-- Treat source sync completion/status as caller-visible behavior. If a workflow
-  returns before all work is complete, status reporting must remain truthful.
+## Persistence & Safety
 
-## Persistence and Local Data
+| Store | Role |
+| --- | --- |
+| SQLite | Authority for source/job/document/chunk lifecycle, active gates, dates, listing, tombstones |
+| Chroma | Semantic candidate accelerator; stale hits filtered via SQLite before evidence |
 
-ChromaDB stores indexed user content for semantic retrieval. SQLite stores
-ContextWiki source/job/document/chunk lifecycle and citation metadata.
+- Do not inspect, delete, reset, or migrate local Chroma/SQLite without explicit
+  user approval, a plan, and rationale. Tests use temp paths/mocks.
+- Soft-delete provenance: tombstones must suppress stale vectors even if
+  best-effort Chroma cleanup lags.
+- Normalized date columns are additive; legacy `date`/`updated_at` intact;
+  empty timestamps until later sync — no forced reindex for that alone.
+- **GitHub prefix cleanup:** under shared `source_github`, cleanup prefixes come
+  only from repositories successfully resolved in that snapshot. One repo must
+  not tombstone another; owner discovery never enables broad owner-prefix
+  cleanup. Confirmed-empty repo (GitHub metadata) may tombstone its exact
+  prefix after a complete sync; ambiguous empty metadata cannot.
 
-- Do not delete, reset, or inspect local Chroma data or SQLite metadata without
-  explicit user approval, a plan, and user-visible rationale.
-- Tests should prefer temporary paths or mocks when touching Chroma or SQLite
-  metadata.
-- Indexing changes must preserve document identity and content hash semantics
-  unless the plan explains migration or reindexing behavior.
-- If a change requires reindexing, the plan and final report must include
-  user-data impact and rollback/mitigation notes.
+### External sources (compressed)
 
-SQLite is the authoritative active-document gate. Stale Chroma hits must be
-filtered through SQLite metadata before being returned as evidence. It is also
-the authoritative normalized-date filter and query-less listing store.
+- Notion / Tistory / GitHub / Obsidian as configured; disabled source blocks new
+  syncs but does not hide already-active docs.
+- GitHub: targets `owner`, `owner/repo`, `owner/repo@ref`; mixed targets must
+  not overlap identities; bounds (files/bytes/pages) make incomplete snapshots
+  and disable stale cleanup; listing endpoints capped (full page 100 → fail
+  before index).
+- Obsidian: vault path + file/byte bounds; over-bound → incomplete fail before cleanup.
+- Default embeddings may egress to OpenAI unless overridden; no AppConfig
+  embedding-provider switch. Local demo/E2E inject `MockEmbedding`.
+- Live API or real-vault checks need explicit approval + plan; never print tokens
+  or local path details.
 
-The `published_at`, `modified_at`, `indexed_at`, and `date_provenance` columns
-are added through the existing additive-column schema initialization. Normal
-future sync/indexing populates them, legacy `date`/`updated_at` remain intact,
-and existing Chroma vectors do not require reindexing. Existing rows can keep
-empty normalized source timestamps until later normal ingestion updates them.
+## Configuration, Secrets, Errors
 
-GitHub stale cleanup remains repository-prefix scoped under the shared
-`source_github` source id. GitHub targets are resolved during each sync, and
-cleanup prefixes are derived only from the exact repositories successfully
-resolved for that snapshot. A sync for one configured repository must not
-tombstone documents that belong to another repository prefix. Owner discovery
-must never enable broad owner-prefix cleanup: a historical or private
-repository absent from the current token-visible result remains outside the
-cleanup scope. A repository confirmed empty by GitHub metadata is a complete
-zero-document scope whose exact prefix can tombstone its previous documents
-after a complete sync; missing or ambiguous empty metadata is not assumed
-complete and cannot enable cleanup for that apparent empty state.
+- Secrets: `environments/token.py`, `.env`, env vars, API keys — never in docs,
+  tests, logs, screenshots, or examples.
+- Domain exceptions in `core/exceptions.py`. Classify fetch errors near fetchers;
+  search errors must not leak internals; indexing updates status before failure
+  surfaces; tool messages stay user-readable without secrets.
 
-Soft-delete provenance matters here: SQLite tombstone metadata must remain able
-to suppress stale managed vector hits even when best-effort vector cleanup
-cannot remove every old Chroma candidate immediately.
+## Testing & Harness
 
-## External Services and Local Sources
+| Change type | Gate |
+| --- | --- |
+| Docs-only | path listing, `git status --short --branch`, `git diff --check`, stage + `git diff --cached --check` |
+| Code/behavior | TDD unit + integration + deterministic E2E → `./scripts/verify_all.sh` before review/delivery |
+| Functional E2E | `./scripts/verify_functional_e2e.sh` (temp data; no live API/LLM) |
+| Live smoke / real vault | Explicit approval + plan only |
 
-Current integrations and local configured sources:
+`harness-plan` and review gates must read this document before choosing
+boundaries or approving contracts.
 
-- Notion API, configured by environment token and API version.
-- Tistory, configured by blog name and bounded post fetching.
-- GitHub repositories, configured by comma- or newline-separated targets and
-  optional `GITHUB_TOKEN`. A bare owner target discovers repositories owned by
-  that account at each sync: public repositories via `/users/{owner}/repos`,
-  and when a token is set, authenticated extras via owner-scoped
-  `/orgs/{owner}/repos` for organizations or, when the authenticated login
-  matches a personal owner, `/user/repos?affiliation=owner` (with
-  `visibility=all`). Discovery does not paginate the token's global
-  `/user/repos?visibility=all` set. Each discovered repository uses its GitHub
-  API-reported default branch. An `owner/repo` target bypasses owner discovery
-  and uses `CONTEXTWIKI_GITHUB_DEFAULT_REF`, while `owner/repo@ref` uses the
-  explicit ref. Mixed targets resolve to exact repository identities before
-  fetching and must not overlap; an exact target does not override the ref of
-  the same repository discovered by an owner target, and the duplicate identity
-  fails the sync. The fetcher considers supported text/code files only and
-  defaults to 200 eligible files per repository and 512000 bytes per file;
-  bound-driven omissions make the snapshot incomplete and disable stale
-  cleanup.
-  Each owner-listing endpoint (`/users/{owner}/repos`, `/orgs/{owner}/repos`,
-  and affiliation-scoped `/user/repos`) is bounded to 100 pages of 100 returned
-  items, up to 10,000 per endpoint. A full page 100 leaves completion unproven,
-  so the sync fails before repository indexing rather than accepting a partial
-  list, and stale cleanup remains disabled.
-- Obsidian local vaults, configured by `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`,
-  `CONTEXTWIKI_OBSIDIAN_MAX_FILES`, and
-  `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. Obsidian sync reads bounded Markdown
-  notes from the filesystem and does not require a live Obsidian app. If the
-  file count or file byte bound is exceeded, the sync fails as an incomplete
-  snapshot before stale cleanup. Real vault validation requires both explicit
-  user approval and a plan; tests must use temporary vaults.
-- A disabled retained source blocks future sync attempts but does not
-  automatically hide already indexed active documents. Those documents remain
-  retrievable until later cleanup or metadata changes mark them inactive.
-- Embedding behavior is inherited from the LlamaIndex runtime/default
-  configuration, and the repository's default server setup resolves to OpenAI
-  embeddings. Unless the embedding settings are overridden, indexing may send
-  document chunks and search may send queries to that provider. The local demo
-  and embedding-dependent E2E tests explicitly inject `MockEmbedding` instead.
-  This project does not expose a separate embedding-provider switch in
-  `AppConfig`. Fully local operation requires local or otherwise non-egress
-  embeddings.
+## Out of Scope
 
-Testing should prefer mocked external APIs and temporary local vaults. Live
-network or real-vault validation requires both explicit user approval and a
-plan and must not print credentials or local path details. Plan-exempt work
-must reclassify before the live check or keep it `blocked/gated`.
-
-Owner-wide GitHub sync is intentionally an explicit configuration choice. It
-can increase GitHub API requests, sync duration, indexed volume, and embedding
-provider cost in proportion to the repositories and bounded files discovered.
-Automated verification uses fake GitHub responses and temporary stores; it does
-not perform live owner discovery or mutate configured user stores.
-
-## Configuration and Secrets
-
-- `environments/token.py`, `.env`, shell environment variables, and API keys are
-  sensitive.
-- Do not add secret values to docs, tests, logs, screenshots, or examples.
-- If a configuration default changes long-term behavior, update this document in
-  the same work item.
-
-## Error Handling
-
-Domain exceptions live in `core/exceptions.py`.
-
-- Fetching errors should be classified close to fetchers.
-- Search errors should not leak implementation details to MCP clients.
-- Indexing errors should update status before surfacing a failure.
-- Tool handlers may return user-readable messages, but logs should preserve
-  enough context to debug without exposing secrets.
-
-## Testing Strategy
-
-Use the smallest useful check first.
-
-The maintained verification model is layered and test-first:
-
-- docs-only verification for README, harness docs, plans, and other markdown
-  changes
-- Red-Green-Refactor for feature and behavior changes: write or update unit,
-  integration, and deterministic functional E2E coverage before production
-  code; record the RED command, tests/layers, non-zero exit, expected failure
-  signature, and ordering; make the minimum implementation pass; refactor while
-  focused tests stay green; then rerun affected tests
-- focused syntax, import, or targeted pytest checks for the directly changed
-  modules
-- retained functional E2E coverage for MCP-visible sync/search/fetch
-  workflows plus internal helper-answer coverage where retained tests depend on
-  `CitationAnswerService`
-- mandatory full-wrapper verification through `./scripts/verify_all.sh` for
-  every code-changing work item after refactor and before review or delivery
-- optional manual live smoke through `scripts/live_query_smoke.py` only when the
-  user explicitly approves real configured-source validation and a plan records
-  its source/data/rollback scope
-- retained local eval surfaces such as `python scripts/run_contextwiki_eval.py`
-  when the change affects a quality-sensitive retrieval or answer surface that
-  already has modeled eval coverage
-- retained eval or higher-level verification only when the change touches an
-  already-modeled quality-sensitive surface such as retrieval or answer quality
-
-- Docs-only changes: path listing, `git status --short --branch`,
-  `git diff --check`, then stage relevant docs-only files and run
-  `git diff --cached --check` so new docs are covered.
-- Syntax/import safety:
-  `python -m compileall api core environments fetching indexing search storage main.py`.
-- Unit/integration tests: `uv run --locked pytest -m "not live"` when the uv
-  workspace is healthy; feature and behavior changes must cover both layers.
-- MCP contract: focused tests around `register_tools` and retained tool
-  functions. The strongest public contract layer uses real
-  `FastMCP.call_tool(...)` payload checks rather than only internal helper
-  assertions.
-- Search/indexing/storage: temp Chroma path, temp SQLite path, or mock
-  collection; avoid user data.
-- Fetching: mocked Notion/Tistory/GitHub responses and temporary Obsidian vaults;
-  live API or real-vault checks only with explicit approval and a plan.
-- Functional E2E: `./scripts/verify_functional_e2e.sh`, which must cover
-  retained MCP sync/search/fetch paths, grouped document browsing, and any
-  retained internal helper-answer flows without browser, wiki, live API, or
-  LLM dependencies.
-- Full wrapper: `./scripts/verify_all.sh`, which includes compile, lint, type,
-  non-live pytest, deterministic local evaluation, and the functional E2E gate;
-  it is mandatory for every code-changing work item.
-- Manual live smoke: `python scripts/live_query_smoke.py`, only with explicit
-  approval and a plan because it can touch real configured sources or local
-  user data.
-- Retained eval runner: `PYTHONPATH=. python scripts/run_contextwiki_eval.py`
-  or the repo wrapper that invokes it, used when a work item changes retrieval
-  or answer quality on a modeled local eval surface.
-- Deterministic reviewer-visible eval artifacts should stay separate from
-  optional runtime or latency metrics such as `runtime_metrics.json` so repeated
-  runs remain comparable.
-
-## Harness Usage
-
-`harness-plan` must read this document before choosing implementation
-boundaries. Review gates must check changed files against this architecture.
+No production Web Console, Auto Wiki generation, generic website/docs crawling,
+dynamic web fallback, or legacy live-search/indexing MCP tools.
