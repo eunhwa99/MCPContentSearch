@@ -35,10 +35,11 @@ Two processes share one SQLite DB and one Chroma store:
 LaunchAgent/Docker only keep the worker process alive. They are not the queue;
 SQLite is. The supported ops model is **one** LaunchAgent (or equivalent)
 `sync_worker` process against a given Chroma/SQLite store — extra worker PIDs
-can oversubscribe Chroma writes even when each process respects `N`. Operators
-must restart both processes after `.env` or source-target changes: restart
-FastMCP **and** the worker (LaunchAgent restart script, or Docker recreate with
-the same `docker run ... --env-file` — `docker restart` keeps the old env).
+can oversubscribe Chroma writes even when each process respects `N`.
+Operators must restart both processes after `.env` or source-target
+changes: restart FastMCP **and** the worker (LaunchAgent restart script, or
+Docker recreate with the same `docker run ... --env-file` — `docker restart`
+keeps the old env).
 
 ### Job queue: enqueue / claim / status
 
