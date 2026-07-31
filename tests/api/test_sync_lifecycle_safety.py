@@ -70,3 +70,28 @@ def test_safe_sync_job_payload_keeps_canonical_running_phase():
     )
 
     assert payload["phase"] == "fetching_page_content"
+
+
+def test_safe_sync_job_payload_exposes_source_neutral_upstream_progress_hints():
+    payload = _safe_sync_job_payload(
+        Dumpable(
+            {
+                "job_id": "job-progress",
+                "source_id": "source_notion",
+                "status": "running",
+                "phase": "fetching_page_content",
+                "upstream_total": 12,
+                "upstream_done": 4,
+                "upstream_total_pages": 12,
+                "upstream_fetched_pages": 4,
+                "last_progress_at": "2026-07-31T00:00:00+00:00",
+                "status_message": "Fetching upstream content 4/12.",
+            }
+        ),
+        include_progress_hints=True,
+    )
+
+    assert payload["upstream_total"] == 12
+    assert payload["upstream_done"] == 4
+    assert "upstream_total_pages" not in payload
+    assert "upstream_fetched_pages" not in payload

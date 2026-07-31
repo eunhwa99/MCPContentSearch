@@ -1,6 +1,7 @@
 import base64
 import binascii
 from dataclasses import dataclass, replace
+import inspect
 import json
 import logging
 import re
@@ -11,8 +12,25 @@ import httpx
 
 from core.models import DocumentModel
 from environments.config import AppConfig
+from fetching.notion import _StopRequested, _raise_if_stop_requested
 
 logger = logging.getLogger(__name__)
+
+
+async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) -> bool:
+    if progress_callback is None:
+        return False
+    try:
+        result = progress_callback(event)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ == "_InactiveJobStop":
+            raise
+        logger.debug("Ignoring progress callback failure")
+        return False
+    return stop_signal is not None and result is stop_signal
 
 
 TEXT_EXTENSIONS = {
@@ -215,25 +233,78 @@ class GitHubRepositoryFetcher:
         self.repository_specs = self._configured_exact_repository_specs()
         _ensure_unique_repository_specs(self.repository_specs)
         self.snapshot_complete = True
+        self.progress_callback = None
+        self.progress_stop_signal = None
+        self.progress_stop_checker = None
 
     async def fetch_documents(self) -> list[DocumentModel]:
         self.snapshot_complete = True
         self.repository_specs = []
         documents: list[DocumentModel] = []
+        progress_callback = self.progress_callback
+        progress_stop_signal = getattr(self, "progress_stop_signal", None)
+        progress_stop_checker = getattr(self, "progress_stop_checker", None)
         try:
             repository_specs = await self._resolve_repository_specs()
             self.repository_specs = repository_specs
+            planned: list[tuple[GitHubRepositorySpec, GitHubRepositorySnapshot, list[dict[str, Any]]]] = []
             for spec in repository_specs:
+                # Allow cancel / InactiveJobStop between multi-repo planning work.
+                await _raise_if_stop_requested(progress_stop_checker)
+                if await _emit_progress(
+                    progress_callback,
+                    {"event": "search_started"},
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
                 if spec.is_empty:
                     continue
                 snapshot = await self._resolve_snapshot(spec)
                 tree = await self._fetch_tree(spec, snapshot)
-                for entry in self._select_entries(tree):
-                    content = await self._fetch_blob_text(spec, entry["sha"], entry["size"])
+                planned.append((spec, snapshot, self._select_entries(tree)))
+            total_pages = sum(len(entries) for _, _, entries in planned)
+            if await _emit_progress(
+                progress_callback,
+                {"event": "search_completed", "total_pages": total_pages},
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
+            current_page = 0
+            for spec, snapshot, entries in planned:
+                for entry in entries:
+                    content = await self._fetch_blob_text(
+                        spec, entry["sha"], entry["size"]
+                    )
+                    current_page += 1
                     if content is None:
                         self.snapshot_complete = False
+                        if await _emit_progress(
+                            progress_callback,
+                            {
+                                "event": "page_fetch_completed",
+                                "current_page": current_page,
+                                "total_pages": total_pages,
+                            },
+                            stop_signal=progress_stop_signal,
+                        ):
+                            raise _StopRequested
                         continue
-                    documents.append(self._to_document(spec, snapshot, entry, content))
+                    documents.append(
+                        self._to_document(spec, snapshot, entry, content)
+                    )
+                    if await _emit_progress(
+                        progress_callback,
+                        {
+                            "event": "page_fetch_completed",
+                            "current_page": current_page,
+                            "total_pages": total_pages,
+                        },
+                        stop_signal=progress_stop_signal,
+                    ):
+                        raise _StopRequested
+        except _StopRequested:
+            self.snapshot_complete = False
+            raise
         except Exception:
             self.snapshot_complete = False
             raise
@@ -251,10 +322,23 @@ class GitHubRepositoryFetcher:
         return specs
 
     async def _resolve_repository_specs(self) -> list[GitHubRepositorySpec]:
+        progress_stop_checker = getattr(self, "progress_stop_checker", None)
+        progress_callback = getattr(self, "progress_callback", None)
+        progress_stop_signal = getattr(self, "progress_stop_signal", None)
         specs = []
         for target in self.repository_targets:
+            await _raise_if_stop_requested(progress_stop_checker)
+            if await _emit_progress(
+                progress_callback,
+                {"event": "search_started"},
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
             specs.extend(
-                await self.discovery.discover_repository_specs_with_metadata(target)
+                await self.discovery.discover_repository_specs_with_metadata(
+                    target,
+                    progress_stop_checker=progress_stop_checker,
+                )
             )
         _ensure_unique_repository_specs(specs)
         return specs
@@ -510,6 +594,8 @@ class GitHubRepositoryDiscovery:
     async def discover_repository_specs_with_metadata(
         self,
         target: str,
+        *,
+        progress_stop_checker=None,
     ) -> list[GitHubRepositorySpec]:
         owner, repo, ref = parse_repository_or_owner_target(
             target,
@@ -518,7 +604,10 @@ class GitHubRepositoryDiscovery:
         if repo:
             return [GitHubRepositorySpec(owner=owner, repo=repo, ref=ref)]
 
-        repositories = await self._fetch_owner_repositories(owner)
+        repositories = await self._fetch_owner_repositories(
+            owner,
+            progress_stop_checker=progress_stop_checker,
+        )
         specs: list[GitHubRepositorySpec] = []
         seen: dict[tuple[str, str], int] = {}
         for repository in repositories:
@@ -585,10 +674,16 @@ class GitHubRepositoryDiscovery:
             )
         return specs
 
-    async def _fetch_owner_repositories(self, owner: str) -> list[dict[str, Any]]:
+    async def _fetch_owner_repositories(
+        self,
+        owner: str,
+        *,
+        progress_stop_checker=None,
+    ) -> list[dict[str, Any]]:
         public_repositories = await self._fetch_paginated_repositories(
             f"https://api.github.com/users/{quote(owner, safe='')}/repos",
             {"type": "owner", "sort": "full_name"},
+            progress_stop_checker=progress_stop_checker,
         )
         if any(
             _repository_owner_login(repository).lower() != owner.lower()
@@ -599,7 +694,10 @@ class GitHubRepositoryDiscovery:
             return public_repositories
 
         authenticated_repositories = (
-            await self._fetch_authenticated_owner_repositories(owner)
+            await self._fetch_authenticated_owner_repositories(
+                owner,
+                progress_stop_checker=progress_stop_checker,
+            )
         )
         return [
             repository
@@ -610,8 +708,13 @@ class GitHubRepositoryDiscovery:
     async def _fetch_authenticated_owner_repositories(
         self,
         owner: str,
+        *,
+        progress_stop_checker=None,
     ) -> list[dict[str, Any]]:
-        org_repositories = await self._try_fetch_org_repositories(owner)
+        org_repositories = await self._try_fetch_org_repositories(
+            owner,
+            progress_stop_checker=progress_stop_checker,
+        )
         if org_repositories is not None:
             return org_repositories
 
@@ -626,16 +729,20 @@ class GitHubRepositoryDiscovery:
                 "visibility": "all",
                 "sort": "full_name",
             },
+            progress_stop_checker=progress_stop_checker,
         )
 
     async def _try_fetch_org_repositories(
         self,
         owner: str,
+        *,
+        progress_stop_checker=None,
     ) -> list[dict[str, Any]] | None:
         try:
             return await self._fetch_paginated_repositories(
                 f"https://api.github.com/orgs/{quote(owner, safe='')}/repos",
                 {"type": "all", "sort": "full_name"},
+                progress_stop_checker=progress_stop_checker,
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 404:
@@ -658,9 +765,12 @@ class GitHubRepositoryDiscovery:
         self,
         base_url: str,
         query: dict[str, str],
+        *,
+        progress_stop_checker=None,
     ) -> list[dict[str, Any]]:
         repositories: list[dict[str, Any]] = []
         for page in range(1, 101):
+            await _raise_if_stop_requested(progress_stop_checker)
             params = {"per_page": "100", "page": str(page), **query}
             query_string = "&".join(
                 f"{quote(key, safe='')}={quote(value, safe='')}"

@@ -33,9 +33,10 @@ Two processes share one SQLite DB and one Chroma store:
 4. Client can **status**-poll the exact job with `get_sync_status(source_id, job_id)`.
 
 LaunchAgent/Docker only keep the worker process alive. They are not the queue;
-SQLite is. After `.env` or source-target changes, restart FastMCP **and** the
-worker (LaunchAgent restart script, or Docker recreate with the same
-`docker run ... --env-file` — `docker restart` keeps the old env).
+SQLite is. Operators must restart both processes after `.env` or source-target
+changes: restart FastMCP **and** the worker (LaunchAgent restart script, or
+Docker recreate with the same `docker run ... --env-file` — `docker restart`
+keeps the old env).
 
 ### Job queue: enqueue / claim / status
 
@@ -145,7 +146,42 @@ tombstones absences.
 
 - **`job.status`:** `queued` → `running` → `succeeded` | `failed` (what clients poll).
 - **`phase`:** optional running-only progress hint (`starting`, `discovering_pages`,
-  …). Not a substitute for `status`. Detail / polling policy: ADR 0009.
+  `fetching_page_content`, `indexing_documents`, …). Not a substitute for
+  `status`. Detail / polling policy: ADR 0009.
+
+### Running progress hints (`get_sync_status` only)
+
+While a job is `running`, exact-job / latest-job payloads may also expose:
+
+| Hint | Meaning |
+| --- | --- |
+| `upstream_total` | Source-neutral list/scan size so far (Notion pages, GitHub selected blobs, Obsidian notes, Tistory scan ids) |
+| `upstream_done` | Items fetched, skipped, or otherwise completed so far |
+| `last_progress_at` | Public liveness stamp for status polls (advances on coalesced progress writes) |
+| `status_message` | Short sanitized, source-neutral text (e.g. “Fetching upstream items 25/100…”) |
+
+```text
+discovering_pages:     upstream_total = discovered so far; upstream_done = 0
+fetching_page_content: upstream_total = final list/scan size; upstream_done = completed items
+```
+
+- Public MCP uses **only** `upstream_total` / `upstream_done`. Legacy SQLite
+  columns `upstream_total_pages` / `upstream_fetched_pages` may be dual-written
+  for older DBs but are **not** exposed. Reads prefer the new columns whenever
+  they exist (including intentional `0`); one-time schema migrate backfills
+  legacy → new.
+- Hint writes are coalesced: full counter/`status_message` about every 25 items
+  (and always on the last item); `last_progress_at` + heartbeat more often
+  (~every 5) so polls do not look stuck and orphan detection stays fresh.
+- Connectors emit Notion-shaped progress events; ingestion maps them for all
+  sources. Cooperative cancel: stop signal / `_InactiveJobStop` re-raises
+  through emit helpers; Tistory cancels `create_task` fan-out in `finally`
+  (including `CancelledError`); GitHub checks stop during owner-resolve
+  pagination and between repo planning steps. Inactive-job stop must not be
+  swallowed by stop-checker helpers.
+
+Hints are suppressed again once the job is terminal. They do not widen
+`sync_source` / `sync_all` response shapes.
 
 ### `sync_source` / `sync_all`
 

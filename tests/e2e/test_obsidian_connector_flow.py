@@ -372,3 +372,79 @@ def test_obsidian_visible_symlinked_note_failure_does_not_tombstone_active_note(
     assert store.get_document("keep.md").deleted_at == ""
     assert store.list_chunks_for_document("keep.md")
     assert indexer.deleted_ids == []
+
+
+def test_obsidian_connector_progress_updates_upstream_counters_via_get_sync_status(
+    tmp_path,
+):
+    vault = _make_vault(
+        tmp_path,
+        {
+            "alpha.md": "# Alpha\n\nfirst note body",
+            "nested/beta.md": "# Beta\n\nsecond note body",
+        },
+    )
+    connector, store, indexer, ingestion, _answer_service, mcp = _obsidian_service(
+        tmp_path,
+        vault,
+    )
+    running_status_snapshots: list[dict] = []
+
+    async def capture_progress(event):
+        if event.get("event") not in {"search_completed", "page_fetch_completed"}:
+            return None
+        status = await _call_tool_json_async(
+            mcp, "get_sync_status", {"source_id": "source_obsidian"}
+        )
+        latest_job = status.get("latest_job") or {}
+        if latest_job.get("status") == "running":
+            running_status_snapshots.append(
+                {
+                    "event": event.get("event"),
+                    "upstream_total": latest_job.get("upstream_total"),
+                    "upstream_done": latest_job.get("upstream_done"),
+                    "status_message": latest_job.get("status_message", ""),
+                    "keys": set(latest_job.keys()),
+                }
+            )
+        return None
+
+    connector.progress_callback = capture_progress
+
+    async def run_flow():
+        sync_job = await _call_tool_json_async(
+            mcp, "sync_source", {"source_id": "source_obsidian"}
+        )
+        await _run_next_queued_sync(ingestion)
+        status = await _wait_for_sync_completion(mcp, "source_obsidian")
+        return sync_job, status
+
+    sync_job, status = asyncio.run(run_flow())
+    persisted = store.get_latest_sync_job("source_obsidian")
+
+    assert sync_job["status"] == "queued"
+    assert status["latest_job"]["status"] == "succeeded"
+    assert status["latest_job"]["processed_documents"] == 2
+    assert running_status_snapshots, "expected running get_sync_status snapshots"
+    assert any(
+        snapshot["event"] == "search_completed"
+        and snapshot["upstream_total"] == 2
+        and snapshot["upstream_done"] == 0
+        for snapshot in running_status_snapshots
+    )
+    assert any(
+        snapshot["event"] == "page_fetch_completed"
+        and snapshot["upstream_total"] == 2
+        and snapshot["upstream_done"] == 2
+        for snapshot in running_status_snapshots
+    )
+    for snapshot in running_status_snapshots:
+        assert "upstream_total_pages" not in snapshot["keys"]
+        assert "upstream_fetched_pages" not in snapshot["keys"]
+        assert "Notion" not in snapshot["status_message"]
+        assert "upstream item" in snapshot["status_message"].lower()
+    assert persisted is not None
+    assert persisted.upstream_total == 2
+    assert persisted.upstream_done == 2
+    assert "Notion" not in persisted.status_message
+    assert len(indexer.documents) == 2

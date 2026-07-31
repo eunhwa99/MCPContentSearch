@@ -78,8 +78,8 @@ class HintFailingMetadataStore(MetadataStore):
     def update_sync_job(self, job_id: str, **updates):
         if {
             "phase",
-            "upstream_total_pages",
-            "upstream_fetched_pages",
+            "upstream_total",
+            "upstream_done",
             "last_progress_at",
             "status_message",
         }.intersection(updates):
@@ -2284,20 +2284,22 @@ def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, capl
     assert job.status == SyncJobStatus.SUCCEEDED
     assert store.progress_updates[0]["total_documents"] == 2
     assert store.touched_job_ids
-    assert "discovered 2 upstream page(s) before indexing" in caplog.text
-    assert "fetching upstream page 1/2" in caplog.text
-    assert "fetched upstream page 2/2" in caplog.text
+    assert "discovered 2 upstream item(s) before indexing" in caplog.text
+    assert "fetching upstream item 1/2" in caplog.text
+    assert "fetched upstream item 2/2" in caplog.text
     assert "page-1" not in caplog.text
     assert "page-2" not in caplog.text
     latest = store.get_latest_sync_job("source_fake")
     assert latest.phase == "completed"
-    assert latest.upstream_total_pages == 2
-    assert latest.upstream_fetched_pages == 2
+    assert latest.upstream_total == 2
+    assert latest.upstream_done == 2
+    assert "upstream_total_pages" not in latest.model_dump()
+    assert "upstream_fetched_pages" not in latest.model_dump()
     assert latest.last_progress_at
     assert latest.status_message == "Sync completed. Indexed 2/2 documents; skipped 0."
 
 
-def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_fetched_pages(
+def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_done(
     tmp_path,
 ):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
@@ -2312,8 +2314,8 @@ def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_fetch
     store.update_sync_job(
         job.job_id,
         phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
-        upstream_total_pages=3,
-        upstream_fetched_pages=1,
+        upstream_total=3,
+        upstream_done=1,
     )
 
     result = asyncio.run(
@@ -2322,7 +2324,7 @@ def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_fetch
             "source_fake",
             {
                 "event": "page_fetch_skipped",
-                "current_page": 2,
+                "current_page": 3,
                 "total_pages": 3,
                 "page_id": "page-skipped",
                 "title": "Skipped",
@@ -2334,9 +2336,48 @@ def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_fetch
 
     assert result is None
     assert latest.phase == ingestion_module.FETCHING_PAGE_CONTENT_PHASE
-    assert latest.upstream_total_pages == 3
-    assert latest.upstream_fetched_pages == 2
-    assert "Reused stored Notion page content 2/3" in latest.status_message
+    assert latest.upstream_total == 3
+    assert latest.upstream_done == 3
+    assert "Reused stored upstream item content 3/3" in latest.status_message
+    assert "Notion" not in latest.status_message
+
+
+def test_handle_source_fetch_progress_status_message_is_source_neutral_for_github(
+    tmp_path,
+):
+    github_connector = FakeConnector([])
+    github_connector.source = github_connector.source.model_copy(
+        update={
+            "source_id": "source_github",
+            "source_type": SourceType.GITHUB,
+            "name": "GitHub",
+        }
+    )
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([github_connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_github")
+    assert started is True
+
+    asyncio.run(
+        service._handle_source_fetch_progress(
+            job.job_id,
+            "source_github",
+            {
+                "event": "search_completed",
+                "total_pages": 10,
+            },
+        )
+    )
+    latest = store.get_sync_job(job.job_id)
+
+    assert "Notion" not in latest.status_message
+    assert "upstream item" in latest.status_message.lower()
+    assert "0/10" in latest.status_message
 
 
 def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_path):
@@ -2366,13 +2407,18 @@ def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_pat
 
     assert result is None
     assert latest.phase == "discovering_pages"
-    assert latest.upstream_total_pages == 42
-    assert latest.upstream_fetched_pages == 0
-    assert latest.status_message == "Discovering Notion pages: 42 found after batch 1. More results remain."
+    assert latest.upstream_total == 42
+    assert latest.upstream_done == 0
+    assert latest.status_message == (
+        "Discovering upstream items: 42 found after batch 1. More results remain."
+    )
+    assert "Notion" not in latest.status_message
 
 
-def test_refresh_running_job_for_progress_updates_visible_progress_timestamp(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+def test_refresh_running_job_for_progress_updates_heartbeat_without_hint_write(
+    tmp_path,
+):
+    store = TouchRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([])]),
@@ -2385,15 +2431,207 @@ def test_refresh_running_job_for_progress_updates_visible_progress_timestamp(tmp
         job.job_id,
         phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
         last_progress_at="2026-06-15T00:00:00+00:00",
-        status_message="Fetching Notion page content 0/10 before indexing begins.",
+        status_message="Fetching upstream items 0/10 before indexing begins.",
     )
 
     result = service._refresh_running_job_for_progress(job.job_id)
     latest = store.get_sync_job(job.job_id)
 
     assert result is None
+    # Heartbeat stays fresh for orphan detection; visible hints are coalesced elsewhere.
+    assert job.job_id in store.touched_job_ids
+    assert latest.last_progress_at == "2026-06-15T00:00:00+00:00"
+    assert latest.status_message == "Fetching upstream items 0/10 before indexing begins."
+
+
+def test_page_fetch_hint_persistence_is_throttled(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingestion_module, "_PAGE_FETCH_HINT_PERSIST_INTERVAL", 3)
+    monkeypatch.setattr(ingestion_module, "_PAGE_FETCH_LIVENESS_PERSIST_INTERVAL", 5)
+
+    class HintCountingStore(TouchRecordingMetadataStore):
+        def __init__(self, db_path):
+            super().__init__(db_path)
+            self.hint_writes = 0
+
+        def update_sync_job(self, job_id: str, **updates):
+            if {"upstream_done", "status_message"}.intersection(updates):
+                self.hint_writes += 1
+            return super().update_sync_job(job_id, **updates)
+
+    obsidian_connector = FakeConnector([])
+    obsidian_connector.source = obsidian_connector.source.model_copy(
+        update={
+            "source_id": "source_obsidian",
+            "source_type": SourceType.OBSIDIAN,
+            "name": "Obsidian",
+        }
+    )
+    store = HintCountingStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([obsidian_connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_obsidian")
+    assert started is True
+    store.update_sync_job(
+        job.job_id,
+        phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
+        upstream_total=7,
+        upstream_done=0,
+    )
+    baseline_writes = store.hint_writes
+    touch_baseline = len(store.touched_job_ids)
+
+    for current in range(1, 8):
+        asyncio.run(
+            service._handle_source_fetch_progress(
+                job.job_id,
+                "source_obsidian",
+                {
+                    "event": "page_fetch_completed",
+                    "current_page": current,
+                    "total_pages": 7,
+                },
+            )
+        )
+
+    # Persist on cadence (3, 6) and always on the last item (7).
+    assert store.hint_writes - baseline_writes == 3
+    # Heartbeat touches coalesce on liveness cadence (5) plus last (7).
+    assert len(store.touched_job_ids) - touch_baseline == 2
+    latest = store.get_sync_job(job.job_id)
+    assert latest.upstream_done == 7
+    assert "7/7" in latest.status_message
+    assert "Notion" not in latest.status_message
+
+
+def test_page_fetch_liveness_updates_last_progress_at_more_often_than_hints(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ingestion_module, "_PAGE_FETCH_HINT_PERSIST_INTERVAL", 10)
+    monkeypatch.setattr(
+        ingestion_module,
+        "_PAGE_FETCH_LIVENESS_PERSIST_INTERVAL",
+        5,
+        raising=False,
+    )
+
+    class ProgressTimestampStore(TouchRecordingMetadataStore):
+        def __init__(self, db_path):
+            super().__init__(db_path)
+            self.last_progress_writes = 0
+            self.hint_counter_writes = 0
+
+        def update_sync_job(self, job_id: str, **updates):
+            if "last_progress_at" in updates:
+                self.last_progress_writes += 1
+            if {"upstream_done", "status_message"}.intersection(updates):
+                self.hint_counter_writes += 1
+            return super().update_sync_job(job_id, **updates)
+
+    store = ProgressTimestampStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_fake")
+    assert started is True
+    store.update_sync_job(
+        job.job_id,
+        phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
+        upstream_total=12,
+        upstream_done=0,
+        last_progress_at="2026-06-15T00:00:00+00:00",
+        status_message="Fetching upstream items 0/12 before indexing begins.",
+    )
+    progress_baseline = store.last_progress_writes
+    hint_baseline = store.hint_counter_writes
+    frozen_message = store.get_sync_job(job.job_id).status_message
+
+    for current in range(1, 6):
+        asyncio.run(
+            service._handle_source_fetch_progress(
+                job.job_id,
+                "source_fake",
+                {
+                    "event": "page_fetch_completed",
+                    "current_page": current,
+                    "total_pages": 12,
+                },
+            )
+        )
+
+    latest = store.get_sync_job(job.job_id)
+    # Liveness cadence (page 5) advances public last_progress_at before hint interval 10.
+    assert store.last_progress_writes - progress_baseline >= 1
     assert latest.last_progress_at != "2026-06-15T00:00:00+00:00"
-    assert latest.status_message == "Fetching Notion page content 0/10 before indexing begins."
+    # Full upstream_*/status_message hints stay throttled until interval 10 / last.
+    assert store.hint_counter_writes - hint_baseline == 0
+    assert latest.upstream_done == 0
+    assert latest.status_message == frozen_message
+
+
+def test_page_fetch_coalesces_touch_sync_job_below_per_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingestion_module, "_PAGE_FETCH_HINT_PERSIST_INTERVAL", 25)
+    monkeypatch.setattr(
+        ingestion_module,
+        "_PAGE_FETCH_LIVENESS_PERSIST_INTERVAL",
+        5,
+        raising=False,
+    )
+
+    class ReadCountingStore(TouchRecordingMetadataStore):
+        def __init__(self, db_path):
+            super().__init__(db_path)
+            self.get_sync_job_calls = 0
+
+        def get_sync_job(self, job_id: str):
+            self.get_sync_job_calls += 1
+            return super().get_sync_job(job_id)
+
+    store = ReadCountingStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_fake")
+    assert started is True
+    store.update_sync_job(
+        job.job_id,
+        phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
+        upstream_total=12,
+        upstream_done=0,
+    )
+    touch_baseline = len(store.touched_job_ids)
+    get_baseline = store.get_sync_job_calls
+
+    for current in range(1, 13):
+        asyncio.run(
+            service._handle_source_fetch_progress(
+                job.job_id,
+                "source_fake",
+                {
+                    "event": "page_fetch_completed",
+                    "current_page": current,
+                    "total_pages": 12,
+                },
+            )
+        )
+
+    touch_count = len(store.touched_job_ids) - touch_baseline
+    # Liveness every 5 + first/last — not one IMMEDIATE touch per event.
+    assert touch_count < 12
+    assert touch_count <= 4
+    # Skipped intervals still observe job activity without a write.
+    assert store.get_sync_job_calls - get_baseline >= 1
+    latest = store.get_sync_job(job.job_id)
+    assert latest.upstream_done == 12
 
 
 def test_running_sync_fails_when_existing_observer_requests_stop(tmp_path):
