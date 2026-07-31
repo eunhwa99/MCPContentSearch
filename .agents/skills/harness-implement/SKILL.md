@@ -26,6 +26,11 @@ gate has:
   expected failure signature, missing-behavior explanation, and
   pre-production-edit ordering in the plan or plan-exempt task evidence.
 
+For improvement-scoped work, also confirm the declared performance baseline was
+captured before production/code edits. Do not start production edits until that
+baseline (or an explicit `n/a` / `n/a — no prior baseline` rationale) is
+recorded.
+
 Then make the smallest useful change that satisfies the plan or task context
 and turns the red test green. Refactor only while the affected tests remain
 green.
@@ -51,12 +56,14 @@ explicit user approval and remains main-agent-only. Do not expose secrets.
 Leave changes ready for the TDD green test lane, full-suite gate, matching
 eval gate when required by feature scope (only after `./scripts/verify_all.sh`;
 prefer recording full-suite quality-eval evidence when already covered),
+improvement performance after/delta recording when improvement-scoped,
 functional smoke gate, and review gate. If returning from a failure, record the
 first actionable failure and the changed code path in the plan progress log, or
 in the task evidence for plan-exempt work.
 
 Do not commit from the implementation lane. Final commit, push, and PR delivery
-happen only after verification, any matching eval gate when in scope, the
-functional smoke matrix, integration, and the final clean three-reviewer
-harness pass unless the user explicitly asks for local-only work or a safety
-blocker prevents delivery.
+happen only after verification, any matching eval gate when in scope,
+improvement performance after/delta when improvement-scoped (or an explicit
+`n/a` rationale), the functional smoke matrix, integration, and the final clean
+three-reviewer harness pass unless the user explicitly asks for local-only work
+or a safety blocker prevents delivery.

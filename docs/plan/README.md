@@ -68,6 +68,35 @@ Each plan document must include:
   `n/a` rationale instead of a manufactured missing-behavior failure
 - TDD GREEN evidence fields: focused unit, integration, and E2E commands/results
 - Full-suite evidence for `./scripts/verify_all.sh`
+- Matching eval gate evidence when required by feature scope
+- Improvement performance delta fields when the work improves or claims to
+  improve an existing measurable capability:
+  - Declared metrics: name(s), unit, measurement command or method, expected
+    improvement direction
+  - Baseline before production/code edits using temporary Chroma/SQLite paths
+    and mocked connectors; never inspect or mutate user data without both
+    explicit user approval and a plan
+  - After measurement: take one after measurement after the latest applicable
+    gate — after `./scripts/verify_all.sh` and matching eval when those gates
+    apply; otherwise after focused GREEN and post-refactor — using temporary
+    Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+    data without both explicit user approval and a plan. Do not require one
+    remeasure per phase
+  - Delta table: metric, unit, before, after, absolute delta, relative delta
+    (% when meaningful), command/method, environment notes (no secrets,
+    credentials, PII, user content, or real user-data paths), one-line
+    interpretation
+  - Quality claims use retained eval scores as delta-table metrics;
+    latency/throughput use runtime metrics and remain informational for
+    quality gates (do not treat `runtime_metrics` as deterministic quality
+    evidence)
+  - Brand-new features with no prior comparable surface:
+    `n/a — no prior baseline` with rationale (optional after-only baseline
+    using temporary Chroma/SQLite paths and mocked connectors; never inspect
+    or mutate user data without both explicit user approval and a plan)
+  - Non-improvement work: `n/a` with a short rationale
+  - Do not invent fake before numbers; keep deterministic quality-eval
+    artifacts separate from optional runtime/latency metrics
 - Functional smoke matrix or planned matrix rows before review
 - Three-reviewer evidence rows for bugs/correctness, security/data safety, and
   performance/reliability
@@ -94,11 +123,16 @@ Use this shape unless a smaller log is clearly enough:
 | Phase | Status | Summary | Evidence |
 | --- | --- | --- | --- |
 | Branch preflight | completed | Created `feature/example`. | `git status --short` |
+| Improvement delta declare | pending | Metric names, units, command/method, expected direction; or `n/a` rationale. | Pending |
+| Improvement baseline | pending | Capture before production edits when improvement-scoped (temp Chroma/SQLite + mocked connectors; no user-data access). | Pending |
 | TDD RED | pending | Run the smallest new/changed test before production edits, or record non-behavior `n/a`. | Command, test/layer, non-zero exit, expected signature, or `n/a` rationale |
 | Focused unit GREEN | pending | Run focused unit coverage. | Pending |
 | Focused integration GREEN | pending | Run focused integration coverage. | Pending |
 | Focused E2E GREEN | pending | Run retained deterministic E2E coverage. | Pending |
 | Full suite GREEN | pending | Run `./scripts/verify_all.sh`. | Pending |
+| Matching eval | pending | Record full-suite quality-eval evidence or focused matching eval when required by feature scope; else `n/a`. | Pending |
+| Improvement after/delta | pending | One after measurement after the latest applicable gate (temp Chroma/SQLite + mocked connectors; no user-data access); record delta table, or keep `n/a`. | Pending |
+| Functional smoke | pending | Exercise task-relevant inventory through safest caller surfaces, or record blocked/gated. | Pending |
 ```
 
 Status values:

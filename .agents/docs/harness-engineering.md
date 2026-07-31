@@ -43,7 +43,7 @@ If the feature changes retrieval quality, ranking,
 grounding, citation selection, answer quality, or another quality-sensitive
 output already modeled by retained local evaluations, it must also add or
 update eval coverage and satisfy the matching eval gate after
-`./scripts/verify_all.sh` succeeds and before functional smoke or review. Prefer
+`./scripts/verify_all.sh` succeeds and before improvement after/delta (or an explicit `n/a` rationale), functional smoke, or review. Prefer
 recording the full-suite deterministic quality eval layer evidence when that
 layer already executed the matching surface; otherwise run the focused matching
 eval command. If the feature falls within retained local eval coverage but no
@@ -61,37 +61,55 @@ run next.
 2. Subagent orchestration design: choose bounded implementation, testing,
    documentation, or integration worker personas when delegation is available;
    use `.agents/skills/harness-multitask/SKILL.md` when work needs splitting.
-3. TDD red gate: for feature/behavior changes, use
+   For improvement-scoped work, the plan (or plan-exempt task evidence) must
+   already declare the metrics to measure; see Improvement Performance Delta.
+3. Improvement performance baseline: when work improves or claims to improve an
+   existing measurable capability, capture the declared baseline metrics before
+   production/code edits (alongside or just before the TDD red gate) using
+   temporary Chroma/SQLite paths and mocked connectors; never inspect or mutate
+   user data without both explicit user approval and a plan. Otherwise record
+   `n/a` with a short rationale. Brand-new features with no prior comparable
+   surface record `n/a — no prior baseline` with rationale.
+4. TDD red gate: for feature/behavior changes, use
    `.agents/skills/harness-test/SKILL.md` to add or update unit, integration,
    and deterministic E2E coverage before production code and record the
    auditable expected focused failure. Pure refactor, test-only, or other
    non-behavior code work records RED as `n/a` with a rationale.
-4. TDD green implementation: `.agents/skills/harness-implement/SKILL.md`,
+5. TDD green implementation: `.agents/skills/harness-implement/SKILL.md`,
    delegated to worker personas when useful and safe.
-5. TDD green verification: use `.agents/skills/harness-test/SKILL.md` to pass
+6. TDD green verification: use `.agents/skills/harness-test/SKILL.md` to pass
    the focused unit, integration, and E2E tests.
-6. TDD refactor phase: `.agents/skills/harness-refactor/SKILL.md`; simplify only
+7. TDD refactor phase: `.agents/skills/harness-refactor/SKILL.md`; simplify only
    while the focused tests remain green.
-7. Post-refactor full-suite gate: rerun affected focused tests, then require
+8. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
+9. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
    succeeds, confirm the matching retained eval surface. Prefer recording the
    full-suite deterministic quality eval layer evidence when that layer already
    executed the matching surface; otherwise run the focused matching eval
    command. Never run matching eval during focused GREEN.
-9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+10. Improvement performance after/delta: when improvement-scoped, take one
+    after measurement after the latest applicable gate — after
+    `./scripts/verify_all.sh` and matching eval when those gates apply;
+    otherwise after focused GREEN and post-refactor — using temporary
+    Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+    data without both explicit user approval and a plan. Do not require one
+    remeasure per phase. Always record the delta table. Keep earlier `n/a`
+    rationales for non-improvement or no-prior-baseline work.
+11. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    which exercises the task-relevant feature inventory once through the safest
    real caller surfaces or records a safety-gated skip.
-10. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
+12. Middle review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
    three-reviewer harness loop.
-11. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-12. Final review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
+13. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+14. Final review gate: `.agents/skills/harness-review/SKILL.md`, which runs the
    three-reviewer harness loop.
-13. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59`. If no real issue exists, omit closing keywords instead of inventing one.
+15. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. When the task is tied to a real GitHub issue, include a dedicated PR-body closing-keyword line such as `closes #59`. If no real issue exists, omit closing keywords instead of inventing one. Include the improvement performance delta summary (or `n/a` rationale) in the PR body and final handoff.
 
 Docs/instruction-only work skips the code-specific TDD red, green
 implementation, full-suite, and functional-smoke gates. It uses the docs-only
-verification commands and retains the review and delivery gates. A trivial
+verification commands and retains the review and delivery gates. Record
+improvement performance delta as `n/a` with a docs-only rationale. A trivial
 plan-exempt code change does not skip TDD or the full-suite gate.
 
 `.agents/skills/harness-engineering/SKILL.md` is the orchestrator for the full loop.
@@ -141,8 +159,81 @@ review, and delivery gates.
 - File name: `YYYY-MM-DD-short-task-name.md`
 - Required sections are listed in `docs/plan/README.md`.
 - Include branch preflight result, scope/non-goals, acceptance criteria, expected files, verification plan, architecture constraints, risk/rollback notes, and progress log.
+- For improvement-scoped work, declare metrics early and reserve progress-log rows for baseline, after, and delta evidence; see Improvement Performance Delta and `docs/plan/README.md`.
 - If verification or review changes the plan, update the same plan document before continuing.
 - Final reports should include the plan document path, or the plan-exempt reason.
+
+## Improvement Performance Delta
+
+Whenever work improves or claims to improve an existing capability on a
+measurable axis (latency, throughput, resource use, ranking/retrieval/answer
+quality, sync speed, or similar), record a before/after performance delta.
+Agents must document what improved and by how much; do not invent fake before
+numbers.
+
+### When it applies
+
+- **Improvement-scoped**: the request or implementation claims a measurable
+  improvement to an existing comparable surface. Full baseline → after → delta
+  recording is mandatory.
+- **Brand-new feature with no prior comparable surface**: record
+  `n/a — no prior baseline` with rationale. Optionally record an after-only
+  baseline for future comparisons using temporary Chroma/SQLite paths and
+  mocked connectors; never inspect or mutate user data without both explicit
+  user approval and a plan. Do not invent fake before numbers.
+- **Non-improvement work** (pure docs, unrelated bug fix with no improvement
+  claim, and similar): record `n/a` with a short rationale. Do not force fake
+  benchmarks.
+
+Plan-exempt improvement-scoped work still records the same evidence in task,
+review, and final handoff context.
+
+### What to record
+
+1. **Declare metrics early** in the plan when one exists; otherwise in
+   task/review evidence: metric name(s), unit, measurement command or method,
+   and expected improvement direction.
+2. **Capture a baseline BEFORE production/code edits** (or before the
+   improvement lands) using the safest local-first surfaces: focused
+   benchmarks, retained evals under `tests/evals`, fixture runners, temporary
+   Chroma/SQLite paths, and mocked connectors. Never inspect or mutate user
+   data without both explicit user approval and a plan.
+3. **Capture the same metric(s) AFTER** with one after measurement after the
+   latest applicable gate — after `./scripts/verify_all.sh` and the matching
+   eval gate when those gates apply; otherwise after focused GREEN and
+   post-refactor — using temporary Chroma/SQLite paths and mocked connectors;
+   never inspect or mutate user data without both explicit user approval and a
+   plan. Do not require one remeasure per phase.
+4. **Always record a delta table** with at least: metric, unit, before, after,
+   absolute delta, relative delta (% when meaningful), command/method,
+   environment notes, and a one-line interpretation (what improved and by how
+   much). If a metric did not improve or regressed, say so explicitly.
+   Environment notes must not include secrets, credentials, PII, user content,
+   or real user-data paths.
+
+Quality claims use retained eval scores as delta-table metrics.
+Latency/throughput claims use runtime metrics and remain informational for
+quality gates; do not treat `runtime_metrics` (or similar) as deterministic
+quality evidence. Keep deterministic quality-eval artifacts separate from
+optional runtime/latency metrics. Deterministic retained eval outputs stay the
+source of truth for quality gates.
+
+### Where to record
+
+- Plan document progress log and dedicated improvement-delta fields when a plan
+  exists (`docs/plan/README.md`).
+- Plan-exempt task updates, reviewer context, and final handoff otherwise.
+- Final handoff and PR body: include the delta summary or the `n/a` rationale
+  alongside verification, matching-eval, functional-smoke, and review evidence.
+  Delta environment notes, handoff text, and PR text must not include secrets,
+  credentials, PII, user content, or real user-data paths.
+
+### Review enforcement
+
+Reviewer 3 (performance/reliability) must treat missing or incoherent
+before/after/delta evidence for improvement-scoped work as an actionable
+finding. Coherent `n/a` rationales for brand-new-without-baseline or
+non-improvement work are acceptable.
 
 ## Architecture
 
@@ -211,9 +302,12 @@ if non-exempt, write or update docs/plan plan and run planning phase
 if exempt, record the reason without creating a plan
 design worker personas and task ownership
 if needed, run multitask phase
+  declare improvement metrics early when improvement-scoped; otherwise record
+  performance-delta n/a with rationale
 if docs/instruction-only:
   run docs-only path/status/unstaged/cached verification
   record functional smoke as n/a
+  record improvement performance delta as n/a with docs-only rationale
   repeat:
     run middle three-reviewer harness gate
     if no actionable findings:
@@ -236,6 +330,18 @@ if docs/instruction-only:
     record the final-review blocker and stop
   after the final clean review pass, commit, push, and create a PR
 else:
+  if improvement-scoped:
+    capture declared metric baseline before production/code edits using safest
+    local-first surfaces (temporary Chroma/SQLite paths and mocked connectors);
+    never invent fake before numbers; never inspect or mutate user data without
+    both explicit user approval and a plan
+  else if brand-new with no prior comparable surface:
+    record n/a — no prior baseline with rationale; optionally after-only
+    baseline using temporary Chroma/SQLite paths and mocked connectors;
+    never inspect or mutate user data without both explicit user approval
+    and a plan
+  else:
+    record performance-delta n/a with short non-improvement rationale
   if feature/behavior-changing:
     write/update unit, integration, and E2E tests first
     run the smallest relevant new or changed test and capture expected RED
@@ -254,6 +360,16 @@ else:
   satisfy any matching eval required by feature scope only after verify_all
   (record full-suite eval-layer evidence when it already covered the matching
   surface; otherwise run the focused matching eval command)
+  if improvement-scoped:
+    take one after measurement after the latest applicable gate (after
+    verify_all and matching eval when those gates apply; otherwise after
+    focused GREEN and post-refactor) using temporary Chroma/SQLite paths and
+    mocked connectors; never inspect or mutate user data without both
+    explicit user approval and a plan; do not require one remeasure per phase;
+    record the delta table (metric, unit, before, after, absolute/relative
+    delta, command/method, environment notes without secrets/credentials/PII/
+    user content/real user-data paths, one-line interpretation); state
+    explicitly if a metric did not improve or regressed
   run functional smoke gate using harness-functional-smoke
   repeat:
     run middle three-reviewer harness gate
@@ -267,12 +383,18 @@ else:
       implement GREEN, refactor, rerun affected tests, and run verify_all
       satisfy any matching eval required by feature scope only after verify_all
       (record full-suite eval evidence when already covered; else rerun matching eval)
+      refresh improvement after/delta when improvement-scoped using temporary
+      Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+      data without both explicit user approval and a plan
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
       satisfy any matching eval required by feature scope only after verify_all
       (record full-suite eval evidence when already covered; else rerun matching eval)
+      refresh improvement after/delta when improvement-scoped using temporary
+      Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+      data without both explicit user approval and a plan
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -281,6 +403,10 @@ else:
   if blocked:
     record the review blocker and stop
   run integration verification
+  if improvement-scoped:
+    refresh improvement after/delta after the latest applicable post-fix gate
+    using temporary Chroma/SQLite paths and mocked connectors; never inspect
+    or mutate user data without both explicit user approval and a plan
   rerun or refresh functional smoke entries affected by integration
   repeat:
     run final three-reviewer harness gate
@@ -294,12 +420,18 @@ else:
       implement GREEN, refactor, rerun affected tests, and run verify_all
       satisfy any matching eval required by feature scope only after verify_all
       (record full-suite eval evidence when already covered; else rerun matching eval)
+      refresh improvement after/delta when improvement-scoped using temporary
+      Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+      data without both explicit user approval and a plan
       rerun affected functional smoke entries
     else if a finding needs a non-behavior code/config/test change:
       record RED as n/a without manufacturing a failure
       rerun affected focused tests and run verify_all
       satisfy any matching eval required by feature scope only after verify_all
       (record full-suite eval evidence when already covered; else rerun matching eval)
+      refresh improvement after/delta when improvement-scoped using temporary
+      Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+      data without both explicit user approval and a plan
       rerun affected functional smoke entries
     else:
       rerun docs-only verification without fake RED
@@ -323,7 +455,9 @@ exactly three fresh read-only reviewer subagents with different primary lenses:
    destructive behavior, and external-service exposure.
 3. Performance and reliability: latency or complexity regressions, resource
    use, async/concurrency, timeouts/retries, lifecycle/cleanup, scalability,
-   observability, and operational failure modes.
+   observability, operational failure modes, and improvement-scoped
+   before/after/delta evidence (missing or incoherent delta evidence is
+   actionable).
 
 Every reviewer may report issues outside the primary lens, but its prompt must
 name the assigned lens and task-relevant checks. The loop continues until all
@@ -346,6 +480,11 @@ Use review lenses that fit the change:
 - Functional-smoke lens: task-relevant inventory coverage, caller surfaces,
   safe data modes, result vocabulary, blocked/gated rows, local substitutes, and
   reruns after review fixes.
+- Improvement-performance-delta lens: declared metrics, pre-edit baseline,
+  one after measurement after the latest applicable gate, coherent delta table
+  or explicit `n/a` rationale, quality claims via retained eval scores versus
+  informational runtime/latency metrics, and environment notes free of secrets,
+  credentials, PII, user content, and real user-data paths.
 - Docs-only lens: path references, skill names, phase order, whitespace checks,
   and staged diff checks.
 
@@ -411,7 +550,7 @@ When the added feature changes retrieval quality, ranking, grounding, citation
 selection, answer quality, or another quality-sensitive output that is already
 modeled by retained local evaluations, they must add or update eval coverage
 and satisfy the matching eval gate only after `./scripts/verify_all.sh`
-succeeds and before functional smoke or review, never during focused GREEN.
+succeeds and before improvement after/delta (or an explicit `n/a` rationale), functional smoke, or review, never during focused GREEN.
 Prefer recording full-suite eval-layer evidence when already covered; otherwise
 run the focused matching eval command.
 
@@ -446,8 +585,9 @@ the all-tests-pass gate.
 Current local eval paths include deterministic eval tests under
 `tests/evals` such as `uv run pytest -q tests/evals` plus the fixture runner at
 `PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
-eval gate only after `./scripts/verify_all.sh` succeeds and before functional
-smoke or review; do not run matching eval during focused GREEN. Prefer
+eval gate only after `./scripts/verify_all.sh` succeeds and before improvement
+after/delta (or an explicit `n/a` rationale), functional smoke, or review; do
+not run matching eval during focused GREEN. Prefer
 recording the full-suite deterministic quality eval layer evidence when that
 layer already executed the matching surface; otherwise run the focused matching
 eval command. If a feature falls within the repo's retained local eval coverage
@@ -466,7 +606,10 @@ the live check or keep it `blocked/gated` and use a fake/temp substitute.
 After focused GREEN, refactoring, affected-test reruns, a successful
 `./scripts/verify_all.sh`, and any matching eval gate required by feature
 scope (record full-suite quality-eval evidence when already covered; otherwise
-run the focused matching eval command), run the functional smoke gate in
+run the focused matching eval command), record improvement after/delta when
+improvement-scoped using temporary Chroma/SQLite paths and mocked connectors;
+never inspect or mutate user data without both explicit user approval and a
+plan, then run the functional smoke gate in
 `.agents/skills/harness-functional-smoke/SKILL.md` before any review gate. The
 smoke matrix must start from the task-relevant inventory of retained MCP tools,
 source-sync paths, status surfaces, search, citation answers, and other
@@ -479,10 +622,19 @@ substitute.
 
 Verification, any matching eval gate required by feature scope (only after
 `./scripts/verify_all.sh`, prefer recording full-suite quality-eval evidence
-when already covered), and functional smoke must precede the harness review
-loop. If review findings require changes, rerun the affected verification,
-matching eval gate when in scope, and affected smoke entries before starting
-the next fresh three-reviewer pass.
+when already covered), improvement after/delta when improvement-scoped, and
+functional smoke must precede the harness review loop. If review findings
+require changes, rerun the affected verification, matching eval gate when in
+scope, refresh improvement after/delta evidence when improvement-scoped using
+temporary Chroma/SQLite paths and mocked connectors; never inspect or mutate
+user data without both explicit user approval and a plan, and affected smoke
+entries before starting the next fresh three-reviewer pass.
+
+For improvement-scoped work, keep the delta table in the plan or plan-exempt
+evidence. Quality claims use retained eval scores as delta-table metrics;
+latency/throughput use runtime metrics and remain informational for quality
+gates. Deterministic quality-eval artifacts remain separate from optional
+runtime/latency metrics such as `runtime_metrics.json`.
 
 ## Delivery
 
@@ -493,6 +645,7 @@ Final reports include:
 - Verification commands and results
 - Matching eval gate evidence when required by feature scope (recorded
   full-suite quality-eval evidence or focused matching command result)
+- Improvement performance delta summary (delta table or `n/a` rationale)
 - Functional smoke matrix results, including blocked/gated checks and local substitutes
 - Review status and any subagent-review limitation
 - Known blockers or skipped checks
@@ -503,7 +656,9 @@ After the final clean three-reviewer pass, do not stop at local completion. Use
 `feature/...` branch, and create a `main`-base PR by default. When the task is
 tied to a real GitHub issue, include a dedicated PR-body closing-keyword line
 such as `closes #59` so the issue closes on merge. If no real issue exists,
-omit closing keywords instead of inventing one. If the user explicitly
+omit closing keywords instead of inventing one. The PR body must include the
+improvement performance delta summary or `n/a` rationale alongside verification,
+smoke, and review evidence. If the user explicitly
 requested local-only work, or if auth, permissions, network, branch safety, or
 review availability blocks PR delivery, report that blocker instead of
 silently skipping the PR.

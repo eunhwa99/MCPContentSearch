@@ -99,9 +99,12 @@ but does not satisfy the all-tests-pass gate.
   closing-keyword line such as `closes #59` so merge closes the issue
   automatically.
   If no real issue exists, do not invent one and omit closing keywords instead.
-- Include verification results and functional smoke matrix results in PR text,
+- Include verification results, functional smoke matrix results, and the
+  improvement performance delta summary or `n/a` rationale in PR text,
   including `blocked/gated` checks, approval blockers, and local substitutes; a
-  link to the plan matrix is acceptable when the summary is clear.
+  link to the plan matrix is acceptable when the summary is clear. Delta
+  environment notes must not include secrets, credentials, PII, user content,
+  or real user-data paths.
 - Stage only files relevant to the current task, commit them, push the current `feature/...` branch, then create the PR.
 - If GitHub CLI auth fails, use the configured PR-create skill fallback when available. If no documented fallback is available in the active environment, report the auth blocker instead of improvising around credentials.
 

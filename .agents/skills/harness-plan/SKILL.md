@@ -42,9 +42,26 @@ The plan must include:
 - Focused GREEN and post-refactor verification commands.
 - Full-suite `./scripts/verify_all.sh` command and result field.
 - Matching eval gate when required by feature scope: after
-  `./scripts/verify_all.sh` and before functional smoke; prefer recording
-  full-suite quality-eval evidence when already covered, otherwise the focused
-  matching eval command.
+  `./scripts/verify_all.sh` and before improvement after/delta and functional
+  smoke; prefer recording full-suite quality-eval evidence when already
+  covered, otherwise the focused matching eval command.
+- Improvement performance delta fields when improvement-scoped: metric name(s),
+  unit, measurement command or method, expected improvement direction, baseline
+  before production edits using temporary Chroma/SQLite paths and mocked
+  connectors (never inspect or mutate user data without both explicit user
+  approval and a plan), one after measurement after the latest applicable gate
+  (after `./scripts/verify_all.sh` and matching eval when those gates apply;
+  otherwise after focused GREEN and post-refactor; do not require one remeasure
+  per phase) using temporary Chroma/SQLite paths and mocked connectors; never
+  inspect or mutate user data without both explicit user approval and a plan,
+  and a delta table with absolute and relative deltas plus a
+  one-line interpretation. Quality claims use retained eval scores as
+  delta-table metrics; latency/throughput use runtime metrics and remain
+  informational for quality gates. Environment notes must not include secrets,
+  credentials, PII, user content, or real user-data paths. Brand-new features
+  with no prior comparable surface use `n/a — no prior baseline` with
+  rationale; non-improvement work uses `n/a` with a short rationale. Do not
+  invent fake before numbers.
 - Functional smoke matrix plan: rows to cover, caller surfaces, safe data modes,
   and approval-gated rows before review.
 - Integration or additional smoke scenario when needed.

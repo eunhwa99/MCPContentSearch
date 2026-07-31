@@ -37,20 +37,34 @@ Before production code changes:
    failure signature, missing-behavior explanation, and timestamp/order evidence
    in the plan or plan-exempt task evidence.
 
+For improvement-scoped work, capture the declared performance baseline before
+production/code edits (alongside or just before this red gate) using temporary
+Chroma/SQLite paths and mocked connectors; never inspect or mutate user data
+without both explicit user approval and a plan. Do not invent fake before
+numbers. After the latest applicable gate — after `./scripts/verify_all.sh` and
+matching eval when those gates apply; otherwise after focused GREEN and
+post-refactor — the orchestrator takes one after measurement using temporary
+Chroma/SQLite paths and mocked connectors (never inspect or mutate user data
+without both explicit user approval and a plan) and records the delta table
+(do not require one remeasure per phase); see Improvement Performance Delta in
+`.agents/docs/harness-engineering.md`. Non-improvement and
+brand-new-without-baseline work keep an explicit `n/a` rationale instead of
+forced benchmarks.
+
 ### Focused Green Gate
 
 After production code changes, run the focused unit, integration, and E2E
 checks and require them all to pass. Stop this test-lane invocation at focused
 GREEN so the next phase can refactor. The orchestrator reruns affected focused
 tests after refactor and owns the mandatory `./scripts/verify_all.sh` execution
-for the current diff before smoke or review.
+for the current diff before improvement after/delta (or an explicit `n/a` rationale), smoke, or review.
 
 Do not run matching eval commands in this focused GREEN lane. When a feature
 changes retrieval quality, ranking, grounding, citation selection, answer
 quality, or another quality-sensitive output already modeled by retained local
 evaluations, add or update eval coverage as part of the red/coverage work, but
 leave the eval gate to the orchestrator: after `./scripts/verify_all.sh`
-succeeds and before functional smoke or review, satisfy the matching eval gate
+succeeds and before improvement after/delta (or an explicit `n/a` rationale), functional smoke, or review, satisfy the matching eval gate
 by recording full-suite deterministic quality eval layer evidence when that
 layer already covered the matching surface, otherwise running the focused
 matching eval command. If the feature falls within retained local eval coverage
@@ -84,7 +98,7 @@ Preferred checks by change type:
   `PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If no matching
   retained local eval surface exists yet, extend an existing retained eval
   surface during coverage work and satisfy the eval gate only after the
-  full-suite gate, before smoke or review. Features outside the current
+  full-suite gate, before improvement after/delta (or an explicit `n/a` rationale), smoke, or review. Features outside the current
   retained local eval coverage are not subject to this eval requirement until
   the retained eval scope changes.
 
@@ -94,7 +108,10 @@ fallback only for diagnosis; do not mark the test gate complete.
 
 After the orchestrator completes refactoring, affected focused-test reruns, a
 successful `./scripts/verify_all.sh`, and any matching eval required by feature
-scope (only after that full-suite gate), run
+scope (only after that full-suite gate), record improvement after/delta when
+improvement-scoped (or keep an explicit `n/a` rationale) using temporary
+Chroma/SQLite paths and mocked connectors — never inspect or mutate user data
+without both explicit user approval and a plan — then run
 `.agents/skills/harness-functional-smoke/SKILL.md` before review. The test lane
 must leave a smoke matrix in the plan, or in the review/final evidence for
 plan-exempt work, that covers
@@ -117,11 +134,12 @@ feature/behavior work has auditable pre-production RED evidence, focused
 unit/integration/E2E GREEN results, post-refactor affected-test results,
 `./scripts/verify_all.sh`, any matching eval gate required by feature scope
 (only after that full-suite gate; prefer recording full-suite quality-eval
-evidence when already covered), and the functional smoke matrix recorded in
+evidence when already covered), improvement after/delta when improvement-scoped
+(or an explicit `n/a` rationale), and the functional smoke matrix recorded in
 the plan or plan-exempt evidence. Pure refactor, test-only, or other
 non-behavior code work records the RED gate as `n/a` with a rationale and still
-supplies applicable focused GREEN, full-suite, matching-eval when in scope, and
-smoke evidence. If required coverage does not exist yet, add it; a
+supplies applicable focused GREEN, full-suite, matching-eval when in scope,
+improvement after/delta when improvement-scoped (or `n/a`), and smoke evidence. If required coverage does not exist yet, add it; a
 compile/import check alone is not a completion baseline for behavior-changing
 code work.
 

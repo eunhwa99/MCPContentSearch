@@ -40,37 +40,56 @@ delivery.
    documentation, or integration subagent personas with bounded file ownership,
    acceptance criteria, non-goals, and verification expectations. Use
    `.agents/skills/harness-multitask/SKILL.md` when work needs decomposition.
-3. TDD red gate: for feature/behavior changes, use
+   For improvement-scoped work, declare metrics early in the plan or
+   plan-exempt evidence (name, unit, command/method, expected direction).
+3. Improvement performance baseline: when work improves or claims to improve an
+   existing measurable capability, capture declared baselines before
+   production/code edits (alongside or just before TDD red) using temporary
+   Chroma/SQLite paths and mocked connectors; never inspect or mutate user data
+   without both explicit user approval and a plan. Otherwise record `n/a` with
+   rationale; brand-new features with no prior comparable surface use
+   `n/a — no prior baseline`.
+4. TDD red gate: for feature/behavior changes, use
    `.agents/skills/harness-test/SKILL.md` to add or update unit, integration,
    and deterministic E2E coverage before production code, then record the
    auditable expected focused failure. Pure refactor, test-only, or other
    non-behavior work records RED as `n/a` with a rationale.
-4. TDD green implementation: `.agents/skills/harness-implement/SKILL.md`,
+5. TDD green implementation: `.agents/skills/harness-implement/SKILL.md`,
    delegated when tool policy and ownership boundaries allow.
-5. TDD green verification: use `.agents/skills/harness-test/SKILL.md` to pass
+6. TDD green verification: use `.agents/skills/harness-test/SKILL.md` to pass
    focused unit, integration, and E2E checks.
-6. TDD refactor phase: `.agents/skills/harness-refactor/SKILL.md`; refactor only
+7. TDD refactor phase: `.agents/skills/harness-refactor/SKILL.md`; refactor only
    while focused tests remain green.
-7. Post-refactor full-suite gate: rerun affected focused tests, then require
+8. Post-refactor full-suite gate: rerun affected focused tests, then require
    `./scripts/verify_all.sh` to pass.
-8. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
+9. Eval gate when required by feature scope: after `./scripts/verify_all.sh`
    succeeds, confirm the matching retained eval surface. Prefer recording the
    full-suite deterministic quality eval layer evidence when that layer already
    executed the matching surface; otherwise run the focused matching eval
    command. Never run matching eval during focused GREEN.
-9. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
+10. Improvement performance after/delta: when improvement-scoped, take one
+    after measurement after the latest applicable gate — after
+    `./scripts/verify_all.sh` and matching eval when those gates apply;
+    otherwise after focused GREEN and post-refactor — using temporary
+    Chroma/SQLite paths and mocked connectors; never inspect or mutate user
+    data without both explicit user approval and a plan. Do not require one
+    remeasure per phase. Record the delta table. Keep earlier `n/a` rationales
+    otherwise. See Improvement Performance Delta in
+    `.agents/docs/harness-engineering.md`.
+11. Functional smoke gate: `.agents/skills/harness-functional-smoke/SKILL.md`,
    covering the task-relevant feature inventory once through the safest real
    caller surfaces before review, not only the files changed.
-10. Middle review gate: `.agents/skills/harness-review/SKILL.md`, running the
+12. Middle review gate: `.agents/skills/harness-review/SKILL.md`, running the
    three-reviewer harness loop.
-11. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
-12. Final review gate: `.agents/skills/harness-review/SKILL.md`, running the
+13. Integration phase: `.agents/skills/harness-integrate/SKILL.md`
+14. Final review gate: `.agents/skills/harness-review/SKILL.md`, running the
    three-reviewer harness loop.
-13. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery.
+15. PR delivery: after the final clean three-reviewer pass, stage only relevant files, commit, push, and create a `main`-base PR by default unless the user explicitly asks for local-only work or a safety blocker prevents delivery. Include the improvement performance delta summary or `n/a` rationale in the PR body and final handoff.
 
 Docs/instruction-only work skips the code-specific TDD red, green
 implementation, full-suite, and functional-smoke gates and uses docs-only
-verification instead. A trivial plan-exempt code change still runs every TDD
+verification instead. Record improvement performance delta as `n/a` with a
+docs-only rationale. A trivial plan-exempt code change still runs every TDD
 and full-suite gate.
 
 All feature and behavior changes use strict Red-Green-Refactor TDD. The red gate
@@ -85,8 +104,9 @@ partial fallback. If the feature changes retrieval quality,
 ranking, grounding, citation selection, answer quality, or another
 quality-sensitive output already modeled by retained local evaluations, also
 require adding or updating eval coverage and satisfying the matching eval gate
-only after `./scripts/verify_all.sh` succeeds and before functional smoke or
-review; never during focused GREEN. Prefer recording full-suite deterministic
+only after `./scripts/verify_all.sh` succeeds and before improvement after/delta
+(or an explicit `n/a` rationale), functional smoke, or review; never during
+focused GREEN. Prefer recording full-suite deterministic
 quality eval layer evidence when that layer already executed the matching
 surface; otherwise run the focused matching eval command. If the feature falls
 within retained local eval coverage but no exact retained eval surface exists
@@ -104,33 +124,42 @@ behavior-changing code/config finding, return to the unit/integration/E2E RED
 gate before production edits, record fresh auditable RED evidence, then rerun
 GREEN, refactor, affected tests, `./scripts/verify_all.sh`, any matching eval
 required by feature scope only after that full-suite gate (record full-suite
-eval evidence when already covered; otherwise rerun the matching eval), and
-functional smoke. For a non-behavior code/config/test finding, record RED as
-`n/a` without manufacturing a failure, then rerun affected focused tests,
+eval evidence when already covered; otherwise rerun the matching eval), refresh
+improvement after/delta when improvement-scoped using temporary Chroma/SQLite
+paths and mocked connectors; never inspect or mutate user data without both
+explicit user approval and a plan, and functional smoke. For a
+non-behavior code/config/test finding, record RED as `n/a` without
+manufacturing a failure, then rerun affected focused tests,
 `./scripts/verify_all.sh`, any matching eval required by feature scope only
 after that full-suite gate (record full-suite eval evidence when already
-covered; otherwise rerun the matching eval), and affected smoke. For a
-docs-only finding, rerun lightweight docs verification without fake RED. Update
-the plan when one is required, assign each issue back to the responsible worker
-persona or a fresh replacement with the same ownership boundary, and continue
-directly to the next fresh review pass rather than restarting the
-already-completed initial RED phase.
+covered; otherwise rerun the matching eval), refresh improvement after/delta
+when improvement-scoped using temporary Chroma/SQLite paths and mocked
+connectors; never inspect or mutate user data without both explicit user
+approval and a plan, and affected smoke. For a docs-only finding, rerun
+lightweight docs verification without fake RED. Update the plan when one is
+required, assign each issue back to the responsible worker persona or a fresh
+replacement with the same ownership boundary, and continue directly to the next
+fresh review pass rather than restarting the already-completed initial RED
+phase.
 Every review pass must run relevant verification, any matching eval gate
 required by feature scope only after `./scripts/verify_all.sh` (prefer
-recording full-suite quality-eval evidence when already covered), and
-functional smoke first, then spawn exactly three fresh read-only reviewers with
-distinct primary lenses: bugs/correctness/contracts/tests;
-security/privacy/data safety/secrets; and
-performance/reliability/async/concurrency/operability. Continue until all
-three in the newest pass report no actionable findings. For code changes,
-review-fix verification must include affected unit/integration/E2E tests and
+recording full-suite quality-eval evidence when already covered), improvement
+after/delta when improvement-scoped, and functional smoke first, then spawn
+exactly three fresh read-only reviewers with distinct primary lenses:
+bugs/correctness/contracts/tests; security/privacy/data safety/secrets; and
+performance/reliability/async/concurrency/operability, including
+improvement-scoped before/after/delta coherence. Continue until all three in
+the newest pass report no actionable findings. For code changes, review-fix
+verification must include affected unit/integration/E2E tests and
 `./scripts/verify_all.sh`, plus any matching eval gate only after that
-full-suite gate and before the next smoke/review pass (prefer recording
-full-suite eval-layer evidence when it already covered the matching surface).
-Worker subagents may edit only within delegated boundaries; reviewer subagents
-must not edit files.
+full-suite gate (prefer recording full-suite eval-layer evidence when it
+already covered the matching surface); then refresh after/delta measurements
+when improvement-scoped using temporary Chroma/SQLite paths and mocked
+connectors (never inspect or mutate user data without both explicit user
+approval and a plan) before the next smoke/review pass. Worker subagents may
+edit only within delegated boundaries; reviewer subagents must not edit files.
 
-Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, and docs-only.
+Use review lenses from `.agents/docs/harness-engineering.md`: MCP contract, indexing/vector-store/storage including SQLite lifecycle/tombstone metadata, fetching/network for external connectors, async/background, config/secrets, test-quality, functional-smoke quality, improvement-performance-delta, and docs-only.
 
 If the three-reviewer harness loop cannot run because subagent review is
 unavailable or unauthorized, stop and report the blocker instead of silently
@@ -148,8 +177,9 @@ behavior before production code.
 Use the current local eval surfaces when they apply, including deterministic
 eval tests under `tests/evals` such as `uv run pytest -q tests/evals` and
 `PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
-eval gate only after `./scripts/verify_all.sh` succeeds and before functional
-smoke or review; do not run matching eval during focused GREEN. Prefer
+eval gate only after `./scripts/verify_all.sh` succeeds and before improvement
+after/delta (or an explicit `n/a` rationale), functional smoke, or review; do
+not run matching eval during focused GREEN. Prefer
 recording the full-suite deterministic quality eval layer evidence when that
 layer already executed the matching surface; otherwise run the focused matching
 eval command. If a feature falls within the repo's retained local eval coverage
