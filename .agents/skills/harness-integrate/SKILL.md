@@ -55,14 +55,17 @@ Live Notion/Tistory/GitHub validation requires both explicit user approval and
 a plan. Plan-exempt work must reclassify before the live check or keep it
 `blocked/gated` with a fake/temp substitute. Do not print tokens.
 
-Refresh the functional smoke matrix from
+When improvement-scoped, refresh improvement after/delta after the latest
+applicable gate and before smoke using temporary Chroma/SQLite paths and
+mocked connectors; never inspect or mutate user data without both explicit
+user approval and a plan. Then refresh the functional smoke matrix from
 `.agents/skills/harness-functional-smoke/SKILL.md` during integration. If
 refactor or integration changed any caller-visible path, rerun the affected
 smoke entries. The final matrix must be present in the plan, or in the
 review/final evidence for plan-exempt work, before the final review gate and
-must explicitly cover retained MCP `sync_source`,
-`list_sources`, and `get_sync_status` flows when source sync behavior is in
-scope, or mark live/user-data checks as blocked/gated with a local substitute.
+must explicitly cover retained MCP `sync_source`, `list_sources`, and
+`get_sync_status` flows when source sync behavior is in scope, or mark
+live/user-data checks as blocked/gated with a local substitute.
 
 ## Completion
 
@@ -72,14 +75,19 @@ behavior-changing code/config edit, return to RED before production changes,
 then rerun GREEN, refactor, affected checks, the full-suite gate, any matching
 eval gate required by feature scope only after that full-suite gate (record
 full-suite eval evidence when already covered; otherwise rerun the matching
-eval), and smoke. For a non-behavior code/config/test edit, record RED as
-`n/a` without manufacturing a failure, then rerun affected focused tests, the
-full-suite gate, any matching eval gate required by feature scope only after
-that full-suite gate (record full-suite eval evidence when already covered;
-otherwise rerun the matching eval), and affected smoke. For a docs-only edit,
-rerun lightweight docs verification without fake RED. Refresh integration
-evidence, then start a fresh three-reviewer pass with the required distinct
-lenses.
+eval), refresh improvement after/delta when improvement-scoped using temporary
+Chroma/SQLite paths and mocked connectors; never inspect or mutate user data
+without both explicit user approval and a plan, and smoke. For
+a non-behavior code/config/test edit, record RED as `n/a` without manufacturing
+a failure, then rerun affected focused tests, the full-suite gate, any matching
+eval gate required by feature scope only after that full-suite gate (record
+full-suite eval evidence when already covered; otherwise rerun the matching
+eval), refresh improvement after/delta when improvement-scoped using temporary
+Chroma/SQLite paths and mocked connectors; never inspect or mutate user data
+without both explicit user approval and a plan, and affected
+smoke. For a docs-only edit, rerun lightweight docs verification without fake
+RED. Refresh integration evidence, then start a fresh three-reviewer pass with
+the required distinct lenses.
 
 After the final clean three-reviewer pass, continue into PR delivery by default: stage only relevant files, commit, push the `feature/...` branch, and create a `main`-base PR using `.agents/docs/github-workflow.md`. Stop and report the blocker if the user explicitly asked for local-only work, review is unavailable, branch safety is unclear, or GitHub auth/network/permission issues prevent delivery.
 
@@ -92,6 +100,9 @@ Final response should include:
 - Verification commands and results.
 - Matching eval gate evidence when required by feature scope (recorded
   full-suite quality-eval evidence or focused matching command result).
+- Improvement performance delta summary (delta table or `n/a` rationale);
+  environment notes must not include secrets, credentials, PII, user content,
+  or real user-data paths.
 - Functional smoke matrix results, including blocked/gated checks.
 - Three-reviewer harness status, including whether the newest fresh
   bugs/correctness, security/data-safety, and performance/reliability reviewers

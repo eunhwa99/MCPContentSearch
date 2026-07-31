@@ -32,7 +32,7 @@
 - For planned work, the main agent is the CEO/orchestrator for file-changing harness work, not the default implementer. Before non-plan target edits, discover available subagent/delegation tools unless an equivalent callable subagent tool is already available in the active tool list.
 - For any work that is not truly atomic, spawn role-specific implementation, testing, documentation, or integration workers before implementation begins. Assign each worker a bounded ownership area, expected files or modules, acceptance criteria, verification expectations, and an instruction to preserve other user/agent changes instead of reverting them.
 - The main agent may implement directly only when the change is truly atomic. Record the reason in the plan progress log, or in the task update for plan-exempt work, before editing target files. Shared-file overlap is not a reason to bypass workers: for non-atomic work, use a single-owner worker or sequential worker handoff instead of parallel edits. If subagent tools are unavailable for non-atomic work, or no safe worker boundary can be created, stop before target edits and ask the user for explicit approval before bypassing worker orchestration. Do not silently collapse worker orchestration into self-implementation.
-- Worker subagents and reviewer subagents are different roles. Workers may edit only inside their assigned boundary and must never commit, push, open PRs, inspect or print secret values, inspect or mutate local Chroma/SQLite or other user data, or perform destructive actions. Secrets, user-data access or mutation, and destructive actions are non-delegable. When explicitly approved user-data work is necessary, it remains main-agent-only and requires a plan rationale, bounded instructions, and rollback/safety notes. Harness reviewers are read-only and run only after verification and functional smoke.
+- Worker subagents and reviewer subagents are different roles. Workers may edit only inside their assigned boundary and must never commit, push, open PRs, inspect or print secret values, inspect or mutate local Chroma/SQLite or other user data, or perform destructive actions. Secrets, user-data access or mutation, and destructive actions are non-delegable. When explicitly approved user-data work is necessary, it remains main-agent-only and requires a plan rationale, bounded instructions, and rollback/safety notes. Harness reviewers are read-only and run only after verification, matching eval when in scope, improvement after/delta when improvement-scoped, and functional smoke.
 - The main agent owns integration: collect worker outputs, inspect diffs, resolve conflicts, update the plan when one is required, run verification, route actionable findings back to the responsible worker persona or a fresh replacement with the same ownership boundary, and minimize human intervention. Ask the user only when safety, credentials, destructive actions, unavailable delegation/review tools, or genuinely unclear requirements require human judgment.
 - Keep `.agents/docs/architecture.md` updated when changes affect ContextWiki source connectors, source sync, document identity, chunking, tombstones, retrieval, citation metadata, answer behavior, or other maintained design assumptions. This document is the maintained human explanation layer and should not drift behind README or implementation.
 - All feature and behavior changes must use strict test-driven development: add or update automated tests before production code, run the smallest relevant new or changed test to observe the expected failure, and record the command, covered test layers/names, non-zero exit code, expected failure signature, and missing-behavior explanation before production edits. Make the minimum implementation pass it, and refactor only while tests stay green.
@@ -48,27 +48,53 @@
   `./scripts/verify_all.sh`, satisfy any matching eval gate required by feature
   scope only after that full-suite gate (prefer recording the full-suite
   deterministic quality eval layer evidence when it already covered the
-  matching surface; otherwise run the focused matching eval command), then run
-  the functional smoke gate before the harness review loop: use
+  matching surface; otherwise run the focused matching eval command), then
+  record improvement after/delta when improvement-scoped using temporary
+  Chroma/SQLite paths and mocked connectors (never inspect or mutate user data
+  without both explicit user approval and a plan), then run the
+  functional smoke gate before the harness review loop: use
   `.agents/skills/harness-functional-smoke/SKILL.md` to
   exercise the task-relevant MCP/source-sync/user-visible feature inventory
   once through the safest real caller surfaces, not only unit-test the changed
   files. Record explicit safety blockers, approval needed, and nearest
   fake/temp substitutes in the plan, or in the review/final evidence for
   plan-exempt work.
-- After verification and before PR delivery for any code, configuration, documentation, or skill change, run the harness review loop with exactly three fresh read-only reviewer subagents per pass. Prompt reviewer 1 for bugs/correctness/API contracts/tests, reviewer 2 for security/privacy/data safety/secrets, and reviewer 3 for performance/reliability/async/concurrency/operability. Repeat until all three reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
+- When work improves or claims to improve an existing measurable capability
+  (latency, throughput, resource use, ranking/retrieval/answer quality, sync
+  speed, or similar), record before/after performance delta evidence: declare
+  metrics early; capture a local-first baseline before production edits using
+  temporary Chroma/SQLite paths and mocked connectors (never inspect or mutate
+  user data without both explicit user approval and a plan); take one after
+  measurement after the latest applicable gate — after `./scripts/verify_all.sh`
+  and matching eval when those gates apply, otherwise after focused GREEN and
+  post-refactor — also using temporary Chroma/SQLite paths and mocked
+  connectors (never inspect or mutate user data without both explicit user
+  approval and a plan; do not require one remeasure per phase); and always
+  record a delta table (or an explicit `n/a` rationale for brand-new surfaces
+  without a prior baseline or for non-improvement work). Do not invent fake
+  before numbers. Delta-table environment notes, handoff, and PR text must not
+  include secrets, credentials, PII, user content, or real user-data paths.
+  Final handoff and PR body must include the delta summary or `n/a` rationale;
+  reviewer 3 treats missing or incoherent improvement-scoped delta evidence as
+  actionable.
+- After verification and before PR delivery for any code, configuration, documentation, or skill change, run the harness review loop with exactly three fresh read-only reviewer subagents per pass. Prompt reviewer 1 for bugs/correctness/API contracts/tests, reviewer 2 for security/privacy/data safety/secrets, and reviewer 3 for performance/reliability/async/concurrency/operability plus improvement-scoped before/after/delta coherence. Repeat until all three reviewers in the newest pass report no actionable findings. If subagent review is unavailable, stop and report the blocker instead of silently replacing it with self-review.
 - If the main agent's synthesis or harness review reports an actionable
   behavior-changing code/config finding, return to the TDD RED gate before
   production edits, then rerun GREEN, refactor, affected tests,
   `./scripts/verify_all.sh`, any matching eval gate required by feature scope
   only after that full-suite gate (record full-suite eval evidence when already
-  covered; otherwise rerun the matching eval), and functional smoke before a
-  fresh three-reviewer pass. For a non-behavior code/config/test finding,
-  record RED as `n/a` without manufacturing a failure, then rerun affected
-  focused tests, `./scripts/verify_all.sh`, any matching eval gate required by
-  feature scope only after that full-suite gate (record full-suite eval
-  evidence when already covered; otherwise rerun the matching eval), and
-  affected functional smoke.
+  covered; otherwise rerun the matching eval), refresh improvement after/delta
+  when improvement-scoped using temporary Chroma/SQLite paths and mocked
+  connectors (never inspect or mutate user data without both explicit user
+  approval and a plan), and functional smoke before a fresh three-reviewer
+  pass. For a non-behavior code/config/test finding, record RED as `n/a`
+  without manufacturing a failure, then rerun affected focused tests,
+  `./scripts/verify_all.sh`, any matching eval gate required by feature scope
+  only after that full-suite gate (record full-suite eval evidence when already
+  covered; otherwise rerun the matching eval), refresh improvement after/delta
+  when improvement-scoped using temporary Chroma/SQLite paths and mocked
+  connectors (never inspect or mutate user data without both explicit user
+  approval and a plan), and affected functional smoke.
   For a docs-only finding, rerun the lightweight docs verification without fake
   RED. Update the plan when one is required and route the fix to the responsible
   worker persona or a fresh replacement with the same ownership boundary.
@@ -133,10 +159,13 @@ If `uv run ...` fails because the local environment or workspace metadata is not
   expose tokens.
 - Verification, any matching eval gate required by feature scope (only after
   `./scripts/verify_all.sh`, prefer recording full-suite quality-eval evidence
-  when already covered), and functional smoke must happen before the harness
-  review loop; if review findings require edits, rerun the affected
-  verification, matching eval gate when in scope, and affected functional smoke
-  entries before starting a fresh three-reviewer pass.
+  when already covered), improvement after/delta when improvement-scoped, and
+  functional smoke must happen before the harness review loop; if review
+  findings require edits, rerun the affected verification, matching eval gate
+  when in scope, refresh improvement after/delta when improvement-scoped using
+  temporary Chroma/SQLite paths and mocked connectors (never inspect or mutate
+  user data without both explicit user approval and a plan), and affected
+  functional smoke entries before starting a fresh three-reviewer pass.
 
 ## Security and Configuration
 

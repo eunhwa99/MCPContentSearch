@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Functional Smoke"
   short_description: "Validate MCPContentSearch behavior through real caller surfaces"
-  default_prompt: "$harness-functional-smoke를 focused GREEN, refactor, affected-test rerun, ./scripts/verify_all.sh GREEN 이후에 사용해 task-relevant 기능 inventory를 MCP tool, retained functional tests, fake/temp storage로 검증하고 skip 사유를 plan 또는 plan-exempt review/final/PR evidence에 기록하세요. Live/user-data/destructive action은 explicit approval과 plan 없이는 blocked/gated입니다."
+  default_prompt: "$harness-functional-smoke를 ./scripts/verify_all.sh GREEN → matching eval(해당 시) → improvement after/delta(또는 n/a) → smoke → review 순서로 사용하세요. focused GREEN, refactor, affected-test rerun, verify_all, matching eval(해당 시), improvement after/delta(또는 n/a)가 끝난 뒤에만 smoke를 실행하고, task-relevant 기능 inventory를 MCP tool, retained functional tests, fake/temp storage로 검증하며 skip 사유를 plan 또는 plan-exempt review/final/PR evidence에 기록하세요. Live/user-data/destructive action은 explicit approval과 plan 없이는 blocked/gated입니다."
