@@ -150,4 +150,4 @@ git diff --cached --check
 | Review pass 3 | done with findings | Security clean; ops + correctness findings fixed | [Pass3 security](58e43206-ffbd-4c54-8b27-39a2432bcdaa) / [Pass3 ops](38287dc0-681a-4668-8d2f-779b57e8fc85) / [Pass3 correctness](f4ef7d86-eee8-4c4a-9030-10710b11ca5a) |
 | Review-fix (pass3) | done | Docker recreate; missing-plist; config/Docker wording; tombstone diagram; phase table; ADR deadline clock; list_documents fields; error field contract | README + architecture |
 | Review pass 4 | done clean | All three NO ACTIONABLE FINDINGS | [Pass4 correctness](64c0f61d-999a-464e-8fb5-e46d6d10aa55) / [Pass4 security](ded0bebb-56e2-485f-b732-35f5dd7fd8f1) / [Pass4 ops](a3554dd8-7c6f-4b61-a109-1bddc4aa7254) |
-| PR delivery | in_progress | Commit, push, open main-base PR | | |
+| PR delivery | done | Commit `eae7391`, PR opened | https://github.com/eunaverse/MCPContentSearch/pull/92 |
