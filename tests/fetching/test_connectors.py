@@ -106,6 +106,25 @@ def test_notion_connector_passes_progress_callback(monkeypatch):
     assert callable(captured["existing_documents_loader"])
 
 
+@pytest.mark.parametrize(
+    ("connector_factory"),
+    [
+        lambda: GitHubSourceConnector(
+            ("eunhwa99/MCPContentSearch@main",),
+            AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        ),
+        lambda: TistorySourceConnector("devlog", AppConfig(tistory_max_post_id=1)),
+        lambda: ObsidianSourceConnector(AppConfig()),
+    ],
+)
+def test_non_notion_connectors_expose_progress_callback_for_ingestion_wiring(
+    connector_factory,
+):
+    connector = connector_factory()
+    assert hasattr(connector, "progress_callback")
+    assert connector.progress_callback is None
+
+
 def test_notion_connector_loader_gets_document_for_requested_ids_only(tmp_path):
     store = MetadataStore(tmp_path / "metadata.sqlite3")
     kept = DocumentModel(
@@ -259,6 +278,8 @@ def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):
         connection_limit,
         request_timeout,
         log_interval,
+        progress_callback=None,
+        progress_stop_signal=None,
     ):
         return [
             DocumentModel(
@@ -485,6 +506,8 @@ def test_obsidian_connector_disables_stale_cleanup_for_partial_snapshot(monkeypa
         *,
         max_files,
         max_file_bytes,
+        progress_callback=None,
+        progress_stop_signal=None,
     ):
         return PartialSnapshot(
             [
@@ -525,6 +548,8 @@ def test_obsidian_connector_passes_configured_snapshot_bounds(monkeypatch, tmp_p
         *,
         max_files,
         max_file_bytes,
+        progress_callback=None,
+        progress_stop_signal=None,
     ):
         captured["vault_path"] = vault_path
         captured["max_files"] = max_files

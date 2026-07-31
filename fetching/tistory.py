@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import ssl
 from datetime import datetime
@@ -8,8 +9,25 @@ import certifi
 from bs4 import BeautifulSoup
 
 from core.models import DocumentModel
+from fetching.notion import _StopRequested
 
 logger = logging.getLogger(__name__)
+
+
+async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) -> bool:
+    if progress_callback is None:
+        return False
+    try:
+        result = progress_callback(event)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ == "_InactiveJobStop":
+            raise
+        logger.debug("Ignoring progress callback failure")
+        return False
+    return stop_signal is not None and result is stop_signal
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
@@ -133,11 +151,20 @@ async def fetch_tistory_posts(
     max_id: int,
     connection_limit: int = 10,
     request_timeout: float = 10.0,
-    log_interval: int = 10
+    log_interval: int = 10,
+    progress_callback=None,
+    progress_stop_signal=None,
 ) -> List[DocumentModel]:
     """Tistory 포스트 수집"""
     posts = []
     found_count = 0
+    total_pages = max(int(max_id or 0), 0)
+    if await _emit_progress(
+        progress_callback,
+        {"event": "search_completed", "total_pages": total_pages},
+        stop_signal=progress_stop_signal,
+    ):
+        raise _StopRequested
     
     connector = aiohttp.TCPConnector(limit=connection_limit)
     timeout_config = aiohttp.ClientTimeout(total=request_timeout)
@@ -147,19 +174,50 @@ async def fetch_tistory_posts(
         timeout=timeout_config
     ) as session:
         tasks = [
-            fetch_post(session, blog_name, post_id, request_timeout) 
+            asyncio.create_task(
+                fetch_post(session, blog_name, post_id, request_timeout)
+            )
             for post_id in range(1, max_id + 1)
         ]
         
-        for future in asyncio.as_completed(tasks):
-            post = await future
-            
-            if post:
-                posts.append(DocumentModel(**post))
-                found_count += 1
-                
-                if found_count % log_interval == 0:
-                    logger.info(f"In progress: {found_count} posts found")
+        completed = 0
+        try:
+            for future in asyncio.as_completed(tasks):
+                post = await future
+                completed += 1
+                if await _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "page_fetch_completed",
+                        "current_page": completed,
+                        "total_pages": total_pages,
+                    },
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
+
+                if post:
+                    posts.append(DocumentModel(**post))
+                    found_count += 1
+
+                    if found_count % log_interval == 0:
+                        logger.info(f"In progress: {found_count} posts found")
+        finally:
+            # Cancel pending fan-out before ClientSession exits on cooperative
+            # stop, CancelledError (worker SIGTERM), or any mid-loop failure.
+            # Shield the drain so a true Task.cancel cannot abort gather mid-await
+            # and leave fan-out hitting a closing ClientSession. If cancel is
+            # delivered to the waiter, still await the shielded gather to finish.
+            pending = [task for task in tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                drain = asyncio.gather(*pending, return_exceptions=True)
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    await drain
+                    raise
     
     logger.info(f"Complete: {found_count} Tistory posts found")
     return posts

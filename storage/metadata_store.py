@@ -182,6 +182,8 @@ class MetadataStore:
                     indexed_chunks INTEGER NOT NULL,
                     skipped_documents INTEGER NOT NULL,
                     phase TEXT NOT NULL DEFAULT '',
+                    upstream_total INTEGER NOT NULL DEFAULT 0,
+                    upstream_done INTEGER NOT NULL DEFAULT 0,
                     upstream_total_pages INTEGER NOT NULL DEFAULT 0,
                     upstream_fetched_pages INTEGER NOT NULL DEFAULT 0,
                     last_progress_at TEXT NOT NULL DEFAULT '',
@@ -284,11 +286,29 @@ class MetadataStore:
                         "owner_id": "TEXT NOT NULL DEFAULT ''",
                         "heartbeat_at": "TEXT NOT NULL DEFAULT ''",
                         "phase": "TEXT NOT NULL DEFAULT ''",
+                        "upstream_total": "INTEGER NOT NULL DEFAULT 0",
+                        "upstream_done": "INTEGER NOT NULL DEFAULT 0",
                         "upstream_total_pages": "INTEGER NOT NULL DEFAULT 0",
                         "upstream_fetched_pages": "INTEGER NOT NULL DEFAULT 0",
                         "last_progress_at": "TEXT NOT NULL DEFAULT ''",
                         "status_message": "TEXT NOT NULL DEFAULT ''",
                     },
+                )
+                # Prefer new columns after migrate; copy legacy page counters when
+                # additive columns still hold their DEFAULT 0 from ALTER TABLE.
+                conn.execute(
+                    """
+                    UPDATE sync_jobs
+                    SET upstream_total = upstream_total_pages
+                    WHERE upstream_total = 0 AND upstream_total_pages > 0
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE sync_jobs
+                    SET upstream_done = upstream_fetched_pages
+                    WHERE upstream_done = 0 AND upstream_fetched_pages > 0
+                    """
                 )
                 self._ensure_columns(
                     conn,
@@ -465,9 +485,10 @@ class MetadataStore:
                 INSERT INTO sync_jobs (
                     job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
-                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    skipped_documents, phase, upstream_total, upstream_done,
+                    upstream_total_pages, upstream_fetched_pages,
                     last_progress_at, status_message, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -482,8 +503,10 @@ class MetadataStore:
                     job.indexed_chunks,
                     job.skipped_documents,
                     job.phase,
-                    job.upstream_total_pages,
-                    job.upstream_fetched_pages,
+                    job.upstream_total,
+                    job.upstream_done,
+                    job.upstream_total,
+                    job.upstream_done,
                     job.last_progress_at,
                     job.status_message,
                     job.error_message,
@@ -544,9 +567,10 @@ class MetadataStore:
                     INSERT INTO sync_jobs (
                         job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                         total_documents, processed_documents, indexed_chunks,
-                        skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                        skipped_documents, phase, upstream_total, upstream_done,
+                        upstream_total_pages, upstream_fetched_pages,
                         last_progress_at, status_message, error_message
-                    ) VALUES (?, ?, '', ?, ?, '', ?, 0, 0, 0, 0, ?, 0, 0, ?, ?, ?)
+                    ) VALUES (?, ?, '', ?, ?, '', ?, 0, 0, 0, 0, ?, 0, 0, 0, 0, ?, ?, ?)
                     """,
                     (
                         job.job_id,
@@ -594,9 +618,10 @@ class MetadataStore:
                 INSERT INTO sync_jobs (
                     job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
-                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    skipped_documents, phase, upstream_total, upstream_done,
+                    upstream_total_pages, upstream_fetched_pages,
                     last_progress_at, status_message, error_message
-                ) VALUES (?, ?, '', ?, ?, '', '', 0, 0, 0, 0, '', 0, 0, '', '', '')
+                ) VALUES (?, ?, '', ?, ?, '', '', 0, 0, 0, 0, '', 0, 0, 0, 0, '', '', '')
                 """,
                 (
                     job.job_id,
@@ -782,9 +807,10 @@ class MetadataStore:
                 INSERT INTO sync_jobs (
                     job_id, source_id, owner_id, status, started_at, heartbeat_at, finished_at,
                     total_documents, processed_documents, indexed_chunks,
-                    skipped_documents, phase, upstream_total_pages, upstream_fetched_pages,
+                    skipped_documents, phase, upstream_total, upstream_done,
+                    upstream_total_pages, upstream_fetched_pages,
                     last_progress_at, status_message, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -799,8 +825,10 @@ class MetadataStore:
                     job.indexed_chunks,
                     job.skipped_documents,
                     job.phase,
-                    job.upstream_total_pages,
-                    job.upstream_fetched_pages,
+                    job.upstream_total,
+                    job.upstream_done,
+                    job.upstream_total,
+                    job.upstream_done,
                     job.last_progress_at,
                     job.status_message,
                     job.error_message,
@@ -998,7 +1026,8 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?, started_at = ?, finished_at = ?, total_documents = ?,
                     processed_documents = ?, indexed_chunks = ?, skipped_documents = ?,
-                    phase = ?, upstream_total_pages = ?, upstream_fetched_pages = ?,
+                    phase = ?, upstream_total = ?, upstream_done = ?,
+                    upstream_total_pages = ?, upstream_fetched_pages = ?,
                     last_progress_at = ?, status_message = ?, error_message = ?
                 WHERE job_id = ? AND status IN (?, ?)
                 """,
@@ -1011,8 +1040,10 @@ class MetadataStore:
                     updated.indexed_chunks,
                     updated.skipped_documents,
                     updated.phase,
-                    updated.upstream_total_pages,
-                    updated.upstream_fetched_pages,
+                    updated.upstream_total,
+                    updated.upstream_done,
+                    updated.upstream_total,
+                    updated.upstream_done,
                     updated.last_progress_at,
                     updated.status_message,
                     updated.error_message,
@@ -2959,7 +2990,27 @@ class MetadataStore:
         )
 
     @staticmethod
+    def _upstream_progress_from_row(row) -> tuple[int, int]:
+        keys = set(row.keys())
+
+        def _prefer(primary: str, legacy: str) -> int:
+            # Prefer primary whenever the column exists — including intentional
+            # zeros (e.g. search_completed resets upstream_done). Legacy columns
+            # are only for pre-migration rows; one-time ensure_schema backfill
+            # copies legacy into primary so reads need not fall back at zero.
+            if primary in keys:
+                return int(row[primary] or 0)
+            if legacy in keys:
+                return int(row[legacy] or 0)
+            return 0
+
+        return _prefer("upstream_total", "upstream_total_pages"), _prefer(
+            "upstream_done", "upstream_fetched_pages"
+        )
+
+    @staticmethod
     def _job_from_row(row) -> SyncJobModel:
+        upstream_total, upstream_done = MetadataStore._upstream_progress_from_row(row)
         return SyncJobModel(
             job_id=row["job_id"],
             source_id=row["source_id"],
@@ -2971,8 +3022,8 @@ class MetadataStore:
             indexed_chunks=row["indexed_chunks"],
             skipped_documents=row["skipped_documents"],
             phase=normalize_sync_job_phase(row["phase"]),
-            upstream_total_pages=row["upstream_total_pages"],
-            upstream_fetched_pages=row["upstream_fetched_pages"],
+            upstream_total=upstream_total,
+            upstream_done=upstream_done,
             last_progress_at=row["last_progress_at"],
             status_message=row["status_message"],
             error_message=row["error_message"],

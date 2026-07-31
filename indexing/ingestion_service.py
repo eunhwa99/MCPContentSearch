@@ -22,12 +22,42 @@ FETCHING_PAGE_CONTENT_PHASE = "fetching_page_content"
 INDEXING_DOCUMENTS_PHASE = "indexing_documents"
 FETCH_PROGRESS_STOP_SIGNAL = object()
 OBSERVER_CANCELLED_SYNC_ERROR = "Sync request was cancelled by a progress observer before completion."
+# Coalesce frequent per-item writes. Hint counters stay sparse; liveness is
+# denser so orphan detection and public last_progress_at stay fresh.
+_PAGE_FETCH_HINT_PERSIST_INTERVAL = 25
+_PAGE_FETCH_LIVENESS_PERSIST_INTERVAL = 5
 
 
 class _InactiveJobStop(Exception):
     def __init__(self, job):
         super().__init__("Sync job is no longer active")
         self.job = job
+
+
+def _should_persist_page_fetch_cadence(
+    current_page: int, total_pages: int, interval: int
+) -> bool:
+    if current_page <= 0:
+        return True
+    if total_pages > 0 and current_page >= total_pages:
+        return True
+    return current_page % interval == 0
+
+
+def _should_persist_page_fetch_hints(current_page: int, total_pages: int) -> bool:
+    return _should_persist_page_fetch_cadence(
+        current_page,
+        total_pages,
+        _PAGE_FETCH_HINT_PERSIST_INTERVAL,
+    )
+
+
+def _should_persist_page_fetch_liveness(current_page: int, total_pages: int) -> bool:
+    return _should_persist_page_fetch_cadence(
+        current_page,
+        total_pages,
+        _PAGE_FETCH_LIVENESS_PERSIST_INTERVAL,
+    )
 
 
 def _now() -> str:
@@ -798,8 +828,8 @@ class IngestionService:
         indexed_chunks: int,
         skipped_documents: int,
         phase: str = INDEXING_DOCUMENTS_PHASE,
-        upstream_total_pages: int | None = None,
-        upstream_fetched_pages: int | None = None,
+        upstream_total: int | None = None,
+        upstream_done: int | None = None,
         last_progress_at: str | None = None,
         status_message: str | None = None,
     ):
@@ -814,15 +844,15 @@ class IngestionService:
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped_documents,
                 phase=phase,
-                upstream_total_pages=(
-                    current_job.upstream_total_pages
-                    if upstream_total_pages is None
-                    else upstream_total_pages
+                upstream_total=(
+                    current_job.upstream_total
+                    if upstream_total is None
+                    else upstream_total
                 ),
-                upstream_fetched_pages=(
-                    current_job.upstream_fetched_pages
-                    if upstream_fetched_pages is None
-                    else upstream_fetched_pages
+                upstream_done=(
+                    current_job.upstream_done
+                    if upstream_done is None
+                    else upstream_done
                 ),
                 last_progress_at=last_progress_at or _now(),
                 status_message=(
@@ -850,16 +880,13 @@ class IngestionService:
 
     def _refresh_running_job_for_progress(self, job_id: str):
         try:
+            # Heartbeat touch for orphan detection. Callers coalesce page_fetch_*
+            # cadence so this is not invoked on every item event.
             current_job = self.metadata_store.touch_sync_job(job_id)
             if not current_job:
                 raise ValueError(f"Unknown sync job: {job_id}")
             if current_job.status != SyncJobStatus.RUNNING:
                 return current_job
-            if current_job.phase in {"discovering_pages", FETCHING_PAGE_CONTENT_PHASE}:
-                self._update_sync_job_hints_best_effort(
-                    job_id,
-                    last_progress_at=_now(),
-                )
             return None
         except Exception as exc:
             logger.debug(
@@ -869,22 +896,140 @@ class IngestionService:
             )
             return None
 
-    async def _handle_source_fetch_progress(self, job_id: str, source_id: str, event: dict):
-        current_job = self._refresh_running_job_for_progress(job_id)
-        if current_job:
-            raise _InactiveJobStop(current_job)
-        running_job = self.metadata_store.get_sync_job(job_id)
+    def _require_running_job_for_progress(self, job_id: str, *, touch: bool):
+        if touch:
+            inactive = self._refresh_running_job_for_progress(job_id)
+            if inactive:
+                return inactive
+            return None
+        current_job = self.metadata_store.get_sync_job(job_id)
+        if not current_job:
+            raise ValueError(f"Unknown sync job: {job_id}")
+        if current_job.status != SyncJobStatus.RUNNING:
+            return current_job
+        return None
 
+    async def _handle_source_fetch_progress(self, job_id: str, source_id: str, event: dict):
         event_name = str(event.get("event") or "").strip()
         total_pages = _int_progress_value(event.get("total_pages"))
         current_page = _int_progress_value(event.get("current_page"))
         elapsed_seconds = _float_progress_value(event.get("elapsed_seconds"))
         progress_timestamp = _now()
+        is_page_fetch = event_name in {
+            "page_fetch_started",
+            "page_fetch_completed",
+            "page_fetch_skipped",
+        }
+
+        if is_page_fetch:
+            persist_liveness = _should_persist_page_fetch_liveness(
+                current_page, total_pages
+            )
+            persist_hints = _should_persist_page_fetch_hints(current_page, total_pages)
+            inactive = self._require_running_job_for_progress(
+                job_id,
+                touch=persist_liveness,
+            )
+            if inactive:
+                raise _InactiveJobStop(inactive)
+            if not persist_liveness and not persist_hints:
+                if event_name == "page_fetch_started":
+                    logger.info(
+                        "Source %s fetching upstream item %s/%s",
+                        source_id,
+                        current_page or "?",
+                        total_pages or "?",
+                    )
+                elif event_name == "page_fetch_completed":
+                    logger.info(
+                        "Source %s fetched upstream item %s/%s in %.2fs",
+                        source_id,
+                        current_page or "?",
+                        total_pages or "?",
+                        elapsed_seconds,
+                    )
+                else:
+                    logger.info(
+                        "Source %s reused stored content for upstream item %s/%s",
+                        source_id,
+                        current_page or "?",
+                        total_pages or "?",
+                    )
+                return None
+
+            running_job = self.metadata_store.get_sync_job(job_id)
+            existing_total = _int_progress_value(
+                getattr(running_job, "upstream_total", 0) if running_job else 0
+            )
+            existing_done = _int_progress_value(
+                getattr(running_job, "upstream_done", 0) if running_job else 0
+            )
+            updates: dict[str, Any] = {
+                "phase": FETCHING_PAGE_CONTENT_PHASE,
+                "last_progress_at": progress_timestamp,
+            }
+            if persist_hints:
+                updates["upstream_total"] = max(total_pages, existing_total)
+                if event_name == "page_fetch_started":
+                    updates["upstream_done"] = max(
+                        max(current_page - 1, 0), existing_done
+                    )
+                    updates["status_message"] = (
+                        "Fetching upstream items "
+                        f"{max(current_page - 1, 0)}/{total_pages} completed; "
+                        f"now fetching item {current_page}."
+                        if total_pages
+                        else "Fetching upstream items before indexing begins."
+                    )
+                elif event_name == "page_fetch_skipped":
+                    updates["upstream_done"] = max(current_page, existing_done)
+                    updates["status_message"] = (
+                        "Reused stored upstream item content "
+                        f"{current_page}/{total_pages} before indexing begins."
+                        if total_pages
+                        else "Reused stored upstream item content before indexing begins."
+                    )
+                else:
+                    updates["upstream_done"] = max(current_page, existing_done)
+                    updates["status_message"] = (
+                        f"Fetching upstream items {current_page}/{total_pages} before indexing begins."
+                        if total_pages
+                        else "Fetching upstream items before indexing begins."
+                    )
+            self._update_sync_job_hints_best_effort(job_id, **updates)
+            if event_name == "page_fetch_started":
+                logger.info(
+                    "Source %s fetching upstream item %s/%s",
+                    source_id,
+                    current_page or "?",
+                    total_pages or "?",
+                )
+            elif event_name == "page_fetch_completed":
+                logger.info(
+                    "Source %s fetched upstream item %s/%s in %.2fs",
+                    source_id,
+                    current_page or "?",
+                    total_pages or "?",
+                    elapsed_seconds,
+                )
+            else:
+                logger.info(
+                    "Source %s reused stored content for upstream item %s/%s",
+                    source_id,
+                    current_page or "?",
+                    total_pages or "?",
+                )
+            return None
+
+        current_job = self._refresh_running_job_for_progress(job_id)
+        if current_job:
+            raise _InactiveJobStop(current_job)
+        running_job = self.metadata_store.get_sync_job(job_id)
         existing_total = _int_progress_value(
-            getattr(running_job, "upstream_total_pages", 0) if running_job else 0
+            getattr(running_job, "upstream_total", 0) if running_job else 0
         )
-        existing_fetched = _int_progress_value(
-            getattr(running_job, "upstream_fetched_pages", 0) if running_job else 0
+        existing_done = _int_progress_value(
+            getattr(running_job, "upstream_done", 0) if running_job else 0
         )
 
         if event_name == "search_started":
@@ -892,26 +1037,26 @@ class IngestionService:
                 job_id,
                 phase="discovering_pages",
                 last_progress_at=progress_timestamp,
-                status_message="Discovering Notion pages before indexing begins.",
+                status_message="Discovering upstream items before indexing begins.",
             )
-            logger.info("Source %s started upstream page discovery", source_id)
+            logger.info("Source %s started upstream item discovery", source_id)
             return None
 
         if event_name == "search_completed":
             self._update_sync_job_hints_best_effort(
                 job_id,
                 phase=FETCHING_PAGE_CONTENT_PHASE,
-                upstream_total_pages=total_pages,
-                upstream_fetched_pages=0,
+                upstream_total=total_pages,
+                upstream_done=0,
                 last_progress_at=progress_timestamp,
                 status_message=(
-                    f"Fetching Notion page content 0/{total_pages} before indexing begins."
+                    f"Fetching upstream items 0/{total_pages} before indexing begins."
                     if total_pages
-                    else "No Notion pages found to index."
+                    else "No upstream items found to index."
                 ),
             )
             logger.info(
-                "Source %s discovered %s upstream page(s) before indexing",
+                "Source %s discovered %s upstream item(s) before indexing",
                 source_id,
                 total_pages,
             )
@@ -924,86 +1069,19 @@ class IngestionService:
             self._update_sync_job_hints_best_effort(
                 job_id,
                 phase="discovering_pages",
-                upstream_total_pages=max(discovered, existing_total),
-                upstream_fetched_pages=existing_fetched,
+                upstream_total=max(discovered, existing_total),
+                upstream_done=existing_done,
                 last_progress_at=progress_timestamp,
                 status_message=(
-                    f"Discovering Notion pages: {discovered} found after batch {batch_index}."
+                    f"Discovering upstream items: {discovered} found after batch {batch_index}."
                     + (" More results remain." if has_more else "")
                 ),
             )
             logger.info(
-                "Source %s discovered %s Notion page(s) after search batch %s",
+                "Source %s discovered %s upstream item(s) after search batch %s",
                 source_id,
                 discovered,
                 batch_index or "?",
-            )
-            return None
-
-        if event_name == "page_fetch_started":
-            self._update_sync_job_hints_best_effort(
-                job_id,
-                phase=FETCHING_PAGE_CONTENT_PHASE,
-                upstream_total_pages=max(total_pages, existing_total),
-                upstream_fetched_pages=max(max(current_page - 1, 0), existing_fetched),
-                last_progress_at=progress_timestamp,
-                status_message=(
-                    "Fetching Notion page content "
-                    f"{max(current_page - 1, 0)}/{total_pages} completed; "
-                    f"now fetching page {current_page}."
-                    if total_pages
-                    else "Fetching Notion page content before indexing begins."
-                ),
-            )
-            logger.info(
-                "Source %s fetching upstream page %s/%s",
-                source_id,
-                current_page or "?",
-                total_pages or "?",
-            )
-            return None
-
-        if event_name == "page_fetch_completed":
-            self._update_sync_job_hints_best_effort(
-                job_id,
-                phase=FETCHING_PAGE_CONTENT_PHASE,
-                upstream_total_pages=max(total_pages, existing_total),
-                upstream_fetched_pages=max(current_page, existing_fetched),
-                last_progress_at=progress_timestamp,
-                status_message=(
-                    f"Fetching Notion page content {current_page}/{total_pages} before indexing begins."
-                    if total_pages
-                    else "Fetching Notion page content before indexing begins."
-                ),
-            )
-            logger.info(
-                "Source %s fetched upstream page %s/%s in %.2fs",
-                source_id,
-                current_page or "?",
-                total_pages or "?",
-                elapsed_seconds,
-            )
-            return None
-
-        if event_name == "page_fetch_skipped":
-            self._update_sync_job_hints_best_effort(
-                job_id,
-                phase=FETCHING_PAGE_CONTENT_PHASE,
-                upstream_total_pages=max(total_pages, existing_total),
-                upstream_fetched_pages=max(current_page, existing_fetched),
-                last_progress_at=progress_timestamp,
-                status_message=(
-                    "Reused stored Notion page content "
-                    f"{current_page}/{total_pages} before indexing begins."
-                    if total_pages
-                    else "Reused stored Notion page content before indexing begins."
-                ),
-            )
-            logger.info(
-                "Source %s reused stored content for upstream page %s/%s",
-                source_id,
-                current_page or "?",
-                total_pages or "?",
             )
             return None
 

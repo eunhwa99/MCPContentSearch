@@ -14,7 +14,9 @@ from fetching.notion import (
     _StopRequested,
     _await_request_with_stop,
     _emit_progress,
+    _raise_if_stop_requested,
     _should_skip_notion_block_fetch,
+    _should_stop,
     fetch_notion_pages,
     fetch_notion_target,
     parse_notion_object_id,
@@ -171,6 +173,68 @@ def test_emit_progress_propagates_stop_requested():
 
     with pytest.raises(_StopRequested):
         asyncio.run(_emit_progress(stop_now, {"event": "search_started"}))
+
+
+def test_should_stop_reraises_inactive_job_stop():
+    class _InactiveJobStop(Exception):
+        pass
+
+    def boom():
+        raise _InactiveJobStop("job inactive")
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(_should_stop(boom))
+
+
+def test_raise_if_stop_requested_propagates_inactive_job_stop():
+    class _InactiveJobStop(Exception):
+        pass
+
+    async def boom():
+        raise _InactiveJobStop("job inactive")
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(_raise_if_stop_requested(boom))
+
+
+def test_emit_progress_reraises_inactive_job_stop():
+    class _InactiveJobStop(Exception):
+        pass
+
+    async def boom(_event):
+        raise _InactiveJobStop("job inactive")
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(_emit_progress(boom, {"event": "search_started"}))
+
+
+def test_fetch_notion_pages_propagates_inactive_job_stop_from_progress(monkeypatch):
+    class _InactiveJobStop(Exception):
+        pass
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def boom(_event):
+        raise _InactiveJobStop("job inactive")
+
+    monkeypatch.setattr(
+        "fetching.notion.httpx.AsyncClient",
+        lambda *args, **kwargs: FakeAsyncClient(),
+    )
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(
+            fetch_notion_pages(
+                "secret",
+                AppConfig(),
+                progress_callback=boom,
+            )
+        )
 
 
 def test_fetch_notion_pages_stops_during_search_discovery(monkeypatch):
@@ -507,6 +571,38 @@ def test_await_request_with_stop_prefers_stop_requested_over_completed_request_e
 
     with pytest.raises(_StopRequested):
         asyncio.run(_await_request_with_stop(request_coro(), stop_checker=lambda: True))
+
+
+def test_await_request_with_stop_cancels_inflight_on_inactive_job_stop(monkeypatch):
+    class _InactiveJobStop(Exception):
+        pass
+
+    request_cancelled = asyncio.Event()
+
+    async def request_coro():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            request_cancelled.set()
+            raise
+
+    async def stop_checker():
+        raise _InactiveJobStop("job inactive")
+
+    async def fake_wait(tasks, timeout):
+        await asyncio.sleep(0)
+        return set(), set(tasks)
+
+    monkeypatch.setattr("fetching.notion.asyncio.wait", fake_wait)
+    monkeypatch.setattr(
+        "fetching.notion.NOTION_STOP_POLL_INTERVAL_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(_await_request_with_stop(request_coro(), stop_checker=stop_checker))
+
+    assert request_cancelled.is_set()
 
 
 def test_request_json_stops_while_request_is_in_flight():

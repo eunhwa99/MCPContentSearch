@@ -1,4 +1,6 @@
 import hashlib
+import inspect
+import logging
 import os
 import stat
 import urllib.parse
@@ -9,6 +11,25 @@ from pathlib import Path
 import yaml
 
 from core.models import DocumentModel
+from fetching.notion import _StopRequested
+
+logger = logging.getLogger(__name__)
+
+
+async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) -> bool:
+    if progress_callback is None:
+        return False
+    try:
+        result = progress_callback(event)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        # Match by name to avoid importing indexing.ingestion_service (cycle).
+        if type(exc).__name__ == "_InactiveJobStop":
+            raise
+        logger.debug("Ignoring progress callback failure")
+        return False
+    return stop_signal is not None and result is stop_signal
 
 
 _OBSIDIAN_SKIP_DIRS = frozenset({".obsidian", ".trash"})
@@ -326,6 +347,8 @@ async def fetch_obsidian_documents(
     *,
     max_files: int = 2_000,
     max_file_bytes: int = 512_000,
+    progress_callback=None,
+    progress_stop_signal=None,
 ) -> ObsidianSnapshot:
     disabled_reason = obsidian_disabled_reason(vault_path)
     if disabled_reason:
@@ -353,7 +376,14 @@ async def fetch_obsidian_documents(
         if not snapshot_complete:
             raise RuntimeError(_OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON)
 
-        for md_file in markdown_files:
+        total_pages = len(markdown_files)
+        if await _emit_progress(
+            progress_callback,
+            {"event": "search_completed", "total_pages": total_pages},
+            stop_signal=progress_stop_signal,
+        ):
+            raise _StopRequested
+        for current_page, md_file in enumerate(markdown_files, start=1):
             relative_path = md_file.as_posix()
             try:
                 content, mtime = _open_note_from_root_fd(
@@ -363,6 +393,16 @@ async def fetch_obsidian_documents(
                 )
             except (OSError, UnicodeDecodeError):
                 snapshot_complete = False
+                if await _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "page_fetch_completed",
+                        "current_page": current_page,
+                        "total_pages": total_pages,
+                    },
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
                 continue
 
             frontmatter, indexed_content, body_line_start = _parse_frontmatter(content)
@@ -389,6 +429,18 @@ async def fetch_obsidian_documents(
                     content_hash=_content_hash(indexed_content),
                 )
             )
+            if await _emit_progress(
+                progress_callback,
+                {
+                    "event": "page_fetch_completed",
+                    "current_page": current_page,
+                    "total_pages": total_pages,
+                },
+                stop_signal=progress_stop_signal,
+            ):
+                raise _StopRequested
+    except _StopRequested:
+        raise
     finally:
         if root_fd is not None:
             os.close(root_fd)

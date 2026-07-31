@@ -10,6 +10,7 @@ from fetching.connectors import GitHubSourceConnector
 from fetching.github import (
     GitHubHTTPClient,
     GitHubRepositoryDiscovery,
+    _emit_progress,
     parse_repository_or_owner_target,
     parse_repository_spec,
 )
@@ -2551,3 +2552,221 @@ def test_github_connector_rejects_duplicate_repository_refs():
             ),
             config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         )
+
+
+def test_github_connector_emits_list_total_and_per_item_upstream_progress():
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        token="secret-token",
+        http_client=FakeGitHubHTTP(),
+    )
+    assert hasattr(connector, "progress_callback")
+    connector.progress_callback = capture
+
+    documents = asyncio.run(connector.fetch_documents())
+
+    assert len(documents) == 2
+    list_ready = [event for event in events if event.get("event") == "search_completed"]
+    assert list_ready, "expected list-total progress after GitHub tree selection"
+    assert list_ready[0]["total_pages"] == 2
+    item_done = [
+        event for event in events if event.get("event") == "page_fetch_completed"
+    ]
+    assert len(item_done) == 2
+    assert item_done[0]["current_page"] == 1
+    assert item_done[0]["total_pages"] == 2
+    assert item_done[-1]["current_page"] == 2
+    assert item_done[-1]["total_pages"] == 2
+
+
+def test_github_connector_emits_search_started_during_resolve_and_planning():
+    """Long owner-resolve/tree planning must emit search_started before search_completed.
+
+    discovery_checkpoint is ignored by ingestion (phase stays starting; last_progress_at
+    freezes). search_started maps to discovering_pages and refreshes progress hints.
+    """
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        token="secret-token",
+        http_client=FakeGitHubHTTP(),
+    )
+    connector.progress_callback = capture
+
+    asyncio.run(connector.fetch_documents())
+
+    event_names = [event.get("event") for event in events]
+    assert "search_started" in event_names, (
+        "expected search_started during GitHub resolve/planning so status "
+        "shows discovering phase before list totals are known"
+    )
+    assert event_names.index("search_started") < event_names.index(
+        "search_completed"
+    )
+    assert "discovery_checkpoint" not in event_names
+
+
+def test_github_emit_progress_reraises_inactive_job_stop():
+    class _InactiveJobStop(Exception):
+        pass
+
+    async def boom(_event):
+        raise _InactiveJobStop("job inactive")
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(_emit_progress(boom, {"event": "page_fetch_completed"}))
+
+
+def test_github_emit_progress_returns_stop_signal():
+    stop_signal = object()
+
+    async def request_stop(_event):
+        return stop_signal
+
+    assert (
+        asyncio.run(
+            _emit_progress(
+                request_stop,
+                {"event": "page_fetch_completed"},
+                stop_signal=stop_signal,
+            )
+        )
+        is True
+    )
+
+
+def test_github_fetch_aborts_when_progress_stop_signal_returned():
+    stop_signal = object()
+    events = []
+
+    async def stop_after_list(event):
+        events.append(event)
+        if event.get("event") == "search_completed":
+            return stop_signal
+        return None
+
+    class StoppingFetcher(FakeGitHubHTTP):
+        pass
+
+    connector = GitHubSourceConnector(
+        repositories=("eunhwa99/MCPContentSearch@main",),
+        config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        token="secret-token",
+        http_client=StoppingFetcher(),
+    )
+    connector.progress_callback = stop_after_list
+    connector.progress_stop_signal = stop_signal
+
+    from fetching.notion import _StopRequested
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(connector.fetch_documents())
+
+    assert any(event.get("event") == "search_completed" for event in events)
+    assert not any(event.get("event") == "page_fetch_completed" for event in events)
+
+
+def test_github_fetch_aborts_mid_discovery_between_repos_via_stop_checker():
+    """Cancel must interrupt multi-repo snapshot/tree planning, not only after list-ready."""
+    from fetching.notion import _StopRequested
+
+    class TrackingMultiRepoGitHubHTTP(MultiRepoGitHubHTTP):
+        def __init__(self):
+            self.urls = []
+
+        async def get_json(self, url, headers=None):
+            self.urls.append(url)
+            return await super().get_json(url, headers=headers)
+
+    http = TrackingMultiRepoGitHubHTTP()
+
+    async def stop_before_second_planned_repo():
+        # Resolve-time checks run per target before planning; abort only after
+        # repo-one snapshot/tree work has started and before repo-two.
+        return any("/repos/eunhwa99/repo-one/" in url for url in http.urls)
+
+    connector = GitHubSourceConnector(
+        repositories=(
+            "eunhwa99/repo-one@main",
+            "eunhwa99/repo-two@main",
+        ),
+        config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        token="secret-token",
+        http_client=http,
+    )
+    connector.progress_stop_checker = stop_before_second_planned_repo
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(connector.fetch_documents())
+
+    assert any("/repos/eunhwa99/repo-one/" in url for url in http.urls)
+    assert not any("/repos/eunhwa99/repo-two/" in url for url in http.urls)
+    assert connector.fetcher.snapshot_complete is False
+
+
+def test_github_fetch_aborts_mid_owner_resolve_via_stop_checker():
+    """Cancel must interrupt owner discovery pagination, not only later per-repo planning."""
+    from fetching.notion import _StopRequested
+
+    http = TwoPageOwnerRepositoryListHTTP()
+
+    async def stop_after_first_owner_page():
+        return any("&page=1&" in url for url in http.urls)
+
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+    connector.progress_stop_checker = stop_after_first_owner_page
+
+    with pytest.raises(_StopRequested):
+        asyncio.run(connector.fetch_documents())
+
+    assert len(http.urls) == 1
+    assert "&page=1&" in http.urls[0]
+    assert not any("&page=2&" in url for url in http.urls)
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.fetcher.snapshot_complete is False
+
+
+def test_github_fetch_aborts_mid_owner_resolve_via_inactive_job_stop():
+    """Composed inactive-job stop must propagate through _should_stop, not be swallowed."""
+    class _InactiveJobStop(Exception):
+        pass
+
+    http = TwoPageOwnerRepositoryListHTTP()
+
+    async def inactive_after_first_owner_page():
+        if any("&page=1&" in url for url in http.urls):
+            raise _InactiveJobStop("job inactive")
+        return False
+
+    connector = GitHubSourceConnector(
+        repositories=("eunaverse",),
+        config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
+        http_client=http,
+    )
+    connector.progress_stop_checker = inactive_after_first_owner_page
+
+    with pytest.raises(_InactiveJobStop):
+        asyncio.run(connector.fetch_documents())
+
+    assert len(http.urls) == 1
+    assert "&page=1&" in http.urls[0]
+    assert not any("&page=2&" in url for url in http.urls)
+    assert not any("/commits/" in url for url in http.urls)
+    assert connector.fetcher.repository_specs == []
+    assert connector.fetcher.snapshot_complete is False
