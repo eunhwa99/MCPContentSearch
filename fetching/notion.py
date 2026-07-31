@@ -3,6 +3,7 @@ import inspect
 import logging
 import re
 import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -12,6 +13,7 @@ from environments.config import AppConfig, NotionConfig
 from core.models import DocumentModel
 from core.exceptions import APIError, FetchError
 from indexing.background_tasks import safe_error_message
+from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
 
@@ -392,7 +394,13 @@ class NotionPageProcessor:
         
         return "Untitled"
     
-    def build_document(self, page: dict, content: str) -> DocumentModel:
+    def build_document(
+        self,
+        page: dict,
+        content: str,
+        *,
+        content_hash: str = "",
+    ) -> DocumentModel:
         """DocumentModel 생성"""
         page_id = page["id"]
         return DocumentModel(
@@ -405,11 +413,34 @@ class NotionPageProcessor:
             url=page.get("url", ""),
             canonical_url=page.get("url", ""),
             date=page.get("created_time", ""),
-            updated_at=page.get("last_edited_time", page.get("created_time", "")),
+            updated_at=_page_remote_modified_at(page),
             published_at=page.get("created_time", ""),
-            modified_at=page.get("last_edited_time", page.get("created_time", "")),
+            modified_at=_page_remote_modified_at(page),
             date_provenance="notion",
+            content_hash=content_hash,
         )
+
+
+def _page_remote_modified_at(page: dict) -> str:
+    return str(page.get("last_edited_time") or page.get("created_time") or "")
+
+
+def _should_skip_notion_block_fetch(
+    existing: DocumentModel | None,
+    page: dict,
+) -> bool:
+    """Reuse stored content when active doc timestamps match the remote page."""
+    if existing is None:
+        return False
+    if not existing.content:
+        return False
+    if existing.deleted_at:
+        return False
+    stored = MetadataStore.canonical_document_timestamp(existing.modified_at or "")
+    remote = MetadataStore.canonical_document_timestamp(_page_remote_modified_at(page))
+    if not stored or not remote:
+        return False
+    return stored == remote
 
 
 async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) -> bool:
@@ -433,6 +464,8 @@ async def fetch_notion_pages(
     progress_callback=None,
     progress_stop_signal=None,
     progress_stop_checker=None,
+    existing_documents: Mapping[str, DocumentModel] | None = None,
+    existing_documents_loader: Callable[[Sequence[str]], Mapping[str, DocumentModel]] | None = None,
 ) -> List[DocumentModel]:
     """Notion 페이지 가져오기"""
     if not api_key:
@@ -442,6 +475,7 @@ async def fetch_notion_pages(
     notion_config = NotionConfig(api_key=api_key)
     api_client = NotionAPIClient(notion_config, app_config)
     processor = NotionPageProcessor(notion_config)
+    known_documents: dict[str, DocumentModel] = dict(existing_documents or {})
     
     documents = []
     
@@ -474,6 +508,11 @@ async def fetch_notion_pages(
                 stop_signal=progress_stop_signal,
             ):
                 raise _StopRequested
+
+            if existing_documents_loader is not None:
+                page_ids = [str(page.get("id") or "") for page in raw_pages if page.get("id")]
+                loaded = await asyncio.to_thread(existing_documents_loader, page_ids)
+                known_documents.update(dict(loaded or {}))
             
             for idx, page in enumerate(raw_pages, 1):
                 await _raise_if_stop_requested(progress_stop_checker)
@@ -492,6 +531,32 @@ async def fetch_notion_pages(
                 ):
                     raise _StopRequested
                 started_at = time.monotonic()
+                existing = known_documents.get(page_id)
+                if _should_skip_notion_block_fetch(existing, page):
+                    assert existing is not None
+                    document = processor.build_document(
+                        page,
+                        existing.content,
+                        content_hash=existing.content_hash or "",
+                    )
+                    documents.append(document)
+                    await _raise_if_stop_requested(progress_stop_checker)
+                    if await _emit_progress(
+                        progress_callback,
+                        {
+                            "event": "page_fetch_skipped",
+                            "current_page": idx,
+                            "total_pages": len(raw_pages),
+                            "page_id": page_id,
+                            "title": title,
+                            "elapsed_seconds": time.monotonic() - started_at,
+                        },
+                        stop_signal=progress_stop_signal,
+                    ):
+                        raise _StopRequested
+                    if idx % 10 == 0:
+                        logger.info(f"Progress: {idx}/{len(raw_pages)}")
+                    continue
                 try:
                     content = await api_client.fetch_block_content(
                         client,

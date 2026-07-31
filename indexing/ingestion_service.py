@@ -985,6 +985,28 @@ class IngestionService:
             )
             return None
 
+        if event_name == "page_fetch_skipped":
+            self._update_sync_job_hints_best_effort(
+                job_id,
+                phase=FETCHING_PAGE_CONTENT_PHASE,
+                upstream_total_pages=max(total_pages, existing_total),
+                upstream_fetched_pages=max(current_page, existing_fetched),
+                last_progress_at=progress_timestamp,
+                status_message=(
+                    "Reused stored Notion page content "
+                    f"{current_page}/{total_pages} before indexing begins."
+                    if total_pages
+                    else "Reused stored Notion page content before indexing begins."
+                ),
+            )
+            logger.info(
+                "Source %s reused stored content for upstream page %s/%s",
+                source_id,
+                current_page or "?",
+                total_pages or "?",
+            )
+            return None
+
         logger.debug(
             "Ignoring unknown fetch progress event for source %s: %s",
             source_id,

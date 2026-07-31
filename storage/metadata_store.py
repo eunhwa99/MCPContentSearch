@@ -11,7 +11,7 @@ from errno import EPERM, ESRCH
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Sequence
 
 from core.error_sanitizer import sanitize_error_text
 from core.models import (
@@ -1337,6 +1337,58 @@ class MetadataStore:
             row = conn.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,)).fetchone()
         return self._document_from_row(row) if row else None
 
+    def get_documents_for_fetch_reuse(
+        self, document_ids: Sequence[str]
+    ) -> dict[str, DocumentModel]:
+        """Batch-load documents needed for Notion fetch skip/reuse decisions."""
+        unique_ids: list[str] = []
+        seen: set[str] = set()
+        for document_id in document_ids:
+            if not document_id or document_id in seen:
+                continue
+            seen.add(document_id)
+            unique_ids.append(document_id)
+        if not unique_ids:
+            return {}
+
+        self.ensure_schema()
+        loaded: dict[str, DocumentModel] = {}
+        chunk_size = 500
+        with self._connect() as conn:
+            for offset in range(0, len(unique_ids), chunk_size):
+                chunk = unique_ids[offset : offset + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                # Dynamic SQL is limited to generated placeholders; document IDs
+                # remain parameterized in the execute call below.
+                query = "\n".join(
+                    [
+                        "SELECT document_id, external_id, source_id, content,",
+                        "       modified_at, content_hash, deleted_at",
+                        "FROM documents",
+                        "WHERE document_id IN (" + placeholders + ")",
+                    ]
+                )
+                rows = conn.execute(
+                    query,
+                    tuple(chunk),
+                ).fetchall()
+                for row in rows:
+                    document_id = row["document_id"]
+                    loaded[document_id] = DocumentModel(
+                        id=document_id,
+                        document_id=document_id,
+                        source_id=row["source_id"] or "",
+                        external_id=row["external_id"] or "",
+                        title="",
+                        content=row["content"] or "",
+                        url="",
+                        platform="",
+                        modified_at=row["modified_at"] or "",
+                        content_hash=row["content_hash"] or "",
+                        deleted_at=row["deleted_at"] or "",
+                    )
+        return loaded
+
     def get_document_by_url(self, url: str) -> Optional[DocumentModel]:
         if not url:
             return None
@@ -2617,11 +2669,15 @@ class MetadataStore:
         )
 
     @classmethod
-    def _canonical_document_timestamp(cls, value: str) -> str:
+    def canonical_document_timestamp(cls, value: str) -> str:
         parsed = cls._parse_timestamp(value)
         if parsed is None:
             return ""
         return parsed.isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _canonical_document_timestamp(cls, value: str) -> str:
+        return cls.canonical_document_timestamp(value)
 
     @staticmethod
     def _upsert_document(conn, document: DocumentModel):

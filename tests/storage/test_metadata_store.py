@@ -5911,3 +5911,130 @@ def test_orphan_recovery_message_is_execution_owner_neutral():
         "Previous running sync job was recovered after its execution owner stopped "
         "responding; start sync again."
     )
+
+
+def test_metadata_store_exposes_public_canonical_document_timestamp():
+    """Fetch/skip callers must use the public helper, not the private underscore name."""
+    assert hasattr(MetadataStore, "canonical_document_timestamp")
+    assert callable(MetadataStore.canonical_document_timestamp)
+    assert (
+        MetadataStore.canonical_document_timestamp("2026-06-01T00:00:00+00:00")
+        == "2026-06-01T00:00:00Z"
+    )
+    assert MetadataStore.canonical_document_timestamp("") == ""
+    assert MetadataStore.canonical_document_timestamp("not-a-timestamp") == ""
+    assert MetadataStore.canonical_document_timestamp("2026-06-01T00:00:00Z") == (
+        "2026-06-01T00:00:00Z"
+    )
+
+
+def test_get_documents_for_fetch_reuse_returns_empty_for_empty_ids(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+
+    assert store.get_documents_for_fetch_reuse([]) == {}
+    assert store.get_documents_for_fetch_reuse(()) == {}
+
+
+def test_get_documents_for_fetch_reuse_batches_skip_fields_for_requested_ids(
+    tmp_path, monkeypatch
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    docs = [
+        DocumentModel(
+            id="doc-a",
+            document_id="page-a",
+            external_id="page-a",
+            source_id="source_notion",
+            title="A",
+            content="body-a",
+            url="https://notion.so/page-a",
+            platform="Notion",
+            modified_at="2026-06-01T00:00:00Z",
+            content_hash="hash-a",
+            deleted_at="",
+        ),
+        DocumentModel(
+            id="doc-b",
+            document_id="page-b",
+            external_id="page-b",
+            source_id="source_notion",
+            title="B",
+            content="body-b",
+            url="https://notion.so/page-b",
+            platform="Notion",
+            modified_at="2026-06-02T00:00:00Z",
+            content_hash="hash-b",
+            deleted_at="",
+        ),
+        DocumentModel(
+            id="doc-c",
+            document_id="page-c",
+            external_id="page-c",
+            source_id="source_notion",
+            title="C",
+            content="body-c",
+            url="https://notion.so/page-c",
+            platform="Notion",
+            modified_at="2026-06-03T00:00:00Z",
+            content_hash="hash-c",
+            deleted_at="2026-06-04T00:00:00Z",
+        ),
+    ]
+    for doc in docs:
+        store.upsert_document(doc)
+
+    connect_calls: list[int] = []
+    statements: list[str] = []
+    original_connect = store._connect
+
+    @contextmanager
+    def traced_connect():
+        connect_calls.append(1)
+        with original_connect() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+
+    loaded = store.get_documents_for_fetch_reuse(
+        ["page-a", "page-b", "page-c", "page-missing"]
+    )
+
+    assert set(loaded) == {"page-a", "page-b", "page-c"}
+    assert "page-missing" not in loaded
+    assert loaded["page-a"].content == "body-a"
+    assert loaded["page-a"].modified_at == "2026-06-01T00:00:00Z"
+    assert loaded["page-a"].content_hash
+    assert loaded["page-a"].deleted_at == ""
+    assert loaded["page-b"].content == "body-b"
+    assert loaded["page-c"].deleted_at == "2026-06-04T00:00:00Z"
+    assert len(connect_calls) == 1
+    select_statements = [
+        statement
+        for statement in statements
+        if "SELECT" in statement.upper() and "from documents" in statement.lower()
+    ]
+    assert len(select_statements) == 1
+    assert "IN (" in select_statements[0].upper() or "?," in select_statements[0]
+
+
+def test_get_documents_for_fetch_reuse_omits_missing_ids(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_document(
+        DocumentModel(
+            id="doc-only",
+            document_id="page-only",
+            external_id="page-only",
+            source_id="source_notion",
+            title="Only",
+            content="only-body",
+            url="https://notion.so/page-only",
+            platform="Notion",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    )
+
+    loaded = store.get_documents_for_fetch_reuse(["page-only", "page-gone"])
+
+    assert set(loaded) == {"page-only"}
+    assert loaded["page-only"].content == "only-body"

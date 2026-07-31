@@ -39,6 +39,8 @@ def test_notion_connector_persists_external_id(monkeypatch, tmp_path):
         progress_callback=None,
         progress_stop_signal=None,
         progress_stop_checker=None,
+        existing_documents=None,
+        existing_documents_loader=None,
     ):
         return [
             DocumentModel(
@@ -74,11 +76,15 @@ def test_notion_connector_passes_progress_callback(monkeypatch):
         progress_callback=None,
         progress_stop_signal=None,
         progress_stop_checker=None,
+        existing_documents=None,
+        existing_documents_loader=None,
     ):
         captured["api_key"] = api_key
         captured["progress_callback"] = progress_callback
         captured["progress_stop_signal"] = progress_stop_signal
         captured["progress_stop_checker"] = progress_stop_checker
+        captured["existing_documents"] = existing_documents
+        captured["existing_documents_loader"] = existing_documents_loader
         return []
 
     async def fake_progress(event):
@@ -96,6 +102,154 @@ def test_notion_connector_passes_progress_callback(monkeypatch):
     assert captured["progress_callback"] is fake_progress
     assert captured["progress_stop_signal"] is None
     assert captured["progress_stop_checker"] is None
+    assert captured["existing_documents"] is None
+    assert callable(captured["existing_documents_loader"])
+
+
+def test_notion_connector_loader_gets_document_for_requested_ids_only(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    kept = DocumentModel(
+        id="notion_page-kept",
+        document_id="page-kept",
+        external_id="page-kept",
+        source_id="source_notion",
+        title="Kept",
+        content="kept body",
+        url="https://notion.so/page-kept",
+        platform="Notion",
+        modified_at="2026-06-01T00:00:00Z",
+    )
+    unrelated = DocumentModel(
+        id="notion_page-unrelated",
+        document_id="page-unrelated",
+        external_id="page-unrelated",
+        source_id="source_notion",
+        title="Unrelated",
+        content="unrelated body",
+        url="https://notion.so/page-unrelated",
+        platform="Notion",
+        modified_at="2026-06-01T00:00:00Z",
+    )
+    store.upsert_document(kept)
+    store.upsert_document(unrelated)
+    list_calls = []
+    get_calls = []
+    batch_calls = []
+    original_list = store.list_documents
+    original_get = store.get_document
+
+    def tracking_list(*args, **kwargs):
+        list_calls.append(1)
+        return original_list(*args, **kwargs)
+
+    def tracking_get(document_id):
+        get_calls.append(document_id)
+        return original_get(document_id)
+
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
+    store.list_documents = tracking_list  # type: ignore[method-assign]
+    store.get_document = tracking_get  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
+
+    connector = NotionSourceConnector("secret", AppConfig(), metadata_store=store)
+    loaded = connector._load_existing_documents_for_page_ids(["page-kept"])
+
+    assert list_calls == []
+    assert get_calls == [], "loader must not hydrate via per-id get_document"
+    assert batch_calls == [["page-kept"]]
+    assert set(loaded) == {"page-kept"}
+    assert loaded["page-kept"].content == "kept body"
+
+
+def test_notion_connector_loader_batches_multiple_page_ids_once(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    for page_id in ("page-a", "page-b", "page-c"):
+        store.upsert_document(
+            DocumentModel(
+                id=f"notion_{page_id}",
+                document_id=page_id,
+                external_id=page_id,
+                source_id="source_notion",
+                title=page_id,
+                content=f"body-{page_id}",
+                url=f"https://notion.so/{page_id}",
+                platform="Notion",
+                modified_at="2026-06-01T00:00:00Z",
+            )
+        )
+    get_calls = []
+    batch_calls = []
+    original_get = store.get_document
+
+    def tracking_get(document_id):
+        get_calls.append(document_id)
+        return original_get(document_id)
+
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
+    store.get_document = tracking_get  # type: ignore[method-assign]
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
+
+    connector = NotionSourceConnector("secret", AppConfig(), metadata_store=store)
+    loaded = connector._load_existing_documents_for_page_ids(
+        ["page-a", "page-b", "page-c"]
+    )
+
+    assert get_calls == []
+    assert batch_calls == [["page-a", "page-b", "page-c"]]
+    assert set(loaded) == {"page-a", "page-b", "page-c"}
+
+
+def test_notion_connector_loader_exposes_doc_under_page_id_when_external_id_differs():
+    """Lookup uses Notion page_id; loader must key by that id even if external_id differs."""
+    page_id = "page-kept"
+    kept = DocumentModel(
+        id="notion_page-kept",
+        document_id=page_id,
+        external_id="legacy-external-other",
+        source_id="source_notion",
+        title="Kept",
+        content="kept body under mismatched external_id",
+        url=f"https://notion.so/{page_id}",
+        platform="Notion",
+        modified_at="2026-06-01T00:00:00Z",
+    )
+
+    class FakeStore:
+        def get_document(self, document_id: str):
+            raise AssertionError("loader must use get_documents_for_fetch_reuse")
+
+        def get_documents_for_fetch_reuse(self, document_ids):
+            result = {}
+            for document_id in document_ids:
+                if document_id == page_id:
+                    result[document_id] = kept
+            return result
+
+    connector = NotionSourceConnector(
+        "secret",
+        AppConfig(),
+        metadata_store=FakeStore(),  # type: ignore[arg-type]
+    )
+    loaded = connector._load_existing_documents_for_page_ids([page_id])
+
+    assert page_id in loaded
+    assert loaded[page_id].content == "kept body under mismatched external_id"
+    assert loaded[page_id].document_id == page_id
+    assert loaded[page_id].external_id == "legacy-external-other"
 
 
 def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):

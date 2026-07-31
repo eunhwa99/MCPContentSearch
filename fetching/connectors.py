@@ -50,12 +50,19 @@ class SourceRegistry:
 class NotionSourceConnector(SourceConnector):
     supports_stale_cleanup = True
 
-    def __init__(self, api_key: str, config: AppConfig, progress_callback=None):
+    def __init__(
+        self,
+        api_key: str,
+        config: AppConfig,
+        progress_callback=None,
+        metadata_store=None,
+    ):
         self.api_key = api_key
         self.config = config
         self.progress_callback = progress_callback
         self.progress_stop_signal = None
         self.progress_stop_checker = None
+        self.metadata_store = metadata_store
         self.source = SourceModel(
             source_id="source_notion",
             source_type=SourceType.NOTION,
@@ -65,6 +72,17 @@ class NotionSourceConnector(SourceConnector):
             sync_status=SyncStatus.IDLE,
         )
 
+    def _load_existing_documents_for_page_ids(
+        self, page_ids: list[str] | tuple[str, ...]
+    ) -> dict[str, DocumentModel]:
+        """Load stored Notion docs for searched page ids only (no full-corpus browse)."""
+        if self.metadata_store is None:
+            return {}
+        ids = [page_id for page_id in page_ids if page_id]
+        if not ids:
+            return {}
+        return self.metadata_store.get_documents_for_fetch_reuse(ids)
+
     async def fetch_documents(self) -> list[DocumentModel]:
         documents = await fetch_notion_pages(
             self.api_key,
@@ -72,6 +90,7 @@ class NotionSourceConnector(SourceConnector):
             progress_callback=self.progress_callback,
             progress_stop_signal=getattr(self, "progress_stop_signal", None),
             progress_stop_checker=getattr(self, "progress_stop_checker", None),
+            existing_documents_loader=self._load_existing_documents_for_page_ids,
         )
         return [
             doc.model_copy(

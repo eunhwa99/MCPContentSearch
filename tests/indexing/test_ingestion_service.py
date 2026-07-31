@@ -2297,6 +2297,48 @@ def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, capl
     assert latest.status_message == "Sync completed. Indexed 2/2 documents; skipped 0."
 
 
+def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_fetched_pages(
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=RecordingIndexer(),
+    )
+    job, started = store.begin_sync_job("source_fake")
+    assert started is True
+    store.update_sync_job(
+        job.job_id,
+        phase=ingestion_module.FETCHING_PAGE_CONTENT_PHASE,
+        upstream_total_pages=3,
+        upstream_fetched_pages=1,
+    )
+
+    result = asyncio.run(
+        service._handle_source_fetch_progress(
+            job.job_id,
+            "source_fake",
+            {
+                "event": "page_fetch_skipped",
+                "current_page": 2,
+                "total_pages": 3,
+                "page_id": "page-skipped",
+                "title": "Skipped",
+                "elapsed_seconds": 0.01,
+            },
+        )
+    )
+    latest = store.get_sync_job(job.job_id)
+
+    assert result is None
+    assert latest.phase == ingestion_module.FETCHING_PAGE_CONTENT_PHASE
+    assert latest.upstream_total_pages == 3
+    assert latest.upstream_fetched_pages == 2
+    assert "Reused stored Notion page content 2/3" in latest.status_message
+
+
 def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     service = IngestionService(
