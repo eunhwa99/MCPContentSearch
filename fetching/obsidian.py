@@ -1,9 +1,11 @@
+import asyncio
 import hashlib
 import inspect
 import logging
 import os
 import stat
 import urllib.parse
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ import yaml
 
 from core.models import DocumentModel
 from fetching.notion import _StopRequested
+from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
 
@@ -280,14 +283,34 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, str], str, int]:
     return meta, body, body_line_start
 
 
+def _should_skip_obsidian_note_fetch(
+    existing: DocumentModel | None,
+    mtime: float,
+) -> bool:
+    """Reuse stored content when active doc timestamps match filesystem mtime."""
+    if existing is None:
+        return False
+    if not existing.content:
+        return False
+    if existing.deleted_at:
+        return False
+    stored = MetadataStore.canonical_document_timestamp(existing.modified_at or "")
+    remote = MetadataStore.canonical_document_timestamp(
+        datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    )
+    if not stored or not remote:
+        return False
+    return stored == remote
+
+
 def _iter_obsidian_markdown_files(
     root_fd: int,
     *,
     max_files: int,
     max_file_bytes: int,
-) -> tuple[list[Path], bool]:
+) -> tuple[list[tuple[Path, float]], bool]:
     snapshot_complete = True
-    markdown_files: list[Path] = []
+    markdown_files: list[tuple[Path, float]] = []
 
     def handle_walk_error(_error: OSError):
         nonlocal snapshot_complete
@@ -337,7 +360,7 @@ def _iter_obsidian_markdown_files(
             if len(markdown_files) >= max_files:
                 snapshot_complete = False
                 continue
-            markdown_files.append(rel_dir / filename)
+            markdown_files.append((rel_dir / filename, entry_stat.st_mtime))
 
     return markdown_files, snapshot_complete
 
@@ -349,6 +372,9 @@ async def fetch_obsidian_documents(
     max_file_bytes: int = 512_000,
     progress_callback=None,
     progress_stop_signal=None,
+    existing_documents: Mapping[str, DocumentModel] | None = None,
+    existing_documents_loader: Callable[[Sequence[str]], Mapping[str, DocumentModel]]
+    | None = None,
 ) -> ObsidianSnapshot:
     disabled_reason = obsidian_disabled_reason(vault_path)
     if disabled_reason:
@@ -356,6 +382,7 @@ async def fetch_obsidian_documents(
 
     vault_name = vault_path.name
     documents: list[DocumentModel] = []
+    known_documents: dict[str, DocumentModel] = dict(existing_documents or {})
     root_fd: int | None = None
     try:
         root_fd = _open_vault_root_without_following_symlinks(vault_path)
@@ -383,8 +410,55 @@ async def fetch_obsidian_documents(
             stop_signal=progress_stop_signal,
         ):
             raise _StopRequested
-        for current_page, md_file in enumerate(markdown_files, start=1):
+
+        if existing_documents_loader is not None:
+            note_ids = [md_file.as_posix() for md_file, _mtime in markdown_files]
+            loaded = await asyncio.to_thread(existing_documents_loader, note_ids)
+            known_documents.update(dict(loaded or {}))
+
+        for current_page, (md_file, listed_mtime) in enumerate(
+            markdown_files, start=1
+        ):
             relative_path = md_file.as_posix()
+            existing = known_documents.get(relative_path)
+            if _should_skip_obsidian_note_fetch(existing, listed_mtime):
+                assert existing is not None
+                updated_at = datetime.fromtimestamp(
+                    listed_mtime, tz=timezone.utc
+                ).isoformat()
+                canonical_url = _obsidian_uri(vault_name, relative_path)
+                documents.append(
+                    DocumentModel(
+                        id=relative_path,
+                        title=existing.title or md_file.stem,
+                        content=existing.content,
+                        url=canonical_url,
+                        platform="obsidian",
+                        source_id="source_obsidian",
+                        document_id=relative_path,
+                        external_id=relative_path,
+                        canonical_url=canonical_url,
+                        path=relative_path,
+                        line_start=existing.line_start,
+                        updated_at=updated_at,
+                        modified_at=updated_at,
+                        date_provenance="filesystem",
+                        content_hash=existing.content_hash or "",
+                    )
+                )
+                if await _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "page_fetch_skipped",
+                        "current_page": current_page,
+                        "total_pages": total_pages,
+                        "page_id": relative_path,
+                        "title": existing.title or md_file.stem,
+                    },
+                    stop_signal=progress_stop_signal,
+                ):
+                    raise _StopRequested
+                continue
             try:
                 content, mtime = _open_note_from_root_fd(
                     root_fd,

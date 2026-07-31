@@ -508,6 +508,8 @@ def test_obsidian_connector_disables_stale_cleanup_for_partial_snapshot(monkeypa
         max_file_bytes,
         progress_callback=None,
         progress_stop_signal=None,
+        existing_documents=None,
+        existing_documents_loader=None,
     ):
         return PartialSnapshot(
             [
@@ -550,6 +552,8 @@ def test_obsidian_connector_passes_configured_snapshot_bounds(monkeypatch, tmp_p
         max_file_bytes,
         progress_callback=None,
         progress_stop_signal=None,
+        existing_documents=None,
+        existing_documents_loader=None,
     ):
         captured["vault_path"] = vault_path
         captured["max_files"] = max_files
@@ -720,3 +724,161 @@ def test_obsidian_file_limit_failure_does_not_tombstone_active_notes(tmp_path):
 
     assert second_connector.supports_stale_cleanup is False
     assert store.get_document("keep.md").deleted_at == ""
+
+
+def test_obsidian_connector_accepts_metadata_store_for_fetch_reuse(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "note.md").write_text("body", encoding="utf-8")
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+
+    connector = ObsidianSourceConnector(
+        AppConfig(obsidian_vault_path=vault),
+        metadata_store=store,
+    )
+
+    assert connector.metadata_store is store
+    assert callable(connector._load_existing_documents_for_page_ids)
+
+
+def test_obsidian_connector_passes_existing_documents_loader_for_fetch_reuse(
+    monkeypatch, tmp_path
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "note.md").write_text("body", encoding="utf-8")
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    captured = {}
+
+    async def fake_fetch_obsidian_documents(vault_path, **kwargs):
+        captured["existing_documents_loader"] = kwargs.get("existing_documents_loader")
+        from fetching.obsidian import ObsidianSnapshot
+
+        return ObsidianSnapshot(documents=[], snapshot_complete=True)
+
+    monkeypatch.setattr(
+        connector_module, "fetch_obsidian_documents", fake_fetch_obsidian_documents
+    )
+    connector = ObsidianSourceConnector(
+        AppConfig(obsidian_vault_path=vault),
+        metadata_store=store,
+    )
+
+    assert asyncio.run(connector.fetch_documents()) == []
+    assert callable(captured["existing_documents_loader"])
+
+
+def test_obsidian_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    store.upsert_document(
+        DocumentModel(
+            id="note.md",
+            document_id="note.md",
+            external_id="note.md",
+            source_id="source_obsidian",
+            title="Note",
+            content="kept body",
+            url="obsidian://open?vault=vault&file=note.md",
+            platform="obsidian",
+            modified_at="2026-06-01T00:00:00Z",
+        )
+    )
+    batch_calls = []
+    original_get = store.get_document
+
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id: original_get(doc_id)
+            for doc_id in document_ids
+            if original_get(doc_id) is not None
+        }
+
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
+    connector = ObsidianSourceConnector(
+        AppConfig(obsidian_vault_path=vault),
+        metadata_store=store,
+    )
+    loaded = connector._load_existing_documents_for_page_ids(["note.md"])
+
+    assert batch_calls == [["note.md"]]
+    assert loaded["note.md"].content == "kept body"
+
+
+def test_github_connector_accepts_metadata_store_for_fetch_reuse():
+    store = object()
+    connector = GitHubSourceConnector(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(),
+        metadata_store=store,
+    )
+
+    assert connector.metadata_store is store
+    assert callable(connector._load_existing_documents_for_page_ids)
+
+
+def test_github_connector_passes_existing_documents_loader_for_fetch_reuse(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    captured = {}
+
+    connector = GitHubSourceConnector(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(github_max_files=10, github_max_file_bytes=1000),
+        metadata_store=store,
+    )
+
+    async def spy_fetch_documents(**kwargs):
+        captured["existing_documents_loader"] = kwargs.get("existing_documents_loader")
+        return []
+
+    connector.fetcher.fetch_documents = spy_fetch_documents  # type: ignore[method-assign]
+    connector.fetcher.snapshot_complete = True
+    connector.fetcher.repository_specs = list(connector.fetcher.repository_specs)
+
+    assert asyncio.run(connector.fetch_documents()) == []
+    assert (
+        captured["existing_documents_loader"]
+        is connector._load_existing_documents_for_page_ids
+    )
+
+
+def test_github_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    doc_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    store.upsert_document(
+        DocumentModel(
+            id=doc_id,
+            document_id=doc_id,
+            external_id=doc_id,
+            source_id="source_github",
+            title="README",
+            content="kept body",
+            url="https://github.com/eunhwa99/MCPContentSearch/blob/main/README.md",
+            platform="GitHub",
+            version_id="abc123",
+        )
+    )
+    batch_calls = []
+    original_get = store.get_document
+
+    def tracking_batch(document_ids):
+        batch_calls.append(list(document_ids))
+        return {
+            doc_id_: original_get(doc_id_)
+            for doc_id_ in document_ids
+            if original_get(doc_id_) is not None
+        }
+
+    store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
+    connector = GitHubSourceConnector(
+        ("eunhwa99/MCPContentSearch@main",),
+        AppConfig(),
+        metadata_store=store,
+    )
+    loaded = connector._load_existing_documents_for_page_ids([doc_id])
+
+    assert batch_calls == [[doc_id]]
+    assert loaded[doc_id].content == "kept body"
+    assert loaded[doc_id].version_id == "abc123"

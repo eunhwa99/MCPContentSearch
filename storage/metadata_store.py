@@ -324,6 +324,13 @@ class MetadataStore:
                         "version_id": "TEXT NOT NULL DEFAULT ''",
                     },
                 )
+                # Speeds batch fetch-reuse MIN(line_start) joins by document.
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chunks_document_source
+                    ON chunks(document_id, source_id)
+                    """
+                )
             self._schema_ready = True
 
     def upsert_source(self, source: SourceModel) -> SourceModel:
@@ -1412,7 +1419,12 @@ class MetadataStore:
     def get_documents_for_fetch_reuse(
         self, document_ids: Sequence[str]
     ) -> dict[str, DocumentModel]:
-        """Batch-load documents needed for Notion fetch skip/reuse decisions."""
+        """Batch-load skip/reuse fields including title and citation line_start.
+
+        ``line_start`` is derived from ``MIN(chunks.line_start)`` for the
+        document, adjusted for leading blank lines in stored content so it
+        matches the original DocumentModel body base used when re-chunking.
+        """
         unique_ids: list[str] = []
         seen: set[str] = set()
         for document_id in document_ids:
@@ -1431,35 +1443,76 @@ class MetadataStore:
                 chunk = unique_ids[offset : offset + chunk_size]
                 placeholders = ",".join("?" for _ in chunk)
                 # Dynamic SQL is limited to generated placeholders; document IDs
-                # remain parameterized in the execute call below.
+                # remain parameterized in the execute call below. Prefer a single
+                # grouped JOIN over a per-row correlated MIN subquery.
                 query = "\n".join(
                     [
-                        "SELECT document_id, external_id, source_id, content,",
-                        "       modified_at, content_hash, deleted_at",
+                        "SELECT documents.document_id, documents.external_id,",
+                        "       documents.source_id, documents.content,",
+                        "       documents.title, documents.modified_at,",
+                        "       documents.version_id, documents.content_hash,",
+                        "       documents.deleted_at,",
+                        "       chunk_mins.min_line_start AS line_start",
                         "FROM documents",
-                        "WHERE document_id IN (" + placeholders + ")",
+                        "LEFT JOIN (",
+                        "    SELECT document_id, source_id,",
+                        "           MIN(line_start) AS min_line_start",
+                        "    FROM chunks",
+                        "    WHERE document_id IN (" + placeholders + ")",
+                        "    GROUP BY document_id, source_id",
+                        ") AS chunk_mins",
+                        "  ON chunk_mins.document_id = documents.document_id",
+                        " AND chunk_mins.source_id = documents.source_id",
+                        "WHERE documents.document_id IN (" + placeholders + ")",
                     ]
                 )
                 rows = conn.execute(
                     query,
-                    tuple(chunk),
+                    tuple(chunk) + tuple(chunk),
                 ).fetchall()
                 for row in rows:
                     document_id = row["document_id"]
+                    content = row["content"] or ""
+                    raw_line_start = row["line_start"]
+                    chunk_min_line_start = (
+                        None if raw_line_start is None else int(raw_line_start)
+                    )
                     loaded[document_id] = DocumentModel(
                         id=document_id,
                         document_id=document_id,
                         source_id=row["source_id"] or "",
                         external_id=row["external_id"] or "",
-                        title="",
-                        content=row["content"] or "",
+                        title=row["title"] or "",
+                        content=content,
                         url="",
                         platform="",
                         modified_at=row["modified_at"] or "",
+                        version_id=row["version_id"] or "",
                         content_hash=row["content_hash"] or "",
                         deleted_at=row["deleted_at"] or "",
+                        line_start=self._document_line_start_from_chunk_min(
+                            content, chunk_min_line_start
+                        ),
                     )
         return loaded
+
+    @staticmethod
+    def _document_line_start_from_chunk_min(
+        content: str, min_chunk_line_start: int | None
+    ) -> int | None:
+        """Map MIN(chunk.line_start) back to DocumentModel.line_start base.
+
+        Chunkers skip leading blank lines before assigning citation line numbers,
+        so reuse must subtract those blanks to restore the original body base.
+        """
+        if min_chunk_line_start is None:
+            return None
+        leading_blank_lines = 0
+        for line in content.splitlines():
+            if line.strip():
+                break
+            leading_blank_lines += 1
+        return int(min_chunk_line_start) - leading_blank_lines
 
     def get_document_by_url(self, url: str) -> Optional[DocumentModel]:
         if not url:

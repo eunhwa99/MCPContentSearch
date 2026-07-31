@@ -6101,6 +6101,29 @@ def test_metadata_store_exposes_public_canonical_document_timestamp():
     )
 
 
+def test_ensure_schema_creates_idx_chunks_document_source(tmp_path):
+    """Fetch-reuse hydrate needs chunks(document_id, source_id) for MIN lookups."""
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.ensure_schema()
+
+    with store._connect() as conn:
+        index_names = {
+            row["name"] for row in conn.execute("PRAGMA index_list(chunks)").fetchall()
+        }
+        master = conn.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_chunks_document_source'
+            """
+        ).fetchone()
+
+    assert "idx_chunks_document_source" in index_names
+    assert master is not None
+    assert master["sql"] is not None
+    assert "document_id" in master["sql"]
+    assert "source_id" in master["sql"]
+
+
 def test_get_documents_for_fetch_reuse_returns_empty_for_empty_ids(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
 
@@ -6176,11 +6199,14 @@ def test_get_documents_for_fetch_reuse_batches_skip_fields_for_requested_ids(
     assert set(loaded) == {"page-a", "page-b", "page-c"}
     assert "page-missing" not in loaded
     assert loaded["page-a"].content == "body-a"
+    assert loaded["page-a"].title == "A"
     assert loaded["page-a"].modified_at == "2026-06-01T00:00:00Z"
     assert loaded["page-a"].content_hash
     assert loaded["page-a"].deleted_at == ""
     assert loaded["page-b"].content == "body-b"
+    assert loaded["page-b"].title == "B"
     assert loaded["page-c"].deleted_at == "2026-06-04T00:00:00Z"
+    assert loaded["page-c"].title == "C"
     assert len(connect_calls) == 1
     select_statements = [
         statement
@@ -6211,6 +6237,129 @@ def test_get_documents_for_fetch_reuse_omits_missing_ids(tmp_path):
 
     assert set(loaded) == {"page-only"}
     assert loaded["page-only"].content == "only-body"
+
+
+def test_get_documents_for_fetch_reuse_includes_version_id(tmp_path):
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_document(
+        DocumentModel(
+            id="doc-gh",
+            document_id="github:owner/repo:README.md",
+            external_id="github:owner/repo:README.md",
+            source_id="source_github",
+            title="README",
+            content="readme body",
+            url="https://github.com/owner/repo/blob/main/README.md",
+            platform="GitHub",
+            modified_at="",
+            version_id="deadbeefcafebabe0123456789abcdef01234567",
+            content_hash="hash-readme",
+            deleted_at="",
+        )
+    )
+
+    loaded = store.get_documents_for_fetch_reuse(["github:owner/repo:README.md"])
+
+    assert set(loaded) == {"github:owner/repo:README.md"}
+    assert loaded["github:owner/repo:README.md"].version_id == (
+        "deadbeefcafebabe0123456789abcdef01234567"
+    )
+    assert loaded["github:owner/repo:README.md"].content == "readme body"
+    assert loaded["github:owner/repo:README.md"].content_hash == "hash-readme"
+    assert loaded["github:owner/repo:README.md"].title == "README"
+
+
+def test_get_documents_for_fetch_reuse_returns_stored_title(tmp_path):
+    """Reuse payload must carry title so Obsidian skip does not fall back to stem."""
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store.upsert_document(
+        DocumentModel(
+            id="doc-obs",
+            document_id="notes/project.md",
+            external_id="notes/project.md",
+            source_id="source_obsidian",
+            title="Project Atlas",
+            content="\n# Architecture\nIndexed body without frontmatter.\n",
+            url="obsidian://open?vault=vault&file=notes/project.md",
+            platform="obsidian",
+            path="notes/project.md",
+            modified_at="2026-06-01T00:00:00Z",
+            content_hash="hash-atlas",
+            deleted_at="",
+        )
+    )
+
+    loaded = store.get_documents_for_fetch_reuse(["notes/project.md"])
+
+    assert set(loaded) == {"notes/project.md"}
+    assert loaded["notes/project.md"].title == "Project Atlas"
+    assert loaded["notes/project.md"].title != ""
+    assert loaded["notes/project.md"].content.startswith("\n# Architecture")
+    assert loaded["notes/project.md"].line_start is None
+
+
+def test_get_documents_for_fetch_reuse_recovers_line_start_from_chunk_min(
+    tmp_path,
+):
+    """Reuse maps MIN(chunk.line_start) back to body base after leading blanks."""
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    document_id = "notes/project.md"
+    content = "\n# Architecture\nIndexed body without frontmatter.\n"
+    store.upsert_document(
+        DocumentModel(
+            id="doc-obs-line",
+            document_id=document_id,
+            external_id=document_id,
+            source_id="source_obsidian",
+            title="Project Atlas",
+            content=content,
+            url="obsidian://open?vault=vault&file=notes/project.md",
+            platform="obsidian",
+            path=document_id,
+            modified_at="2026-06-01T00:00:00Z",
+            content_hash="hash-atlas-line",
+            deleted_at="",
+        )
+    )
+    store.replace_document_chunks(
+        document_id,
+        [
+            ChunkModel(
+                chunk_id=f"{document_id}:chunk:0:abc",
+                document_id=document_id,
+                source_id="source_obsidian",
+                title="Project Atlas",
+                text="# Architecture\nIndexed body without frontmatter.",
+                url="obsidian://open?vault=vault&file=notes/project.md",
+                path=document_id,
+                chunk_index=0,
+                line_start=5,
+                line_end=6,
+                content_hash="chunk-hash-abc",
+            ),
+            ChunkModel(
+                chunk_id=f"{document_id}:chunk:1:def",
+                document_id=document_id,
+                source_id="source_obsidian",
+                title="Project Atlas",
+                text="More architecture detail.",
+                url="obsidian://open?vault=vault&file=notes/project.md",
+                path=document_id,
+                chunk_index=1,
+                line_start=7,
+                line_end=7,
+                content_hash="chunk-hash-def",
+            ),
+        ],
+    )
+
+    loaded = store.get_documents_for_fetch_reuse([document_id])
+
+    assert set(loaded) == {document_id}
+    assert loaded[document_id].title == "Project Atlas"
+    assert loaded[document_id].content == content
+    # MIN(chunk.line_start)=5 minus one leading blank in stored content → 4
+    assert loaded[document_id].line_start == 4
 
 
 def test_update_sync_job_dual_writes_upstream_progress_to_legacy_page_columns(tmp_path):
