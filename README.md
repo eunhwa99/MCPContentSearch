@@ -218,7 +218,16 @@ uv run --locked python -m indexing.sync_worker
 
 With Docker, the Quick Start `contextwiki-sync-worker` container is this worker.
 
-Closing the MCP client does not stop an in-flight sync if the worker is still up. Stopping the worker fails the current job; request a fresh sync afterward.
+The worker may run up to `N` distinct-source jobs at once. Set
+`CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` in the repository-local `.env`
+(integer `1`–`8`; default `2`). Invalid values fail closed at worker startup.
+`1` restores global single-flight. `N` bounds SQLite `RUNNING` claims;
+connector fetch can overlap inside one worker, and Chroma mutations are
+serialized within that process only. Run one LaunchAgent sync_worker process
+per store — extra worker PIDs can oversubscribe writes. Restart the LaunchAgent
+worker after changing the value.
+
+Closing the MCP client does not stop an in-flight sync if the worker is still up. Stopping the worker fails every in-flight claimed job; request a fresh sync afterward.
 
 ---
 

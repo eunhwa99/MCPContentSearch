@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 import traceback
 from types import SimpleNamespace
 
@@ -108,3 +110,180 @@ def test_content_indexer_serializes_concurrent_index_documents_calls():
     asyncio.run(run_two_calls())
 
     assert max_active_calls == 1
+
+
+def test_batch_index_offloads_blocking_chroma_work_so_event_loop_can_progress(
+    monkeypatch,
+):
+    import indexing.indexer as indexer_module
+
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+    peer_progressed = asyncio.Event()
+    entered_batch = asyncio.Event()
+
+    def blocking_from_documents(batch, storage_context=None, show_progress=True):
+        entered_batch.set()
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if peer_progressed.is_set():
+                return object()
+            time.sleep(0.01)
+        raise AssertionError(
+            "event loop did not progress a peer task during blocking Chroma work"
+        )
+
+    monkeypatch.setattr(
+        indexer_module.VectorStoreIndex,
+        "from_documents",
+        staticmethod(blocking_from_documents),
+    )
+
+    async def scenario():
+        async def peer():
+            await entered_batch.wait()
+            peer_progressed.set()
+
+        peer_task = asyncio.create_task(peer())
+        await indexer._batch_index([SimpleNamespace(text="content")])
+        await peer_task
+
+    asyncio.run(scenario())
+
+
+def test_batch_index_shields_chroma_thread_so_cancel_keeps_mutation_lock(
+    monkeypatch,
+):
+    import indexing.indexer as indexer_module
+
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+    entered_batch = asyncio.Event()
+    release_batch = threading.Event()
+
+    def blocking_from_documents(batch, storage_context=None, show_progress=True):
+        entered_batch.set()
+        assert release_batch.wait(timeout=2)
+        return object()
+
+    monkeypatch.setattr(
+        indexer_module.VectorStoreIndex,
+        "from_documents",
+        staticmethod(blocking_from_documents),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            indexer.index_documents(
+                [
+                    DocumentModel(
+                        id="doc-1",
+                        title="Doc",
+                        content="content",
+                        url="https://example.com",
+                        platform="web",
+                    )
+                ]
+            )
+        )
+        await entered_batch.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        # Lock must remain held until the shielded Chroma thread finishes.
+        acquired_during_write = False
+        try:
+            await asyncio.wait_for(indexer._mutation_lock.acquire(), timeout=0.05)
+            acquired_during_write = True
+            indexer._mutation_lock.release()
+        except TimeoutError:
+            pass
+        release_batch.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not acquired_during_write
+
+    async def fake_filter(documents):
+        from llama_index.core import Document
+
+        return {
+            "documents": [Document(text="content")],
+            "new": 1,
+            "updated": 0,
+        }
+
+    indexer._filter_documents = fake_filter
+    asyncio.run(scenario())
+
+
+def test_batch_index_join_survives_double_cancel_while_chroma_thread_runs(
+    monkeypatch,
+):
+    import indexing.indexer as indexer_module
+
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+    entered_batch = asyncio.Event()
+    release_batch = threading.Event()
+
+    def blocking_from_documents(batch, storage_context=None, show_progress=True):
+        entered_batch.set()
+        assert release_batch.wait(timeout=2)
+        return object()
+
+    monkeypatch.setattr(
+        indexer_module.VectorStoreIndex,
+        "from_documents",
+        staticmethod(blocking_from_documents),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            indexer.index_documents(
+                [
+                    DocumentModel(
+                        id="doc-1",
+                        title="Doc",
+                        content="content",
+                        url="https://example.com",
+                        platform="web",
+                    )
+                ]
+            )
+        )
+        await entered_batch.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        acquired_during_write = False
+        try:
+            await asyncio.wait_for(indexer._mutation_lock.acquire(), timeout=0.05)
+            acquired_during_write = True
+            indexer._mutation_lock.release()
+        except TimeoutError:
+            pass
+        release_batch.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not acquired_during_write
+
+    async def fake_filter(documents):
+        from llama_index.core import Document
+
+        return {
+            "documents": [Document(text="content")],
+            "new": 1,
+            "updated": 0,
+        }
+
+    indexer._filter_documents = fake_filter
+    asyncio.run(scenario())

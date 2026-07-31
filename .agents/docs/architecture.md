@@ -19,21 +19,24 @@ Two processes share one SQLite DB and one Chroma store:
 | Node | Meaning |
 | --- | --- |
 | MCP client → FastMCP | Claude/Cursor calls MCP tools (`sync_*`, `search_*`, …) |
-| LaunchAgent / Docker → Worker | Supervises `indexing.sync_worker` so sync keeps running after the MCP client stops |
+| LaunchAgent / Docker → Worker | Supervises one `indexing.sync_worker` process per store so sync keeps running after the MCP client stops |
 | SQLite jobs + lifecycle | Same `MetadataStore`: job queue (enqueue/claim/status) **and** document/chunk/tombstone lifecycle |
 | search / MetadataStore reads | FastMCP read path: active-gate search, `list_documents`, `fetch_context`, status |
-| fetch + index lifecycle | Worker write path: fetch source → chunk → write Chroma → update SQLite → terminal job status |
+| fetch + index lifecycle | Worker write path: overlapping connector fetch for up to `N` distinct-source jobs → chunk → Chroma write under in-process mutation lock → SQLite lifecycle → terminal job status |
 | Chroma vectors | Semantic candidate store only; SQLite decides what is still active/citeable |
 
 ### Workflow
 
 1. Client asks FastMCP to sync → FastMCP **enqueues** (or reuses) a job in SQLite and returns.
-2. Worker **claims** the job, runs fetch + index, writes Chroma + SQLite lifecycle, marks the job succeeded/failed.
+2. Worker **claims** queued jobs while `COUNT(RUNNING) < N`, runs fetch + index (fetch may overlap; Chroma mutations serialize in-process), writes Chroma + SQLite lifecycle, marks each job succeeded/failed.
 3. Client asks FastMCP to search → FastMCP pulls Chroma candidates, applies the **active gate**, returns evidence.
 4. Client can **status**-poll the exact job with `get_sync_status(source_id, job_id)`.
 
 LaunchAgent/Docker only keep the worker process alive. They are not the queue;
-SQLite is. Operators must restart both processes after `.env` or source-target
+SQLite is. The supported ops model is **one** LaunchAgent (or equivalent)
+`sync_worker` process against a given Chroma/SQLite store — extra worker PIDs
+can oversubscribe Chroma writes even when each process respects `N`.
+Operators must restart both processes after `.env` or source-target
 changes: restart FastMCP **and** the worker (LaunchAgent restart script, or
 Docker recreate with the same `docker run ... --env-file` — `docker restart`
 keeps the old env).
@@ -43,7 +46,7 @@ keeps the old env).
 | Term | Who | Meaning |
 | --- | --- | --- |
 | **enqueue** | FastMCP (`sync_source` / `sync_all`) | Insert a new sync job as `queued`, or return the existing queued/running job for that source (no duplicate). Returns immediately — does not wait for fetch/index. |
-| **claim** | Worker | Atomically take the next `queued` job → `running`, attach owner/pid/heartbeat, then execute fetch + index for that job. |
+| **claim** | Worker | Atomically take the next `queued` job → `running` while `COUNT(RUNNING) < N`, attach owner/pid/heartbeat, then execute fetch + index. Up to `N` distinct-source jobs may run concurrently in one worker. |
 | **status** | FastMCP (`get_sync_status`) | Read the job (or source's latest job) from SQLite: `queued` / `running` / `succeeded` / `failed`. Exact-job mode uses both `source_id` and `job_id`. |
 
 ### Document / chunk / tombstone lifecycle
@@ -66,7 +69,7 @@ Chroma only proposes semantic **candidates**. Before results go to the client, S
 | --- | --- |
 | `api/` | MCP tool contracts, formatting, caller-visible errors |
 | `fetching/` | Notion, Tistory, GitHub, Obsidian connectors |
-| `indexing/` | Worker claim/dispatch, chunking, Chroma mutation, sync lifecycle |
+| `indexing/` | Worker claim/dispatch under bounded global RUNNING budget, chunking, in-process Chroma mutation lock, sync lifecycle |
 | `search/` | Retrieval, ranking, SQLite active gates, CitationAnswerService |
 | `storage/` | SQLite source/job/document/chunk/tombstone metadata |
 | `core/` | Shared models, exceptions, utilities |
@@ -109,13 +112,27 @@ sequenceDiagram
 
   MCP->>Q: enqueue or reuse active job
   Note over Q: Queued jobs are unowned
-  W->>Q: claim oldest queued job
+  W->>Q: claim while COUNT(RUNNING) < N
   Q-->>W: running + owner/pid/heartbeat
-  W->>S: blocking sync for claimed job
+  W->>S: up to N concurrent distinct-source syncs
+  Note over W,S: Fetch may overlap; ContentIndexer mutation lock serializes Chroma writes in-process
   S->>Q: documents/chunks + terminal status
   Note over S,Q: Soft-delete missing docs only after a full successful sync on cleanup-capable sources
   MCP->>Q: get_sync_status(source_id, job_id) exact job
 ```
+
+### Bounded concurrency
+
+The generic worker may run up to `N` distinct-source jobs concurrently across
+Notion, Tistory, GitHub, and Obsidian. Default `N` is 2 via
+`CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`, fail-closed at
+startup). `N=1` restores the previous global single-flight behavior. SQLite
+claim remains authoritative with a `COUNT(RUNNING) < N` gate, and enqueue still
+allows at most one active queued/running job per `source_id`. Within one
+worker process, connector fetch may overlap while `ContentIndexer`'s
+in-process mutation lock serializes Chroma mutations. That lock is not
+cross-process: multiple worker PIDs against the same store can oversubscribe
+writes even when each process respects `N`. Detail: ADR 0010.
 
 ### Ownership & recovery
 
@@ -128,9 +145,9 @@ sequenceDiagram
   Darwin) is definitive only in-scope; unknown/malformed/cross-namespace falls
   back to heartbeat staleness.
 - MCP shutdown does not cancel worker jobs. Graceful worker signal → fail
-  in-flight job **without** tombstones. Abrupt death → orphan recovery marks
-  failed; v1 does not auto-resume partial work. After the orphaned job is
-  terminal `failed`, callers enqueue a **fresh** sync.
+  **all** in-flight claimed jobs **without** tombstones. Abrupt death → orphan
+  recovery marks failed; v1 does not auto-resume partial work. After the
+  orphaned job is terminal `failed`, callers enqueue a **fresh** sync.
 
 ### Tombstone safety
 

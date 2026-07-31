@@ -29,12 +29,21 @@ Separate source-sync acceptance from execution:
 
 - FastMCP `sync_source` and `sync_all` atomically enqueue or reuse SQLite jobs
   and return without creating request-process background tasks.
-- A generic `python -m indexing.sync_worker` process atomically claims the
-  oldest queued job, marks it running with worker ownership, and executes the
-  existing fetch/index/finalize lifecycle.
+- A generic `python -m indexing.sync_worker` process atomically claims queued
+  jobs while `COUNT(RUNNING) < N`, marks each running with worker ownership,
+  and executes the existing fetch/index/finalize lifecycle.
 - One worker handles every retained source: Notion, Tistory, GitHub, and
   Obsidian. Source-specific behavior remains in connectors.
-- The worker processes one job at a time by default.
+- The worker may run up to `N` distinct-source jobs concurrently. Default
+  `N` is 2 via `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`,
+  fail-closed at startup). `N=1` restores global single-flight. Per-source
+  queued/running guards remain. `N` bounds SQLite `RUNNING` claims; within
+  one worker process, connector fetch may overlap while the in-process
+  `ContentIndexer` mutation lock serializes Chroma mutations. That lock is
+  not cross-process.
+- Supported ops model: one LaunchAgent-supervised sync_worker process against
+  a given Chroma/SQLite store. Multiple worker PIDs on the same store can
+  oversubscribe Chroma writes even when each process respects `N`.
 - A macOS user LaunchAgent supervises the worker independently from FastMCP.
   Its generated plist contains absolute repository, `uv`, and log paths but no
   credentials. Runtime secrets continue to load from the repository-local
@@ -57,16 +66,23 @@ Separate source-sync acceptance from execution:
 - SQLite remains the queue and lifecycle authority. The LaunchAgent is only a
   process supervisor, and Chroma is not used for ownership.
 
-A graceful worker shutdown fails its in-flight job without tombstoning an
-incomplete snapshot. Abruptly orphaned running work uses the existing
-owner/heartbeat recovery and is not automatically resumed in this first
-version. A valid queued job remains queued when no worker is available.
+A graceful worker shutdown fails all in-flight claimed jobs without
+tombstoning an incomplete snapshot. Abruptly orphaned running work uses the
+existing owner/heartbeat recovery and is not automatically resumed in this
+first version. A valid queued job remains queued when no worker is available.
 
 ## Consequences
 
 - Stopping FastMCP no longer stops a job owned by the worker.
-- Stopping the worker does stop execution; callers must inspect the terminal or
+- Stopping the worker does stop execution, including every in-flight claimed
+  job under the concurrency budget; callers must inspect the terminal or
   recovered failure and explicitly request a fresh sync.
+- Bounded concurrency defaults to two concurrent RUNNING jobs for distinct
+  sources. Invalid `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` values outside
+  `1..8` fail closed at worker startup. Setting `N=1` preserves the earlier
+  one-at-a-time claim behavior for operators who prefer it. Operators should
+  run a single sync_worker process per store; extra worker PIDs are outside
+  the supported model and can race Chroma writes.
 - Newly accepted jobs may be observed as `queued` before becoming `running`.
   Existing queued or running jobs are reused instead of duplicated.
 - Public `started` launch vocabulary means accepted into the durable queue, not
@@ -135,8 +151,14 @@ version. A valid queued job remains queued when no worker is available.
   all retained sources even though their fetch performance differs.
 - Add Redis, Celery, or another queue: rejected because SQLite already owns the
   required local lifecycle and atomic claim boundary.
-- Run one worker per source or multiple concurrent jobs: deferred until shared
-  Chroma-write and connector behavior justify measured concurrency.
+- Run one worker process per source or multiple worker PIDs on one store:
+  rejected; one generic LaunchAgent worker owns all retained sources, and
+  multi-PID operation can oversubscribe in-process-only Chroma mutation
+  locking.
+- Unbounded or high multi-job concurrency: rejected in favor of a fail-closed
+  `1..8` SQLite `RUNNING` budget (default 2) so fetch may overlap inside one
+  worker while that process's indexer mutation lock serializes its Chroma
+  writes.
 
 ## Supersedes
 

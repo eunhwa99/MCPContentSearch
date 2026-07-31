@@ -90,6 +90,45 @@ class ContentIndexer:
             "updated": update_count
         }
     
+    async def _join_thread_task_preserving_cancel(self, task: asyncio.Task) -> None:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception as exc:
+                logger.error(
+                    "Chroma worker failed during cancel join: %s",
+                    safe_error_message(exc),
+                )
+                continue
+
+    async def _run_chroma_in_thread(self, func, /, *args, **kwargs):
+        """Run blocking Chroma work off-loop without releasing the mutation lock.
+
+        ``asyncio.shield`` alone still raises ``CancelledError`` immediately,
+        which would exit ``async with self._mutation_lock`` while the executor
+        thread continues. Join the thread task before re-raising cancel.
+        """
+        task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+        current = asyncio.current_task()
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await self._join_thread_task_preserving_cancel(task)
+            raise
+        except Exception:
+            if current is not None and current.cancelling():
+                if not task.done():
+                    await self._join_thread_task_preserving_cancel(task)
+                elif task.exception() is not None:
+                    logger.error(
+                        "Chroma worker failed during cancel: %s",
+                        safe_error_message(task.exception()),
+                    )
+                raise asyncio.CancelledError from None
+            raise
+
     async def _batch_index(self, documents: List[Document]):
         total = len(documents)
         
@@ -97,14 +136,15 @@ class ContentIndexer:
             batch = documents[i:i + self.config.batch_size]
             
             if self.index is None:
-                self.index = VectorStoreIndex.from_documents(
+                self.index = await self._run_chroma_in_thread(
+                    VectorStoreIndex.from_documents,
                     batch,
                     storage_context=self.storage_context,
-                    show_progress=True
+                    show_progress=True,
                 )
             else:
                 for doc in batch:
-                    self.index.insert(doc)
+                    await self._run_chroma_in_thread(self.index.insert, doc)
             
             processed = min(total, i + self.config.batch_size)
             self._update_progress(processed, total)
