@@ -141,7 +141,7 @@ Rollback: set `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT=1` or revert the branch.
 | Docs remediation | completed | Chroma in-process lock honesty; Purpose restored | architecture/ADR/README |
 | Review passes 2–6 | remediated | Cancel drain, chroma shield+join, CancelledError precedence, docs honesty | multiple verify_all greens |
 | Review pass 7 | completed/clean | All three lenses CLEAN | Reviewers 3e89d084, dd136f66, c252a918 |
-| PR delivery | in_progress | | |
+| PR delivery | completed | Opened main-base PR | https://github.com/eunaverse/MCPContentSearch/pull/93 |
 
 ## Functional Smoke Matrix
 
