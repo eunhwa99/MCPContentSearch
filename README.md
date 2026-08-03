@@ -1,4 +1,4 @@
-# ContextWiki
+# MyWiki
 
 [![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
