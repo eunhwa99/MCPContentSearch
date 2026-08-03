@@ -1,0 +1,12 @@
+{
+  "name": "hybrid-rrf-v1",
+  "retrieval_mode": "hybrid_rrf",
+  "query_normalization": false,
+  "metadata_filtering": false,
+  "exact_duplicate_removal": false,
+  "near_duplicate_removal": false,
+  "candidate_multiplier": 2,
+  "rrf_k": 60,
+  "near_duplicate_threshold": 0.8,
+  "top_k": 5
+}

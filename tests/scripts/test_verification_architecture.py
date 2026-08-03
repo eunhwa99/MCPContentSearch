@@ -23,6 +23,15 @@ def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
     assert "./scripts/verify_functional_e2e.sh" in workflow
 
 
+def test_functional_gate_includes_career_evidence_mcp_flow():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "verify_functional_e2e.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "tests/e2e/test_career_evidence_flow.py" in script
+
+
 def test_ci_artifact_upload_is_guarded_when_eval_output_is_missing():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -74,3 +83,10 @@ def test_docs_require_both_processes_to_reload_source_configuration():
     assert "fully restart the MCP" in readme
     assert "./scripts/restart_sync_worker_launch_agent.sh" in readme
     assert "Operators must restart both processes" in architecture
+
+
+def test_verification_scripts_disable_repo_dotenv_loading():
+    repo_root = Path(__file__).resolve().parents[2]
+    for script_name in ("verify_all.sh", "verify_functional_e2e.sh"):
+        script = (repo_root / "scripts" / script_name).read_text(encoding="utf-8")
+        assert "export CONTEXTWIKI_DISABLE_DOTENV=1" in script

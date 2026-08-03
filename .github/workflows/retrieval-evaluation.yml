@@ -1,0 +1,133 @@
+name: Manual Retrieval Evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Evaluation data/provider mode
+        required: true
+        default: public_fixture
+        type: choice
+        options:
+          - public_fixture
+          - private_local
+          - live_provider
+          - larger_local
+      confirm_local_only:
+        description: Confirm non-public data stays on tagged self-hosted runner
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  evaluate-public-fixture:
+    name: Evaluate public deterministic retrieval fixture
+    if: inputs.mode == 'public_fixture'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CONTEXTWIKI_DISABLE_DOTENV: "1"
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.5"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --python 3.13 --dev
+
+      - name: Run public fixture and regression comparison
+        run: |
+          eval_git_identifier="$(bash scripts/evaluation_git_identifier.sh)"
+          uv run --locked python -m evaluation.runner \
+            --dataset evaluation/datasets/retrieval_gold.example.jsonl \
+            --corpus evaluation/datasets/career_corpus.example.jsonl \
+            --configuration evaluation/configs/deterministic_fixture.json \
+            --output-dir artifacts/career-retrieval-evaluation \
+            --git-identifier "${eval_git_identifier}" \
+            --public-only
+          uv run --locked python -m evaluation.compare \
+            --baseline evaluation/reports/retrieval_fixture_baseline.json \
+            --current artifacts/career-retrieval-evaluation/report.json \
+            --thresholds evaluation/reports/ci_thresholds.json \
+            --output artifacts/career-retrieval-evaluation/comparison.json
+
+      # No artifact upload by design. Private datasets and raw evidence must
+      # stay on the local machine that owns them.
+
+  require-local-confirmation:
+    name: Require explicit local-only confirmation
+    if: inputs.mode != 'public_fixture' && !inputs.confirm_local_only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Reject unconfirmed non-public run
+        run: |
+          echo "Non-public modes require confirm_local_only=true." >&2
+          exit 1
+
+  reject-untrusted-non-public-ref:
+    name: Require trusted default branch for non-public data
+    if: >-
+      inputs.mode != 'public_fixture' &&
+      inputs.confirm_local_only &&
+      github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Reject non-default-ref execution
+        run: |
+          echo "Non-public evaluation runs only from the protected default branch." >&2
+          exit 1
+
+  evaluate-local-only:
+    name: Evaluate on local-only self-hosted runner
+    if: >-
+      inputs.mode != 'public_fixture' &&
+      inputs.confirm_local_only &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: retrieval-evaluation-private
+    runs-on: [self-hosted, retrieval-evaluation, ephemeral, isolated]
+    timeout-minutes: 30
+    env:
+      CONTEXTWIKI_DISABLE_DOTENV: "1"
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        # Reviewed actions/checkout v4.2.2 commit; update only after upstream diff review.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # Keep the approved job on the immutable commit selected at dispatch.
+          ref: ${{ github.sha }}
+
+      - name: Select reviewed local-only inputs
+        env:
+          EVALUATION_MODE: ${{ inputs.mode }}
+        run: |
+          set +x
+          set -eu
+          umask 077
+          eval_git_identifier="$(bash scripts/evaluation_git_identifier.sh)"
+          uv run --locked python -m evaluation.private_workflow \
+            --mode "${EVALUATION_MODE}" \
+            --git-identifier "${eval_git_identifier}"
+
+      # Runner is assumed ephemeral, isolated, and reset after every approved job.
+      # Inputs stay in runner-local environment. No artifact upload, arbitrary
+      # command execution, command echo, or workflow-secret bridge.

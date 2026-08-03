@@ -1,0 +1,754 @@
+{
+  "configuration": {
+    "candidate_multiplier": 2,
+    "exact_duplicate_removal": false,
+    "metadata_filtering": false,
+    "name": "hybrid-rrf-v1",
+    "near_duplicate_removal": false,
+    "near_duplicate_threshold": 0.8,
+    "query_normalization": false,
+    "retrieval_mode": "hybrid_rrf",
+    "rrf_k": 60,
+    "top_k": 5
+  },
+  "dataset": {
+    "label_source": "deterministic_fixture",
+    "name": "retrieval_gold.example.jsonl",
+    "size": 13
+  },
+  "disclaimer": "TEST FIXTURE — NOT PRODUCT PERFORMANCE",
+  "execution_path": {
+    "identity": "dependency-free-retrieve-evidence:hybrid_rrf:v1",
+    "provider": "deterministic_offline_retrieval_function",
+    "retrieval_function": "evaluation.retrieval.retrieve_evidence"
+  },
+  "failures": [
+    {
+      "expected_behavior": "top-5 chunks contain ['resume-professional-reliability']; documents contain ['resume-current']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "Kubernetes readiness probe incident reduction",
+      "query_id": "q-001",
+      "reason": "wrong_source_type",
+      "returned_results": [
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032786885246,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-copy",
+          "document_id": "resume-current-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032258064516,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031746031746,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.03125,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "behavioral_story"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['previous-resume-recovery']; documents contain ['resume-previous']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "work that made service recovery faster after failures",
+      "query_id": "q-002",
+      "reason": "wrong_source_type",
+      "returned_results": [
+        {
+          "chunk_id": "previous-resume-recovery",
+          "document_id": "resume-previous",
+          "exact_quote": "Cut recovery time after service failures by standardizing rollback checks.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032786885246,
+          "source_type": "previous_resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032002048131,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031754032258,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-copy",
+          "document_id": "resume-current-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031498015873,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.030769230769,
+          "source_type": "resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['github-readme-kafka']; documents contain ['github-readme-stream-lab']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "Kafka consumer lag monitoring implementation",
+      "query_id": "q-003",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "github-readme-kafka",
+          "document_id": "github-readme-stream-lab",
+          "exact_quote": "This personal project monitors Kafka consumer lag and flags unhealthy consumers.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.032786885246,
+          "source_type": "github_readme"
+        },
+        {
+          "chunk_id": "project-tracing",
+          "document_id": "project-observability-lab",
+          "exact_quote": "Implemented distributed tracing in a personal queue-processing project.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.016129032258,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "resume-certifications",
+          "document_id": "resume-current",
+          "exact_quote": "Completed a synthetic cloud architecture certification exercise.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015625,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "skills-inventory-coursework",
+          "document_id": "skills-inventory",
+          "exact_quote": "Completed academic operating systems coursework using isolated lab exercises.",
+          "experience_type": "academic",
+          "retrieval_score": 0.015384615385,
+          "source_type": "skills_inventory"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['behavioral-story-alerts']; documents contain ['behavioral-story-operations']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "reduced alert noise by 35 percent",
+      "query_id": "q-004",
+      "reason": "wrong_source_type",
+      "returned_results": [
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032786885246,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032002048131,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-copy",
+          "document_id": "resume-current-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031498015873,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031009615385,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "previous-resume-recovery",
+          "document_id": "resume-previous",
+          "exact_quote": "Cut recovery time after service failures by standardizing rollback checks.",
+          "experience_type": "professional",
+          "retrieval_score": 0.030414746544,
+          "source_type": "previous_resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['resume-professional-migration']; documents contain ['resume-current']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "professional database migration experience",
+      "query_id": "q-005",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032786885246,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.032258064516,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031498015873,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "previous-resume-recovery",
+          "document_id": "resume-previous",
+          "exact_quote": "Cut recovery time after service failures by standardizing rollback checks.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031024531025,
+          "source_type": "previous_resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-copy",
+          "document_id": "resume-current-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.031009615385,
+          "source_type": "resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['project-tracing']; documents contain ['project-observability-lab']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "personal project implementing distributed tracing",
+      "query_id": "q-006",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "project-tracing",
+          "document_id": "project-observability-lab",
+          "exact_quote": "Implemented distributed tracing in a personal queue-processing project.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.032786885246,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "github-readme-kafka",
+          "document_id": "github-readme-stream-lab",
+          "exact_quote": "This personal project monitors Kafka consumer lag and flags unhealthy consumers.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.032258064516,
+          "source_type": "github_readme"
+        },
+        {
+          "chunk_id": "career-note-learning-goals",
+          "document_id": "career-note-growth",
+          "exact_quote": "Set future learning goals for storage engines and distributed consistency.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.031498015873,
+          "source_type": "career_note"
+        },
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.031498015873,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "skills-inventory-coursework",
+          "document_id": "skills-inventory",
+          "exact_quote": "Completed academic operating systems coursework using isolated lab exercises.",
+          "experience_type": "academic",
+          "retrieval_score": 0.015384615385,
+          "source_type": "skills_inventory"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['resume-certifications']; documents contain ['resume-current']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "certifications cloud architecture",
+      "query_id": "q-007",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "resume-certifications",
+          "document_id": "resume-current",
+          "exact_quote": "Completed a synthetic cloud architecture certification exercise.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032786885246,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.016129032258,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.015625,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "career-note-leadership",
+          "document_id": "career-note-growth",
+          "exact_quote": "Recorded leadership goals for clearer technical decisions and team support.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.015384615385,
+          "source_type": "career_note"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['career-note-leadership', 'behavioral-story-mentoring']; documents contain ['career-note-growth', 'behavioral-story-mentoring']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "leadership evidence",
+      "query_id": "q-008",
+      "reason": "wrong_source_type",
+      "returned_results": [
+        {
+          "chunk_id": "career-note-leadership",
+          "document_id": "career-note-growth",
+          "exact_quote": "Recorded leadership goals for clearer technical decisions and team support.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.032786885246,
+          "source_type": "career_note"
+        },
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.016129032258,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-copy",
+          "document_id": "resume-current-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015625,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "behavioral_story"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "empty result",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "COBOL mainframe production deployment",
+      "query_id": "q-009",
+      "reason": "empty_result_false_positive,wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.016393442623,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.016129032258,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "project-tracing",
+          "document_id": "project-observability-lab",
+          "exact_quote": "Implemented distributed tracing in a personal queue-processing project.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.015625,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "resume-professional-reliability",
+          "document_id": "resume-current",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for a synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['skills-inventory-coursework']; documents contain ['skills-inventory']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "academic operating systems coursework",
+      "query_id": "q-010",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "skills-inventory-coursework",
+          "document_id": "skills-inventory",
+          "exact_quote": "Completed academic operating systems coursework using isolated lab exercises.",
+          "experience_type": "academic",
+          "retrieval_score": 0.032786885246,
+          "source_type": "skills_inventory"
+        },
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032258064516,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "previous-resume-recovery",
+          "document_id": "resume-previous",
+          "exact_quote": "Cut recovery time after service failures by standardizing rollback checks.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015625,
+          "source_type": "previous_resume"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "behavioral_story"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['project-prototype-migration']; documents contain ['project-migration-prototype']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "prototype schema migration tool",
+      "query_id": "q-011",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.032786885246,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.032258064516,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "behavioral-story-mentoring",
+          "document_id": "behavioral-story-mentoring",
+          "exact_quote": "Mentored two synthetic teammates through an incident-review practice.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015873015873,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "behavioral-story-alerts",
+          "document_id": "behavioral-story-operations",
+          "exact_quote": "Consolidated duplicate alerts and reduced alert noise by 35 percent.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015625,
+          "source_type": "behavioral_story"
+        },
+        {
+          "chunk_id": "resume-certifications",
+          "document_id": "resume-current",
+          "exact_quote": "Completed a synthetic cloud architecture certification exercise.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['career-note-learning-goals']; documents contain ['career-note-growth']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "future learning goals for storage systems",
+      "query_id": "q-012",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "career-note-learning-goals",
+          "document_id": "career-note-growth",
+          "exact_quote": "Set future learning goals for storage engines and distributed consistency.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.032786885246,
+          "source_type": "career_note"
+        },
+        {
+          "chunk_id": "career-note-leadership",
+          "document_id": "career-note-growth",
+          "exact_quote": "Recorded leadership goals for clearer technical decisions and team support.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.032258064516,
+          "source_type": "career_note"
+        },
+        {
+          "chunk_id": "skills-inventory-coursework",
+          "document_id": "skills-inventory",
+          "exact_quote": "Completed academic operating systems coursework using isolated lab exercises.",
+          "experience_type": "academic",
+          "retrieval_score": 0.031257631258,
+          "source_type": "skills_inventory"
+        },
+        {
+          "chunk_id": "resume-professional-migration",
+          "document_id": "resume-current",
+          "exact_quote": "Led a staged professional database migration with rollback verification.",
+          "experience_type": "professional",
+          "retrieval_score": 0.03125,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.02921108742,
+          "source_type": "resume"
+        }
+      ]
+    },
+    {
+      "expected_behavior": "top-5 chunks contain ['github-readme-kafka']; documents contain ['github-readme-stream-lab']",
+      "missing_chunk_ids": [],
+      "missing_document_ids": [],
+      "query": "side project that detects unhealthy message consumers",
+      "query_id": "q-013",
+      "reason": "wrong_source_type,wrong_experience_type",
+      "returned_results": [
+        {
+          "chunk_id": "github-readme-kafka",
+          "document_id": "github-readme-stream-lab",
+          "exact_quote": "This personal project monitors Kafka consumer lag and flags unhealthy consumers.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.032786885246,
+          "source_type": "github_readme"
+        },
+        {
+          "chunk_id": "project-prototype-migration",
+          "document_id": "project-migration-prototype",
+          "exact_quote": "Built a prototype schema migration tool against generated test databases.",
+          "experience_type": "prototype",
+          "retrieval_score": 0.032002048131,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "project-tracing",
+          "document_id": "project-observability-lab",
+          "exact_quote": "Implemented distributed tracing in a personal queue-processing project.",
+          "experience_type": "personal_project",
+          "retrieval_score": 0.032002048131,
+          "source_type": "project"
+        },
+        {
+          "chunk_id": "resume-certifications",
+          "document_id": "resume-current",
+          "exact_quote": "Completed a synthetic cloud architecture certification exercise.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015625,
+          "source_type": "resume"
+        },
+        {
+          "chunk_id": "resume-professional-reliability-near-copy",
+          "document_id": "resume-current-near-copy",
+          "exact_quote": "Improved Kubernetes readiness probes and reduced incident recovery time for the synthetic service.",
+          "experience_type": "professional",
+          "retrieval_score": 0.015384615385,
+          "source_type": "resume"
+        }
+      ]
+    }
+  ],
+  "git_identifier": "commit=9a2d39cbcb6a28f90d47ff0b62e76000edec627c;head_tree=fdfe77e949bf3384382acf1bf7ab34d99d10a75b;worktree_tree=8f4e7602b4bb3c579d242634f77729f987fbdecb;state=dirty",
+  "ingestion_metrics": {
+    "full_ingestion_latency_ms": null,
+    "incremental_update_latency_ms": null,
+    "metric_denominators": {
+      "full_ingestion_latency_ms": 0,
+      "incremental_update_latency_ms": 0,
+      "parsing_success_rate": 0,
+      "unchanged_document_skip_rate": 0,
+      "unnecessary_reembedding_rate": 0
+    },
+    "parsing_success_rate": null,
+    "unchanged_document_skip_rate": null,
+    "unnecessary_reembedding_rate": null
+  },
+  "ingestion_metrics_note": "No ingestion run was executed by this retrieval-only fixture; values remain undefined with zero denominators.",
+  "input_digests": {
+    "configuration_sha256": "e9f12ede45510b200b678251e9198c250a4d0b9b3b3a390661842bff8da2ec1e",
+    "corpus_sha256": "0bff529524068586730a648b7bd957af6200cc8c8b545073c365037c2776857a",
+    "dataset_sha256": "d193117a73adb4d52c73d7f51145a6a04cc4c83f687213f58cafafd2b23b8715"
+  },
+  "metrics": {
+    "citation_validity_rate": 1.0,
+    "document_recall_at_1": 0.9583333333333334,
+    "document_recall_at_3": 0.9583333333333334,
+    "document_recall_at_5": 1.0,
+    "duplicate_result_rate": 0.13846153846153847,
+    "empty_result_accuracy": 0.9230769230769231,
+    "exact_duplicate_count": 5,
+    "exact_duplicate_result_rate": 0.07692307692307693,
+    "experience_type_filter_accuracy": 0.5692307692307692,
+    "invalid_citations": [],
+    "latency_sample_count": 13,
+    "mean_latency_ms": 0.3358043860106801,
+    "metric_denominators": {
+      "citation_validity_rate": 65,
+      "document_recall_at_1": 12,
+      "document_recall_at_3": 12,
+      "document_recall_at_5": 12,
+      "duplicate_result_rate": 65,
+      "empty_result_accuracy": 13,
+      "experience_type_filter_accuracy": 65,
+      "mean_latency_ms": 13,
+      "mrr": 12,
+      "ndcg_at_5": 12,
+      "p50_latency_ms": 13,
+      "p95_latency_ms": 13,
+      "precision_at_3": 12,
+      "precision_at_5": 12,
+      "recall_at_1": 12,
+      "recall_at_3": 12,
+      "recall_at_5": 12,
+      "source_type_filter_accuracy": 65
+    },
+    "mrr": 1.0,
+    "ndcg_at_5": 0.9701554117170889,
+    "near_duplicate_count": 4,
+    "near_duplicate_result_rate": 0.06153846153846154,
+    "p50_latency_ms": 0.3312920016469434,
+    "p95_latency_ms": 0.411375003750436,
+    "precision_at_3": 0.3333333333333333,
+    "precision_at_5": 0.21666666666666667,
+    "recall_at_1": 0.9583333333333334,
+    "recall_at_3": 0.9583333333333334,
+    "recall_at_5": 1.0,
+    "source_type_filter_accuracy": 0.3076923076923077,
+    "total_count": 65,
+    "total_result_count": 65,
+    "valid_count": 65
+  },
+  "report_version": 2,
+  "resource_cost": {
+    "estimated_cost_usd": 0.0,
+    "external_api_calls": 0
+  },
+  "status": "measured",
+  "timestamp": "2026-08-03T07:34:36Z"
+}

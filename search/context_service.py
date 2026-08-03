@@ -20,6 +20,7 @@ from search.intent import classify_intent
 from search import debug_redaction, ranking
 from search.ranking import ContextCandidateRanker
 from search.retrieval_pipeline import (
+    BoundedRetrievalExecutor,
     ContextRetrievalPipeline,
     managed_hit_matches_chunk,
     metadata_filters,
@@ -30,8 +31,14 @@ from storage.metadata_store import MetadataStore
 class _HydrationCachedMetadataStore:
     """Per-search facade that avoids repeated hydration across refill rounds."""
 
-    def __init__(self, metadata_store: MetadataStore):
+    def __init__(
+        self,
+        metadata_store: MetadataStore,
+        *,
+        enable_batch_hydration: bool = False,
+    ):
         self._metadata_store = metadata_store
+        self._enable_batch_hydration = enable_batch_hydration
         self.chunks: dict[str, ChunkModel | None] = {}
         self.documents: dict[str, DocumentModel | None] = {}
         self.sources: dict[str, Any | None] = {}
@@ -51,6 +58,32 @@ class _HydrationCachedMetadataStore:
             self.sources[source_id] = self._metadata_store.get_source(source_id)
         return self.sources[source_id]
 
+    def prime_active_evidence_snapshots(self, chunk_ids: Iterable[str]) -> None:
+        """Batch-prime active chunk/document rows before ranking hydration."""
+        if not self._enable_batch_hydration:
+            return
+        requested = list(
+            dict.fromkeys(
+                chunk_id
+                for chunk_id in chunk_ids
+                if chunk_id and chunk_id not in self.chunks
+            )
+        )
+        if not requested:
+            return
+        loader = getattr(self._metadata_store, "get_active_evidence_snapshots", None)
+        if not callable(loader):
+            return
+        snapshots = loader(requested)
+        for chunk_id in requested:
+            snapshot = snapshots.get(chunk_id)
+            if not isinstance(snapshot, (tuple, list)) or len(snapshot) != 2:
+                self.chunks[chunk_id] = None
+                continue
+            chunk, document = snapshot
+            self.chunks[chunk_id] = chunk
+            self.documents[chunk.document_id] = document
+
     def __getattr__(self, name: str):
         return getattr(self._metadata_store, name)
 
@@ -66,6 +99,8 @@ class ContextSearchService:
         retriever: Callable | Iterable[DocumentModel] | None = None,
         vector_retriever_cls=None,
         default_source_ids: Iterable[str] | None = None,
+        retrieval_timeout_seconds: float | None = None,
+        retrieval_max_concurrency: int | None = None,
     ):
         self.metadata_store = metadata_store
         self.indexer = indexer
@@ -75,6 +110,23 @@ class ContextSearchService:
         self.default_source_ids = self._normalize_default_source_ids(default_source_ids)
         self._default_source_id_set = set(self.default_source_ids or ())
         self.ranker = ContextCandidateRanker(self.metadata_store, self.config)
+        self._retrieval_executor = BoundedRetrievalExecutor(
+            timeout_seconds=(
+                self.config.request_timeout
+                if retrieval_timeout_seconds is None
+                else retrieval_timeout_seconds
+            ),
+            max_concurrency=(
+                self.config.connection_limit
+                if retrieval_max_concurrency is None
+                else retrieval_max_concurrency
+            ),
+        )
+
+    @property
+    def retrieval_executor(self) -> BoundedRetrievalExecutor:
+        """Shared bounded executor for multi-step internal retrieval requests."""
+        return self._retrieval_executor
 
     async def search_context(
         self,
@@ -83,6 +135,9 @@ class ContextSearchService:
         top_k: int = 10,
         include_debug: bool = False,
         include_internal_metadata: bool = False,
+        candidate_budget: int | None = None,
+        candidate_metadata_filters: dict[str, list[str]] | None = None,
+        _retrieval_deadline: float | None = None,
     ) -> dict:
         filter_payload = self._filter_payload(filters)
         source_ids = self._effective_source_ids(filter_payload)
@@ -94,15 +149,30 @@ class ContextSearchService:
                 include_internal_metadata=include_internal_metadata,
             )
         normalized_filters = self._normalized_filters(filter_payload)
-        retrieval_limit = top_k
-        max_limit = self._max_retrieval_limit(retrieval_limit)
-        hydration_store = _HydrationCachedMetadataStore(self.metadata_store)
+        bounded_candidate_budget = self._candidate_budget(candidate_budget)
+        bounded_metadata_filters = self._candidate_metadata_filters(
+            candidate_metadata_filters
+        )
+        retrieval_limit = min(top_k, bounded_candidate_budget or top_k)
+        max_limit = (
+            bounded_candidate_budget
+            if bounded_candidate_budget is not None
+            else self._max_retrieval_limit(retrieval_limit)
+        )
+        hydration_store = _HydrationCachedMetadataStore(
+            self.metadata_store,
+            enable_batch_hydration=bounded_candidate_budget is not None,
+        )
         has_date_filters = self._has_date_filters(filter_payload)
         cached_pipeline = (
             self._pipeline(
                 metadata_store=cast(MetadataStore, hydration_store),
             )
-            if has_date_filters
+            if (
+                has_date_filters
+                or bounded_candidate_budget is not None
+                or bounded_metadata_filters is not None
+            )
             else None
         )
 
@@ -112,6 +182,9 @@ class ContextSearchService:
                     query,
                     retrieval_limit,
                     source_ids,
+                    hard_candidate_limit=bounded_candidate_budget,
+                    candidate_metadata_filters=bounded_metadata_filters,
+                    deadline=_retrieval_deadline,
                 )
                 if cached_pipeline is not None
                 else await self._retrieve_candidates(
@@ -148,6 +221,40 @@ class ContextSearchService:
             include_debug=include_debug,
             include_internal_metadata=include_internal_metadata,
         )
+
+    @staticmethod
+    def _candidate_budget(value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("candidate_budget must be a positive integer")
+        return value
+
+    @staticmethod
+    def _candidate_metadata_filters(
+        value: dict[str, list[str]] | None,
+    ) -> dict[str, list[str]] | None:
+        if value is None:
+            return None
+        allowed_keys = {
+            "evidence_source_type",
+            "experience_type",
+            "document_id",
+        }
+        if set(value) - allowed_keys:
+            raise ValueError("unsupported candidate metadata filter")
+        normalized: dict[str, list[str]] = {}
+        for key, raw_values in value.items():
+            if not isinstance(raw_values, list):
+                raise ValueError("candidate metadata filter values must be lists")
+            values = list(
+                dict.fromkeys(
+                    str(item) for item in raw_values if isinstance(item, str) and item
+                )
+            )
+            if values:
+                normalized[key] = values
+        return normalized or None
 
     async def search_documents(
         self,
@@ -235,7 +342,9 @@ class ContextSearchService:
             include_debug=include_debug,
             include_internal_metadata=True,
         )
-        return payload, payload.get("_internal_grounding", payload.get("_grounding", {}))
+        return payload, payload.get(
+            "_internal_grounding", payload.get("_grounding", {})
+        )
 
     def _empty_search_result(
         self,
@@ -285,7 +394,9 @@ class ContextSearchService:
         ]
 
     @staticmethod
-    def _normalize_default_source_ids(source_ids: Iterable[str] | None) -> tuple[str, ...] | None:
+    def _normalize_default_source_ids(
+        source_ids: Iterable[str] | None,
+    ) -> tuple[str, ...] | None:
         if source_ids is None:
             return None
         if isinstance(source_ids, str):
@@ -364,6 +475,7 @@ class ContextSearchService:
                 if metadata_store is None
                 else ContextCandidateRanker(active_store, self.config)
             ),
+            retrieval_executor=self._retrieval_executor,
         )
 
     async def _retrieve_candidates(
@@ -420,15 +532,20 @@ class ContextSearchService:
         term_groups: list[set[str]],
         candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        return self.ranker.metadata_fallback_candidates(query, top_k, source_ids, term_groups, candidates)
+        return self.ranker.metadata_fallback_candidates(
+            query, top_k, source_ids, term_groups, candidates
+        )
 
     @staticmethod
     def _managed_hit_matches_chunk(metadata: dict[str, Any], chunk) -> bool:
         return managed_hit_matches_chunk(metadata, chunk)
 
     @staticmethod
-    def _metadata_filters(source_ids: list[str] | None):
-        return metadata_filters(source_ids)
+    def _metadata_filters(
+        source_ids: list[str] | None,
+        candidate_metadata_filters: dict[str, list[str]] | None = None,
+    ):
+        return metadata_filters(source_ids, candidate_metadata_filters)
 
     def _keyword_candidates(
         self,
@@ -438,7 +555,9 @@ class ContextSearchService:
         source_ids: list[str] | None,
         term_groups: list[set[str]] | None = None,
     ) -> list[dict[str, Any]]:
-        return self.ranker.keyword_candidates(query, documents, top_k, source_ids, term_groups)
+        return self.ranker.keyword_candidates(
+            query, documents, top_k, source_ids, term_groups
+        )
 
     def _metadata_keyword_candidates(
         self,
@@ -527,7 +646,9 @@ class ContextSearchService:
     def _document_metadata_haystack(document: DocumentModel) -> str:
         return ranking.document_metadata_haystack(document)
 
-    def _is_document_like(self, document: DocumentModel, metadata_haystack: str) -> bool:
+    def _is_document_like(
+        self, document: DocumentModel, metadata_haystack: str
+    ) -> bool:
         return self.ranker.is_document_like(document, metadata_haystack)
 
     def _document_intent_allows_chunk(
@@ -545,14 +666,18 @@ class ContextSearchService:
         metadata_haystack: str,
         is_document_like: bool,
     ) -> bool:
-        return ranking.term_group_matches(term_group, haystack, metadata_haystack, is_document_like)
+        return ranking.term_group_matches(
+            term_group, haystack, metadata_haystack, is_document_like
+        )
 
     @staticmethod
     def _query_term_groups(query: str) -> list[set[str]]:
         return ranking.query_term_groups(query)
 
     @staticmethod
-    def _append_query_term_group(raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]):
+    def _append_query_term_group(
+        raw_term: str, groups: list[set[str]], seen: set[tuple[str, ...]]
+    ):
         ranking.append_query_term_group(raw_term, groups, seen)
 
     @staticmethod
@@ -571,7 +696,9 @@ class ContextSearchService:
         top_k: int,
         source_ids: list[str] | None,
     ) -> bool:
-        return ranking.should_run_metadata_fallback(query, term_groups, candidates, top_k, source_ids)
+        return ranking.should_run_metadata_fallback(
+            query, term_groups, candidates, top_k, source_ids
+        )
 
     def _metadata_fallback_source_ids(
         self,
@@ -589,7 +716,9 @@ class ContextSearchService:
         return ranking.metadata_lookup_terms(term_groups, source_ids)
 
     @staticmethod
-    def _github_metadata_anchor_groups(query: str, term_groups: list[set[str]]) -> list[set[str]]:
+    def _github_metadata_anchor_groups(
+        query: str, term_groups: list[set[str]]
+    ) -> list[set[str]]:
         return ranking.github_metadata_anchor_groups(query, term_groups)
 
     @staticmethod
@@ -597,7 +726,9 @@ class ContextSearchService:
         return ranking.ordinary_metadata_lookup_terms(term_groups)
 
     @staticmethod
-    def _document_intent_metadata_lookup_terms(term_groups: list[set[str]]) -> set[str] | None:
+    def _document_intent_metadata_lookup_terms(
+        term_groups: list[set[str]],
+    ) -> set[str] | None:
         return ranking.document_intent_metadata_lookup_terms(term_groups)
 
     @staticmethod
@@ -625,7 +756,9 @@ class ContextSearchService:
         document: DocumentModel,
         source_type_terms: set[str],
     ) -> bool:
-        return self.ranker.document_matches_source_type_terms(document, source_type_terms)
+        return self.ranker.document_matches_source_type_terms(
+            document, source_type_terms
+        )
 
     @classmethod
     def _redact_debug_query_text(cls, value: str) -> str:
@@ -644,7 +777,9 @@ class ContextSearchService:
         return ranking.metadata_lookup_topical_terms(term_groups)
 
     @staticmethod
-    def _strong_anchor_lookup_terms(term_groups: list[set[str]]) -> tuple[set[str], set[str]]:
+    def _strong_anchor_lookup_terms(
+        term_groups: list[set[str]],
+    ) -> tuple[set[str], set[str]]:
         return ranking.strong_anchor_lookup_terms(term_groups)
 
     @staticmethod
@@ -661,14 +796,18 @@ class ContextSearchService:
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        return self.ranker.includes_text_in_metadata_lookup(query, term_groups, source_ids)
+        return self.ranker.includes_text_in_metadata_lookup(
+            query, term_groups, source_ids
+        )
 
     def _requires_document_like_metadata_lookup(
         self,
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        return self.ranker.requires_document_like_metadata_lookup(term_groups, source_ids)
+        return self.ranker.requires_document_like_metadata_lookup(
+            term_groups, source_ids
+        )
 
     def _prefers_document_like_metadata_lookup(
         self,
@@ -676,7 +815,9 @@ class ContextSearchService:
         term_groups: list[set[str]],
         source_ids: list[str] | None,
     ) -> bool:
-        return self.ranker.prefers_document_like_metadata_lookup(query, term_groups, source_ids)
+        return self.ranker.prefers_document_like_metadata_lookup(
+            query, term_groups, source_ids
+        )
 
     @staticmethod
     def _query_is_metadata_like(query: str, term_groups: list[set[str]]) -> bool:
@@ -710,11 +851,15 @@ class ContextSearchService:
         return ranking.query_looks_like_repository_name(query)
 
     @staticmethod
-    def _query_looks_like_repository_name_from_groups(term_groups: list[set[str]]) -> bool:
+    def _query_looks_like_repository_name_from_groups(
+        term_groups: list[set[str]],
+    ) -> bool:
         return ranking.query_looks_like_repository_name_from_groups(term_groups)
 
     @staticmethod
-    def _query_has_strong_repository_signal(query: str, term_groups: list[set[str]]) -> bool:
+    def _query_has_strong_repository_signal(
+        query: str, term_groups: list[set[str]]
+    ) -> bool:
         return ranking.query_has_strong_repository_signal(query, term_groups)
 
     @staticmethod
@@ -925,7 +1070,9 @@ class ContextSearchService:
             url=chunk.url,
             path=chunk.path,
             score=float(candidate.get("score", 0.0)),
-            vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
+            vector_score=float(
+                candidate.get("vector_score", candidate.get("score", 0.0))
+            ),
             metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
             preview=self._preview(chunk.text),
             text=chunk.text,
@@ -958,7 +1105,9 @@ class ContextSearchService:
             url=chunk.url,
             path=chunk.path,
             score=float(candidate.get("score", 0.0)),
-            vector_score=float(candidate.get("vector_score", candidate.get("score", 0.0))),
+            vector_score=float(
+                candidate.get("vector_score", candidate.get("score", 0.0))
+            ),
             metadata_priority=int(candidate.get("metadata_priority", 0) or 0),
             matched_context=chunk.text or "",
             published_at=document.published_at,
@@ -1064,8 +1213,10 @@ class ContextSearchService:
         undated = [item for item in results if item not in dated]
         dated.sort(key=lambda item: item.document_id)
         dated.sort(
-            key=lambda item: cls._sort_timestamp(getattr(item, sort_by))
-            or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda item: (
+                cls._sort_timestamp(getattr(item, sort_by))
+                or datetime.min.replace(tzinfo=timezone.utc)
+            ),
             reverse=sort_order == SortOrder.DESC.value,
         )
         undated.sort(key=lambda item: item.document_id)
@@ -1094,7 +1245,10 @@ class ContextSearchService:
             "results": results,
         }
         raw_grounding = {
-            "original_term_groups": [sorted(group) for group in retrieval_debug.get("original_term_groups", [])],
+            "original_term_groups": [
+                sorted(group)
+                for group in retrieval_debug.get("original_term_groups", [])
+            ],
             "effective_term_groups": [sorted(group) for group in effective_term_groups],
         }
         debug_payload = self._build_debug_payload(

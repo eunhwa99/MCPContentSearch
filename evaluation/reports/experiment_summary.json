@@ -1,0 +1,73 @@
+{
+  "status": "measured",
+  "disclaimer": "TEST FIXTURE — NOT PRODUCT PERFORMANCE",
+  "timestamp": "2026-08-03T07:34:36Z",
+  "proxy_variant_reports_timestamp": "2026-08-03T07:34:36Z",
+  "proxy_variant_git_identifier": "commit=9a2d39cbcb6a28f90d47ff0b62e76000edec627c;head_tree=fdfe77e949bf3384382acf1bf7ab34d99d10a75b;worktree_tree=8f4e7602b4bb3c579d242634f77729f987fbdecb;state=dirty",
+  "git_identifier": "commit=9a2d39cbcb6a28f90d47ff0b62e76000edec627c;head_tree=fdfe77e949bf3384382acf1bf7ab34d99d10a75b;worktree_tree=8f4e7602b4bb3c579d242634f77729f987fbdecb;state=dirty",
+  "checked_report_schema_version": 2,
+  "dataset": {
+    "name": "retrieval_gold.example.jsonl",
+    "label_source": "deterministic_fixture",
+    "size": 13
+  },
+  "selected_default": "production_analog",
+  "selected_report": "evaluation/reports/retrieval_fixture_baseline.json",
+  "selected_input_digests": {
+    "configuration_sha256": "8053a8a703053abe57ed425509c65713ab733fe0dd87f12c8fc96a43c5820409",
+    "corpus_sha256": "0bff529524068586730a648b7bd957af6200cc8c8b545073c365037c2776857a",
+    "dataset_sha256": "d193117a73adb4d52c73d7f51145a6a04cc4c83f687213f58cafafd2b23b8715"
+  },
+  "selected_execution_path": {
+    "context_service": "ContextSearchService",
+    "evidence_service": "EvidenceSearchService",
+    "identity": "context-search-service+evidence-search-service+deterministic-offline-candidate-provider:v1",
+    "provider": "deterministic_offline_candidate_provider"
+  },
+  "schema_migration_validation": {
+    "legacy_v1_comparison": {
+      "passed": false,
+      "violations": [
+        "invalid_baseline_report_version",
+        "missing_baseline_input_digests",
+        "missing_baseline_execution_path_identity"
+      ]
+    },
+    "same_workload_v2_comparison": {
+      "passed": true,
+      "violations": []
+    }
+  },
+  "external_api_calls": 0,
+  "estimated_cost_usd": 0.0,
+  "latency_analysis": {
+    "proxy_path": "direct_offline_fixture_scorer",
+    "selected_path": "context_and_evidence_services",
+    "cross_path_delta_ms": null,
+    "cross_path_delta_status": "n/a_non_comparable_paths",
+    "selected_service_path_p95_latency_ms": 2.0080410031368956,
+    "same_path_baseline_p95_latency_ms": 2.0080410031368956,
+    "same_path_current_p95_latency_ms": 2.0190829964121804,
+    "same_path_delta_ms": 0.011041993275284767,
+    "proxy_variant_p95_latency_ms": {
+      "baseline_keyword": 0.09612500434741378,
+      "query_normalization": 0.10141699749510735,
+      "metadata_filters": 0.054625008488073945,
+      "exact_dedup": 0.11283399362582713,
+      "near_dedup": 0.12570800026878715,
+      "hybrid_rrf": 0.411375003750436,
+      "candidate_tuning": 0.41649999911896884
+    }
+  },
+  "variants": {
+    "baseline_keyword": {"recall_at_5": 0.9583333333333334, "mrr": 1.0, "ndcg_at_5": 0.9447793310592014, "duplicate_result_rate": 0.18421052631578946, "source_type_filter_accuracy": 0.47368421052631576, "experience_type_filter_accuracy": 0.7631578947368421, "empty_result_accuracy": 1.0, "p95_latency_ms": 0.09612500434741378, "failure_count": 10},
+    "query_normalization": {"recall_at_5": 0.9583333333333334, "mrr": 1.0, "ndcg_at_5": 0.9447793310592014, "duplicate_result_rate": 0.23684210526315788, "source_type_filter_accuracy": 0.47368421052631576, "experience_type_filter_accuracy": 0.7631578947368421, "empty_result_accuracy": 1.0, "p95_latency_ms": 0.10141699749510735, "failure_count": 10},
+    "metadata_filters": {"recall_at_5": 0.9583333333333334, "mrr": 1.0, "ndcg_at_5": 0.9378892821186144, "duplicate_result_rate": 0.2222222222222222, "source_type_filter_accuracy": 1.0, "experience_type_filter_accuracy": 1.0, "empty_result_accuracy": 1.0, "p95_latency_ms": 0.054625008488073945, "failure_count": 1},
+    "exact_dedup": {"recall_at_5": 0.9583333333333334, "mrr": 1.0, "ndcg_at_5": 0.9447793310592014, "duplicate_result_rate": 0.11428571428571428, "source_type_filter_accuracy": 0.4857142857142857, "experience_type_filter_accuracy": 0.7428571428571429, "empty_result_accuracy": 1.0, "p95_latency_ms": 0.11283399362582713, "failure_count": 10},
+    "near_dedup": {"recall_at_5": 0.9583333333333334, "mrr": 1.0, "ndcg_at_5": 0.9447793310592014, "duplicate_result_rate": 0.0, "source_type_filter_accuracy": 0.4838709677419355, "experience_type_filter_accuracy": 0.7096774193548387, "empty_result_accuracy": 1.0, "p95_latency_ms": 0.12570800026878715, "failure_count": 10},
+    "hybrid_rrf": {"recall_at_5": 1.0, "mrr": 1.0, "ndcg_at_5": 0.9701554117170889, "duplicate_result_rate": 0.13846153846153847, "source_type_filter_accuracy": 0.3076923076923077, "experience_type_filter_accuracy": 0.5692307692307692, "empty_result_accuracy": 0.9230769230769231, "p95_latency_ms": 0.411375003750436, "failure_count": 13},
+    "candidate_tuning": {"recall_at_5": 1.0, "mrr": 1.0, "ndcg_at_5": 0.9701554117170889, "duplicate_result_rate": 0.16923076923076924, "source_type_filter_accuracy": 0.3076923076923077, "experience_type_filter_accuracy": 0.5692307692307692, "empty_result_accuracy": 0.9230769230769231, "p95_latency_ms": 0.41649999911896884, "failure_count": 13},
+    "production_analog": {"recall_at_5": 1.0, "document_recall_at_5": 1.0, "mrr": 1.0, "ndcg_at_5": 0.9792758870925922, "duplicate_result_rate": 0.0, "source_type_filter_accuracy": 1.0, "experience_type_filter_accuracy": 1.0, "empty_result_accuracy": 1.0, "p95_latency_ms": 2.0080410031368956, "failure_count": 0}
+  },
+  "selection_rationale": "The selected production analog executes ContextSearchService and EvidenceSearchService and retains Recall@5, MRR, citation validity, source filters, experience filters, empty-result accuracy all at 1.0 with duplicate-result rate at 0.0. Other variants remain historical offline scorer experiments. RRF remained experiment-only because production has no explicit RRF mode and the isolated variant produced a no-answer false positive."
+}

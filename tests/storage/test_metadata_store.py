@@ -102,7 +102,9 @@ def _insert_legacy_web_source_row(store: MetadataStore):
         )
 
 
-def _raw_source_and_job_status(store: MetadataStore, source_id: str, job_id: str) -> tuple[str, str]:
+def _raw_source_and_job_status(
+    store: MetadataStore, source_id: str, job_id: str
+) -> tuple[str, str]:
     with store._connect() as conn:
         source_row = conn.execute(
             "SELECT sync_status FROM sources WHERE source_id = ?",
@@ -138,6 +140,100 @@ def _sensitive_lifecycle_text(source_id: str) -> str:
         "path:/Users/tester/private vault/meeting notes.md, job_id=job-123; "
         rf"file:C:\Users\tester\private vault\meeting notes.md; source_id={source_id}"
     )
+
+
+def test_successful_sync_terminal_transaction_persists_all_ingestion_metrics(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    source = SourceModel(
+        source_id="source_metrics",
+        source_type=SourceType.NOTION,
+        name="Metrics",
+        enabled=True,
+        sync_status=SyncStatus.IDLE,
+    )
+    store.upsert_source(source)
+    job, started = store.begin_sync_job(source.source_id)
+    assert started is True
+
+    completed, _ = store.complete_successful_sync(
+        job_id=job.job_id,
+        source_id=source.source_id,
+        total_documents=9,
+        processed_documents=7,
+        indexed_chunks=13,
+        skipped_documents=2,
+        last_seen_at="2026-08-03T00:00:00Z",
+        cleanup_missing_documents=False,
+        deleted_at="2026-08-03T00:01:00Z",
+        parsed_documents=9,
+        updated_documents=4,
+        created_chunks=5,
+        updated_chunks=6,
+        skipped_chunks=7,
+        embeddings_generated=8,
+        embeddings_reused=9,
+        parsing_failures=0,
+        indexing_latency_ms=12.5,
+    )
+
+    assert completed.status == SyncJobStatus.SUCCEEDED
+    assert completed.parsed_documents == 9
+    assert completed.updated_documents == 4
+    assert completed.created_chunks == 5
+    assert completed.updated_chunks == 6
+    assert completed.skipped_chunks == 7
+    assert completed.embeddings_generated == 8
+    assert completed.embeddings_reused == 9
+    assert completed.parsing_failures == 0
+    assert completed.indexing_latency_ms == 12.5
+
+
+def test_failed_sync_terminal_transaction_persists_all_ingestion_metrics(tmp_path):
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    source = SourceModel(
+        source_id="source_failed_metrics",
+        source_type=SourceType.NOTION,
+        name="Failed metrics",
+        enabled=True,
+        sync_status=SyncStatus.IDLE,
+    )
+    store.upsert_source(source)
+    job, started = store.begin_sync_job(source.source_id)
+    assert started is True
+
+    failed = store.complete_failed_sync(
+        job_id=job.job_id,
+        source_id=source.source_id,
+        error_message="synthetic failure",
+        total_documents=9,
+        processed_documents=7,
+        indexed_chunks=13,
+        skipped_documents=2,
+        parsed_documents=9,
+        updated_documents=4,
+        created_chunks=5,
+        updated_chunks=6,
+        skipped_chunks=7,
+        embeddings_generated=8,
+        embeddings_reused=9,
+        parsing_failures=1,
+        indexing_latency_ms=12.5,
+    )
+
+    assert failed.status == SyncJobStatus.FAILED
+    assert failed.total_documents == 9
+    assert failed.processed_documents == 7
+    assert failed.indexed_chunks == 13
+    assert failed.skipped_documents == 2
+    assert failed.parsed_documents == 9
+    assert failed.updated_documents == 4
+    assert failed.created_chunks == 5
+    assert failed.updated_chunks == 6
+    assert failed.skipped_chunks == 7
+    assert failed.embeddings_generated == 8
+    assert failed.embeddings_reused == 9
+    assert failed.parsing_failures == 1
+    assert failed.indexing_latency_ms == 12.5
 
 
 def test_metadata_store_redacts_short_explicit_auth_credentials_at_rest(tmp_path):
@@ -583,7 +679,9 @@ def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):
         _assert_sanitized_lifecycle_text(row["stale_cleanup_disabled_reason"])
 
 
-def test_metadata_store_sanitizes_direct_job_status_failure_and_cleanup_writes(tmp_path):
+def test_metadata_store_sanitizes_direct_job_status_failure_and_cleanup_writes(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     source_id = "source_notion"
     raw = _sensitive_lifecycle_text(source_id)
@@ -875,7 +973,9 @@ def test_get_latest_sync_job_prefers_newest_running_row_when_started_at_ties(tmp
     assert first_job.status == SyncJobStatus.FAILED
 
 
-def test_source_status_snapshot_prefers_newest_finished_rows_when_timestamps_tie(tmp_path):
+def test_source_status_snapshot_prefers_newest_finished_rows_when_timestamps_tie(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.upsert_source(
         SourceModel(
@@ -1691,7 +1791,9 @@ def test_atomic_document_chunk_commit_rolls_back_when_chunk_insert_fails(tmp_pat
     )
 
     with pytest.raises(Exception):
-        store.upsert_document_and_replace_chunks(document, [duplicate_chunk, duplicate_chunk])
+        store.upsert_document_and_replace_chunks(
+            document, [duplicate_chunk, duplicate_chunk]
+        )
 
     assert store.get_document("doc_atomic") is None
     assert store.list_chunks_for_document("doc_atomic") == []
@@ -1795,7 +1897,9 @@ def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):
         return job.job_id, started, local_store.sync_owner_id
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        results = list(executor.map(lambda _: begin_from_new_connection(), range(worker_count)))
+        results = list(
+            executor.map(lambda _: begin_from_new_connection(), range(worker_count))
+        )
 
     started_results = [result for result in results if result[1]]
     job_ids = {job_id for job_id, _, _ in results}
@@ -1810,9 +1914,7 @@ def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):
         ).fetchone()
         owner_ids = {
             row["owner_id"]
-            for row in conn.execute(
-                "SELECT owner_id FROM sync_job_owners"
-            ).fetchall()
+            for row in conn.execute("SELECT owner_id FROM sync_job_owners").fetchall()
         }
 
     assert len(started_results) == 1
@@ -1851,7 +1953,9 @@ def test_begin_sync_job_uses_running_job_even_when_source_status_is_stale(tmp_pa
 
 
 def test_begin_sync_job_recovers_stale_running_job(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1885,7 +1989,9 @@ def test_begin_sync_job_recovers_stale_running_job(tmp_path):
 
 
 def test_begin_sync_job_recovers_all_stale_running_jobs(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2013,8 +2119,12 @@ def test_recover_orphaned_running_jobs_preserves_jobs_started_after_cutoff(tmp_p
     assert returned.job_id == active.job_id
 
 
-def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_cutoff(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_cutoff(
+    tmp_path,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2045,7 +2155,9 @@ def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_
     assert returned.job_id == active.job_id
 
 
-def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, monkeypatch):
+def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(
+    tmp_path, monkeypatch
+):
     store = MetadataStore(
         tmp_path / "contextwiki.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
@@ -2073,7 +2185,9 @@ def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, mo
         started_at="2026-06-01T00:00:00+00:00",
         heartbeat_at=datetime.now(timezone.utc).isoformat(),
     )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: False))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: False)
+    )
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
@@ -2125,7 +2239,9 @@ def test_recover_orphaned_running_jobs_recovers_stale_previous_owner_even_if_pid
         started_at=stale_owner_heartbeat,
         heartbeat_at=stale_owner_heartbeat,
     )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True)
+    )
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
@@ -2187,7 +2303,9 @@ def test_recover_orphaned_running_jobs_preserves_same_pid_previous_owner_when_jo
             """,
             ("previous-owner",),
         )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True)
+    )
     monkeypatch.setattr(
         MetadataStore,
         "_get_process_start_identity",
@@ -2245,7 +2363,9 @@ def test_begin_sync_job_preserves_same_pid_previous_owner_when_job_heartbeat_is_
         started_at=stale_owner_heartbeat,
         heartbeat_at=stale_owner_heartbeat,
     )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True)
+    )
 
     returned, started = store.begin_sync_job("source_github")
 
@@ -2292,7 +2412,9 @@ def test_begin_sync_job_recovers_stale_same_pid_previous_owner_and_starts_fresh_
         started_at=stale_timestamp,
         heartbeat_at=stale_timestamp,
     )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True)
+    )
 
     fresh, fresh_started = store.begin_sync_job("source_github")
 
@@ -2301,7 +2423,9 @@ def test_begin_sync_job_recovers_stale_same_pid_previous_owner_and_starts_fresh_
     assert store.get_sync_job(previous_job.job_id).status == SyncJobStatus.FAILED
 
 
-def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, monkeypatch):
+def test_recover_orphaned_running_jobs_preserves_live_previous_owner(
+    tmp_path, monkeypatch
+):
     store = MetadataStore(
         tmp_path / "contextwiki.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
@@ -2329,7 +2453,9 @@ def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, m
         started_at="2026-06-01T00:00:00+00:00",
         heartbeat_at=datetime.now(timezone.utc).isoformat(),
     )
-    monkeypatch.setattr(MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True))
+    monkeypatch.setattr(
+        MetadataStore, "_is_process_alive", staticmethod(lambda process_id: True)
+    )
 
     recovered_count = store.recover_orphaned_running_jobs(
         started_before="2026-06-02T00:00:00+00:00",
@@ -2378,7 +2504,9 @@ def test_begin_sync_job_preserves_owned_job_after_unowned_grace(tmp_path):
     assert returned.job_id == active.job_id
 
 
-def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path, monkeypatch):
+def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(
+    tmp_path, monkeypatch
+):
     store = MetadataStore(
         tmp_path / "contextwiki.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
@@ -2428,7 +2556,9 @@ def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path
     assert fresh.job_id != previous_job.job_id
 
 
-def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(tmp_path):
+def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(
+    tmp_path,
+):
     store = MetadataStore(
         tmp_path / "contextwiki.sqlite3",
         unowned_running_job_grace_seconds=60,
@@ -2515,8 +2645,12 @@ def test_is_process_alive_treats_permission_error_as_alive(monkeypatch):
     assert MetadataStore._is_process_alive(12345) is True
 
 
-def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate(
+    tmp_path,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2555,8 +2689,12 @@ def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate
     assert store.get_source("source_github").sync_status == SyncStatus.RUNNING
 
 
-def test_latest_sync_job_prefers_active_running_job_over_later_failed_duplicate(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+def test_latest_sync_job_prefers_active_running_job_over_later_failed_duplicate(
+    tmp_path,
+):
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2591,7 +2729,9 @@ def test_latest_sync_job_prefers_active_running_job_over_later_failed_duplicate(
 
 
 def test_latest_sync_job_recovers_stale_running_job_without_new_sync(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2728,7 +2868,9 @@ def test_running_job_commit_rejects_cross_source_document(tmp_path):
     )
 
     with pytest.raises(ValueError, match="belongs to source_github"):
-        store.upsert_document_and_replace_chunks_for_running_job(job.job_id, document, [chunk])
+        store.upsert_document_and_replace_chunks_for_running_job(
+            job.job_id, document, [chunk]
+        )
 
     assert store.get_document("wrong-source-doc") is None
 
@@ -2848,7 +2990,9 @@ def test_replace_document_chunks_rejects_missing_document(tmp_path):
 
 
 def test_superseded_running_job_cannot_commit_metadata(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2975,7 +3119,10 @@ def test_metadata_store_persists_identity_lifecycle_fields(tmp_path):
     assert persisted is not None
     assert store.get_document("blob-sha-1") is None
     assert persisted.external_id == "eunhwa99/MCPContentSearch:api/tools.py"
-    assert persisted.canonical_url == "https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py"
+    assert (
+        persisted.canonical_url
+        == "https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py"
+    )
     assert persisted.last_seen_at == "2026-05-22T00:00:01Z"
     assert persisted.last_seen_sync_id == "job-1"
     assert persisted.deleted_at == ""
@@ -3071,12 +3218,12 @@ def test_search_filters_reject_utc_conversion_overflow_deterministically(prefix)
         ValueError,
         match="Date filters must be valid ISO 8601 timestamps",
     ):
-        SearchFilters(
-            **{f"{prefix}_from": "0001-01-01T00:00:00+14:00"}
-        )
+        SearchFilters(**{f"{prefix}_from": "0001-01-01T00:00:00+14:00"})
 
 
-def test_metadata_store_persists_normalized_document_times_and_adds_legacy_columns(tmp_path):
+def test_metadata_store_persists_normalized_document_times_and_adds_legacy_columns(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     document = DocumentModel(
         id="dated-doc",
@@ -3103,7 +3250,9 @@ def test_metadata_store_persists_normalized_document_times_and_adds_legacy_colum
     assert {"published_at", "modified_at", "indexed_at", "date_provenance"} <= columns
 
 
-def test_metadata_store_canonicalizes_document_times_before_sql_keyset_pagination(tmp_path):
+def test_metadata_store_canonicalizes_document_times_before_sql_keyset_pagination(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     for document_id, published_at, modified_at, indexed_at, provenance in (
         (
@@ -3232,7 +3381,9 @@ def test_metadata_store_blanks_utc_conversion_overflow_without_failing_sync(tmp_
     assert stored.date_provenance == ""
 
 
-def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(tmp_path):
+def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     for document_id, published_at in (
         ("z-earlier", "2026-07-01T00:00:00.000100Z"),
@@ -3288,7 +3439,9 @@ def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(
     assert sql_matches == python_matches == {"a-later"}
 
 
-def test_list_documents_filters_active_rows_sorts_dates_and_paginates_with_cursor(tmp_path):
+def test_list_documents_filters_active_rows_sorts_dates_and_paginates_with_cursor(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     for document_id, published_at, deleted_at in [
         ("newest", "2026-07-03T00:00:00Z", ""),
@@ -3357,8 +3510,7 @@ def test_document_filter_source_aliases_form_one_effective_union(tmp_path):
     filters = SearchFilters(source_id="source_b", source_ids=["source_a", "source_b"])
 
     assert [
-        store.document_matches_filters(document, filters)
-        for document in documents
+        store.document_matches_filters(document, filters) for document in documents
     ] == [True, True, False]
     assert {
         document.source_id
@@ -3405,7 +3557,9 @@ def test_list_documents_cursor_binds_to_canonical_source_alias_union(tmp_path):
         ("desc", ["c", "a", "b", "null-a", "null-b"]),
     ],
 )
-def test_list_documents_keyset_keeps_ties_and_nulls_last(tmp_path, sort_order, expected):
+def test_list_documents_keyset_keeps_ties_and_nulls_last(
+    tmp_path, sort_order, expected
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     for document_id, published_at in (
         ("a", "2026-07-01T00:00:00Z"),
@@ -3435,9 +3589,7 @@ def test_list_documents_keyset_keeps_ties_and_nulls_last(tmp_path, sort_order, e
             page_size=2,
             cursor=cursor,
         )
-        document_ids.extend(
-            document.document_id for document in page["documents"]
-        )
+        document_ids.extend(document.document_id for document in page["documents"])
         cursor = page["next_cursor"]
         if cursor is None:
             break
@@ -3593,9 +3745,7 @@ def test_list_documents_rejects_cursor_when_anchor_does_not_match_filtered_row(
     )
     valid_cursor = first_page["next_cursor"]
     payload = store._decode_document_cursor(valid_cursor)
-    forged_cursor = store._encode_document_cursor(
-        {**payload, **payload_override}
-    )
+    forged_cursor = store._encode_document_cursor({**payload, **payload_override})
 
     with pytest.raises(ValueError, match="Invalid document cursor"):
         store.list_documents(
@@ -3760,7 +3910,10 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
     store.ensure_schema()
 
     with store._connect() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
         row = conn.execute(
             """
             SELECT document_id, external_id, canonical_url, last_seen_at,
@@ -3849,7 +4002,9 @@ def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):
     store.ensure_schema()
 
     with store._connect() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()
+        }
 
     assert "version_id" in columns
     assert store.get_chunk("legacy-chunk").version_id == ""
@@ -3890,7 +4045,10 @@ def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
     store.ensure_schema()
 
     with store._connect() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sync_jobs)").fetchall()}
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sync_jobs)").fetchall()
+        }
         row = conn.execute(
             "SELECT job_id, owner_id FROM sync_jobs WHERE job_id = ?",
             ("legacy-job",),
@@ -3902,7 +4060,9 @@ def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
 
 
 def test_ensure_schema_adds_process_start_id_to_legacy_owner_table(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", sync_owner_id="current-owner")
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", sync_owner_id="current-owner"
+    )
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
     with store._connect() as conn:
         conn.executescript(
@@ -4291,7 +4451,10 @@ def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path
     )
 
     assert deleted_chunk_ids == ["github:eunhwa99/mcpcontentsearch:old.py:chunk:0:aaa"]
-    assert store.get_document(stale_configured_repo.id).deleted_at == "2026-05-22T00:03:00Z"
+    assert (
+        store.get_document(stale_configured_repo.id).deleted_at
+        == "2026-05-22T00:03:00Z"
+    )
     assert store.get_document(stale_ad_hoc_repo.id).deleted_at == ""
     assert store.list_chunks_for_document(stale_ad_hoc_repo.id)
     assert [chunk.document_id for chunk in store.list_chunks(["source_github"])] == [
@@ -4364,7 +4527,10 @@ def test_successful_sync_cleanup_prefix_treats_underscore_literally(tmp_path):
     )
 
     assert deleted_chunk_ids == ["github:eunhwa99/foo_bar:old.py:chunk:0:aaa"]
-    assert store.get_document(exact_prefix_document.id).deleted_at == "2026-05-22T00:03:00Z"
+    assert (
+        store.get_document(exact_prefix_document.id).deleted_at
+        == "2026-05-22T00:03:00Z"
+    )
     assert store.get_document(wildcard_like_document.id).deleted_at == ""
     assert store.list_chunks_for_document(wildcard_like_document.id)
 
@@ -4528,7 +4694,9 @@ def test_failed_sync_rejects_source_mismatch(tmp_path):
 
 
 def test_self_expired_job_marks_source_failed_when_no_replacement_is_active(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4557,7 +4725,9 @@ def test_self_expired_job_marks_source_failed_when_no_replacement_is_active(tmp_
 
 
 def test_stale_cross_source_document_claim_does_not_block_new_source(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_a",
@@ -4603,7 +4773,9 @@ def test_stale_cross_source_document_claim_does_not_block_new_source(tmp_path):
         platform="GitHub",
     )
 
-    current_job = store.validate_running_job_document(second_job.job_id, second_document)
+    current_job = store.validate_running_job_document(
+        second_job.job_id, second_document
+    )
 
     with store._connect() as conn:
         claim = conn.execute(
@@ -4619,7 +4791,9 @@ def test_stale_cross_source_document_claim_does_not_block_new_source(tmp_path):
 
 
 def test_superseded_running_job_cannot_finalize_stale_cleanup(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60
+    )
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -5024,20 +5198,21 @@ def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
     assert len(winners) == 1
     winner_index, first_job = winners[0]
     assert first_job.status == SyncJobStatus.RUNNING
-    assert sum(
-        1
-        for source_id in ("source_a", "source_b")
-        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
-    ) == 1
+    assert (
+        sum(
+            1
+            for source_id in ("source_a", "source_b")
+            if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
+        )
+        == 1
+    )
 
     workers[winner_index].complete_failed_sync(
         job_id=first_job.job_id,
         source_id=first_job.source_id,
         error_message="test terminalization",
     )
-    second_job = workers[1 - winner_index].claim_next_sync_job(
-        ["source_a", "source_b"]
-    )
+    second_job = workers[1 - winner_index].claim_next_sync_job(["source_a", "source_b"])
 
     assert second_job is not None
     assert second_job.job_id != first_job.job_id
@@ -5175,11 +5350,14 @@ def test_two_workers_can_claim_different_sources_when_max_concurrent_is_two(tmp_
     assert len(claimed) == 2
     assert {job.source_id for job in claimed} == {"source_a", "source_b"}
     assert all(job.status == SyncJobStatus.RUNNING for job in claimed)
-    assert sum(
-        1
-        for source_id in ("source_a", "source_b")
-        if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
-    ) == 2
+    assert (
+        sum(
+            1
+            for source_id in ("source_a", "source_b")
+            if requester.get_latest_sync_job(source_id).status == SyncJobStatus.RUNNING
+        )
+        == 2
+    )
 
 
 @pytest.mark.parametrize("invalid_value", (0, 9, -1))
@@ -5395,9 +5573,7 @@ def test_global_claim_preserves_fresh_linux_owner_when_pid_is_invisible_outside_
         MetadataStore,
         "_get_process_start_identity",
         staticmethod(
-            lambda process_id: observer_identity
-            if process_id == os.getpid()
-            else ""
+            lambda process_id: observer_identity if process_id == os.getpid() else ""
         ),
     )
 
@@ -5449,9 +5625,9 @@ def test_global_claim_recovers_fresh_linux_owner_when_pid_is_dead_in_same_scope(
         MetadataStore,
         "_get_process_start_identity",
         staticmethod(
-            lambda process_id: "linux-v2|boot-a|pidns-a|300"
-            if process_id == os.getpid()
-            else ""
+            lambda process_id: (
+                "linux-v2|boot-a|pidns-a|300" if process_id == os.getpid() else ""
+            )
         ),
     )
 

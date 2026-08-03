@@ -1,10 +1,12 @@
 import asyncio
 import json
+import stat
 from pathlib import Path
 
 import pytest
 
 import main
+from app_runtime import build_ingestion_runtime
 from environments.config import AppConfig
 
 
@@ -32,8 +34,9 @@ class FakeContentIndexer:
 class FakeMetadataStore:
     instances = []
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, require_private=False):
         self.db_path = Path(db_path)
+        self.require_private = require_private
         self.sources = {}
         self.recovered_source_ids = None
         self.__class__.instances.append(self)
@@ -105,6 +108,19 @@ class FakeCitationAnswerService:
         }
 
 
+class FakeEvidenceSearchService:
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.__class__.instances.append(self)
+
+    async def search_evidence(self, request):
+        del request
+        return []
+
+
 def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_path):
     monkeypatch.delenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", raising=False)
     monkeypatch.delenv("CONTEXTWIKI_OBSIDIAN_MAX_FILES", raising=False)
@@ -130,6 +146,13 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
     monkeypatch.setattr(main, "MetadataStore", FakeMetadataStore)
     monkeypatch.setattr(main, "ContextSearchService", FakeContextSearchService)
     monkeypatch.setattr(main, "CitationAnswerService", FakeCitationAnswerService)
+    FakeEvidenceSearchService.instances = []
+    monkeypatch.setattr(
+        main,
+        "EvidenceSearchService",
+        FakeEvidenceSearchService,
+        raising=False,
+    )
     monkeypatch.setattr(main, "NOTION_API_KEY", "")
     monkeypatch.setattr(main, "TISTORY_BLOG_NAME", "")
     monkeypatch.setattr(main, "get_env_secret", lambda name: "")
@@ -145,6 +168,7 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "search_documents",
         "list_documents",
         "fetch_context",
+        "search_evidence",
     }
     registered_tools = {tool.name for tool in asyncio.run(app.list_tools())}
     assert registered_tools == expected_tools
@@ -177,3 +201,144 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "source_obsidian",
     )
     assert chroma_collections
+
+
+def test_create_app_requires_private_stores_when_career_source_is_enabled(
+    monkeypatch,
+    tmp_path,
+):
+    career_root = tmp_path / "career"
+    career_root.mkdir()
+    manifest = tmp_path / "career-manifest.json"
+    manifest.write_text(
+        json.dumps({"root": "career", "documents": []}),
+        encoding="utf-8",
+    )
+    config = AppConfig(
+        chroma_db_path=tmp_path / "private" / "chroma",
+        metadata_db_path=tmp_path / "private" / "contextwiki.sqlite3",
+        career_manifest_path=manifest,
+        github_repositories=(),
+    )
+    setup_flags = []
+
+    def fake_setup_chroma(app_config, *, require_private=False):
+        assert app_config == config
+        setup_flags.append(require_private)
+        return object()
+
+    FakeMetadataStore.instances = []
+    monkeypatch.setattr(main, "AppConfig", lambda: config)
+    monkeypatch.setattr(main, "setup_chroma", fake_setup_chroma)
+    monkeypatch.setattr(main, "ChromaVectorStore", FakeVectorStore)
+    monkeypatch.setattr(main, "StorageContext", FakeStorageContext)
+    monkeypatch.setattr(main, "ContentIndexer", FakeContentIndexer)
+    monkeypatch.setattr(main, "MetadataStore", FakeMetadataStore)
+    monkeypatch.setattr(main, "ContextSearchService", FakeContextSearchService)
+    monkeypatch.setattr(main, "CitationAnswerService", FakeCitationAnswerService)
+    monkeypatch.setattr(main, "EvidenceSearchService", FakeEvidenceSearchService)
+    monkeypatch.setattr(main, "NOTION_API_KEY", "")
+    monkeypatch.setattr(main, "TISTORY_BLOG_NAME", "")
+    monkeypatch.setattr(main, "get_env_secret", lambda _name: "")
+
+    app = main.create_app()
+    sources = json.loads(asyncio.run(app.call_tool("list_sources", {}))[0].text)[
+        "sources"
+    ]
+
+    assert setup_flags == [True]
+    assert FakeMetadataStore.instances[0].require_private is True
+    assert any(source["source_id"] == "source_career" for source in sources)
+
+
+def test_create_app_preflights_both_private_stores_before_opening_chroma(
+    monkeypatch,
+    tmp_path,
+):
+    career_root = tmp_path / "career"
+    career_root.mkdir()
+    manifest = tmp_path / "career-manifest.json"
+    manifest.write_text(
+        json.dumps({"root": "career", "documents": []}),
+        encoding="utf-8",
+    )
+    private_parent = tmp_path / "private"
+    private_parent.mkdir(mode=0o700)
+    sqlite_path = private_parent / "contextwiki.sqlite3"
+    sqlite_path.write_bytes(b"")
+    sqlite_path.chmod(0o644)
+    config = AppConfig(
+        chroma_db_path=private_parent / "chroma",
+        metadata_db_path=sqlite_path,
+        career_manifest_path=manifest,
+        github_repositories=(),
+    )
+    setup_calls = []
+
+    def fake_setup_chroma(_config, *, require_private=False):
+        setup_calls.append(require_private)
+        return object()
+
+    monkeypatch.setattr(main, "AppConfig", lambda: config)
+    monkeypatch.setattr(main, "setup_chroma", fake_setup_chroma)
+    monkeypatch.setattr(main, "ChromaVectorStore", FakeVectorStore)
+    monkeypatch.setattr(main, "StorageContext", FakeStorageContext)
+    monkeypatch.setattr(main, "ContentIndexer", FakeContentIndexer)
+    monkeypatch.setattr(main, "MetadataStore", FakeMetadataStore)
+    monkeypatch.setattr(main, "NOTION_API_KEY", "")
+    monkeypatch.setattr(main, "TISTORY_BLOG_NAME", "")
+    monkeypatch.setattr(main, "get_env_secret", lambda _name: "")
+
+    with pytest.raises(RuntimeError, match="chmod 600") as exc_info:
+        main.create_app()
+
+    assert setup_calls == []
+    assert str(tmp_path) not in str(exc_info.value)
+    assert stat.S_IMODE(sqlite_path.stat().st_mode) == 0o644
+
+
+def test_missing_configured_career_manifest_is_preflighted_before_later_enable(
+    tmp_path,
+):
+    manifest = tmp_path / "career-manifest.json"
+    private_parent = tmp_path / "private"
+    config = AppConfig(
+        chroma_db_path=private_parent / "chroma",
+        metadata_db_path=private_parent / "contextwiki.sqlite3",
+        career_manifest_path=manifest,
+        github_repositories=(),
+    )
+    setup_flags = []
+
+    def fake_setup_chroma(_config, *, require_private=False):
+        setup_flags.append(require_private)
+        return object()
+
+    FakeMetadataStore.instances = []
+    runtime = build_ingestion_runtime(
+        config=config,
+        notion_api_key="",
+        tistory_blog_name="",
+        setup_chroma_fn=fake_setup_chroma,
+        vector_store_cls=FakeVectorStore,
+        storage_context_cls=FakeStorageContext,
+        indexer_cls=FakeContentIndexer,
+        metadata_store_cls=FakeMetadataStore,
+    )
+    connector = runtime.source_registry.get_connector("source_career")
+    assert connector.source.enabled is False
+
+    career_root = tmp_path / "career"
+    career_root.mkdir()
+    manifest.write_text(
+        json.dumps({"root": "career", "documents": []}),
+        encoding="utf-8",
+    )
+    connector.refresh_source_state()
+
+    assert connector.source.enabled is True
+    assert setup_flags == [True]
+    assert runtime.metadata_store.require_private is True
+    assert stat.S_IMODE(private_parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(config.chroma_db_path.stat().st_mode) == 0o700
+    assert stat.S_IMODE(config.metadata_db_path.stat().st_mode) == 0o600

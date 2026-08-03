@@ -1,11 +1,20 @@
 import asyncio
 import inspect
 import logging
+import threading
 
 import pytest
 
 import indexing.ingestion_service as ingestion_module
-from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncJobStatus, SyncStatus
+from core.exceptions import CareerManifestParsingError, ParsingError
+from core.models import (
+    ChunkModel,
+    DocumentModel,
+    SourceModel,
+    SourceType,
+    SyncJobStatus,
+    SyncStatus,
+)
 from core.utils import ContentHasher
 from environments.config import AppConfig
 from indexing.chunker import DocumentChunker
@@ -153,7 +162,9 @@ class DisabledConnector(FakeConnector):
 
 
 class DisabledSameSourceConnector(DisabledConnector):
-    source = FakeConnector.source.model_copy(update={"enabled": False, "name": "Disabled Fake"})
+    source = FakeConnector.source.model_copy(
+        update={"enabled": False, "name": "Disabled Fake"}
+    )
 
 
 class ProgressAwareConnector(FakeConnector):
@@ -360,7 +371,9 @@ class LeaseLostDuringFetchConnector(FakeConnector):
     async def _stop_checker(self):
         self.stop_checks += 1
         if self.stop_checks == 1:
-            replacement_store = MetadataStore(self.db_path, running_job_timeout_seconds=0)
+            replacement_store = MetadataStore(
+                self.db_path, running_job_timeout_seconds=0
+            )
             self.replacement_job, _ = replacement_store.begin_sync_job("source_fake")
         return False
 
@@ -408,6 +421,308 @@ class RecordingIndexer:
         self.deleted_ids.extend(document_ids)
 
 
+class _LifecycleRecordingChunker(DocumentChunker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = threading.Event()
+        self.finished = threading.Event()
+
+    def chunk_document(self, document, **kwargs):
+        self.started.set()
+        try:
+            return super().chunk_document(document, **kwargs)
+        finally:
+            self.finished.set()
+
+
+class _CancellationBlockingChunker(DocumentChunker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.stop_observed = threading.Event()
+        self.poll_interval = threading.Event()
+
+    def chunk_document(self, document, **kwargs):
+        stop_checker = kwargs["stop_checker"]
+        self.started.set()
+        try:
+            while not stop_checker():
+                self.poll_interval.wait(0.001)
+            self.stop_observed.set()
+            return super().chunk_document(document, **kwargs)
+        finally:
+            self.finished.set()
+
+
+class _CancellationDuringModelBuildChunker(DocumentChunker):
+    """Expose cancellation arriving while the real chunker constructs models."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.first_model_built = threading.Event()
+        self.finished = threading.Event()
+        self.stop_observed = threading.Event()
+        self.model_builds = 0
+
+    def chunk_document(self, document, **kwargs):
+        stop_checker = kwargs["stop_checker"]
+
+        def observed_stop_checker():
+            stopped = stop_checker()
+            if stopped:
+                self.stop_observed.set()
+            return stopped
+
+        try:
+            return super().chunk_document(
+                document,
+                stop_checker=observed_stop_checker,
+            )
+        finally:
+            self.finished.set()
+
+    def _build_chunk(self, *args, **kwargs):
+        self.model_builds += 1
+        self.first_model_built.set()
+        threading.Event().wait(0.0005)
+        return super()._build_chunk(*args, **kwargs)
+
+
+def test_sync_chunks_large_document_off_loop_and_keeps_heartbeat_responsive(tmp_path):
+    document = DocumentModel(
+        id="large-document",
+        source_id="source_fake",
+        title="large.txt",
+        content="line\n" * 40_000,
+        url="",
+        platform="Fixture",
+        path="large.txt",
+    )
+    chunker = _LifecycleRecordingChunker(max_chars=64, overlap_chars=0)
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=chunker,
+        indexer=RecordingIndexer(),
+    )
+
+    async def run_sync_with_heartbeat():
+        ticks_during_chunking = 0
+
+        async def heartbeat():
+            nonlocal ticks_during_chunking
+            while not chunker.finished.is_set():
+                if chunker.started.is_set():
+                    ticks_during_chunking += 1
+                await asyncio.sleep(0)
+
+        result, _ = await asyncio.gather(
+            service.sync_source("source_fake"),
+            heartbeat(),
+        )
+        return result, ticks_during_chunking
+
+    result, ticks = asyncio.run(run_sync_with_heartbeat())
+
+    assert result.status == SyncJobStatus.SUCCEEDED
+    assert ticks > 0, "event-loop heartbeat stalled for the entire chunking operation"
+
+
+def test_sync_cancellation_joins_cooperative_chunk_worker(tmp_path):
+    document = DocumentModel(
+        id="cancel-large-document",
+        source_id="source_fake",
+        title="cancel-large.txt",
+        content="line\n" * 80_000,
+        url="",
+        platform="Fixture",
+        path="cancel-large.txt",
+    )
+    chunker = _CancellationBlockingChunker(max_chars=64, overlap_chars=0)
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=chunker,
+        indexer=RecordingIndexer(),
+    )
+
+    async def cancel_while_chunking():
+        task = asyncio.create_task(service.sync_source("source_fake"))
+        while not chunker.started.is_set():
+            await asyncio.sleep(0)
+        assert not chunker.finished.is_set(), "chunking never yielded before it completed"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return chunker.finished.is_set(), chunker.stop_observed.is_set()
+
+    assert asyncio.run(cancel_while_chunking()) == (True, True)
+
+
+def test_sync_cancellation_interrupts_real_chunk_model_build_loop(tmp_path):
+    document = DocumentModel(
+        id="cancel-model-build",
+        source_id="source_fake",
+        title="cancel-model-build.txt",
+        content="evidence line\n" * 2_000,
+        url="",
+        platform="Fixture",
+        path="cancel-model-build.txt",
+    )
+    chunker = _CancellationDuringModelBuildChunker(max_chars=16, overlap_chars=0)
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=chunker,
+        indexer=indexer,
+    )
+
+    async def cancel_during_model_build():
+        task = asyncio.create_task(service.sync_source("source_fake"))
+        while not chunker.first_model_built.is_set():
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_during_model_build())
+
+    assert chunker.finished.is_set()
+    assert chunker.stop_observed.is_set()
+    assert chunker.model_builds < 10
+    assert indexer.indexed_batches == []
+
+
+def test_large_vector_cleanup_uses_one_batched_sqlite_snapshot_and_one_indexer_call():
+    chunk_ids = [f"chunk-{index}" for index in range(1_200)]
+
+    class SnapshotStore:
+        def __init__(self):
+            self.calls = []
+            self.recorded = []
+            self.marked = []
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            self.calls.append((list(requested_ids), source_id))
+            return set(requested_ids[:200])
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            self.recorded.append((list(requested_ids), source_id))
+
+        def mark_vector_cleanup_complete(self, requested_ids, source_id=""):
+            self.marked.append((list(requested_ids), source_id))
+
+    class CleanupIndexer:
+        def __init__(self):
+            self.calls = []
+
+        async def delete_documents_by_ids(self, document_ids, source_id=""):
+            self.calls.append((list(document_ids), source_id))
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = SnapshotStore()
+    service.indexer = CleanupIndexer()
+
+    asyncio.run(service._delete_vectors_best_effort(chunk_ids, "source_career"))
+
+    assert service.metadata_store.calls == [(chunk_ids, "source_career")]
+    assert service.metadata_store.recorded == [(chunk_ids[200:], "source_career")]
+    assert service.indexer.calls == [(chunk_ids[200:], "source_career")]
+    assert service.metadata_store.marked == [(chunk_ids[200:], "source_career")]
+
+
+def test_newly_deleted_ids_bypass_pending_page_limit_and_drain_immediately():
+    chunk_ids = [f"chunk-{index}" for index in range(5_501)]
+
+    class PendingStore:
+        def __init__(self):
+            self.pending = list(chunk_ids)
+            self.list_calls = 0
+
+        def list_pending_vector_cleanup_ids(self, source_id, *, limit=5_000):
+            assert source_id == "source_career"
+            self.list_calls += 1
+            return self.pending[:limit]
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            return set()
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            for chunk_id in requested_ids:
+                if chunk_id not in self.pending:
+                    self.pending.append(chunk_id)
+
+        def mark_vector_cleanup_complete(self, requested_ids, source_id=""):
+            completed = set(requested_ids)
+            self.pending = [
+                chunk_id for chunk_id in self.pending if chunk_id not in completed
+            ]
+
+    class CleanupIndexer:
+        def __init__(self):
+            self.calls = []
+
+        async def delete_documents_by_ids(self, document_ids, source_id=""):
+            self.calls.append((list(document_ids), source_id))
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = PendingStore()
+    service.indexer = CleanupIndexer()
+
+    asyncio.run(service._drain_vector_cleanup_backlog(chunk_ids, "source_career"))
+
+    assert service.indexer.calls == [(chunk_ids, "source_career")]
+    assert service.metadata_store.pending == []
+    assert service.metadata_store.list_calls == 1
+
+
+def test_pending_cleanup_paging_stops_after_first_failure_without_looping():
+    chunk_ids = [f"chunk-{index}" for index in range(10_001)]
+
+    class PendingStore:
+        def __init__(self):
+            self.pending = list(chunk_ids)
+            self.list_calls = 0
+
+        def list_pending_vector_cleanup_ids(self, source_id, *, limit=5_000):
+            self.list_calls += 1
+            return self.pending[:limit]
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            return set()
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            return None
+
+        def mark_vector_cleanup_complete(self, requested_ids, source_id=""):
+            completed = set(requested_ids)
+            self.pending = [
+                chunk_id for chunk_id in self.pending if chunk_id not in completed
+            ]
+
+    class FailSecondCleanupIndexer:
+        def __init__(self):
+            self.calls = 0
+
+        async def delete_documents_by_ids(self, document_ids, source_id=""):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("injected cleanup page failure")
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = PendingStore()
+    service.indexer = FailSecondCleanupIndexer()
+
+    asyncio.run(service._drain_vector_cleanup_backlog([], "source_career"))
+
+    assert service.indexer.calls == 2
+    assert service.metadata_store.list_calls == 2
+    assert len(service.metadata_store.pending) == 5_001
+
+
 class FailingDeleteIndexer(RecordingIndexer):
     def __init__(self, message="vector delete failed"):
         super().__init__()
@@ -415,6 +730,18 @@ class FailingDeleteIndexer(RecordingIndexer):
 
     def delete_documents_by_ids(self, document_ids, source_id=""):
         raise RuntimeError(self.message)
+
+
+class FailingOnceDeleteIndexer(RecordingIndexer):
+    def __init__(self):
+        super().__init__()
+        self.delete_attempts = 0
+
+    def delete_documents_by_ids(self, document_ids, source_id=""):
+        self.delete_attempts += 1
+        if self.delete_attempts == 1:
+            raise RuntimeError("injected vector delete failure")
+        super().delete_documents_by_ids(document_ids, source_id=source_id)
 
 
 class FailingOnceIndexer(RecordingIndexer):
@@ -427,6 +754,16 @@ class FailingOnceIndexer(RecordingIndexer):
             self.failed = True
             raise RuntimeError("index failed")
         await super().index_documents(documents)
+
+
+class SimulatedHardWorkerCrash(BaseException):
+    pass
+
+
+class HardCrashAfterVectorWriteIndexer(RecordingIndexer):
+    async def index_documents(self, documents):
+        await super().index_documents(documents)
+        raise SimulatedHardWorkerCrash("simulated hard worker interruption")
 
 
 class ReplacementDuringIndexingIndexer(RecordingIndexer):
@@ -471,11 +808,15 @@ class FailingOnceMetadataStore(MetadataStore):
             raise RuntimeError("chunk metadata failed")
         return super().upsert_document_and_replace_chunks(document, chunks)
 
-    def upsert_document_and_replace_chunks_for_running_job(self, job_id, document, chunks):
+    def upsert_document_and_replace_chunks_for_running_job(
+        self, job_id, document, chunks
+    ):
         if not self.failed:
             self.failed = True
             raise RuntimeError("chunk metadata failed")
-        return super().upsert_document_and_replace_chunks_for_running_job(job_id, document, chunks)
+        return super().upsert_document_and_replace_chunks_for_running_job(
+            job_id, document, chunks
+        )
 
 
 pytestmark = pytest.mark.integration
@@ -643,7 +984,9 @@ def test_ingestion_can_skip_source_config_registration_for_ad_hoc_sync(tmp_path)
     connector = FakeConnector([document])
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.register_source(
-        FakeConnector.source.model_copy(update={"enabled": False, "name": "Configured Fake"})
+        FakeConnector.source.model_copy(
+            update={"enabled": False, "name": "Configured Fake"}
+        )
     )
     service = IngestionService(
         metadata_store=store,
@@ -737,7 +1080,9 @@ def test_start_sync_source_returns_running_job_and_completes_in_background(tmp_p
                 break
             await asyncio.sleep(0)
         else:
-            raise AssertionError("background sync did not complete within polling window")
+            raise AssertionError(
+                "background sync did not complete within polling window"
+            )
 
         return connector, launched_job, running_job, completed_job, store
 
@@ -791,7 +1136,9 @@ def test_start_sync_source_reuses_existing_running_job_without_second_fetch(tmp_
                 break
             await asyncio.sleep(0)
         else:
-            raise AssertionError("background sync did not complete within polling window")
+            raise AssertionError(
+                "background sync did not complete within polling window"
+            )
 
         return connector, first_job, second_job, completed_job
 
@@ -893,7 +1240,9 @@ def test_sync_source_starts_fresh_run_after_successful_background_completion(tmp
     assert rerun_job.job_id != launched_job.job_id
 
 
-def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled(tmp_path):
+def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled(
+    tmp_path,
+):
     document = DocumentModel(
         id="doc-blocking-cancel",
         source_id="source_fake",
@@ -966,7 +1315,9 @@ def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled_
         completed_job = await direct_task
         return launched_job, completed_job, store
 
-    launched_job, completed_job, store = asyncio.run(run_blocking_join_prestart_cancel())
+    launched_job, completed_job, store = asyncio.run(
+        run_blocking_join_prestart_cancel()
+    )
 
     assert launched_job.status == SyncJobStatus.RUNNING
     assert completed_job.job_id != launched_job.job_id
@@ -1018,7 +1369,9 @@ def test_cancelled_background_sync_task_marks_job_failed(tmp_path):
     assert store.get_source("source_fake").sync_status == SyncStatus.FAILED
 
 
-def test_start_sync_source_retries_immediately_after_generic_background_cancellation(tmp_path):
+def test_start_sync_source_retries_immediately_after_generic_background_cancellation(
+    tmp_path,
+):
     document = DocumentModel(
         id="doc-cancel-retry",
         source_id="source_fake",
@@ -1053,7 +1406,11 @@ def test_start_sync_source_retries_immediately_after_generic_background_cancella
 
         for _ in range(20):
             latest_job = store.get_latest_sync_job("source_fake")
-            if latest_job and latest_job.job_id == retried_job.job_id and latest_job.status != SyncJobStatus.RUNNING:
+            if (
+                latest_job
+                and latest_job.job_id == retried_job.job_id
+                and latest_job.status != SyncJobStatus.RUNNING
+            ):
                 cancelled_job = store.get_sync_job(first_job.job_id)
                 return connector, first_job, cancelled_job, retried_job, latest_job
             await asyncio.sleep(0)
@@ -1074,7 +1431,9 @@ def test_start_sync_source_retries_immediately_after_generic_background_cancella
     assert latest_job.status == SyncJobStatus.SUCCEEDED
 
 
-def test_sync_source_can_start_new_job_after_cancelled_background_callback_finalizes(tmp_path):
+def test_sync_source_can_start_new_job_after_cancelled_background_callback_finalizes(
+    tmp_path,
+):
     document = DocumentModel(
         id="doc-cancelled-callback-handoff",
         source_id="source_fake",
@@ -1110,7 +1469,9 @@ def test_sync_source_can_start_new_job_after_cancelled_background_callback_final
         rerun_job = await service.sync_source("source_fake")
         return connector, launched_job, rerun_job, store
 
-    connector, launched_job, rerun_job, store = asyncio.run(run_cancel_then_direct_sync())
+    connector, launched_job, rerun_job, store = asyncio.run(
+        run_cancel_then_direct_sync()
+    )
 
     assert connector.calls == 2
     assert rerun_job.status == SyncJobStatus.SUCCEEDED
@@ -1118,7 +1479,9 @@ def test_sync_source_can_start_new_job_after_cancelled_background_callback_final
     assert store.get_latest_sync_job("source_fake").job_id == rerun_job.job_id
 
 
-def test_sync_source_ignores_cancelled_background_cache_when_newer_foreign_job_is_running(tmp_path):
+def test_sync_source_ignores_cancelled_background_cache_when_newer_foreign_job_is_running(
+    tmp_path,
+):
     document = DocumentModel(
         id="doc-cancelled-foreign-running",
         source_id="source_fake",
@@ -1156,7 +1519,9 @@ def test_sync_source_ignores_cancelled_background_cache_when_newer_foreign_job_i
         release.set()
         return launched_job, foreign_job, direct_job
 
-    launched_job, foreign_job, direct_job = asyncio.run(run_cancel_then_foreign_restart())
+    launched_job, foreign_job, direct_job = asyncio.run(
+        run_cancel_then_foreign_restart()
+    )
 
     assert direct_job.job_id != launched_job.job_id
     assert direct_job.job_id == foreign_job.job_id
@@ -1261,7 +1626,10 @@ def test_cancelled_source_sync_marks_job_failed_and_allows_retry(tmp_path):
     assert failed_job.error_message == "Sync request was cancelled before completion."
     assert source_after_cancel is not None
     assert source_after_cancel.sync_status == SyncStatus.FAILED
-    assert source_after_cancel.last_error == "Sync request was cancelled before completion."
+    assert (
+        source_after_cancel.last_error
+        == "Sync request was cancelled before completion."
+    )
     assert retried_job.status == SyncJobStatus.SUCCEEDED
     assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
 
@@ -1325,7 +1693,9 @@ def test_failed_indexing_does_not_mark_document_as_indexed_for_retry(tmp_path):
     assert len(indexer.indexed_batches) == 1
 
 
-def test_stale_sync_does_not_commit_metadata_after_losing_lease_during_indexing(tmp_path):
+def test_stale_sync_does_not_commit_metadata_after_losing_lease_during_indexing(
+    tmp_path,
+):
     document = DocumentModel(
         id="lease-lost",
         source_id="source_fake",
@@ -1385,7 +1755,9 @@ def test_sync_source_returns_failed_job_when_lease_is_lost_during_fetch(tmp_path
     assert connector.replacement_job.status == SyncJobStatus.RUNNING
 
 
-def test_stale_sync_does_not_delete_replacement_active_vector_after_losing_lease(tmp_path):
+def test_stale_sync_does_not_delete_replacement_active_vector_after_losing_lease(
+    tmp_path,
+):
     document = DocumentModel(
         id="lease-lost",
         source_id="source_fake",
@@ -1416,7 +1788,9 @@ def test_stale_sync_does_not_delete_replacement_active_vector_after_losing_lease
 
         async def index_documents(self, documents):
             await super().index_documents(documents)
-            replacement_store = MetadataStore(self.db_path, running_job_timeout_seconds=0)
+            replacement_store = MetadataStore(
+                self.db_path, running_job_timeout_seconds=0
+            )
             self.replacement_job, _ = replacement_store.begin_sync_job("source_fake")
             replacement_store.upsert_document_and_replace_chunks(
                 self.active_document,
@@ -1493,10 +1867,12 @@ def test_ingestion_rejects_cross_source_document_identity_collision(tmp_path):
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
-        source_registry=SourceRegistry([
-            SourceAConnector([first]),
-            SourceBConnector([second]),
-        ]),
+        source_registry=SourceRegistry(
+            [
+                SourceAConnector([first]),
+                SourceBConnector([second]),
+            ]
+        ),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=indexer,
     )
@@ -1538,17 +1914,21 @@ def test_sync_all_runs_multiple_sources_and_returns_aggregate_summary(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     service = IngestionService(
         metadata_store=store,
-        source_registry=SourceRegistry([
-            SourceAConnector([first]),
-            SourceBConnector([second]),
-        ]),
+        source_registry=SourceRegistry(
+            [
+                SourceAConnector([first]),
+                SourceBConnector([second]),
+            ]
+        ),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
     )
 
     async def launch_and_wait():
         result = await service.sync_all()
-        assert all(item["job"].status == SyncJobStatus.RUNNING for item in result["results"])
+        assert all(
+            item["job"].status == SyncJobStatus.RUNNING for item in result["results"]
+        )
         await asyncio.gather(*service._background_sync_tasks.values())
         return result
 
@@ -1579,10 +1959,12 @@ def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     service = IngestionService(
         metadata_store=store,
-        source_registry=SourceRegistry([
-            SourceAConnector([document]),
-            DisabledConnector(),
-        ]),
+        source_registry=SourceRegistry(
+            [
+                SourceAConnector([document]),
+                DisabledConnector(),
+            ]
+        ),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
     )
@@ -1594,8 +1976,12 @@ def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
 
     result = asyncio.run(launch_and_wait())
 
-    started = next(item for item in result["results"] if item["source_id"] == "source_a")
-    skipped = next(item for item in result["results"] if item["source_id"] == "source_disabled")
+    started = next(
+        item for item in result["results"] if item["source_id"] == "source_a"
+    )
+    skipped = next(
+        item for item in result["results"] if item["source_id"] == "source_disabled"
+    )
     assert result["status"] == "accepted"
     assert started["launch_outcome"] == "started"
     assert skipped["launch_outcome"] == "skipped"
@@ -1692,19 +2078,35 @@ def test_sync_all_reports_already_running_source_without_waiting(tmp_path):
         store = MetadataStore(tmp_path / "contextwiki.sqlite3")
         service = IngestionService(
             metadata_store=store,
-            source_registry=SourceRegistry([
-                SourceAConnector([document]),
-                SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
-            ]),
+            source_registry=SourceRegistry(
+                [
+                    SourceAConnector([document]),
+                    SourceBConnector(
+                        [
+                            document.model_copy(
+                                update={"id": "doc-b", "document_id": "doc-b"}
+                            )
+                        ]
+                    ),
+                ]
+            ),
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
         blocking_a = BlockingConnector([document], started, release)
         blocking_a.source = SourceAConnector.source
-        service.source_registry = SourceRegistry([
-            blocking_a,
-            SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
-        ])
+        service.source_registry = SourceRegistry(
+            [
+                blocking_a,
+                SourceBConnector(
+                    [
+                        document.model_copy(
+                            update={"id": "doc-b", "document_id": "doc-b"}
+                        )
+                    ]
+                ),
+            ]
+        )
 
         first_task = asyncio.create_task(service.sync_source("source_a"))
         await started.wait()
@@ -1717,8 +2119,12 @@ def test_sync_all_reports_already_running_source_without_waiting(tmp_path):
 
     result = asyncio.run(run_sync_all_while_one_source_is_running())
 
-    running = next(item for item in result["results"] if item["source_id"] == "source_a")
-    started = next(item for item in result["results"] if item["source_id"] == "source_b")
+    running = next(
+        item for item in result["results"] if item["source_id"] == "source_a"
+    )
+    started = next(
+        item for item in result["results"] if item["source_id"] == "source_b"
+    )
     assert result["status"] == "accepted"
     assert running["launch_outcome"] == "already_running"
     assert running["job"].status == SyncJobStatus.RUNNING
@@ -1746,10 +2152,18 @@ def test_sync_all_reuses_local_background_sync_without_waiting(tmp_path):
         blocking_a.source = SourceAConnector.source
         service = IngestionService(
             metadata_store=store,
-            source_registry=SourceRegistry([
-                blocking_a,
-                SourceBConnector([document.model_copy(update={"id": "doc-b", "document_id": "doc-b"})]),
-            ]),
+            source_registry=SourceRegistry(
+                [
+                    blocking_a,
+                    SourceBConnector(
+                        [
+                            document.model_copy(
+                                update={"id": "doc-b", "document_id": "doc-b"}
+                            )
+                        ]
+                    ),
+                ]
+            ),
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
         )
@@ -1763,8 +2177,12 @@ def test_sync_all_reuses_local_background_sync_without_waiting(tmp_path):
 
     launched_job, result = asyncio.run(run_sync_all_while_background_sync_is_running())
 
-    running = next(item for item in result["results"] if item["source_id"] == "source_a")
-    started = next(item for item in result["results"] if item["source_id"] == "source_b")
+    running = next(
+        item for item in result["results"] if item["source_id"] == "source_a"
+    )
+    started = next(
+        item for item in result["results"] if item["source_id"] == "source_b"
+    )
     assert launched_job.status == SyncJobStatus.RUNNING
     assert result["status"] == "accepted"
     assert running["launch_outcome"] == "already_running"
@@ -1832,10 +2250,12 @@ def test_sync_all_launch_acceptance_does_not_claim_connector_completion(tmp_path
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     service = IngestionService(
         metadata_store=store,
-        source_registry=SourceRegistry([
-            SourceAConnector([document]),
-            FakeConnector(error=RuntimeError("boom")),
-        ]),
+        source_registry=SourceRegistry(
+            [
+                SourceAConnector([document]),
+                FakeConnector(error=RuntimeError("boom")),
+            ]
+        ),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
     )
@@ -1854,8 +2274,7 @@ def test_sync_all_launch_acceptance_does_not_claim_connector_completion(tmp_path
     assert result["summary"]["already_running"] == 0
     assert result["summary"]["skipped"] == 0
     assert {
-        (item["source_id"], item["launch_outcome"])
-        for item in result["results"]
+        (item["source_id"], item["launch_outcome"]) for item in result["results"]
     } == {("source_a", "started"), ("source_fake", "started")}
     assert store.get_latest_sync_job("source_a").status == SyncJobStatus.SUCCEEDED
     assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.FAILED
@@ -1908,10 +2327,12 @@ def test_concurrent_cross_source_collision_is_rejected_before_vector_write(tmp_p
         indexer = BlockingFirstIndexIndexer(started, release)
         service = IngestionService(
             metadata_store=store,
-            source_registry=SourceRegistry([
-                SourceAConnector([first]),
-                SourceBConnector([second]),
-            ]),
+            source_registry=SourceRegistry(
+                [
+                    SourceAConnector([first]),
+                    SourceBConnector([second]),
+                ]
+            ),
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=indexer,
         )
@@ -1943,7 +2364,9 @@ def test_self_expired_fetch_does_not_finalize_or_tombstone(tmp_path):
         path="existing.md",
         last_seen_at="2026-05-22T00:00:00Z",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0)
+    store = MetadataStore(
+        tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0
+    )
     store.upsert_document_and_replace_chunks(
         existing,
         [
@@ -1985,7 +2408,9 @@ def test_partial_update_deletes_only_stale_chunk_vectors(tmp_path):
         path="Multi Chunk",
         updated_at="2026-05-20T00:00:00Z",
     )
-    second_document = first_document.model_copy(update={"content": ("A" * 30) + ("C" * 30)})
+    second_document = first_document.model_copy(
+        update={"content": ("A" * 30) + ("C" * 30)}
+    )
     connector = FakeConnector([first_document])
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     indexer = RecordingIndexer()
@@ -2042,7 +2467,9 @@ def test_durable_disabled_source_is_failed_atomically_without_completion_handoff
     )
 
     def unexpected_second_transaction(**_kwargs):
-        raise AssertionError("disabled enqueue must be terminal in its enqueue transaction")
+        raise AssertionError(
+            "disabled enqueue must be terminal in its enqueue transaction"
+        )
 
     monkeypatch.setattr(store, "complete_failed_sync", unexpected_second_transaction)
 
@@ -2058,7 +2485,9 @@ def test_durable_disabled_source_is_failed_atomically_without_completion_handoff
     assert store.get_source("source_disabled").sync_status == SyncStatus.FAILED
 
 
-def test_disabled_github_source_records_public_missing_repository_config_error(tmp_path):
+def test_disabled_github_source_records_public_missing_repository_config_error(
+    tmp_path,
+):
     connector = GitHubSourceConnector(
         repositories=(),
         config=AppConfig(),
@@ -2086,7 +2515,9 @@ def test_disabled_github_source_records_public_missing_repository_config_error(t
     assert "ghp_secretcredential" not in source.last_error
 
 
-def test_disabled_source_request_returns_existing_running_job_without_clobbering(tmp_path):
+def test_disabled_source_request_returns_existing_running_job_without_clobbering(
+    tmp_path,
+):
     store = MetadataStore(tmp_path / "contextwiki.sqlite3")
     store.register_source(FakeConnector.source)
     running_job, started = store.begin_sync_job("source_fake")
@@ -2145,7 +2576,220 @@ def test_metadata_commit_failure_does_not_make_retry_skip_document(tmp_path):
     assert indexer.deleted_ids == [indexer.indexed_batches[0][0].chunk_id]
 
 
-def test_successful_full_sync_tombstones_missing_documents_and_deletes_vectors(tmp_path):
+def test_uncommitted_vector_cleanup_failure_is_durable_and_retried(tmp_path):
+    document = DocumentModel(
+        id="doc-orphan",
+        source_id="source_fake",
+        title="Orphan protection",
+        content="Vector insertion succeeds before metadata commit fails.",
+        url="https://example.com/orphan",
+        platform="Notion",
+    )
+    connector = FakeConnector([document])
+    store = FailingOnceMetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = FailingOnceDeleteIndexer()
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    failed = asyncio.run(service.sync_source("source_fake"))
+    orphan_chunk_id = indexer.indexed_batches[0][0].chunk_id
+
+    assert failed.status == SyncJobStatus.FAILED
+    assert store.list_pending_vector_cleanup_ids("source_fake") == [orphan_chunk_id]
+
+    connector.documents = []
+    recovered = asyncio.run(service.sync_source("source_fake"))
+
+    assert recovered.status == SyncJobStatus.SUCCEEDED
+    assert indexer.delete_attempts == 2
+    assert indexer.deleted_ids == [orphan_chunk_id]
+    assert store.list_pending_vector_cleanup_ids("source_fake") == []
+
+
+def test_vector_write_intent_survives_hard_interruption_and_retries_cleanup(tmp_path):
+    document = DocumentModel(
+        id="doc-hard-crash",
+        source_id="source_fake",
+        title="Hard crash protection",
+        content="A durable intent precedes every new vector write.",
+        url="https://example.com/hard-crash",
+        platform="Notion",
+    )
+    connector = FakeConnector([document])
+    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = HardCrashAfterVectorWriteIndexer()
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    with pytest.raises(SimulatedHardWorkerCrash):
+        asyncio.run(service.sync_source("source_fake"))
+
+    interrupted = store.get_latest_sync_job("source_fake")
+    assert interrupted is not None
+    orphan_chunk_id = indexer.indexed_batches[0][0].chunk_id
+    assert store.list_pending_vector_cleanup_ids("source_fake") == [orphan_chunk_id]
+    store.complete_failed_sync(
+        job_id=interrupted.job_id,
+        source_id="source_fake",
+        error_message="worker interrupted",
+    )
+    connector.documents = []
+
+    recovered = asyncio.run(service.sync_source("source_fake"))
+
+    assert recovered.status == SyncJobStatus.SUCCEEDED
+    assert indexer.deleted_ids == [orphan_chunk_id]
+    assert store.list_pending_vector_cleanup_ids("source_fake") == []
+
+
+def test_cleanup_backlog_retry_is_bounded_per_sync():
+    class EndlessPendingStore:
+        def __init__(self):
+            self.page = 0
+
+        def list_pending_vector_cleanup_ids(self, source_id, *, limit=5_000):
+            del source_id
+            self.page += 1
+            return [f"pending-{self.page}-{index}" for index in range(limit)]
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            return set()
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+
+        def mark_vector_cleanup_complete(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+
+    class CleanupIndexer:
+        def __init__(self):
+            self.calls = 0
+
+        def delete_documents_by_ids(self, document_ids, source_id=""):
+            del document_ids, source_id
+            self.calls += 1
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = EndlessPendingStore()
+    service.indexer = CleanupIndexer()
+
+    asyncio.run(service._drain_vector_cleanup_backlog([], "source_career"))
+
+    assert (
+        service.metadata_store.page
+        == ingestion_module.VECTOR_CLEANUP_MAX_PAGES_PER_SYNC
+    )
+    assert service.indexer.calls == ingestion_module.VECTOR_CLEANUP_MAX_PAGES_PER_SYNC
+
+
+def test_large_cleanup_sqlite_operations_run_off_event_loop_thread():
+    event_loop_thread_id = threading.get_ident()
+
+    class ThreadRecordingStore:
+        def __init__(self):
+            self.thread_ids = []
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            self.thread_ids.append(threading.get_ident())
+            return set()
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            self.thread_ids.append(threading.get_ident())
+
+        def mark_vector_cleanup_complete(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            self.thread_ids.append(threading.get_ident())
+
+    class ThreadRecordingIndexer:
+        def __init__(self):
+            self.thread_ids = []
+
+        def delete_documents_by_ids(self, document_ids, source_id=""):
+            del document_ids, source_id
+            self.thread_ids.append(threading.get_ident())
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = ThreadRecordingStore()
+    service.indexer = ThreadRecordingIndexer()
+
+    asyncio.run(
+        service._delete_vectors_best_effort(
+            [f"chunk-{index}" for index in range(10_000)],
+            "source_career",
+        )
+    )
+
+    assert service.metadata_store.thread_ids
+    assert service.indexer.thread_ids
+    assert all(
+        thread_id != event_loop_thread_id
+        for thread_id in service.metadata_store.thread_ids
+    )
+    assert all(
+        thread_id != event_loop_thread_id for thread_id in service.indexer.thread_ids
+    )
+
+
+def test_cleanup_cancellation_waits_for_inflight_sqlite_operation_and_stops():
+    operation_started = threading.Event()
+    release_operation = threading.Event()
+
+    class BlockingStore:
+        def __init__(self):
+            self.record_calls = 0
+
+        def get_active_chunk_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            operation_started.set()
+            release_operation.wait(timeout=2)
+            return set()
+
+        def record_pending_vector_cleanup_ids(self, requested_ids, source_id=""):
+            del requested_ids, source_id
+            self.record_calls += 1
+
+    class NeverCalledIndexer:
+        def __init__(self):
+            self.calls = 0
+
+        def delete_documents_by_ids(self, document_ids, source_id=""):
+            del document_ids, source_id
+            self.calls += 1
+
+    async def cancel_cleanup(service):
+        task = asyncio.create_task(
+            service._delete_vectors_best_effort(["chunk-cancel"], "source_career")
+        )
+        await asyncio.to_thread(operation_started.wait, 2)
+        task.cancel()
+        release_operation.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    service = object.__new__(IngestionService)
+    service.metadata_store = BlockingStore()
+    service.indexer = NeverCalledIndexer()
+
+    asyncio.run(cancel_cleanup(service))
+
+    assert service.metadata_store.record_calls == 0
+    assert service.indexer.calls == 0
+
+
+def test_successful_full_sync_tombstones_missing_documents_and_deletes_vectors(
+    tmp_path,
+):
     kept = DocumentModel(
         id="kept",
         source_id="source_fake",
@@ -2245,8 +2889,87 @@ def test_running_sync_progress_update_failure_logs_redacted_error(tmp_path, capl
         job = asyncio.run(service.sync_source("source_fake"))
 
     assert job.status == SyncJobStatus.SUCCEEDED
+    assert job.parsed_documents == 1
+    assert job.created_chunks == 1
+    assert job.updated_documents == 0
+    assert job.skipped_chunks == 0
+    assert job.embeddings_generated == 1
+    assert job.embeddings_reused == 0
+    assert job.parsing_failures == 0
+    assert job.indexing_latency_ms > 0
     assert "token=secret-value" not in caplog.text
     assert "token=<redacted>" in caplog.text
+
+
+def test_failed_sync_terminal_transaction_persists_metrics_when_progress_write_fails(
+    tmp_path,
+):
+    document = DocumentModel(
+        id="first",
+        source_id="source_fake",
+        title="First",
+        content="First document.",
+        url="https://example.com/first",
+        platform="GitHub",
+        path="first.md",
+    )
+    store = FailingProgressMetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+
+    async def fail_parsing(_documents):
+        await asyncio.sleep(0.001)
+        raise ParsingError("synthetic parser failure")
+
+    indexer.index_documents = fail_parsing
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector([document])]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    failed = asyncio.run(service.sync_source("source_fake"))
+    persisted = store.get_sync_job(failed.job_id)
+
+    assert failed.status == SyncJobStatus.FAILED
+    assert failed.total_documents == 1
+    assert failed.parsed_documents == 1
+    assert failed.parsing_failures == 1
+    assert failed.indexing_latency_ms > 0
+    assert persisted is not None
+    assert persisted.parsing_failures == 1
+    assert persisted.indexing_latency_ms == failed.indexing_latency_ms
+
+
+def test_partial_manifest_parse_metrics_are_atomically_persisted_on_failure(tmp_path):
+    error = CareerManifestParsingError(
+        "private-entry.txt failed with private-content",
+        attempted_documents=2,
+        completed_documents=1,
+        parsing_latency_ms=12.5,
+    )
+    store = FailingProgressMetadataStore(tmp_path / "contextwiki.sqlite3")
+    indexer = RecordingIndexer()
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([FakeConnector(error=error)]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    failed = asyncio.run(service.sync_source("source_fake"))
+    persisted = store.get_sync_job(failed.job_id)
+
+    assert failed.status == SyncJobStatus.FAILED
+    assert failed.total_documents == 2
+    assert failed.parsed_documents == 1
+    assert failed.parsing_failures == 1
+    assert failed.indexing_latency_ms == 0.0
+    assert failed.processed_documents == 0
+    assert indexer.indexed_batches == []
+    assert persisted == failed
+    assert "private-entry.txt" not in failed.error_message
+    assert "private-content" not in failed.error_message
 
 
 def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, caplog):
@@ -2441,7 +3164,9 @@ def test_refresh_running_job_for_progress_updates_heartbeat_without_hint_write(
     # Heartbeat stays fresh for orphan detection; visible hints are coalesced elsewhere.
     assert job.job_id in store.touched_job_ids
     assert latest.last_progress_at == "2026-06-15T00:00:00+00:00"
-    assert latest.status_message == "Fetching upstream items 0/10 before indexing begins."
+    assert (
+        latest.status_message == "Fetching upstream items 0/10 before indexing begins."
+    )
 
 
 def test_page_fetch_hint_persistence_is_throttled(tmp_path, monkeypatch):
@@ -2799,7 +3524,9 @@ def test_sync_source_replays_observer_cancelled_background_failure_once(tmp_path
         rerun_job = await service.sync_source("source_fake")
         return launched_job, replayed_job, rerun_job, store
 
-    launched_job, replayed_job, rerun_job, store = asyncio.run(run_background_then_direct_sync())
+    launched_job, replayed_job, rerun_job, store = asyncio.run(
+        run_background_then_direct_sync()
+    )
 
     assert replayed_job.job_id == launched_job.job_id
     assert replayed_job.status == SyncJobStatus.FAILED
@@ -2839,7 +3566,9 @@ def test_start_sync_source_replays_observer_cancelled_background_failure_once(tm
         rerun_job = await service.start_sync_source("source_fake")
         return launched_job, replayed_job, rerun_job, store
 
-    launched_job, replayed_job, rerun_job, store = asyncio.run(run_background_then_restart())
+    launched_job, replayed_job, rerun_job, store = asyncio.run(
+        run_background_then_restart()
+    )
 
     assert replayed_job.job_id == launched_job.job_id
     assert replayed_job.status == SyncJobStatus.FAILED
@@ -3223,7 +3952,9 @@ def test_partial_snapshot_connector_does_not_tombstone_missing_documents(tmp_pat
     assert indexer.deleted_ids == []
 
 
-def test_metadata_only_citation_change_refreshes_chunks_without_vector_reindex(tmp_path):
+def test_metadata_only_citation_change_refreshes_chunks_without_vector_reindex(
+    tmp_path,
+):
     first = DocumentModel(
         id="doc-meta",
         source_id="source_fake",
@@ -3345,17 +4076,21 @@ def test_changed_document_metadata_failure_does_not_delete_old_vectors(tmp_path)
     old_chunk_ids = {chunk.chunk_id for chunk in old_chunks}
     new_chunk_ids = {
         chunk.chunk_id
-        for chunk in DocumentChunker(max_chars=30, overlap_chars=0).chunk_document(second)
+        for chunk in DocumentChunker(max_chars=30, overlap_chars=0).chunk_document(
+            second
+        )
     }
     assert failed.status == SyncJobStatus.FAILED
     assert set(indexer.deleted_ids) == new_chunk_ids - old_chunk_ids
     assert not old_chunk_ids.intersection(indexer.deleted_ids)
-    assert [chunk.chunk_id for chunk in store.list_chunks_for_document("doc-multi")] == [
-        chunk.chunk_id for chunk in old_chunks
-    ]
+    assert [
+        chunk.chunk_id for chunk in store.list_chunks_for_document("doc-multi")
+    ] == [chunk.chunk_id for chunk in old_chunks]
 
 
-def test_vector_delete_failure_after_tombstone_does_not_fail_sync_or_restore_chunks(tmp_path):
+def test_vector_delete_failure_after_tombstone_does_not_fail_sync_or_restore_chunks(
+    tmp_path,
+):
     removed = DocumentModel(
         id="removed",
         source_id="source_fake",

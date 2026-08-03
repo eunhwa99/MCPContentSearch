@@ -14,7 +14,11 @@ from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
 from llama_index.core import Settings, StorageContext
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from storage.metadata_store import MetadataStore
+from storage.metadata_store import (
+    MetadataStore,
+    prepare_private_directory,
+    prepare_private_sqlite_path,
+)
 
 
 @dataclass(frozen=True)
@@ -45,13 +49,21 @@ def _wire_connector_metadata_stores(
             connector.metadata_store = metadata_store
 
 
+def _career_source_registered(source_registry: SourceRegistry) -> bool:
+    try:
+        source_registry.get_connector("source_career")
+    except ValueError:
+        return False
+    return True
+
+
 def build_ingestion_runtime(
     *,
     config: AppConfig,
     notion_api_key: str,
     tistory_blog_name: str,
     github_token: str = "",
-    setup_chroma_fn: Callable[[AppConfig], Any] = setup_chroma,
+    setup_chroma_fn: Callable[..., Any] = setup_chroma,
     vector_store_cls=ChromaVectorStore,
     storage_context_cls=StorageContext,
     indexer_cls=ContentIndexer,
@@ -61,18 +73,33 @@ def build_ingestion_runtime(
     ingestion_service_cls=IngestionService,
 ) -> IngestionRuntime:
     """Compose the ingestion dependencies shared by MCP and the sync worker."""
-    chroma_collection = setup_chroma_fn(config)
-    vector_store = vector_store_cls(chroma_collection=chroma_collection)
-    storage_context = storage_context_cls.from_defaults(vector_store=vector_store)
-    Settings.cache_dir = config.cache_dir
-
-    indexer = indexer_cls(config, chroma_collection, storage_context)
-    metadata_store = metadata_store_cls(config.metadata_db_path)
     source_registry = source_registry_builder(
         config=config,
         notion_api_key=notion_api_key,
         tistory_blog_name=tistory_blog_name,
         github_token=github_token,
+    )
+    career_configured = (
+        config.career_manifest_path is not None
+        or _career_source_registered(source_registry)
+    )
+    if career_configured:
+        prepare_private_directory(config.chroma_db_path)
+        prepare_private_sqlite_path(config.metadata_db_path)
+    chroma_collection = (
+        setup_chroma_fn(config, require_private=True)
+        if career_configured
+        else setup_chroma_fn(config)
+    )
+    vector_store = vector_store_cls(chroma_collection=chroma_collection)
+    storage_context = storage_context_cls.from_defaults(vector_store=vector_store)
+    Settings.cache_dir = config.cache_dir
+
+    indexer = indexer_cls(config, chroma_collection, storage_context)
+    metadata_store = (
+        metadata_store_cls(config.metadata_db_path, require_private=True)
+        if career_configured
+        else metadata_store_cls(config.metadata_db_path)
     )
     _wire_connector_metadata_stores(source_registry, metadata_store)
     ingestion_service = ingestion_service_cls(

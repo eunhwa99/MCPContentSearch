@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
-**Self-hosted knowledge retrieval MCP server.** Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
+**Self-hosted knowledge and career-evidence retrieval MCP server.** Syncs
+Notion · Tistory · GitHub · Obsidian · explicit local career files into vector
+and metadata stores and returns citation-backed context or exact stored evidence.
 
 ---
 
@@ -34,6 +36,7 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 | `search_documents(query, ...)` | One result per matching document (relevance or date sort) |
 | `list_documents(...)` | Browse active docs by date (no semantic query; cursor pagination) |
 | `fetch_context(document_id="", chunk_id="")` | Fetch stored document/chunks by ID |
+| `search_evidence(query, source_types=None, experience_types=None, document_ids=None, top_k=5)` | Return filtered, de-duplicated exact career passages as a bare JSON list |
 
 | Source | `source_id` |
 |--------|-------------|
@@ -41,6 +44,7 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 | Tistory | `source_tistory` |
 | GitHub | `source_github` |
 | Obsidian | `source_obsidian` |
+| Career manifest (when configured) | `source_career` |
 
 **Example prompts**
 
@@ -54,6 +58,7 @@ Two processes: **FastMCP enqueues jobs**; the **LaunchAgent or Docker worker cla
 | Newest docs from July (by index time) | `list_documents(filters={"indexed_from": "2026-07-01"}, sort_by="indexed_at", sort_order="desc")` |
 | Show docs by publication date | `list_documents(sort_by="published_at", sort_order="desc")` |
 | Open the document / chunk you just found | `fetch_context(document_id="...")` or `fetch_context(chunk_id="...")` |
+| Find professional resume evidence without paraphrasing | `search_evidence(query="...", source_types=["resume"], experience_types=["professional"])` |
 
 ---
 
@@ -96,6 +101,7 @@ For Obsidian in Docker: `-v "/path/to/vault:/vault:ro"` and `CONTEXTWIKI_OBSIDIA
 | Tistory (`source_tistory`) | `TISTORY_BLOG_NAME` |
 | GitHub (`source_github`) | `CONTEXTWIKI_GITHUB_REPOSITORIES` |
 | Obsidian (`source_obsidian`) | `CONTEXTWIKI_OBSIDIAN_VAULT_PATH` |
+| Career files (`source_career`) | `CONTEXTWIKI_CAREER_MANIFEST_PATH` (absolute JSON manifest path) |
 
 Default embeddings need **`OPENAI_API_KEY`** (indexing/search may send text to OpenAI). Empty enable vars leave a source disabled.
 
@@ -110,9 +116,44 @@ CONTEXTWIKI_GITHUB_REPOSITORIES=eunaverse
 GITHUB_TOKEN=...                  # private repos / higher rate limits
 
 CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
+
+CONTEXTWIKI_CAREER_MANIFEST_PATH=/absolute/private/path/career-manifest.json
+CONTEXTWIKI_CAREER_MAX_FILE_BYTES=10000000
+CONTEXTWIKI_CAREER_MAX_FILES=100
+CONTEXTWIKI_CAREER_MAX_TOTAL_RAW_BYTES=50000000
+CONTEXTWIKI_CAREER_MAX_TOTAL_EXTRACTED_TEXT_BYTES=100000000
 ```
 
 GitHub targets (comma/newline separated): `owner` = that account’s visible repos on each default branch; `owner/repo` = one repo at `CONTEXTWIKI_GITHUB_DEFAULT_REF` (default `main`); `owner/repo@ref` = one repo at that ref. Do not list an `owner` together with one of its repos — overlapping targets are rejected.
+
+### Career evidence
+
+Career ingestion supports PDF, DOCX, Markdown, and UTF-8 text files explicitly
+listed in a root-bounded manifest. It preserves stable IDs, versions, section
+metadata, exact quotes, and explicit source/experience taxonomies. See the
+[Application OS integration guide](docs/application_os_integration.md) and
+[sanitized manifest example](docs/examples/career_manifest.example.json).
+
+If `CONTEXTWIKI_CAREER_MANIFEST_PATH` is unset, `source_career` is not
+registered. If it points to an invalid, relative, or symlinked manifest, the
+source is present but disabled. A valid absolute manifest enables
+`sync_source("source_career")`.
+
+Privacy: the default embedding path needs `OPENAI_API_KEY` and may send private
+chunk text and search queries to OpenAI. Local parsing/SQLite storage does not
+make production embedding local. Tests use fake/mock embeddings.
+
+When `CONTEXTWIKI_CAREER_MANIFEST_PATH` is configured, startup requires
+owner-only persistence even while a missing or invalid manifest leaves the
+source disabled, because the connector can be refreshed later. The
+SQLite parent and Chroma directory must be owned by the current user with
+mode `0700`, and an existing SQLite file must use mode `0600`. Symlinks,
+including symlinked ancestors, foreign ownership, and public modes fail closed.
+Every existing ancestor must be owned by the current user or root and must not
+be group/world-writable; only standard root-owned sticky temporary roots are
+accepted as a bounded exception.
+ContextWiki never changes an existing store's permissions; move, recreate, or
+`chmod` it manually.
 
 ---
 
@@ -178,7 +219,8 @@ Add the same local uv block to `.cursor/mcp.json`.
 
 1. Sync one source (`sync_source`) or all (`sync_all`).
 2. Poll `get_sync_status` with the returned `source_id` + `job_id` until it finishes.
-3. Search or browse with `search_context`, `search_documents`, or `list_documents`.
+3. Search or browse with `search_context`, `search_documents`,
+   `search_evidence`, or `list_documents`.
 
 **Example prompt:**
 ```text
@@ -256,9 +298,23 @@ Do not paste `.env`, tokens, or indexed content into diagnostics.
 ./scripts/demo.sh                           # Run the local sample flow
 ./scripts/demo.sh --query "your question"
 ./scripts/verify_all.sh                     # full developer checks
+eval_git_identifier="$(bash scripts/evaluation_git_identifier.sh)"
+uv run --locked python -m evaluation.runner \
+  --dataset evaluation/datasets/retrieval_gold.example.jsonl \
+  --corpus evaluation/datasets/career_corpus.example.jsonl \
+  --configuration evaluation/configs/deterministic_fixture.json \
+  --output-dir artifacts/career-retrieval-evaluation \
+  --git-identifier "${eval_git_identifier}" \
+  --public-only                              # measured synthetic offline proxy
 ```
 
 `demo.sh` needs no credentials. It uses the bundled Obsidian sample vault, temporary SQLite and Chroma storage, and mock embeddings. Automated verification does not run live GitHub owner sync.
+
+Career evaluation reports are labeled `TEST FIXTURE — NOT PRODUCT PERFORMANCE`.
+Selected CI evaluation executes real `ContextSearchService` and
+`EvidenceSearchService` with an offline lexical/character candidate provider
+and deterministic score calibration. It does not execute configured embedding
+provider or reproduce production I/O/vector scores.
 
 ---
 
@@ -272,7 +328,9 @@ deploy/launchd/  macOS LaunchAgent template
 environments/    Env var and secret loading
 fetching/        Source connectors
 indexing/        Chunking, sync worker, dedup, Chroma indexing
+parsing/         Root-bounded PDF/DOCX/Markdown/text career parsing
 search/          Retrieval, ranking, active gate, citations
 storage/         SQLite lifecycle metadata
+evaluation/      Career dataset validation, metrics/report helpers, CI thresholds
 tests/, scripts/ Verification harnesses and utilities
 ```

@@ -1,15 +1,18 @@
 import asyncio
 import inspect
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from core.error_sanitizer import sanitize_error_text
+from core.exceptions import CareerManifestParsingError, ParsingError
 from core.models import DocumentModel, SyncJobStatus
 from core.utils import ContentHasher
 from fetching.connectors import SourceRegistry
 from fetching.notion import _StopRequested
-from indexing.chunker import DocumentChunker
+from indexing.chunker import DocumentChunker, _ChunkingCancelled
 from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
@@ -21,11 +24,16 @@ WORKER_STOPPED_SYNC_ERROR = (
 FETCHING_PAGE_CONTENT_PHASE = "fetching_page_content"
 INDEXING_DOCUMENTS_PHASE = "indexing_documents"
 FETCH_PROGRESS_STOP_SIGNAL = object()
-OBSERVER_CANCELLED_SYNC_ERROR = "Sync request was cancelled by a progress observer before completion."
+OBSERVER_CANCELLED_SYNC_ERROR = (
+    "Sync request was cancelled by a progress observer before completion."
+)
 # Coalesce frequent per-item writes. Hint counters stay sparse; liveness is
 # denser so orphan detection and public last_progress_at stay fresh.
 _PAGE_FETCH_HINT_PERSIST_INTERVAL = 25
 _PAGE_FETCH_LIVENESS_PERSIST_INTERVAL = 5
+_DURABLE_STOP_POLL_INTERVAL_SECONDS = 0.5
+VECTOR_CLEANUP_PAGE_SIZE = 5_000
+VECTOR_CLEANUP_MAX_PAGES_PER_SYNC = 4
 
 
 class _InactiveJobStop(Exception):
@@ -115,8 +123,7 @@ def _is_replayable_background_failure(job) -> bool:
         return False
     return (
         getattr(job, "status", None) == SyncJobStatus.FAILED
-        and getattr(job, "error_message", "")
-        == OBSERVER_CANCELLED_SYNC_ERROR
+        and getattr(job, "error_message", "") == OBSERVER_CANCELLED_SYNC_ERROR
     )
 
 
@@ -148,6 +155,28 @@ class IngestionService:
     def refresh_registered_sources(self):
         for source in self.source_registry.list_sources():
             self.metadata_store.register_source(source)
+
+    async def _chunk_document_off_loop(
+        self,
+        document: DocumentModel,
+    ):
+        stop_requested = threading.Event()
+        chunk_task = asyncio.create_task(
+            asyncio.to_thread(
+                self.chunker.chunk_document,
+                document,
+                stop_checker=stop_requested.is_set,
+            )
+        )
+        try:
+            return await asyncio.shield(chunk_task)
+        except asyncio.CancelledError:
+            stop_requested.set()
+            try:
+                await chunk_task
+            except _ChunkingCancelled:
+                pass
+            raise
 
     async def sync_all(self, source_ids: list[str] | None = None) -> dict:
         if self.durable_dispatch:
@@ -198,9 +227,7 @@ class IngestionService:
                 1 for result in results if result["launch_outcome"] == "started"
             ),
             "already_running": sum(
-                1
-                for result in results
-                if result["launch_outcome"] == "already_running"
+                1 for result in results if result["launch_outcome"] == "already_running"
             ),
             "skipped": sum(
                 1 for result in results if result["launch_outcome"] == "skipped"
@@ -263,9 +290,7 @@ class IngestionService:
                 1 for result in results if result["launch_outcome"] == "started"
             ),
             "already_running": sum(
-                1
-                for result in results
-                if result["launch_outcome"] == "already_running"
+                1 for result in results if result["launch_outcome"] == "already_running"
             ),
             "skipped": sum(
                 1 for result in results if result["launch_outcome"] == "skipped"
@@ -283,7 +308,10 @@ class IngestionService:
 
     async def sync_source(self, source_id: str):
         self._reconcile_finished_background_task(source_id)
-        await self._await_finished_background_handoff(source_id)
+        await self._await_finished_background_handoff(
+            source_id,
+            completion_grace_seconds=0.5,
+        )
         recent_terminal_job = self._recent_terminal_background_jobs.pop(source_id, None)
         if recent_terminal_job is not None:
             latest_job = self.metadata_store.get_latest_sync_job(source_id)
@@ -293,9 +321,13 @@ class IngestionService:
                 and latest_job.error_message == OBSERVER_CANCELLED_SYNC_ERROR
             ):
                 return latest_job
-        return await self._sync_source_internal(source_id, join_existing_background=True)
+        return await self._sync_source_internal(
+            source_id, join_existing_background=True
+        )
 
-    async def _sync_source_internal(self, source_id: str, *, join_existing_background: bool):
+    async def _sync_source_internal(
+        self, source_id: str, *, join_existing_background: bool
+    ):
         connector, job, should_run = self._begin_sync_source(source_id)
         if not should_run:
             existing_task = self._background_sync_tasks.get(source_id)
@@ -310,8 +342,13 @@ class IngestionService:
                     if existing_task.cancelled() or existing_task.done():
                         for _ in range(5):
                             self._reconcile_finished_background_task(source_id)
-                            latest_job = self.metadata_store.get_latest_sync_job(source_id)
-                            if latest_job is not None and latest_job.status != SyncJobStatus.RUNNING:
+                            latest_job = self.metadata_store.get_latest_sync_job(
+                                source_id
+                            )
+                            if (
+                                latest_job is not None
+                                and latest_job.status != SyncJobStatus.RUNNING
+                            ):
                                 return latest_job
                             await asyncio.sleep(0)
                     raise
@@ -455,17 +492,22 @@ class IngestionService:
             return connector, job, False
         if not connector.source.enabled:
             message = _redact_sensitive_error(
-                getattr(connector, "disabled_reason", "") or f"Source {source_id} is disabled"
+                getattr(connector, "disabled_reason", "")
+                or f"Source {source_id} is disabled"
             )
-            return connector, self.metadata_store.complete_failed_sync(
-                job_id=job.job_id,
-                source_id=source_id,
-                error_message=message,
-                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(
-                    connector,
-                    message,
+            return (
+                connector,
+                self.metadata_store.complete_failed_sync(
+                    job_id=job.job_id,
+                    source_id=source_id,
+                    error_message=message,
+                    stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(
+                        connector,
+                        message,
+                    ),
                 ),
-            ), False
+                False,
+            )
         return connector, job, True
 
     async def _run_sync_source_job(
@@ -477,13 +519,63 @@ class IngestionService:
         cancellation_error: str = CANCELLED_SYNC_ERROR,
     ):
         job = None
+        indexing_started_at: float | None = None
+        total_documents = 0
+        processed = 0
+        indexed_chunks = 0
+        skipped = 0
+        parsed_documents = 0
+        updated_documents = 0
+        created_chunks = 0
+        updated_chunks = 0
+        skipped_chunks = 0
+        embeddings_generated = 0
+        embeddings_reused = 0
         observer_stop_requested = False
+        last_durable_stop_poll_at = float("-inf")
         previous_progress_callback = getattr(connector, "progress_callback", None)
         progress_callback_attached = hasattr(connector, "progress_callback")
         previous_progress_stop_signal = getattr(connector, "progress_stop_signal", None)
         progress_stop_signal_attached = hasattr(connector, "progress_stop_signal")
-        previous_progress_stop_checker = getattr(connector, "progress_stop_checker", None)
+        previous_progress_stop_checker = getattr(
+            connector, "progress_stop_checker", None
+        )
         progress_stop_checker_attached = hasattr(connector, "progress_stop_checker")
+
+        def _complete_failed_job(
+            error_message: str,
+            *,
+            parsing_failures: int = 0,
+        ):
+            indexing_latency_ms = (
+                (time.perf_counter() - indexing_started_at) * 1000
+                if indexing_started_at is not None
+                else 0.0
+            )
+            return self.metadata_store.complete_failed_sync(
+                job_id=job.job_id if job is not None else job_id,
+                source_id=source_id,
+                error_message=error_message,
+                stale_cleanup_disabled_reason=(
+                    _stale_cleanup_reason_for_connector(connector, error_message)
+                    if not getattr(connector, "supports_stale_cleanup", False)
+                    or not connector.source.enabled
+                    else ""
+                ),
+                total_documents=total_documents,
+                processed_documents=processed,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped,
+                parsed_documents=parsed_documents,
+                updated_documents=updated_documents,
+                created_chunks=created_chunks,
+                updated_chunks=updated_chunks,
+                skipped_chunks=skipped_chunks,
+                embeddings_generated=embeddings_generated,
+                embeddings_reused=embeddings_reused,
+                parsing_failures=parsing_failures,
+                indexing_latency_ms=indexing_latency_ms,
+            )
 
         async def _composed_progress_callback(event: dict):
             nonlocal observer_stop_requested
@@ -514,7 +606,7 @@ class IngestionService:
             return result
 
         async def _composed_progress_stop_checker():
-            nonlocal observer_stop_requested
+            nonlocal observer_stop_requested, last_durable_stop_poll_at
             nested_stop_requested = False
             if previous_progress_stop_checker is not None:
                 try:
@@ -534,7 +626,16 @@ class IngestionService:
             if nested_stop_requested:
                 observer_stop_requested = True
                 return True
-            current_job = self._refresh_running_job_for_progress(job_id)
+            if observer_stop_requested:
+                return True
+            now = time.monotonic()
+            if now - last_durable_stop_poll_at < _DURABLE_STOP_POLL_INTERVAL_SECONDS:
+                return False
+            last_durable_stop_poll_at = now
+            current_job = await asyncio.to_thread(
+                self._refresh_running_job_for_progress,
+                job_id,
+            )
             if current_job is not None:
                 raise _InactiveJobStop(current_job)
             return False
@@ -557,17 +658,25 @@ class IngestionService:
             inactive_job = self._refresh_running_job_or_current(job.job_id)
             if inactive_job:
                 return inactive_job
-            cleanup_missing_documents = getattr(connector, "supports_stale_cleanup", False)
-            processed = 0
-            skipped = 0
-            indexed_chunks = 0
+            indexing_started_at = time.perf_counter()
+            cleanup_missing_documents = getattr(
+                connector, "supports_stale_cleanup", False
+            )
             total_documents = len(documents)
+            parsed_documents = total_documents
             self._record_sync_progress(
                 job.job_id,
                 total_documents=total_documents,
                 processed_documents=processed,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped,
+                parsed_documents=parsed_documents,
+                updated_documents=updated_documents,
+                created_chunks=created_chunks,
+                updated_chunks=updated_chunks,
+                skipped_chunks=skipped_chunks,
+                embeddings_generated=embeddings_generated,
+                embeddings_reused=embeddings_reused,
             )
             last_seen_at = _now()
             last_seen_sync_id = job.job_id
@@ -587,22 +696,114 @@ class IngestionService:
                 content_hash = normalized.content_hash or ContentHasher.hash_content(
                     normalized.content
                 )
-                normalized = normalized.model_copy(update={"content_hash": content_hash})
-                chunks = self.chunker.chunk_document(normalized)
+                normalized = normalized.model_copy(
+                    update={"content_hash": content_hash}
+                )
+                chunks = await self._chunk_document_off_loop(normalized)
                 old_chunks = self.metadata_store.list_chunks_for_document(document_id)
+                existing_content_hash = self.metadata_store.get_document_content_hash(
+                    document_id
+                )
+                existing_document = self.metadata_store.get_document(document_id)
                 old_chunk_ids = {chunk.chunk_id for chunk in old_chunks}
                 new_chunk_ids = {chunk.chunk_id for chunk in chunks}
+                reused_chunk_ids = old_chunk_ids & new_chunk_ids
+                old_chunks_by_id = {chunk.chunk_id: chunk for chunk in old_chunks}
+                retained_metadata_changed_chunks = [
+                    chunk
+                    for chunk in chunks
+                    if chunk.chunk_id in reused_chunk_ids
+                    and self._vector_chunk_metadata_changed(
+                        old_chunks_by_id[chunk.chunk_id],
+                        chunk,
+                    )
+                ]
+                retained_metadata_changed_ids = {
+                    chunk.chunk_id for chunk in retained_metadata_changed_chunks
+                }
+                generated_chunk_ids = new_chunk_ids - old_chunk_ids
+                removed_chunk_ids = old_chunk_ids - new_chunk_ids
+                lifecycle_updated_chunks = min(
+                    len(removed_chunk_ids),
+                    len(generated_chunk_ids),
+                )
+                lifecycle_created_chunks = (
+                    len(generated_chunk_ids) - lifecycle_updated_chunks
+                )
                 stale_chunk_ids = [
                     chunk.chunk_id
                     for chunk in old_chunks
                     if chunk.chunk_id not in new_chunk_ids
                 ]
-                inactive_job = self._validate_document_before_index(job.job_id, normalized)
+                inactive_job = self._validate_document_before_index(
+                    job.job_id, normalized
+                )
                 if inactive_job:
                     return inactive_job
+                if (
+                    existing_document is not None
+                    and existing_document.evidence_source_type is not None
+                ):
+                    await self._reconcile_pending_vector_metadata_refresh(
+                        source_id=source_id,
+                        document_id=document_id,
+                        authoritative_chunks=old_chunks,
+                        platform=existing_document.platform,
+                    )
+                index_result = None
 
-                if self.metadata_store.get_document_content_hash(document_id) == content_hash:
+                if existing_content_hash == content_hash:
                     if old_chunk_ids == new_chunk_ids:
+                        career_metadata_changed = self._career_metadata_changed(
+                            existing_document,
+                            normalized,
+                        )
+                        if retained_metadata_changed_chunks or career_metadata_changed:
+                            (
+                                inactive_job,
+                                index_result,
+                            ) = await self._refresh_vector_metadata_and_commit(
+                                job.job_id,
+                                normalized,
+                                chunks,
+                                retained_metadata_changed_chunks,
+                            )
+                            if inactive_job:
+                                return inactive_job
+                            if index_result is None:
+                                index_result = {
+                                    "embeddings_generated": 0,
+                                    "embeddings_reused": len(reused_chunk_ids),
+                                }
+                            processed += 1
+                            indexed_chunks += len(chunks)
+                            updated_documents += 1
+                            updated_chunks += len(reused_chunk_ids)
+                            embeddings_generated += self._index_metric(
+                                index_result,
+                                "embeddings_generated",
+                                0,
+                            )
+                            embeddings_reused += self._index_metric(
+                                index_result,
+                                "embeddings_reused",
+                                len(reused_chunk_ids),
+                            )
+                            self._record_sync_progress(
+                                job.job_id,
+                                total_documents=total_documents,
+                                processed_documents=processed,
+                                indexed_chunks=indexed_chunks,
+                                skipped_documents=skipped,
+                                parsed_documents=parsed_documents,
+                                updated_documents=updated_documents,
+                                created_chunks=created_chunks,
+                                updated_chunks=updated_chunks,
+                                skipped_chunks=skipped_chunks,
+                                embeddings_generated=embeddings_generated,
+                                embeddings_reused=embeddings_reused,
+                            )
+                            continue
                         inactive_job = self._commit_chunks_or_current(
                             job.job_id,
                             normalized,
@@ -611,12 +812,21 @@ class IngestionService:
                         if inactive_job:
                             return inactive_job
                         skipped += 1
+                        skipped_chunks += len(reused_chunk_ids)
+                        embeddings_reused += len(reused_chunk_ids)
                         self._record_sync_progress(
                             job.job_id,
                             total_documents=total_documents,
                             processed_documents=processed,
                             indexed_chunks=indexed_chunks,
                             skipped_documents=skipped,
+                            parsed_documents=parsed_documents,
+                            updated_documents=updated_documents,
+                            created_chunks=created_chunks,
+                            updated_chunks=updated_chunks,
+                            skipped_chunks=skipped_chunks,
+                            embeddings_generated=embeddings_generated,
+                            embeddings_reused=embeddings_reused,
                         )
                         continue
 
@@ -626,31 +836,76 @@ class IngestionService:
                             for chunk in chunks
                             if chunk.chunk_id not in old_chunk_ids
                         ]
-                        await self.indexer.index_documents(
+                        await self._record_vector_write_intents(
+                            uncommitted_vector_ids,
+                            source_id=source_id,
+                            document_id=document_id,
+                            job_id=job.job_id,
+                        )
+                        index_result = await self.indexer.index_documents(
                             [
                                 chunk.to_document_model(platform=normalized.platform)
                                 for chunk in chunks
                             ]
                         )
-                    inactive_job = self._commit_chunks_or_current(
+                    vector_metadata_refresh_chunks = (
+                        self._vector_metadata_refresh_chunks_after_index(
+                            chunks,
+                            retained_metadata_changed_chunks,
+                            generated_chunk_ids,
+                            index_result,
+                        )
+                    )
+                    (
+                        inactive_job,
+                        _metadata_update_result,
+                    ) = await self._refresh_vector_metadata_and_commit(
                         job.job_id,
                         normalized,
                         chunks,
+                        vector_metadata_refresh_chunks,
                     )
                     if inactive_job:
-                        await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+                        await self._delete_vectors_best_effort(
+                            uncommitted_vector_ids, source_id
+                        )
                         uncommitted_vector_ids = []
                         return inactive_job
                     uncommitted_vector_ids = []
                     await self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                     processed += 1
                     indexed_chunks += len(chunks)
+                    updated_documents += 1
+                    created_chunks += lifecycle_created_chunks
+                    updated_chunks += lifecycle_updated_chunks + len(
+                        retained_metadata_changed_ids
+                    )
+                    skipped_chunks += len(
+                        reused_chunk_ids - retained_metadata_changed_ids
+                    )
+                    embeddings_generated += self._index_metric(
+                        index_result,
+                        "embeddings_generated",
+                        len(generated_chunk_ids),
+                    )
+                    embeddings_reused += self._index_metric(
+                        index_result,
+                        "embeddings_reused",
+                        len(reused_chunk_ids),
+                    )
                     self._record_sync_progress(
                         job.job_id,
                         total_documents=total_documents,
                         processed_documents=processed,
                         indexed_chunks=indexed_chunks,
                         skipped_documents=skipped,
+                        parsed_documents=parsed_documents,
+                        updated_documents=updated_documents,
+                        created_chunks=created_chunks,
+                        updated_chunks=updated_chunks,
+                        skipped_chunks=skipped_chunks,
+                        embeddings_generated=embeddings_generated,
+                        embeddings_reused=embeddings_reused,
                     )
                     continue
 
@@ -660,27 +915,99 @@ class IngestionService:
                         for chunk in chunks
                         if chunk.chunk_id not in old_chunk_ids
                     ]
-                    await self.indexer.index_documents(
-                        [chunk.to_document_model(platform=normalized.platform) for chunk in chunks]
+                    await self._record_vector_write_intents(
+                        uncommitted_vector_ids,
+                        source_id=source_id,
+                        document_id=document_id,
+                        job_id=job.job_id,
                     )
-
-                inactive_job = self._commit_chunks_or_current(job.job_id, normalized, chunks)
+                    index_result = await self.indexer.index_documents(
+                        [
+                            chunk.to_document_model(platform=normalized.platform)
+                            for chunk in chunks
+                        ]
+                    )
+                vector_metadata_refresh_chunks = (
+                    self._vector_metadata_refresh_chunks_after_index(
+                        chunks,
+                        retained_metadata_changed_chunks,
+                        generated_chunk_ids,
+                        index_result,
+                    )
+                )
+                (
+                    inactive_job,
+                    _metadata_update_result,
+                ) = await self._refresh_vector_metadata_and_commit(
+                    job.job_id,
+                    normalized,
+                    chunks,
+                    vector_metadata_refresh_chunks,
+                )
                 if inactive_job:
-                    await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
+                    await self._delete_vectors_best_effort(
+                        uncommitted_vector_ids, source_id
+                    )
                     uncommitted_vector_ids = []
                     return inactive_job
                 uncommitted_vector_ids = []
                 await self._delete_vectors_best_effort(stale_chunk_ids, source_id)
                 processed += 1
                 indexed_chunks += len(chunks)
+                if old_chunks:
+                    updated_documents += 1
+                    created_chunks += lifecycle_created_chunks
+                    updated_chunks += lifecycle_updated_chunks + len(
+                        retained_metadata_changed_ids
+                    )
+                else:
+                    created_chunks += len(chunks)
+                skipped_chunks += len(reused_chunk_ids - retained_metadata_changed_ids)
+                embeddings_generated += self._index_metric(
+                    index_result,
+                    "embeddings_generated",
+                    len(generated_chunk_ids),
+                )
+                embeddings_reused += self._index_metric(
+                    index_result,
+                    "embeddings_reused",
+                    len(reused_chunk_ids),
+                )
                 self._record_sync_progress(
                     job.job_id,
                     total_documents=total_documents,
                     processed_documents=processed,
                     indexed_chunks=indexed_chunks,
                     skipped_documents=skipped,
+                    parsed_documents=parsed_documents,
+                    updated_documents=updated_documents,
+                    created_chunks=created_chunks,
+                    updated_chunks=updated_chunks,
+                    skipped_chunks=skipped_chunks,
+                    embeddings_generated=embeddings_generated,
+                    embeddings_reused=embeddings_reused,
                 )
 
+            indexing_latency_ms = (
+                (time.perf_counter() - indexing_started_at) * 1000
+                if indexing_started_at is not None
+                else 0.0
+            )
+            self._record_sync_progress(
+                job.job_id,
+                total_documents=total_documents,
+                processed_documents=processed,
+                indexed_chunks=indexed_chunks,
+                skipped_documents=skipped,
+                parsed_documents=parsed_documents,
+                updated_documents=updated_documents,
+                created_chunks=created_chunks,
+                updated_chunks=updated_chunks,
+                skipped_chunks=skipped_chunks,
+                embeddings_generated=embeddings_generated,
+                embeddings_reused=embeddings_reused,
+                indexing_latency_ms=indexing_latency_ms,
+            )
             finished, deleted_chunk_ids = self.metadata_store.complete_successful_sync(
                 job_id=job.job_id,
                 source_id=source_id,
@@ -688,6 +1015,15 @@ class IngestionService:
                 processed_documents=processed,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped,
+                parsed_documents=parsed_documents,
+                updated_documents=updated_documents,
+                created_chunks=created_chunks,
+                updated_chunks=updated_chunks,
+                skipped_chunks=skipped_chunks,
+                embeddings_generated=embeddings_generated,
+                embeddings_reused=embeddings_reused,
+                parsing_failures=0,
+                indexing_latency_ms=indexing_latency_ms,
                 last_seen_at=last_seen_at,
                 last_seen_sync_id=last_seen_sync_id,
                 cleanup_missing_documents=cleanup_missing_documents,
@@ -697,9 +1033,11 @@ class IngestionService:
                     (),
                 ),
                 deleted_at=_now(),
-                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(connector),
+                stale_cleanup_disabled_reason=_stale_cleanup_reason_for_connector(
+                    connector
+                ),
             )
-            await self._delete_vectors_best_effort(deleted_chunk_ids, source_id)
+            await self._drain_vector_cleanup_backlog(deleted_chunk_ids, source_id)
             return finished
 
         except _InactiveJobStop as stop:
@@ -707,51 +1045,42 @@ class IngestionService:
         except _StopRequested:
             error_message = OBSERVER_CANCELLED_SYNC_ERROR
             if "uncommitted_vector_ids" in locals():
-                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
-            return self.metadata_store.complete_failed_sync(
-                job_id=job.job_id if job is not None else job_id,
-                source_id=source_id,
-                error_message=error_message,
-                stale_cleanup_disabled_reason=(
-                    _stale_cleanup_reason_for_connector(connector, error_message)
-                    if not getattr(connector, "supports_stale_cleanup", False)
-                    or not connector.source.enabled
-                    else ""
-                ),
-            )
+                await self._delete_vectors_best_effort(
+                    uncommitted_vector_ids, source_id
+                )
+            return _complete_failed_job(error_message)
         except asyncio.CancelledError:
             error_message = cancellation_error
             logger.warning("Sync cancelled for source %s", source_id)
             if "uncommitted_vector_ids" in locals():
-                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
-            self.metadata_store.complete_failed_sync(
-                job_id=job.job_id if job is not None else job_id,
-                source_id=source_id,
-                error_message=error_message,
-                stale_cleanup_disabled_reason=(
-                    _stale_cleanup_reason_for_connector(connector, error_message)
-                    if not getattr(connector, "supports_stale_cleanup", False)
-                    or not connector.source.enabled
-                    else ""
-                ),
-            )
+                await self._delete_vectors_best_effort(
+                    uncommitted_vector_ids, source_id
+                )
+            _complete_failed_job(error_message)
             raise
+        except CareerManifestParsingError as exc:
+            total_documents = exc.attempted_documents
+            parsed_documents = exc.completed_documents
+            error_message = "Career manifest snapshot did not parse completely."
+            logger.error("Career manifest parsing failed for source %s", source_id)
+            return _complete_failed_job(
+                error_message,
+                parsing_failures=1,
+            )
+        except ParsingError as exc:
+            error_message = _redact_sensitive_error(str(exc))
+            logger.error(
+                "Career parsing failed for source %s: %s", source_id, error_message
+            )
+            return _complete_failed_job(error_message, parsing_failures=1)
         except Exception as exc:
             error_message = _redact_sensitive_error(str(exc))
             logger.error("Sync failed for source %s: %s", source_id, error_message)
             if "uncommitted_vector_ids" in locals():
-                await self._delete_vectors_best_effort(uncommitted_vector_ids, source_id)
-            return self.metadata_store.complete_failed_sync(
-                job_id=job.job_id if job is not None else job_id,
-                source_id=source_id,
-                error_message=error_message,
-                stale_cleanup_disabled_reason=(
-                    _stale_cleanup_reason_for_connector(connector, error_message)
-                    if not getattr(connector, "supports_stale_cleanup", False)
-                    or not connector.source.enabled
-                    else ""
-                ),
-            )
+                await self._delete_vectors_best_effort(
+                    uncommitted_vector_ids, source_id
+                )
+            return _complete_failed_job(error_message)
         finally:
             if progress_callback_attached:
                 connector.progress_callback = previous_progress_callback
@@ -827,6 +1156,15 @@ class IngestionService:
         processed_documents: int,
         indexed_chunks: int,
         skipped_documents: int,
+        parsed_documents: int | None = None,
+        updated_documents: int | None = None,
+        created_chunks: int | None = None,
+        updated_chunks: int | None = None,
+        skipped_chunks: int | None = None,
+        embeddings_generated: int | None = None,
+        embeddings_reused: int | None = None,
+        parsing_failures: int | None = None,
+        indexing_latency_ms: float | None = None,
         phase: str = INDEXING_DOCUMENTS_PHASE,
         upstream_total: int | None = None,
         upstream_done: int | None = None,
@@ -843,6 +1181,51 @@ class IngestionService:
                 processed_documents=processed_documents,
                 indexed_chunks=indexed_chunks,
                 skipped_documents=skipped_documents,
+                parsed_documents=(
+                    current_job.parsed_documents
+                    if parsed_documents is None
+                    else parsed_documents
+                ),
+                updated_documents=(
+                    current_job.updated_documents
+                    if updated_documents is None
+                    else updated_documents
+                ),
+                created_chunks=(
+                    current_job.created_chunks
+                    if created_chunks is None
+                    else created_chunks
+                ),
+                updated_chunks=(
+                    current_job.updated_chunks
+                    if updated_chunks is None
+                    else updated_chunks
+                ),
+                skipped_chunks=(
+                    current_job.skipped_chunks
+                    if skipped_chunks is None
+                    else skipped_chunks
+                ),
+                embeddings_generated=(
+                    current_job.embeddings_generated
+                    if embeddings_generated is None
+                    else embeddings_generated
+                ),
+                embeddings_reused=(
+                    current_job.embeddings_reused
+                    if embeddings_reused is None
+                    else embeddings_reused
+                ),
+                parsing_failures=(
+                    current_job.parsing_failures
+                    if parsing_failures is None
+                    else parsing_failures
+                ),
+                indexing_latency_ms=(
+                    current_job.indexing_latency_ms
+                    if indexing_latency_ms is None
+                    else indexing_latency_ms
+                ),
                 phase=phase,
                 upstream_total=(
                     current_job.upstream_total
@@ -867,6 +1250,15 @@ class IngestionService:
                 job_id,
                 _redact_sensitive_error(str(exc)),
             )
+
+    @staticmethod
+    def _index_metric(result: object, key: str, default: int) -> int:
+        if not isinstance(result, dict):
+            return default
+        value = result.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return default
+        return value
 
     def _update_sync_job_hints_best_effort(self, job_id: str, **updates) -> None:
         try:
@@ -909,7 +1301,9 @@ class IngestionService:
             return current_job
         return None
 
-    async def _handle_source_fetch_progress(self, job_id: str, source_id: str, event: dict):
+    async def _handle_source_fetch_progress(
+        self, job_id: str, source_id: str, event: dict
+    ):
         event_name = str(event.get("event") or "").strip()
         total_pages = _int_progress_value(event.get("total_pages"))
         current_page = _int_progress_value(event.get("current_page"))
@@ -1092,7 +1486,27 @@ class IngestionService:
         )
         return None
 
-    async def _await_finished_background_handoff(self, source_id: str, attempts: int = 5) -> None:
+    async def _await_finished_background_handoff(
+        self,
+        source_id: str,
+        attempts: int = 5,
+        completion_grace_seconds: float = 0.0,
+    ) -> None:
+        if completion_grace_seconds > 0:
+            existing_task = self._background_sync_tasks.get(source_id)
+            if existing_task is not None and not existing_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(existing_task),
+                        timeout=completion_grace_seconds,
+                    )
+                except TimeoutError:
+                    return
+                except asyncio.CancelledError:
+                    if not existing_task.cancelled():
+                        raise
+                self._reconcile_finished_background_task(source_id)
+                return
         for _ in range(attempts):
             existing_task = self._background_sync_tasks.get(source_id)
             if existing_task is None:
@@ -1104,18 +1518,8 @@ class IngestionService:
             await asyncio.sleep(0)
 
     def _validate_document_before_index(self, job_id: str, document: DocumentModel):
-        current_job = self.metadata_store.validate_running_job_document(job_id, document)
-        if not current_job:
-            raise ValueError(f"Unknown sync job: {job_id}")
-        if current_job.status != SyncJobStatus.RUNNING:
-            return current_job
-        return None
-
-    def _commit_chunks_or_current(self, job_id: str, document: DocumentModel, chunks):
-        _, current_job = self.metadata_store.upsert_document_and_replace_chunks_for_running_job(
-            job_id,
-            document,
-            chunks,
+        current_job = self.metadata_store.validate_running_job_document(
+            job_id, document
         )
         if not current_job:
             raise ValueError(f"Unknown sync job: {job_id}")
@@ -1123,29 +1527,339 @@ class IngestionService:
             return current_job
         return None
 
-    async def _delete_vectors_best_effort(self, chunk_ids: list[str], source_id: str):
-        if not chunk_ids or not hasattr(self.indexer, "delete_documents_by_ids"):
-            return
-        deletable_chunk_ids = [
-            chunk_id
-            for chunk_id in chunk_ids
-            if not self.metadata_store.get_chunk(chunk_id)
+    def _commit_chunks_or_current(self, job_id: str, document: DocumentModel, chunks):
+        _, current_job = (
+            self.metadata_store.upsert_document_and_replace_chunks_for_running_job(
+                job_id,
+                document,
+                chunks,
+            )
+        )
+        if not current_job:
+            raise ValueError(f"Unknown sync job: {job_id}")
+        if current_job.status != SyncJobStatus.RUNNING:
+            return current_job
+        return None
+
+    async def _update_vector_metadata(self, chunks, *, platform: str):
+        update_metadata = getattr(self.indexer, "update_documents_metadata", None)
+        if not callable(update_metadata):
+            raise RuntimeError("Configured indexer cannot refresh vector metadata")
+        result = update_metadata(
+            [chunk.to_document_model(platform=platform) for chunk in chunks]
+        )
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    async def _refresh_vector_metadata_and_commit(
+        self,
+        job_id: str,
+        document: DocumentModel,
+        chunks,
+        retained_metadata_changed_chunks,
+    ):
+        metadata_update_result = None
+        refresh_chunk_ids = [
+            chunk.chunk_id for chunk in retained_metadata_changed_chunks
         ]
-        if not deletable_chunk_ids:
-            return
+        await self._record_vector_metadata_refresh_intents(
+            refresh_chunk_ids,
+            source_id=document.source_id,
+            document_id=document.document_id or document.id,
+            job_id=job_id,
+        )
         try:
-            delete_result = self.indexer.delete_documents_by_ids(
+            if retained_metadata_changed_chunks:
+                metadata_update_result = await self._update_vector_metadata(
+                    retained_metadata_changed_chunks,
+                    platform=document.platform,
+                )
+            inactive_job = self._commit_chunks_or_current(job_id, document, chunks)
+        except asyncio.CancelledError:
+            if metadata_update_result is not None:
+                await self._rollback_vector_metadata(metadata_update_result)
+                await self._mark_vector_metadata_refresh_complete(
+                    refresh_chunk_ids,
+                    source_id=document.source_id,
+                )
+            raise
+        except Exception:
+            if metadata_update_result is not None:
+                await self._rollback_vector_metadata(metadata_update_result)
+                await self._mark_vector_metadata_refresh_complete(
+                    refresh_chunk_ids,
+                    source_id=document.source_id,
+                )
+            raise
+        if inactive_job and metadata_update_result is not None:
+            await self._rollback_vector_metadata(metadata_update_result)
+            await self._mark_vector_metadata_refresh_complete(
+                refresh_chunk_ids,
+                source_id=document.source_id,
+            )
+        return inactive_job, metadata_update_result
+
+    async def _reconcile_pending_vector_metadata_refresh(
+        self,
+        *,
+        source_id: str,
+        document_id: str,
+        authoritative_chunks,
+        platform: str,
+    ) -> None:
+        authoritative_by_id = {chunk.chunk_id: chunk for chunk in authoritative_chunks}
+        while True:
+            pending_ids = await self._run_blocking_operation(
+                self.metadata_store.list_pending_vector_metadata_refresh_ids,
+                source_id,
+                document_id=document_id,
+            )
+            if not pending_ids:
+                return
+            chunks_to_restore = [
+                authoritative_by_id[chunk_id]
+                for chunk_id in pending_ids
+                if chunk_id in authoritative_by_id
+            ]
+            if not chunks_to_restore:
+                return
+            await self._update_vector_metadata(chunks_to_restore, platform=platform)
+            await self._mark_vector_metadata_refresh_complete(
+                [chunk.chunk_id for chunk in chunks_to_restore],
+                source_id=source_id,
+            )
+
+    async def _rollback_vector_metadata(self, index_result: object) -> None:
+        if not isinstance(index_result, dict):
+            raise RuntimeError("Vector metadata update did not return rollback state")
+        rollback_state = index_result.get("metadata_rollback")
+        rollback_metadata = getattr(self.indexer, "rollback_documents_metadata", None)
+        if rollback_state is None or not callable(rollback_metadata):
+            raise RuntimeError("Configured indexer cannot roll back vector metadata")
+        result = rollback_metadata(rollback_state)
+        if asyncio.iscoroutine(result):
+            await result
+
+    @staticmethod
+    def _vector_chunk_metadata_changed(existing, current) -> bool:
+        if existing.evidence_source_type is None:
+            return False
+        fields = (
+            "chunk_index",
+            "line_start",
+            "line_end",
+            "version_id",
+            "document_version_id",
+            "created_at",
+            "updated_at",
+            "evidence_source_type",
+            "experience_type",
+        )
+        return any(
+            getattr(existing, field) != getattr(current, field) for field in fields
+        )
+
+    @classmethod
+    def _vector_metadata_refresh_chunks_after_index(
+        cls,
+        chunks,
+        retained_metadata_changed_chunks,
+        generated_chunk_ids: set[str],
+        index_result: object,
+    ):
+        refresh_ids = {
+            chunk.chunk_id for chunk in retained_metadata_changed_chunks
+        }
+        reused_vector_count = cls._index_metric(
+            index_result,
+            "embeddings_reused",
+            len(generated_chunk_ids),
+        )
+        if generated_chunk_ids and reused_vector_count > 0:
+            refresh_ids.update(
+                chunk.chunk_id
+                for chunk in chunks
+                if chunk.evidence_source_type is not None
+                and chunk.chunk_id in generated_chunk_ids
+            )
+        return [chunk for chunk in chunks if chunk.chunk_id in refresh_ids]
+
+    @staticmethod
+    def _career_metadata_changed(
+        existing: DocumentModel | None,
+        current: DocumentModel,
+    ) -> bool:
+        if (
+            existing is None
+            or existing.evidence_source_type is None
+            or current.evidence_source_type is None
+        ):
+            return False
+        fields = (
+            "title",
+            "document_title",
+            "file_name",
+            "company",
+            "role",
+            "project",
+            "start_date",
+            "end_date",
+        )
+        return any(
+            getattr(existing, field) != getattr(current, field) for field in fields
+        )
+
+    async def _record_vector_write_intents(
+        self,
+        chunk_ids: list[str],
+        *,
+        source_id: str,
+        document_id: str,
+        job_id: str,
+    ) -> None:
+        if not chunk_ids:
+            return
+        await self._run_blocking_operation(
+            self.metadata_store.record_vector_write_intents,
+            chunk_ids,
+            source_id=source_id,
+            document_id=document_id,
+            job_id=job_id,
+        )
+
+    async def _record_vector_metadata_refresh_intents(
+        self,
+        chunk_ids: list[str],
+        *,
+        source_id: str,
+        document_id: str,
+        job_id: str,
+    ) -> None:
+        if not chunk_ids:
+            return
+        await self._run_blocking_operation(
+            self.metadata_store.record_vector_metadata_refresh_intents,
+            chunk_ids,
+            source_id=source_id,
+            document_id=document_id,
+            job_id=job_id,
+        )
+
+    async def _mark_vector_metadata_refresh_complete(
+        self,
+        chunk_ids: list[str],
+        *,
+        source_id: str,
+    ) -> None:
+        if not chunk_ids:
+            return
+        await self._run_blocking_operation(
+            self.metadata_store.mark_vector_metadata_refresh_complete,
+            chunk_ids,
+            source_id=source_id,
+        )
+
+    @staticmethod
+    async def _run_blocking_operation(operation, *args, **kwargs):
+        """Keep a started SQLite/vector operation alive through caller cancellation."""
+        task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
+
+    async def _drain_vector_cleanup_backlog(
+        self,
+        newly_deleted_chunk_ids: list[str],
+        source_id: str,
+    ) -> None:
+        if newly_deleted_chunk_ids:
+            cleaned = await self._delete_vectors_best_effort(
+                newly_deleted_chunk_ids,
+                source_id,
+            )
+            if not cleaned:
+                return
+
+        seen_pages: set[tuple[str, ...]] = set()
+        for _ in range(VECTOR_CLEANUP_MAX_PAGES_PER_SYNC):
+            pending = await self._run_blocking_operation(
+                self.metadata_store.list_pending_vector_cleanup_ids,
+                source_id,
+                limit=VECTOR_CLEANUP_PAGE_SIZE,
+            )
+            if not pending:
+                return
+            page_key = tuple(pending)
+            if page_key in seen_pages:
+                logger.error("Vector cleanup made no progress for source %s", source_id)
+                return
+            seen_pages.add(page_key)
+            cleaned = await self._delete_vectors_best_effort(pending, source_id)
+            if not cleaned:
+                return
+        logger.info(
+            "Vector cleanup retry budget exhausted for source %s; remaining work is deferred",
+            source_id,
+        )
+
+    async def _delete_vectors_best_effort(
+        self,
+        chunk_ids: list[str],
+        source_id: str,
+    ) -> bool:
+        if not chunk_ids or not hasattr(self.indexer, "delete_documents_by_ids"):
+            return not chunk_ids
+        try:
+            unique_chunk_ids = list(
+                dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id)
+            )
+            active_chunk_ids = await self._run_blocking_operation(
+                self.metadata_store.get_active_chunk_ids,
+                unique_chunk_ids,
+                source_id=source_id,
+            )
+            deletable_chunk_ids = [
+                chunk_id
+                for chunk_id in unique_chunk_ids
+                if chunk_id not in active_chunk_ids
+            ]
+            if not deletable_chunk_ids:
+                return True
+            await self._run_blocking_operation(
+                self.metadata_store.record_pending_vector_cleanup_ids,
                 deletable_chunk_ids,
                 source_id=source_id,
             )
-            if asyncio.iscoroutine(delete_result):
-                await delete_result
+            delete_operation = self.indexer.delete_documents_by_ids
+            if inspect.iscoroutinefunction(delete_operation):
+                await delete_operation(deletable_chunk_ids, source_id=source_id)
+            else:
+                delete_result = await self._run_blocking_operation(
+                    delete_operation,
+                    deletable_chunk_ids,
+                    source_id=source_id,
+                )
+                if inspect.isawaitable(delete_result):
+                    await delete_result
+            await self._run_blocking_operation(
+                self.metadata_store.mark_vector_cleanup_complete,
+                deletable_chunk_ids,
+                source_id=source_id,
+            )
+            return True
         except Exception as exc:
             logger.error(
                 "Vector cleanup failed for source %s: %s",
                 source_id,
                 _redact_sensitive_error(str(exc)),
             )
+            return False
 
     @staticmethod
     def _normalize_document(
@@ -1154,7 +1868,11 @@ class IngestionService:
         last_seen_at: str,
         last_seen_sync_id: str = "",
     ) -> DocumentModel:
-        document_id = document.external_id or document.document_id or document.id
+        document_id = (
+            document.document_id
+            if document.evidence_source_type and document.document_id
+            else document.external_id or document.document_id or document.id
+        )
         return document.model_copy(
             update={
                 "source_id": source_id,

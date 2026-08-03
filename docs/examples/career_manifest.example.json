@@ -1,0 +1,28 @@
+{
+  "root": "./career-files",
+  "documents": [
+    {
+      "path": "resume.md",
+      "source_type": "resume",
+      "experience_type": "professional",
+      "document_title": "Synthetic Backend Resume",
+      "company": "Example Systems",
+      "role": "Backend Engineer",
+      "start_date": "2024-01",
+      "end_date": "2025-01"
+    },
+    {
+      "path": "scheduler-project.docx",
+      "source_type": "project",
+      "experience_type": "personal_project",
+      "document_title": "Scheduler Learning Project",
+      "project": "Scheduler Learning Project"
+    },
+    {
+      "path": "skills.txt",
+      "source_type": "skills_inventory",
+      "experience_type": "unknown",
+      "document_title": "Synthetic Skills Inventory"
+    }
+  ]
+}

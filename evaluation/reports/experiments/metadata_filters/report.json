@@ -1,0 +1,125 @@
+{
+  "configuration": {
+    "candidate_multiplier": 1,
+    "exact_duplicate_removal": false,
+    "metadata_filtering": true,
+    "name": "metadata-filters-v1",
+    "near_duplicate_removal": false,
+    "near_duplicate_threshold": 0.8,
+    "query_normalization": false,
+    "retrieval_mode": "keyword",
+    "top_k": 5
+  },
+  "dataset": {
+    "label_source": "deterministic_fixture",
+    "name": "retrieval_gold.example.jsonl",
+    "size": 13
+  },
+  "disclaimer": "TEST FIXTURE — NOT PRODUCT PERFORMANCE",
+  "execution_path": {
+    "identity": "dependency-free-retrieve-evidence:keyword:v1",
+    "provider": "deterministic_offline_retrieval_function",
+    "retrieval_function": "evaluation.retrieval.retrieve_evidence"
+  },
+  "failures": [
+    {
+      "expected_behavior": "top-5 chunks contain ['career-note-leadership', 'behavioral-story-mentoring']; documents contain ['career-note-growth', 'behavioral-story-mentoring']",
+      "missing_chunk_ids": [
+        "behavioral-story-mentoring"
+      ],
+      "missing_document_ids": [
+        "behavioral-story-mentoring"
+      ],
+      "query": "leadership evidence",
+      "query_id": "q-008",
+      "reason": "expected_chunk_not_in_top_5,expected_document_not_in_top_5",
+      "returned_results": [
+        {
+          "chunk_id": "career-note-leadership",
+          "document_id": "career-note-growth",
+          "exact_quote": "Recorded leadership goals for clearer technical decisions and team support.",
+          "experience_type": "unknown",
+          "retrieval_score": 0.188982236505,
+          "source_type": "career_note"
+        }
+      ]
+    }
+  ],
+  "git_identifier": "commit=9a2d39cbcb6a28f90d47ff0b62e76000edec627c;head_tree=fdfe77e949bf3384382acf1bf7ab34d99d10a75b;worktree_tree=8f4e7602b4bb3c579d242634f77729f987fbdecb;state=dirty",
+  "ingestion_metrics": {
+    "full_ingestion_latency_ms": null,
+    "incremental_update_latency_ms": null,
+    "metric_denominators": {
+      "full_ingestion_latency_ms": 0,
+      "incremental_update_latency_ms": 0,
+      "parsing_success_rate": 0,
+      "unchanged_document_skip_rate": 0,
+      "unnecessary_reembedding_rate": 0
+    },
+    "parsing_success_rate": null,
+    "unchanged_document_skip_rate": null,
+    "unnecessary_reembedding_rate": null
+  },
+  "ingestion_metrics_note": "No ingestion run was executed by this retrieval-only fixture; values remain undefined with zero denominators.",
+  "input_digests": {
+    "configuration_sha256": "bb3ae7dc2bc7817bbadfb3241378906120a80f0b02011f125d9c80dec9e06fda",
+    "corpus_sha256": "0bff529524068586730a648b7bd957af6200cc8c8b545073c365037c2776857a",
+    "dataset_sha256": "d193117a73adb4d52c73d7f51145a6a04cc4c83f687213f58cafafd2b23b8715"
+  },
+  "metrics": {
+    "citation_validity_rate": 1.0,
+    "document_recall_at_1": 0.9583333333333334,
+    "document_recall_at_3": 0.9583333333333334,
+    "document_recall_at_5": 0.9583333333333334,
+    "duplicate_result_rate": 0.2222222222222222,
+    "empty_result_accuracy": 1.0,
+    "exact_duplicate_count": 2,
+    "exact_duplicate_result_rate": 0.1111111111111111,
+    "experience_type_filter_accuracy": 1.0,
+    "invalid_citations": [],
+    "latency_sample_count": 13,
+    "mean_latency_ms": 0.020211459531520422,
+    "metric_denominators": {
+      "citation_validity_rate": 18,
+      "document_recall_at_1": 12,
+      "document_recall_at_3": 12,
+      "document_recall_at_5": 12,
+      "duplicate_result_rate": 18,
+      "empty_result_accuracy": 13,
+      "experience_type_filter_accuracy": 18,
+      "mean_latency_ms": 13,
+      "mrr": 12,
+      "ndcg_at_5": 12,
+      "p50_latency_ms": 13,
+      "p95_latency_ms": 13,
+      "precision_at_3": 12,
+      "precision_at_5": 12,
+      "recall_at_1": 12,
+      "recall_at_3": 12,
+      "recall_at_5": 12,
+      "source_type_filter_accuracy": 18
+    },
+    "mrr": 1.0,
+    "ndcg_at_5": 0.9378892821186144,
+    "near_duplicate_count": 2,
+    "near_duplicate_result_rate": 0.1111111111111111,
+    "p50_latency_ms": 0.015915997209958732,
+    "p95_latency_ms": 0.054625008488073945,
+    "precision_at_3": 0.3333333333333333,
+    "precision_at_5": 0.20000000000000004,
+    "recall_at_1": 0.9583333333333334,
+    "recall_at_3": 0.9583333333333334,
+    "recall_at_5": 0.9583333333333334,
+    "source_type_filter_accuracy": 1.0,
+    "total_count": 18,
+    "total_result_count": 18,
+    "valid_count": 18
+  },
+  "report_version": 2,
+  "resource_cost": {
+    "estimated_cost_usd": 0.0,
+    "external_api_calls": 0
+  },
+  "status": "measured",
+  "timestamp": "2026-08-03T07:34:36Z"
+}

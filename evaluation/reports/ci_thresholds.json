@@ -1,0 +1,29 @@
+{
+  "recall_at_5": {
+    "max_drop": 0.05
+  },
+  "mrr": {
+    "max_drop": 0.05
+  },
+  "document_recall_at_5": {
+    "min": 1.0
+  },
+  "citation_validity_rate": {
+    "min": 1.0
+  },
+  "duplicate_result_rate": {
+    "max": 0.0
+  },
+  "empty_result_accuracy": {
+    "min": 0.95
+  },
+  "source_type_filter_accuracy": {
+    "min": 1.0
+  },
+  "experience_type_filter_accuracy": {
+    "min": 1.0
+  },
+  "p95_latency_ms": {
+    "max": 1000.0
+  }
+}

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
-from pydantic import Field
+from mcp.types import TextContent, ToolAnnotations
+from pydantic import Field, ValidationError
 
+from core.exceptions import (
+    EvidenceRetrievalError,
+    EvidenceSearchError,
+    InvalidEvidenceRequestError,
+)
 from core.error_sanitizer import sanitize_error_text
 from core.models import (
     DocumentSortBy,
+    EvidenceChunk,
+    EvidenceSourceType,
+    ExperienceType,
+    SearchEvidenceInput,
     SearchFilters,
     SearchSortBy,
     SortOrder,
@@ -28,6 +38,7 @@ if TYPE_CHECKING:
     from indexing.ingestion_service import IngestionService
     from search.answer_service import CitationAnswerService
     from search.context_service import ContextSearchService
+    from search.evidence_service import EvidenceSearchService
     from storage.metadata_store import MetadataStore
 
 logger = logging.getLogger(__name__)
@@ -53,22 +64,30 @@ SearchFiltersInput = Annotated[
         )
     ),
 ]
+EVIDENCE_SOURCE_TYPE_VALUES = [item.value for item in EvidenceSourceType]
+EXPERIENCE_TYPE_VALUES = [item.value for item in ExperienceType]
 
 
-def _metadata_read_tool(mcp, *, open_world: bool = False):
+def _metadata_read_tool(
+    mcp,
+    *,
+    open_world: bool = False,
+    structured_output: bool | None = None,
+):
     """Annotate reads that can persist SQLite schema or owner-heartbeat metadata."""
     try:
-        if "annotations" in inspect.signature(mcp.tool).parameters:
-            decorator = mcp.tool(
-                annotations=ToolAnnotations(
-                    readOnlyHint=False,
-                    destructiveHint=False,
-                    idempotentHint=False,
-                    openWorldHint=open_world,
-                )
+        tool_parameters = inspect.signature(mcp.tool).parameters
+        tool_options = {}
+        if "annotations" in tool_parameters:
+            tool_options["annotations"] = ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=open_world,
             )
-        else:
-            decorator = mcp.tool()
+        if structured_output is not None and "structured_output" in tool_parameters:
+            tool_options["structured_output"] = structured_output
+        decorator = mcp.tool(**tool_options)
     except (TypeError, ValueError):
         decorator = mcp.tool()
 
@@ -97,10 +116,39 @@ def _hide_fastmcp_tool_validation_inputs(mcp, tool_name: str) -> None:
     model_rebuild(force=True)
 
 
+def _publish_required_tool_field(
+    mcp,
+    tool_name: str,
+    field_name: str,
+    *,
+    fields_without_defaults: tuple[str, ...] = (),
+) -> None:
+    """Advertise one required field without moving validation outside its handler."""
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    get_tool = getattr(tool_manager, "get_tool", None)
+    if not callable(get_tool):
+        return
+    tool = get_tool(tool_name)
+    parameters = getattr(tool, "parameters", None)
+    if not isinstance(parameters, dict):
+        return
+    properties = parameters.get("properties")
+    if isinstance(properties, dict):
+        for published_field in (field_name, *fields_without_defaults):
+            field_schema = properties.get(published_field)
+            if isinstance(field_schema, dict):
+                field_schema.pop("default", None)
+    required = list(parameters.get("required") or [])
+    if field_name not in required:
+        required.append(field_name)
+    parameters["required"] = required
+
+
 def register_tools(
     mcp: FastMCP,
     ingestion_service: IngestionService | None = None,
     context_search_service: ContextSearchService | None = None,
+    evidence_search_service: EvidenceSearchService | None = None,
     answer_service: CitationAnswerService | None = None,
     metadata_store: MetadataStore | None = None,
     source_registry: SourceRegistry | None = None,
@@ -410,6 +458,133 @@ def register_tools(
                 }
             return {"status": "error", "message": message, "sources": []}
 
+    @_metadata_read_tool(mcp, open_world=True, structured_output=False)
+    async def search_evidence(
+        query: Annotated[
+            Any,
+            Field(
+                description="Required query; 1-4096 characters.",
+                json_schema_extra={
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                },
+            ),
+        ] = None,
+        source_types: Annotated[
+            Any,
+            Field(
+                description=(
+                    "Optional list: resume, previous_resume, project, "
+                    "github_readme, behavioral_story, career_note, "
+                    "skills_inventory."
+                ),
+                json_schema_extra={
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "maxItems": 32,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "enum": EVIDENCE_SOURCE_TYPE_VALUES,
+                            },
+                        },
+                        {"type": "null"},
+                    ],
+                },
+            ),
+        ] = None,
+        experience_types: Annotated[
+            Any,
+            Field(
+                description=(
+                    "Optional list: professional, academic, personal_project, "
+                    "prototype, unknown."
+                ),
+                json_schema_extra={
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "maxItems": 32,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "enum": EXPERIENCE_TYPE_VALUES,
+                            },
+                        },
+                        {"type": "null"},
+                    ],
+                },
+            ),
+        ] = None,
+        document_ids: Annotated[
+            Any,
+            Field(
+                description="Optional list of up to 100 document IDs.",
+                json_schema_extra={
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512,
+                            },
+                        },
+                        {"type": "null"},
+                    ],
+                },
+            ),
+        ] = None,
+        top_k: Annotated[
+            Any,
+            Field(
+                description="Requested result count from 1 through 50.",
+                json_schema_extra={
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+            ),
+        ] = 5,
+    ) -> TextContent:
+        """Return ranked stored career evidence without synthesis or paraphrase."""
+        try:
+            request = SearchEvidenceInput.model_validate(
+                {
+                    "query": query,
+                    "source_types": source_types,
+                    "experience_types": experience_types,
+                    "document_ids": document_ids,
+                    "top_k": top_k,
+                }
+            )
+            if evidence_search_service is None:
+                raise EvidenceRetrievalError("Evidence search service is unavailable")
+            evidence = await evidence_search_service.search_evidence(request)
+            return _evidence_text_content(evidence)
+        except (ValidationError, InvalidEvidenceRequestError):
+            raise InvalidEvidenceRequestError(
+                "[invalid_request] Invalid evidence request"
+            ) from None
+        except EvidenceRetrievalError:
+            raise EvidenceRetrievalError(
+                "[internal_error] Evidence retrieval failed"
+            ) from None
+        except EvidenceSearchError as exc:
+            raise EvidenceSearchError(
+                f"[{exc.error_type}] Evidence search failed",
+                error_type=exc.error_type,
+            ) from None
+        except Exception:
+            raise EvidenceRetrievalError(
+                "[internal_error] Evidence retrieval failed"
+            ) from None
+
     @_metadata_read_tool(mcp, open_world=True)
     async def search_context(
         query: str,
@@ -620,6 +795,12 @@ def register_tools(
             "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
         }
 
+    _publish_required_tool_field(
+        mcp,
+        "search_evidence",
+        "query",
+    )
+
 def _source_registry_ids(source_registry) -> frozenset[str] | None:
     if source_registry is None:
         return None
@@ -745,6 +926,14 @@ def _refresh_registered_sources(metadata_store, source_registry) -> None:
     for source in source_registry.list_sources():
         if _is_registerable_source(source):
             register_source(source)
+
+
+def _evidence_text_content(evidence: list[EvidenceChunk]) -> TextContent:
+    payload = [item.model_dump(mode="json") for item in evidence]
+    return TextContent(
+        type="text",
+        text=json.dumps(payload, ensure_ascii=False, allow_nan=False),
+    )
 
 
 def _model_payload(model) -> dict:

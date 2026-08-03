@@ -15,6 +15,7 @@ from indexing.chunker import DocumentChunker
 from indexing.ingestion_service import IngestionService
 from search.answer_service import CitationAnswerService
 from search.context_service import ContextSearchService
+from search.evidence_service import EvidenceSearchService
 from storage.metadata_store import MetadataStore, ORPHANED_SYNC_JOB_RECOVERY_MESSAGE
 from api.tools import register_tools
 
@@ -67,6 +68,10 @@ def create_app() -> FastMCP:
         default_source_ids=retained_source_ids,
     )
     answer_service = CitationAnswerService(context_search)
+    evidence_search_service = EvidenceSearchService(
+        context_search_service=context_search,
+        metadata_store=metadata_store,
+    )
 
     # FastMCP 서버
     mcp = FastMCP("content-search-server")
@@ -76,6 +81,7 @@ def create_app() -> FastMCP:
         mcp,
         ingestion_service=ingestion_service,
         context_search_service=context_search,
+        evidence_search_service=evidence_search_service,
         answer_service=answer_service,
         metadata_store=metadata_store,
         source_registry=source_registry,

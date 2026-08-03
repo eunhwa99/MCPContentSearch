@@ -13,7 +13,6 @@ from environments.config import AppConfig, NotionConfig
 from fetching.notion import NotionAPIClient
 from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
-from indexing.manager import IndexManager
 from indexing.sync_worker import _configure_logging, _redact_worker_log_message
 
 
@@ -867,10 +866,6 @@ def test_worker_info_log_does_not_persist_path_bearing_document_ids(
     try:
         handler = _configure_logging()
         assert handler is not None
-        manager = object.__new__(IndexManager)
-        manager.collection = _RecordingCollection()
-        manager.delete_document(sensitive_document_id)
-
         indexer = object.__new__(ContentIndexer)
         indexer.collection = _RecordingCollection()
         indexer._mutation_lock = asyncio.Lock()

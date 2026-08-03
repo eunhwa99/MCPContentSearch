@@ -13,6 +13,8 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 artifacts/
+evaluation/datasets/retrieval_gold.local.jsonl
+evaluation/reports/private/
 
 # Virtual environments
 .venv

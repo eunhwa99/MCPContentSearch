@@ -24,11 +24,18 @@ OBSIDIAN_ENV_VARS = (
     "CONTEXTWIKI_OBSIDIAN_MAX_FILES",
     "CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES",
 )
+CAREER_ENV_VARS = (
+    "CONTEXTWIKI_CAREER_MANIFEST_PATH",
+    "CONTEXTWIKI_CAREER_MAX_FILE_BYTES",
+    "CONTEXTWIKI_CAREER_MAX_FILES",
+    "CONTEXTWIKI_CAREER_MAX_TOTAL_RAW_BYTES",
+    "CONTEXTWIKI_CAREER_MAX_TOTAL_EXTRACTED_TEXT_BYTES",
+)
 
 
 @pytest.fixture(autouse=True)
-def clear_obsidian_env(monkeypatch):
-    for name in OBSIDIAN_ENV_VARS:
+def clear_source_connector_env(monkeypatch):
+    for name in (*OBSIDIAN_ENV_VARS, *CAREER_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
 
 

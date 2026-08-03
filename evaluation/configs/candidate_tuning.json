@@ -1,0 +1,12 @@
+{
+  "name": "production-analog-candidate-tuning-v1",
+  "retrieval_mode": "production_analog",
+  "query_normalization": true,
+  "metadata_filtering": false,
+  "exact_duplicate_removal": false,
+  "near_duplicate_removal": false,
+  "candidate_multiplier": 3,
+  "keyword_weight": 0.7,
+  "near_duplicate_threshold": 0.8,
+  "top_k": 5
+}

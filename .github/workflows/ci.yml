@@ -37,10 +37,10 @@ jobs:
         run: uv sync --locked --python 3.13 --dev
 
       - name: Compile retained Python modules
-        run: uv run --locked python -m compileall api core environments fetching indexing search storage main.py
+        run: uv run --locked python -m compileall api core environments evaluation fetching indexing parsing search storage main.py
 
       - name: Run Ruff lint
-        run: uv run --locked ruff check api core environments fetching indexing search storage main.py
+        run: uv run --locked ruff check api core environments evaluation fetching indexing parsing search storage main.py
 
       - name: Run scoped mypy
         run: uv run --locked mypy
@@ -50,7 +50,7 @@ jobs:
           uv run --locked bandit \
             -q \
             -c pyproject.toml \
-            -r api core environments fetching indexing search storage main.py \
+            -r api core environments evaluation fetching indexing parsing search storage main.py \
             --severity-level medium \
             --confidence-level low
 
@@ -70,8 +70,10 @@ jobs:
             --cov=api \
             --cov=core \
             --cov=environments \
+            --cov=evaluation \
             --cov=fetching \
             --cov=indexing \
+            --cov=parsing \
             --cov=search \
             --cov=storage \
             --cov-report=term-missing
@@ -81,12 +83,36 @@ jobs:
           uv run --locked python scripts/run_contextwiki_eval.py \
             --output-dir artifacts/contextwiki-evals
 
+      - name: Run deterministic career retrieval evaluation
+        run: |
+          eval_git_identifier="$(bash scripts/evaluation_git_identifier.sh)"
+          uv run --locked python -m evaluation.runner \
+            --dataset evaluation/datasets/retrieval_gold.example.jsonl \
+            --corpus evaluation/datasets/career_corpus.example.jsonl \
+            --configuration evaluation/configs/deterministic_fixture.json \
+            --output-dir artifacts/career-retrieval-evaluation \
+            --git-identifier "${eval_git_identifier}" \
+            --public-only
+          uv run --locked python -m evaluation.compare \
+            --baseline evaluation/reports/retrieval_fixture_baseline.json \
+            --current artifacts/career-retrieval-evaluation/report.json \
+            --thresholds evaluation/reports/ci_thresholds.json \
+            --output artifacts/career-retrieval-evaluation/comparison.json
+
       - name: Upload ContextWiki eval artifacts
         if: ${{ always() && hashFiles('artifacts/contextwiki-evals/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: contextwiki-evals
           path: artifacts/contextwiki-evals
+          if-no-files-found: warn
+
+      - name: Upload public career retrieval eval artifacts
+        if: ${{ success() && hashFiles('artifacts/career-retrieval-evaluation/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: career-retrieval-evaluation
+          path: artifacts/career-retrieval-evaluation
           if-no-files-found: warn
 
       - name: Run functional E2E gate

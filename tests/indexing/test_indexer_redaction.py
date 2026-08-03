@@ -5,6 +5,7 @@ import traceback
 from types import SimpleNamespace
 
 import pytest
+from llama_index.core import Document
 
 from core.exceptions import IndexingError
 from core.models import DocumentModel
@@ -154,6 +155,113 @@ def test_batch_index_offloads_blocking_chroma_work_so_event_loop_can_progress(
     asyncio.run(scenario())
 
 
+def test_warmed_batch_index_uses_bounded_bulk_writes_without_per_chunk_insert(
+    monkeypatch,
+):
+    import indexing.indexer as indexer_module
+
+    class WarmedIndex:
+        def __init__(self):
+            self.insert_calls = 0
+            self.insert_node_batch_sizes = []
+            self.docstore = SimpleNamespace(set_document_hash=lambda *_args: None)
+
+        def insert(self, document):
+            del document
+            self.insert_calls += 1
+
+        def insert_nodes(self, nodes):
+            self.insert_node_batch_sizes.append(len(nodes))
+
+    warmed_index = WarmedIndex()
+    def transform_batch(batch, transformations, show_progress=True):
+        del transformations
+        assert show_progress is True
+        return list(batch)
+
+    monkeypatch.setattr(
+        indexer_module,
+        "run_transformations",
+        transform_batch,
+    )
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=10_000, batch_size=1_000),
+        chroma_collection=None,
+        storage_context=None,
+    )
+    indexer.index = warmed_index
+    documents = [Document(text=f"evidence-{index}") for index in range(1_200)]
+
+    asyncio.run(indexer._batch_index(documents))
+
+    assert warmed_index.insert_node_batch_sizes == [500, 500, 200]
+    assert warmed_index.insert_calls == 0
+
+
+def test_cold_prechunked_passage_bypasses_configured_size_transformations(
+    monkeypatch,
+):
+    import indexing.indexer as indexer_module
+
+    transformed_nodes = []
+
+    class ExplodingTransform:
+        def __call__(self, nodes, **kwargs):
+            del kwargs
+            return [
+                Document(
+                    text=f"{node.text}-part-{part}",
+                    metadata=dict(node.metadata),
+                )
+                for node in nodes
+                for part in range(2)
+            ]
+
+    def recording_from_documents(
+        batch,
+        storage_context=None,
+        show_progress=True,
+        transformations=None,
+    ):
+        del storage_context
+        assert show_progress is True
+        assert transformations is not None
+        transformed_nodes.extend(
+            indexer_module.run_transformations(batch, transformations)
+        )
+        return object()
+
+    monkeypatch.setattr(
+        indexer_module.VectorStoreIndex,
+        "from_documents",
+        staticmethod(recording_from_documents),
+    )
+    monkeypatch.setattr(
+        indexer_module.Settings,
+        "transformations",
+        [ExplodingTransform()],
+    )
+    passage = Document(
+        id_="career-large-chunk",
+        text=("Kubernetes reliability 개선 증거. " * 2_000),
+        metadata={
+            "chunk_id": "career-large-chunk",
+            "source_id": "source_career",
+            "contextwiki_managed": "true",
+        },
+    )
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=10_000, batch_size=500),
+        chroma_collection=None,
+        storage_context=None,
+    )
+
+    asyncio.run(indexer._batch_index([passage]))
+
+    assert [node.id_ for node in transformed_nodes] == ["career-large-chunk"]
+    assert transformed_nodes[0].text == passage.text
+
+
 def test_batch_index_shields_chroma_thread_so_cancel_keeps_mutation_lock(
     monkeypatch,
 ):
@@ -286,4 +394,79 @@ def test_batch_index_join_survives_double_cancel_while_chroma_thread_runs(
         }
 
     indexer._filter_documents = fake_filter
+    asyncio.run(scenario())
+
+
+def test_batched_vector_cleanup_does_not_block_event_loop():
+    entered_delete = asyncio.Event()
+    peer_progressed = asyncio.Event()
+
+    class BlockingDeleteCollection:
+        def delete(self, *, where):
+            del where
+            entered_delete.set()
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                if peer_progressed.is_set():
+                    return
+                time.sleep(0.01)
+            raise AssertionError("event loop did not progress during Chroma delete")
+
+    indexer = ContentIndexer(
+        config=None,
+        chroma_collection=BlockingDeleteCollection(),
+        storage_context=None,
+    )
+
+    async def scenario():
+        async def peer():
+            await entered_delete.wait()
+            peer_progressed.set()
+
+        peer_task = asyncio.create_task(peer())
+        await indexer.delete_documents_by_ids(["chunk-1"], source_id="source_career")
+        await peer_task
+
+    asyncio.run(scenario())
+
+
+def test_batched_vector_cleanup_cancel_keeps_lock_until_chroma_thread_finishes():
+    entered_delete = threading.Event()
+    release_delete = threading.Event()
+
+    class BlockingDeleteCollection:
+        def delete(self, *, where):
+            del where
+            entered_delete.set()
+            assert release_delete.wait(timeout=2)
+
+    indexer = ContentIndexer(
+        config=None,
+        chroma_collection=BlockingDeleteCollection(),
+        storage_context=None,
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            indexer.delete_documents_by_ids(
+                ["chunk-1"],
+                source_id="source_career",
+            )
+        )
+        while not entered_delete.is_set():
+            await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        acquired_during_delete = False
+        try:
+            await asyncio.wait_for(indexer._mutation_lock.acquire(), timeout=0.05)
+            acquired_during_delete = True
+            indexer._mutation_lock.release()
+        except TimeoutError:
+            pass
+        release_delete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not acquired_during_delete
+
     asyncio.run(scenario())
