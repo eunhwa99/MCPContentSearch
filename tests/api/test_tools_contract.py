@@ -2669,6 +2669,7 @@ def test_contextwiki_mcp_tools_are_registered():
         "search_documents",
         "list_documents",
         "fetch_context",
+        "search_evidence",
     } == set(mcp.tools)
 
 

@@ -1,0 +1,19 @@
+{
+  "status": "measured_configuration",
+  "name": "career-evidence-production-analog-v1",
+  "retrieval_mode": "production_analog",
+  "service_execution": true,
+  "query_normalization": true,
+  "metadata_filtering": true,
+  "exact_duplicate_removal": true,
+  "near_duplicate_removal": true,
+  "candidate_multiplier": 3,
+  "keyword_weight": 0.7,
+  "candidate_score_scale": 16.0,
+  "candidate_score_calibration_floor": 0.01,
+  "near_duplicate_threshold": 0.8,
+  "top_k": 5,
+  "production_mapping": "Deterministic offline candidates prefilter source/experience taxonomy before the bounded candidate cap, then pass through ContextSearchService source scoping/reranking and EvidenceSearchService authoritative metadata revalidation, relevance filtering, exact/near deduplication, and refill (candidate multiplier 3; top_k 5 gives at most 15 candidates).",
+  "proxy_limitation": "Offline lexical and character-similarity candidate provider with deterministic score calibration only; does not reproduce embedding-provider vector scores.",
+  "notes": "Selected from executed deterministic public-fixture experiments. No external provider or private data."
+}

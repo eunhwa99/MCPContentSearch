@@ -6,11 +6,17 @@ cd "$REPO_ROOT"
 
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 export IS_TESTING="${IS_TESTING:-1}"
+export CONTEXTWIKI_DISABLE_DOTENV=1
 DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
 unset CONTEXTWIKI_OBSIDIAN_VAULT_PATH
 unset CONTEXTWIKI_OBSIDIAN_MAX_FILES
 unset CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES
+unset CONTEXTWIKI_CAREER_MANIFEST_PATH
+unset CONTEXTWIKI_CAREER_MAX_FILE_BYTES
+unset CONTEXTWIKI_CAREER_MAX_FILES
+unset CONTEXTWIKI_CAREER_MAX_TOTAL_RAW_BYTES
+unset CONTEXTWIKI_CAREER_MAX_TOTAL_EXTRACTED_TEXT_BYTES
 mkdir -p "$UV_CACHE_DIR"
 
 uv_workspace_healthy() {
@@ -27,6 +33,8 @@ fi
 ALLOW_SYSTEM_PYTHON="${VERIFY_E2E_ALLOW_SYSTEM_PYTHON:-0}"
 
 RETAINED_FUNCTIONAL_TESTS=(
+  tests/e2e/test_career_evidence_ingestion_flow.py
+  tests/e2e/test_career_evidence_flow.py
   tests/e2e/test_contextwiki_flow.py
   tests/e2e/test_durable_sync_worker_flow.py
   tests/e2e/test_obsidian_connector_flow.py

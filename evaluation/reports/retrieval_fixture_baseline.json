@@ -1,0 +1,117 @@
+{
+  "configuration": {
+    "candidate_multiplier": 3,
+    "candidate_score_calibration_floor": 0.01,
+    "candidate_score_scale": 16.0,
+    "exact_duplicate_removal": true,
+    "keyword_weight": 0.7,
+    "metadata_filtering": true,
+    "name": "career-evidence-production-analog-v1",
+    "near_duplicate_removal": true,
+    "near_duplicate_threshold": 0.8,
+    "notes": "Selected from executed deterministic public-fixture experiments. No external provider or private data.",
+    "production_mapping": "Deterministic offline candidates prefilter source/experience taxonomy before the bounded candidate cap, then pass through ContextSearchService source scoping/reranking and EvidenceSearchService authoritative metadata revalidation, relevance filtering, exact/near deduplication, and refill (candidate multiplier 3; top_k 5 gives at most 15 candidates).",
+    "proxy_limitation": "Offline lexical and character-similarity candidate provider with deterministic score calibration only; does not reproduce embedding-provider vector scores.",
+    "query_normalization": true,
+    "retrieval_mode": "production_analog",
+    "service_execution": true,
+    "status": "measured_configuration",
+    "top_k": 5
+  },
+  "dataset": {
+    "label_source": "deterministic_fixture",
+    "name": "retrieval_gold.example.jsonl",
+    "size": 13
+  },
+  "disclaimer": "TEST FIXTURE — NOT PRODUCT PERFORMANCE",
+  "execution_path": {
+    "candidate_budget_per_query": 15,
+    "candidate_multiplier": 3,
+    "context_service": "ContextSearchService",
+    "evidence_service": "EvidenceSearchService",
+    "identity": "context-search-service+evidence-search-service+deterministic-offline-candidate-provider:v1",
+    "provider": "deterministic_offline_candidate_provider"
+  },
+  "failures": [],
+  "git_identifier": "commit=9a2d39cbcb6a28f90d47ff0b62e76000edec627c;head_tree=fdfe77e949bf3384382acf1bf7ab34d99d10a75b;worktree_tree=8f4e7602b4bb3c579d242634f77729f987fbdecb;state=dirty",
+  "ingestion_metrics": {
+    "full_ingestion_latency_ms": null,
+    "incremental_update_latency_ms": null,
+    "metric_denominators": {
+      "full_ingestion_latency_ms": 0,
+      "incremental_update_latency_ms": 0,
+      "parsing_success_rate": 0,
+      "unchanged_document_skip_rate": 0,
+      "unnecessary_reembedding_rate": 0
+    },
+    "parsing_success_rate": null,
+    "unchanged_document_skip_rate": null,
+    "unnecessary_reembedding_rate": null
+  },
+  "ingestion_metrics_note": "No ingestion run was executed by this retrieval-only fixture; values remain undefined with zero denominators.",
+  "input_digests": {
+    "configuration_sha256": "8053a8a703053abe57ed425509c65713ab733fe0dd87f12c8fc96a43c5820409",
+    "corpus_sha256": "0bff529524068586730a648b7bd957af6200cc8c8b545073c365037c2776857a",
+    "dataset_sha256": "d193117a73adb4d52c73d7f51145a6a04cc4c83f687213f58cafafd2b23b8715"
+  },
+  "limitations": [
+    "Executes ContextSearchService and EvidenceSearchService with an offline lexical and character-similarity candidate provider; it does not execute the configured embedding provider or reproduce provider vector scores.",
+    "Latency measures the in-process sanitized fixture only, not production I/O."
+  ],
+  "metrics": {
+    "citation_validity_rate": 1.0,
+    "document_recall_at_1": 0.9583333333333334,
+    "document_recall_at_3": 1.0,
+    "document_recall_at_5": 1.0,
+    "duplicate_result_rate": 0.0,
+    "empty_result_accuracy": 1.0,
+    "exact_duplicate_count": 0,
+    "exact_duplicate_result_rate": 0.0,
+    "experience_type_filter_accuracy": 1.0,
+    "invalid_citations": [],
+    "latency_sample_count": 13,
+    "mean_latency_ms": 0.671551078154992,
+    "metric_denominators": {
+      "citation_validity_rate": 20,
+      "document_recall_at_1": 12,
+      "document_recall_at_3": 12,
+      "document_recall_at_5": 12,
+      "duplicate_result_rate": 20,
+      "empty_result_accuracy": 13,
+      "experience_type_filter_accuracy": 20,
+      "mean_latency_ms": 13,
+      "mrr": 12,
+      "ndcg_at_5": 12,
+      "p50_latency_ms": 13,
+      "p95_latency_ms": 13,
+      "precision_at_3": 12,
+      "precision_at_5": 12,
+      "recall_at_1": 12,
+      "recall_at_3": 12,
+      "recall_at_5": 12,
+      "source_type_filter_accuracy": 20
+    },
+    "mrr": 1.0,
+    "ndcg_at_5": 0.9792758870925922,
+    "near_duplicate_count": 0,
+    "near_duplicate_result_rate": 0.0,
+    "p50_latency_ms": 0.5339579947758466,
+    "p95_latency_ms": 2.0080410031368956,
+    "precision_at_3": 0.3611111111111111,
+    "precision_at_5": 0.21666666666666667,
+    "recall_at_1": 0.9583333333333334,
+    "recall_at_3": 1.0,
+    "recall_at_5": 1.0,
+    "source_type_filter_accuracy": 1.0,
+    "total_count": 20,
+    "total_result_count": 20,
+    "valid_count": 20
+  },
+  "report_version": 2,
+  "resource_cost": {
+    "estimated_cost_usd": 0.0,
+    "external_api_calls": 0
+  },
+  "status": "measured",
+  "timestamp": "2026-08-03T07:34:36Z"
+}

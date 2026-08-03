@@ -5,6 +5,7 @@
 ```mermaid
 flowchart LR
   Client[MCP client] --> FastMCP[FastMCP in main.py]
+  Manifest[Explicit career manifest] --> Worker
   LaunchAgent[LaunchAgent / Docker] --> Worker["indexing.sync_worker"]
   FastMCP --> SQLite[(SQLite jobs + lifecycle)]
   Worker --> SQLite
@@ -18,7 +19,7 @@ Two processes share one SQLite DB and one Chroma store:
 
 | Node | Meaning |
 | --- | --- |
-| MCP client → FastMCP | Claude/Cursor calls MCP tools (`sync_*`, `search_*`, …) |
+| MCP client → FastMCP | Claude/Cursor/Application OS calls MCP tools (`sync_*`, `search_*`, …) over stdio |
 | LaunchAgent / Docker → Worker | Supervises one `indexing.sync_worker` process per store so sync keeps running after the MCP client stops |
 | SQLite jobs + lifecycle | Same `MetadataStore`: job queue (enqueue/claim/status) **and** document/chunk/tombstone lifecycle |
 | search / MetadataStore reads | FastMCP read path: active-gate search, `list_documents`, `fetch_context`, status |
@@ -68,12 +69,14 @@ Chroma only proposes semantic **candidates**. Before results go to the client, S
 | Module | Owns |
 | --- | --- |
 | `api/` | MCP tool contracts, formatting, caller-visible errors |
-| `fetching/` | Notion, Tistory, GitHub, Obsidian connectors |
+| `fetching/` | Notion, Tistory, GitHub, Obsidian, and explicit-manifest career connectors |
+| `parsing/` | Root-bounded PDF, DOCX, Markdown, and text career parsing |
 | `indexing/` | Worker claim/dispatch under bounded global RUNNING budget, chunking, in-process Chroma mutation lock, sync lifecycle |
-| `search/` | Retrieval, ranking, SQLite active gates, CitationAnswerService |
+| `search/` | Retrieval, ranking, SQLite active gates, CitationAnswerService, extractive EvidenceSearchService |
 | `storage/` | SQLite source/job/document/chunk/tombstone metadata |
 | `core/` | Shared models, exceptions, utilities |
 | `environments/` | AppConfig, Chroma setup, token/env access |
+| `evaluation/` | Offline deterministic candidate provider routed through real ContextSearchService + EvidenceSearchService for selected CI evaluation, plus dataset validation, metrics/reports, proxy experiment configs, measured fixture baseline, and thresholds |
 | `main.py` | FastMCP composition/startup only |
 | `deploy/launchd`, `scripts/` | macOS supervision helpers (not ingestion/persistence) |
 
@@ -190,6 +193,10 @@ fetching_page_content: upstream_total = final list/scan size; upstream_done = co
 - Hint writes are coalesced: full counter/`status_message` about every 25 items
   (and always on the last item); `last_progress_at` + heartbeat more often
   (~every 5) so polls do not look stuck and orphan detection stays fresh.
+- Career parser cancellation remains in-memory at roughly 50 ms. Durable
+  SQLite heartbeat/status polling is independently throttled to 0.5 seconds and
+  blocking heartbeat writes run off the event loop, avoiding parser-duration
+  write amplification and event-loop lock stalls.
 - Connectors emit Notion-shaped progress events; ingestion maps them for all
   sources. Cooperative cancel: stop signal / `_InactiveJobStop` re-raises
   through emit helpers; Tistory cancels `create_task` fan-out in `finally`
@@ -217,6 +224,8 @@ Hints are suppressed again once the job is terminal. They do not widen
 flowchart TD
   SC[search_context] --> CSS[ContextSearchService]
   SD[search_documents] --> CSS
+  SE[search_evidence] --> ES[EvidenceSearchService]
+  ES --> CSS
   CSS --> Norm[Deterministic query normalize]
   Norm --> Cand[Chroma / LlamaIndex candidates]
   Cand --> Val[SQLite active + inclusive date gate]
@@ -227,7 +236,42 @@ flowchart TD
   MS --> Browse[Date-ordered keyset pages]
   FC[fetch_context] --> Hydrate[MetadataStore hydrate doc/chunks]
   CA[CitationAnswerService] --> CSS
+  ES --> EHydrate[SQLite active evidence hydration]
+  EHydrate --> EFilter[Evidence filters + exact/near dedup]
+  EFilter --> Exact[Stored exact-quote JSON array]
 ```
+
+`search_evidence` is additive. `ContextSearchService` proposes ranked hybrid
+candidates under one hard request budget of `3 * top_k` (maximum 150 for the
+public `top_k <= 50` contract). That budget is shared across query variants;
+bounded vector evidence retrieval disables metadata fallback so provider hits
+plus fallback scan work cannot exceed it. This evidence path does not use the
+general 64x refill expansion. Career vectors retain identity, the non-PII
+`evidence_source_type` and `experience_type` taxonomies, and non-content chunk
+lifecycle fields (position, line range, source/document version, and
+created/updated timestamps); all retained metadata is excluded from embedding
+serialization. Requested taxonomy and document-ID filters reach Chroma (or the
+offline fixture provider) before the hard cap. SQLite remains authoritative for
+all hydrated evidence metadata. Candidate chunk/document hydration then uses cached SQLite batches,
+and `EvidenceSearchService` authoritatively reapplies the same filters against
+active rows, preserves stored quote text and stable IDs, and removes exact and
+token-Jaccard near duplicates. It does not call an LLM or synthesize evidence.
+Standard logs use a request ID and query hash; they do not include full queries,
+documents, or exact quotes.
+
+Synchronous embedding, index construction, vector retrieval, ranking, candidate
+hydration, and final authoritative evidence snapshot hydration execute in one
+executor shared by each
+`ContextSearchService`, not on the FastMCP event loop. The executor has the
+same bounded concurrency as `AppConfig.connection_limit` (default `10`) and a
+single total queue-plus-execution deadline from candidate retrieval through
+final evidence hydration, using `AppConfig.request_timeout` (default `10`
+seconds); embedded compositions can pass narrower constructor overrides.
+Timeout or caller cancellation cannot stop an already-running Python thread,
+so its concurrency slot remains reserved until the worker returns. This keeps
+abandoned work bounded instead of starting replacement threads without limit.
+`search_evidence` maps the deadline to the sanitized public error type
+`timeout`; it never includes the query, document text, or provider detail.
 
 ## MCP Tool Contract
 
@@ -240,6 +284,7 @@ search_context(query, filters=None, top_k=10, include_debug=False) -> dict
 search_documents(query, filters=None, sort_by="relevance", sort_order="desc", top_k=10) -> dict
 list_documents(filters=None, sort_by="indexed_at", sort_order="desc", page_size=20, cursor=None) -> dict
 fetch_context(document_id="", chunk_id="") -> dict
+search_evidence(query, source_types=None, experience_types=None, document_ids=None, top_k=5) -> JSON list[EvidenceChunk]
 ```
 
 **Intent (short):**
@@ -265,6 +310,10 @@ fetch_context(document_id="", chunk_id="") -> dict
 - Tool annotations: retrieval tools are not read-only/idempotent (schema init /
   heartbeat); `search_*` `openWorldHint=True` (default embeddings may egress);
   `list_documents` / `fetch_context` `openWorldHint=False`.
+- `search_evidence`: trimmed non-empty query; `top_k` 1–50 (default 5);
+  optional fixed evidence-source, experience, and document-ID filters are
+  combined. Success is one MCP text content block containing a bare JSON array;
+  no match is `[]`. Invalid/internal failures are typed and sanitized.
 - Keep names, params, return shapes, and error vocabulary stable unless the
   user requested a contract change; never leak secrets or full local paths.
 
@@ -276,6 +325,7 @@ fetch_context(document_id="", chunk_id="") -> dict
 | Tistory | `blog_name:post_id` | `published_at`, `date_provenance="tistory"` | No cheap remote change token before HTML body download (`published_at` only after fetch); fetch-before-index skip is intentionally out of scope |
 | GitHub | repository path | blob SHA → `version_id` only (not a mod timestamp) | Skip `_fetch_blob_text` when active stored doc has content and `version_id` matches tree blob SHA; batched skip/reuse fields only; skipped blobs still in snapshot for `last_seen` / prefix cleanup |
 | Obsidian | relative note path | mtime → `modified_at`, `date_provenance="filesystem"`; `obsidian://open` as citation URL | Skip note byte read when active stored doc has content and canonical `modified_at` matches filesystem mtime; batched skip/reuse fields include title and citation `line_start`; skipped notes still in snapshot for `last_seen` / cleanup; local vault Markdown, not a live Obsidian app |
+| Career manifest | explicit `document_id` or normalized relative-path hash | SHA-256 content → `document_version_id`; filesystem created/modified stamps | Taxonomy changes do not change automatic identity; only listed PDF/DOCX/Markdown/text files inside a non-symlink root; explicit taxonomy is authoritative; complete successful manifest sync enables scoped tombstones |
 
 Lifecycle fields: `external_id`, `document_id`, `canonical_url`, `version_id`,
 `published_at`, `modified_at`, `indexed_at`, `date_provenance`, `last_seen_at`,
@@ -285,6 +335,138 @@ Chunking: heading markdown → plain-text windows → line-range code chunks.
 Citation metadata per chunk includes `chunk_id`, `document_id`, `source_id`,
 `title`, `url`, `path`, `chunk_index`, `line_start`/`line_end`, hashes, version,
 timestamps, `date_provenance`.
+
+Plain-text and oversized Markdown section windows advance independent newline
+cursors once, so citation line ranges are derived in `O(n)` rather than
+rescanning each prefix for every chunk. Markdown detection and sectioning use a
+`splitlines()`-compatible streaming iterator and flush completed sections
+without retaining a second document-wide line/section list. An oversized
+heading section is represented by one joined buffer and a monotonic window
+cursor, so even a single-line section avoids repeated remaining-suffix copies
+and remains linear. Parser title/section scans use the same streaming line
+discipline and poll cancellation at most every 256 codepoints. DOCX uses
+bounded 64 KiB reads with defused incremental XML parsing, polling every XML
+event and at most every 64 text nodes. Chunk-model loops poll the cooperative
+stop before every model build. Ingestion runs each document's CPU chunk
+generation in a worker thread; cancellation sets the stop signal, joins that
+worker before propagating cancellation, and therefore cannot leave an
+unobserved chunking thread running against later sync lifecycle work.
+
+Career document/chunk rows add `document_version_id`,
+`evidence_source_type`, `experience_type`, `file_name`, `document_title`,
+`section_title`, `parent_section_title`, `exact_quote`, `created_at`, and
+available company/role/project/date metadata. Markdown and DOCX heading styles
+feed section hierarchy. PDF/plain text hierarchy is best effort.
+PDF subprocess deadline/cancellation polling remains fast, while Darwin RSS
+sampling of the validated absolute `/bin/ps` helper is independently throttled
+to 0.5 seconds to avoid spawning a monitor process on every poll.
+
+### Career source boundary
+
+`SourceType.CAREER` identifies the connector transport. It is separate from
+the evidence taxonomy: `resume`, `previous_resume`, `project`,
+`github_readme`, `behavioral_story`, `career_note`, and `skills_inventory`.
+Experience is explicit: `professional`, `academic`, `personal_project`,
+`prototype`, or `unknown`; prose never upgrades a personal project to
+professional experience.
+
+`source_career` is registered only when
+`CONTEXTWIKI_CAREER_MANIFEST_PATH` is non-empty. A relative, missing, or
+symlinked configured manifest leaves that registered source disabled with a
+sanitized reason. A valid absolute manifest enables it. The manifest is an
+authoritative complete snapshot only after every entry parses successfully;
+failed/partial parsing disables stale cleanup.
+
+Manifest parsing remains all-or-nothing for indexing. A typed failure carries
+only bounded attempted/completed document counts and elapsed parsing time; the
+terminal failed-job transaction records those as `total_documents`,
+`parsed_documents`, and `parsing_failures=1`. Because indexing has not started,
+`indexing_latency_ms` remains zero; parsing time is not mislabeled as indexing
+time. It never persists partial documents or exposes a local path or document
+content. A retry starts a fresh job and reprocesses the authoritative manifest
+snapshot.
+
+Manifest, root, nested listed-file directories, and listed files use
+descriptor-relative `O_NOFOLLOW` traversal from `/`. Each opened component is
+current-user- or root-owned and rejects group/world write access; the only
+writable-directory exception is an exact standard root-owned sticky temp root.
+The manifest is read through the validated descriptor while its parent
+descriptor stays open; relative roots open from that same parent descriptor.
+The parser duplicates the bound root descriptor, securely reopens and verifies
+its device/inode before and after each listed-file read, and uses the bound
+descriptor chain for the read. Intermediate symlink ancestors and root/parent
+swaps therefore cannot redirect ingestion.
+The complete manifest and every listed file also compare descriptor `fstat`
+snapshots before and after reading (`device`, `inode`, `size`, nanosecond
+`mtime`, and nanosecond `ctime`). Immediately before accepting the authoritative
+snapshot, the loader securely reopens and revalidates the manifest and every
+listed file against those retained snapshots; late mutation or replacement
+therefore also fails before indexing or stale cleanup. Manifest/root/entry path
+components reject NUL and non-printable controls before filesystem calls, and
+filesystem argument errors stay inside the sanitized typed parsing boundary.
+Manifest entries resolving to the same securely opened device/inode (including
+hard links and case-insensitive aliases) fail the entire snapshot before
+document parsing or ID generation.
+
+If a retained career chunk changes its explicit source or experience taxonomy,
+position, line range, source/document version, or lifecycle timestamp, the
+ingestion path refreshes the existing Chroma row metadata and embedded node
+metadata in bounded batches. Stable chunk IDs and embeddings are reused, and
+the chunk is counted as updated rather than skipped. The pre-update Chroma
+metadata is retained as compensation state until SQLite commits the new
+authoritative metadata; partial Chroma failure, an inactive job, or SQLite
+commit failure restores the prior vector metadata so callers cannot observe a
+mixed lifecycle state. A durable SQLite vector-metadata-refresh intent is
+recorded before the external Chroma mutation. If a hard interruption escapes
+normal compensation, the next career sync replays pending intents from active,
+authoritative SQLite chunks before allowing an unchanged-document skip, then
+acknowledges the intent atomically with lifecycle commit or cleanup.
+When a tombstoned/reactivated or pre-commit-orphan stable vector is reused by
+content hash, SQLite may classify the chunk as new even though Chroma already
+contains it. Any such reuse is conservatively routed through the same durable
+metadata-refresh transaction before authoritative commit, so changed taxonomy
+cannot make the reactivated evidence unsearchable.
+
+New or content-changed chunks use supported LlamaIndex bulk paths: cold indexes
+use `from_documents`, while warm indexes transform each batch once and call
+`insert_nodes`. Each blocking transform/embed/Chroma write runs off-loop in a
+batch capped at 500 chunks (and may be smaller by configuration), without
+per-chunk executor handoffs, extra index structures, or fixed sleeps. Stable
+chunk IDs, managed metadata, write-intent cleanup, and the in-process mutation
+lock retain their existing lifecycle and retry guarantees.
+Already-chunked managed passages bypass size transformations on both cold and
+warm paths: one logical `chunk_id` maps to one stable LlamaIndex/Chroma node and
+one generated-embedding count, including multilingual passages larger than the
+default splitter window. Unmanaged raw documents retain configured transforms.
+
+Chunk tombstones also retain vector-cleanup acknowledgement state. Cleanup
+checks active chunk IDs from one source-scoped SQLite snapshot, deletes Chroma
+rows off-loop in batches of at most 500, and acknowledges only successful
+deletion. Newly deleted IDs are drained immediately even above the 5,000-row
+backlog page size. Older pending work has a per-successful-sync retry budget of
+four 5,000-ID pages (20,000 IDs); failure or budget exhaustion defers the
+remainder. Uncommitted vector IDs are ledgered before cleanup too. A failed
+deletion stays pending and is retried after the next successful sync, including
+an otherwise unchanged sync.
+
+Content-stable changes to explicit career title/company/role/project/start/end
+metadata update the authoritative document and chunk rows and count as updated
+with embedding reuse. Only taxonomy fields are vector-visible, so non-taxonomy
+metadata changes do not rewrite Chroma rows or regenerate embeddings.
+
+When the career source is configured, runtime composition requires private
+persistence before opening either store, even if its manifest is initially
+missing or invalid because connector state can refresh later. The final SQLite
+parent and Chroma directory are current-user-owned mode `0700`, and an existing
+SQLite file is a regular current-user-owned mode `0600` file. Descriptor-based
+no-follow traversal rejects symlinks across the full configured ancestry
+without reading contents. Final private components reject all group/world
+access. Every existing ancestor descriptor must be current-user- or root-owned
+and must not be group/world-writable. Standard root-owned sticky temp roots are
+the sole writable exception; their descendants still pass normal trust checks.
+Validated absolute paths are used downstream. New paths use owner-only
+creation modes; existing stores are never silently `chmod`ed and instead fail
+with filename-only manual migration guidance.
 
 ## Persistence & Safety
 
@@ -307,14 +489,15 @@ timestamps, `date_provenance`.
 
 ### External sources (compressed)
 
-- Notion / Tistory / GitHub / Obsidian as configured; disabled source blocks new
+- Notion / Tistory / GitHub / Obsidian / career manifest as configured; disabled source blocks new
   syncs but does not hide already-active docs.
 - GitHub: targets `owner`, `owner/repo`, `owner/repo@ref`; mixed targets must
   not overlap identities; bounds (files/bytes/pages) make incomplete snapshots
   and disable stale cleanup; listing endpoints capped (full page 100 → fail
   before index).
 - Obsidian: vault path + file/byte bounds; over-bound → incomplete fail before cleanup.
-- Default embeddings may egress to OpenAI unless overridden; no AppConfig
+- Career parsing is local and root-bounded, but default embeddings may egress
+  private chunk text and search queries to OpenAI unless overridden; no AppConfig
   embedding-provider switch. Local demo/E2E inject `MockEmbedding`.
 - Live API or real-vault checks need explicit approval + plan; never print tokens
   or local path details.
@@ -323,7 +506,9 @@ timestamps, `date_provenance`.
 
 - Secrets: `environments/token.py`, `.env`, env vars, API keys — never in docs,
   tests, logs, screenshots, or examples.
-- Domain exceptions in `core/exceptions.py`. Classify fetch errors near fetchers;
+- Domain exceptions in `core/exceptions.py`. Career parsing uses `ParsingError`;
+  evidence requests use `EvidenceSearchError`,
+  `InvalidEvidenceRequestError`, and `EvidenceRetrievalError`. Classify fetch errors near fetchers;
   search errors must not leak internals; indexing updates status before failure
   surfaces; tool messages stay user-readable without secrets.
 
@@ -334,6 +519,7 @@ timestamps, `date_provenance`.
 | Docs-only | path listing, `git status --short --branch`, `git diff --check`, stage + `git diff --cached --check` |
 | Code/behavior | TDD unit + integration + deterministic E2E → `./scripts/verify_all.sh` before review/delivery |
 | Functional E2E | `./scripts/verify_functional_e2e.sh` (temp data; no live API/LLM) |
+| Career evaluation | Measured public synthetic fixture executes real context/evidence services with offline candidates + checked-in baseline comparison; never treat calibrated proxy scores/latency/quality as product performance |
 | Live smoke / real vault | Explicit approval + plan only |
 
 `harness-plan` and review gates must read this document before choosing
@@ -342,4 +528,7 @@ boundaries or approving contracts.
 ## Out of Scope
 
 No production Web Console, Auto Wiki generation, generic website/docs crawling,
-dynamic web fallback, or legacy live-search/indexing MCP tools.
+dynamic web fallback, or legacy live-search/indexing MCP tools. Job-description
+parsing, job-fit scoring, resume recommendations/generation, outreach,
+application tracking, and Application OS UI/workflows remain outside this
+repository.

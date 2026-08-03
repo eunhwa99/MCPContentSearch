@@ -417,6 +417,7 @@ def test_public_fastmcp_tool_inventory_uses_short_sync_status_polling_workflow()
         "search_documents",
         "list_documents",
         "fetch_context",
+        "search_evidence",
     }
 
 

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dataset": {
+    "path": "evaluation/datasets/retrieval_gold.example.jsonl",
+    "sha256": "d193117a73adb4d52c73d7f51145a6a04cc4c83f687213f58cafafd2b23b8715"
+  },
+  "corpus": {
+    "path": "evaluation/datasets/career_corpus.example.jsonl",
+    "sha256": "0bff529524068586730a648b7bd957af6200cc8c8b545073c365037c2776857a"
+  },
+  "configurations": {
+    "evaluation/configs/baseline_keyword.json": "485749414b680461e9a7499e647d5eb564f9e62e391dc7c4521a19a84ac9966b",
+    "evaluation/configs/candidate_tuning.json": "b1add7d050f4b9e6ac8562669a2cca2a92bcbb0e10d978e42094e6a6e1c5bac5",
+    "evaluation/configs/deterministic_fixture.json": "8053a8a703053abe57ed425509c65713ab733fe0dd87f12c8fc96a43c5820409",
+    "evaluation/configs/exact_dedup.json": "43f06764f40ddc47ae7a8965488e426d0c9c014cf6c70f42a98f722e44409e07",
+    "evaluation/configs/hybrid_rrf.json": "e9f12ede45510b200b678251e9198c250a4d0b9b3b3a390661842bff8da2ec1e",
+    "evaluation/configs/metadata_filters.json": "bb3ae7dc2bc7817bbadfb3241378906120a80f0b02011f125d9c80dec9e06fda",
+    "evaluation/configs/near_dedup.json": "068b1713ece89e196bfbf3e11cee1bda3ac564a35adbdba0e115b2e7d8e1290b",
+    "evaluation/configs/query_normalization.json": "d49ffb4792664a1253f90d2c4f942dad52260810074dc35e539be69e5bfa39d0"
+  }
+}

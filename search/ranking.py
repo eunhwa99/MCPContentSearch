@@ -614,6 +614,8 @@ class ContextCandidateRanker:
         source_ids: list[str] | None,
         term_groups: list[set[str]],
         candidates: list[dict[str, Any]],
+        *,
+        candidate_scan_limit: int | None = None,
     ) -> list[dict[str, Any]]:
         if not term_groups:
             return []
@@ -673,6 +675,7 @@ class ContextCandidateRanker:
                 fallback_source_ids,
             ),
             metadata_only_terms=metadata_only_terms,
+            candidate_scan_limit=candidate_scan_limit,
         )
         if (
             should_try_lowercase_github_probe(query, term_groups, source_ids)
@@ -700,6 +703,7 @@ class ContextCandidateRanker:
                 ),
                 prefer_document_like=False,
                 include_text=True,
+                candidate_scan_limit=candidate_scan_limit,
             )
             seen_metadata_chunk_ids = {
                 candidate["chunk_id"] for candidate in metadata_candidates
@@ -724,6 +728,7 @@ class ContextCandidateRanker:
         prefer_document_like: bool = False,
         include_text: bool | None = None,
         metadata_only_terms: set[str] | None = None,
+        candidate_scan_limit: int | None = None,
     ) -> list[dict[str, Any]]:
         term_groups = term_groups or query_term_groups(query)
         if not term_groups and not metadata_terms:
@@ -744,6 +749,7 @@ class ContextCandidateRanker:
                 prefer_document_like=prefer_document_like,
                 include_text=False,
                 metadata_only_terms=metadata_only_terms,
+                candidate_scan_limit=candidate_scan_limit,
             )
             non_github_candidates = self.metadata_keyword_candidates(
                 query,
@@ -756,6 +762,7 @@ class ContextCandidateRanker:
                 prefer_document_like=False,
                 include_text=True,
                 metadata_only_terms=None,
+                candidate_scan_limit=candidate_scan_limit,
             )
             return self.merge_ranked_candidates(
                 [],
@@ -771,6 +778,7 @@ class ContextCandidateRanker:
                 include_text=bool(include_text),
                 require_all_terms=require_all_metadata_terms,
                 metadata_only_terms=metadata_only_terms,
+                candidate_scan_limit=candidate_scan_limit,
             )
             if chunks is not None:
                 documents = [
@@ -795,6 +803,7 @@ class ContextCandidateRanker:
             include_text,
             require_all_metadata_terms,
             metadata_only_terms=metadata_only_terms,
+            candidate_scan_limit=candidate_scan_limit,
         )
         if chunks is None:
             return []
@@ -812,13 +821,18 @@ class ContextCandidateRanker:
         include_text: bool = False,
         require_all_terms: bool = False,
         metadata_only_terms: set[str] | None = None,
+        candidate_scan_limit: int | None = None,
     ) -> list[ChunkModel] | None:
         if metadata_terms or metadata_only_terms:
             list_matching = getattr(self.metadata_store, "list_chunks_matching_metadata_terms", None)
             if callable(list_matching):
                 base_limit = int(getattr(self.config, "similarity_top_k", 10))
                 kwargs: dict[str, Any] = {
-                    "limit": max(base_limit * 50, 200),
+                    "limit": (
+                        candidate_scan_limit
+                        if candidate_scan_limit is not None
+                        else max(base_limit * 50, 200)
+                    ),
                     "require_document_like": require_document_like,
                     "include_text": include_text,
                     "require_all_terms": require_all_terms,
@@ -833,7 +847,10 @@ class ContextCandidateRanker:
         list_chunks = getattr(self.metadata_store, "list_chunks", None)
         if not callable(list_chunks):
             return None
-        return list_chunks(source_ids)
+        chunks = list_chunks(source_ids)
+        if candidate_scan_limit is not None:
+            return chunks[:candidate_scan_limit]
+        return chunks
 
     def merge_ranked_candidates(
         self,

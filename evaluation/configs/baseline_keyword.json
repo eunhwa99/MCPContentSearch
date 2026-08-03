@@ -1,0 +1,11 @@
+{
+  "name": "legacy-keyword-baseline-v1",
+  "retrieval_mode": "keyword",
+  "query_normalization": false,
+  "metadata_filtering": false,
+  "exact_duplicate_removal": false,
+  "near_duplicate_removal": false,
+  "candidate_multiplier": 1,
+  "near_duplicate_threshold": 0.8,
+  "top_k": 5
+}

@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 import sqlite3
+import stat
 import sys
 import uuid
 from contextlib import contextmanager
@@ -35,6 +36,247 @@ ORPHANED_SYNC_JOB_RECOVERY_MESSAGE = (
     "responding; start sync again."
 )
 _DARWIN_PROC_PIDTBSDINFO = 3
+_TRUSTED_STICKY_TEMP_DIRECTORIES = frozenset(
+    {
+        # Exact trust-policy identities only; this code does not create temp paths.
+        Path("/tmp"),  # nosec B108
+        Path("/var/tmp"),  # nosec B108
+        Path("/private/tmp"),
+        Path("/private/var/tmp"),
+    }
+)
+
+
+def _current_uid() -> int:
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        raise RuntimeError(
+            "Private career storage owner checks are unavailable. "
+            "Move or recreate storage on a supported local filesystem."
+        )
+    return int(getuid())
+
+
+def _private_storage_error(
+    path: Path,
+    problem: str,
+    guidance: str,
+) -> RuntimeError:
+    safe_name = path.name or path.anchor or "storage"
+    return RuntimeError(
+        f"Private career storage {problem} for '{safe_name}'. {guidance}"
+    )
+
+
+def _private_absolute_path(path: Path | str) -> Path:
+    raw_path = Path(path)
+    if ".." in raw_path.parts:
+        raise _private_storage_error(
+            raw_path,
+            "rejected parent traversal",
+            "Move or recreate it at an absolute owner-only path.",
+        )
+    return Path(os.path.abspath(os.fspath(raw_path)))
+
+
+def _private_directory_open_flags(path: Path) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise _private_storage_error(
+            path,
+            "cannot perform no-follow directory checks",
+            "Move or recreate it on a supported local filesystem.",
+        )
+    return os.O_RDONLY | directory_flag | no_follow | getattr(os, "O_CLOEXEC", 0)
+
+
+def _trusted_sticky_temp_directory(path: Path, file_stat) -> bool:
+    mode = stat.S_IMODE(file_stat.st_mode)
+    return (
+        path in _TRUSTED_STICKY_TEMP_DIRECTORIES
+        and file_stat.st_uid == 0
+        and bool(file_stat.st_mode & stat.S_ISVTX)
+        and bool(mode & 0o022)
+    )
+
+
+def _validate_private_ancestor_descriptor(path: Path, descriptor: int) -> None:
+    file_stat = os.fstat(descriptor)
+    if not stat.S_ISDIR(file_stat.st_mode):
+        raise _private_storage_error(
+            path,
+            "ancestor is not a directory",
+            "Move or recreate storage under trusted directories.",
+        )
+    if file_stat.st_uid not in {0, _current_uid()}:
+        raise _private_storage_error(
+            path,
+            "ancestor is not owned by current user or root",
+            "Move or recreate storage under current-user or root-owned directories.",
+        )
+    if stat.S_IMODE(file_stat.st_mode) & 0o022 and not _trusted_sticky_temp_directory(
+        path,
+        file_stat,
+    ):
+        raise _private_storage_error(
+            path,
+            "ancestor is group/world-writable",
+            "Move it or remove group/other write permissions manually.",
+        )
+
+
+def _open_private_directory_tree(path: Path | str) -> tuple[Path, int]:
+    """Open/create a directory through no-follow descriptor-relative traversal."""
+    resolved = _private_absolute_path(path)
+    flags = _private_directory_open_flags(resolved)
+    descriptor = os.open(os.sep, flags)
+    try:
+        current_path = Path(os.sep)
+        _validate_private_ancestor_descriptor(current_path, descriptor)
+        for component in resolved.parts[1:]:
+            try:
+                child_descriptor = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError:
+                    raise _private_storage_error(
+                        resolved,
+                        "directory creation failed",
+                        "Move or recreate it as an owner-only directory.",
+                    ) from None
+                try:
+                    child_descriptor = os.open(component, flags, dir_fd=descriptor)
+                except OSError:
+                    raise _private_storage_error(
+                        resolved,
+                        "rejected symlink or unsafe directory ancestry",
+                        "Move or recreate it without symlinked ancestors.",
+                    ) from None
+            except OSError:
+                raise _private_storage_error(
+                    resolved,
+                    "rejected symlink or unsafe directory ancestry",
+                    "Move or recreate it without symlinked ancestors.",
+                ) from None
+            os.close(descriptor)
+            descriptor = child_descriptor
+            current_path = current_path / component
+            _validate_private_ancestor_descriptor(current_path, descriptor)
+        return resolved, descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _validate_private_directory_descriptor(path: Path, descriptor: int) -> None:
+    file_stat = os.fstat(descriptor)
+    if not stat.S_ISDIR(file_stat.st_mode):
+        raise _private_storage_error(
+            path,
+            "path is not a directory",
+            "Move or recreate it as an owner-only directory.",
+        )
+    if file_stat.st_uid != _current_uid():
+        raise _private_storage_error(
+            path,
+            "directory is not owned by current user",
+            "Move or recreate it under the current user.",
+        )
+    if stat.S_IMODE(file_stat.st_mode) != 0o700:
+        raise _private_storage_error(
+            path,
+            "directory mode must be 0700",
+            "Run chmod 700 manually, move, or recreate it.",
+        )
+
+
+def prepare_private_directory(path: Path | str) -> Path:
+    resolved = _private_absolute_path(path)
+    for directory in (resolved.parent, resolved):
+        validated_path, descriptor = _open_private_directory_tree(directory)
+        try:
+            _validate_private_directory_descriptor(validated_path, descriptor)
+        finally:
+            os.close(descriptor)
+    return resolved
+
+
+def prepare_private_sqlite_path(path: Path | str) -> Path:
+    resolved = _private_absolute_path(path)
+    parent, parent_descriptor = _open_private_directory_tree(resolved.parent)
+    try:
+        _validate_private_directory_descriptor(parent, parent_descriptor)
+    except BaseException:
+        os.close(parent_descriptor)
+        raise
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        os.close(parent_descriptor)
+        raise _private_storage_error(
+            resolved,
+            "cannot perform no-follow file checks",
+            "Move or recreate it on a supported local filesystem.",
+        )
+    flags = (
+        os.O_RDWR
+        | no_follow
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(resolved.name, flags, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            descriptor = os.open(
+                resolved.name,
+                flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        file_stat = os.fstat(descriptor)
+    except OSError:
+        raise _private_storage_error(
+            resolved,
+            "rejected symlink or unsafe file",
+            "Move or recreate it as an owner-only regular SQLite file.",
+        ) from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_descriptor)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise _private_storage_error(
+            resolved,
+            "path is not a regular file",
+            "Move or recreate it as an owner-only SQLite file.",
+        )
+    if file_stat.st_uid != _current_uid():
+        raise _private_storage_error(
+            resolved,
+            "file is not owned by current user",
+            "Move or recreate it under the current user.",
+        )
+    if stat.S_IMODE(file_stat.st_mode) != 0o600:
+        raise _private_storage_error(
+            resolved,
+            "file mode must be 0600",
+            "Run chmod 600 manually, move, or recreate it.",
+        )
+    return resolved
+
+
+@contextmanager
+def private_creation_umask():
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 class _DarwinProcBSDInfo(ctypes.Structure):
@@ -72,9 +314,7 @@ OBSIDIAN_REFRESH_CLEARABLE_ERRORS = (
     "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
     "must not be a symlink.",
 )
-OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR = (
-    "Obsidian vault snapshot was incomplete because one or more notes could not be read."
-)
+OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR = "Obsidian vault snapshot was incomplete because one or more notes could not be read."
 
 
 def _now() -> str:
@@ -109,11 +349,15 @@ class MetadataStore:
         sync_owner_id: str | None = None,
         unowned_running_job_grace_seconds: int = 60,
         max_concurrent_sync_jobs: int = 1,
+        require_private: bool = False,
     ):
         # Default stays single-flight for non-worker MetadataStore callers.
         # The durable sync worker raises this to CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT
         # (default 2) in create_worker.
-        self.db_path = Path(db_path)
+        self.require_private = require_private
+        self.db_path = (
+            prepare_private_sqlite_path(db_path) if require_private else Path(db_path)
+        )
         self.running_job_timeout_seconds = running_job_timeout_seconds
         self.sync_owner_id = sync_owner_id or str(uuid.uuid4())
         self.unowned_running_job_grace_seconds = unowned_running_job_grace_seconds
@@ -127,11 +371,7 @@ class MetadataStore:
 
     @staticmethod
     def _validate_max_concurrent_sync_jobs(value: int) -> int:
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 1 <= value <= 8
-        ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
             raise ValueError(
                 "max_concurrent_sync_jobs must be an integer between 1 and 8"
             )
@@ -151,7 +391,10 @@ class MetadataStore:
         with self._schema_lock:
             if self._schema_ready:
                 return
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.require_private:
+                prepare_private_sqlite_path(self.db_path)
+            else:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
                 conn.executescript(
                     """
@@ -181,6 +424,15 @@ class MetadataStore:
                     processed_documents INTEGER NOT NULL,
                     indexed_chunks INTEGER NOT NULL,
                     skipped_documents INTEGER NOT NULL,
+                    parsed_documents INTEGER NOT NULL DEFAULT 0,
+                    updated_documents INTEGER NOT NULL DEFAULT 0,
+                    created_chunks INTEGER NOT NULL DEFAULT 0,
+                    updated_chunks INTEGER NOT NULL DEFAULT 0,
+                    skipped_chunks INTEGER NOT NULL DEFAULT 0,
+                    embeddings_generated INTEGER NOT NULL DEFAULT 0,
+                    embeddings_reused INTEGER NOT NULL DEFAULT 0,
+                    parsing_failures INTEGER NOT NULL DEFAULT 0,
+                    indexing_latency_ms REAL NOT NULL DEFAULT 0,
                     phase TEXT NOT NULL DEFAULT '',
                     upstream_total INTEGER NOT NULL DEFAULT 0,
                     upstream_done INTEGER NOT NULL DEFAULT 0,
@@ -219,7 +471,21 @@ class MetadataStore:
                     last_seen_sync_id TEXT NOT NULL DEFAULT '',
                     deleted_at TEXT NOT NULL DEFAULT '',
                     version_id TEXT NOT NULL DEFAULT '',
-                    content_hash TEXT NOT NULL
+                    content_hash TEXT NOT NULL,
+                    document_version_id TEXT NOT NULL DEFAULT '',
+                    evidence_source_type TEXT NOT NULL DEFAULT '',
+                    experience_type TEXT NOT NULL DEFAULT 'unknown',
+                    file_name TEXT NOT NULL DEFAULT '',
+                    document_title TEXT NOT NULL DEFAULT '',
+                    section_title TEXT NOT NULL DEFAULT '',
+                    parent_section_title TEXT NOT NULL DEFAULT '',
+                    exact_quote TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    company TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT '',
+                    project TEXT NOT NULL DEFAULT '',
+                    start_date TEXT NOT NULL DEFAULT '',
+                    end_date TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS chunks (
@@ -235,7 +501,21 @@ class MetadataStore:
                     line_end INTEGER,
                     version_id TEXT NOT NULL DEFAULT '',
                     content_hash TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    document_version_id TEXT NOT NULL DEFAULT '',
+                    evidence_source_type TEXT NOT NULL DEFAULT '',
+                    experience_type TEXT NOT NULL DEFAULT 'unknown',
+                    file_name TEXT NOT NULL DEFAULT '',
+                    document_title TEXT NOT NULL DEFAULT '',
+                    section_title TEXT NOT NULL DEFAULT '',
+                    parent_section_title TEXT NOT NULL DEFAULT '',
+                    exact_quote TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    company TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT '',
+                    project TEXT NOT NULL DEFAULT '',
+                    start_date TEXT NOT NULL DEFAULT '',
+                    end_date TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS document_claims (
@@ -249,7 +529,26 @@ class MetadataStore:
                     chunk_id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
                     source_id TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL
+                    recorded_at TEXT NOT NULL,
+                    vector_cleanup_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS vector_write_intents (
+                    chunk_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY (chunk_id, source_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS vector_metadata_refresh_intents (
+                    chunk_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY (chunk_id, source_id)
                 );
                 """
                 )
@@ -277,6 +576,20 @@ class MetadataStore:
                         "last_seen_sync_id": "TEXT NOT NULL DEFAULT ''",
                         "deleted_at": "TEXT NOT NULL DEFAULT ''",
                         "version_id": "TEXT NOT NULL DEFAULT ''",
+                        "document_version_id": "TEXT NOT NULL DEFAULT ''",
+                        "evidence_source_type": "TEXT NOT NULL DEFAULT ''",
+                        "experience_type": "TEXT NOT NULL DEFAULT 'unknown'",
+                        "file_name": "TEXT NOT NULL DEFAULT ''",
+                        "document_title": "TEXT NOT NULL DEFAULT ''",
+                        "section_title": "TEXT NOT NULL DEFAULT ''",
+                        "parent_section_title": "TEXT NOT NULL DEFAULT ''",
+                        "exact_quote": "TEXT NOT NULL DEFAULT ''",
+                        "created_at": "TEXT NOT NULL DEFAULT ''",
+                        "company": "TEXT NOT NULL DEFAULT ''",
+                        "role": "TEXT NOT NULL DEFAULT ''",
+                        "project": "TEXT NOT NULL DEFAULT ''",
+                        "start_date": "TEXT NOT NULL DEFAULT ''",
+                        "end_date": "TEXT NOT NULL DEFAULT ''",
                     },
                 )
                 self._ensure_columns(
@@ -292,6 +605,15 @@ class MetadataStore:
                         "upstream_fetched_pages": "INTEGER NOT NULL DEFAULT 0",
                         "last_progress_at": "TEXT NOT NULL DEFAULT ''",
                         "status_message": "TEXT NOT NULL DEFAULT ''",
+                        "parsed_documents": "INTEGER NOT NULL DEFAULT 0",
+                        "updated_documents": "INTEGER NOT NULL DEFAULT 0",
+                        "created_chunks": "INTEGER NOT NULL DEFAULT 0",
+                        "updated_chunks": "INTEGER NOT NULL DEFAULT 0",
+                        "skipped_chunks": "INTEGER NOT NULL DEFAULT 0",
+                        "embeddings_generated": "INTEGER NOT NULL DEFAULT 0",
+                        "embeddings_reused": "INTEGER NOT NULL DEFAULT 0",
+                        "parsing_failures": "INTEGER NOT NULL DEFAULT 0",
+                        "indexing_latency_ms": "REAL NOT NULL DEFAULT 0",
                     },
                 )
                 # Prefer new columns after migrate; copy legacy page counters when
@@ -322,6 +644,27 @@ class MetadataStore:
                     "chunks",
                     {
                         "version_id": "TEXT NOT NULL DEFAULT ''",
+                        "document_version_id": "TEXT NOT NULL DEFAULT ''",
+                        "evidence_source_type": "TEXT NOT NULL DEFAULT ''",
+                        "experience_type": "TEXT NOT NULL DEFAULT 'unknown'",
+                        "file_name": "TEXT NOT NULL DEFAULT ''",
+                        "document_title": "TEXT NOT NULL DEFAULT ''",
+                        "section_title": "TEXT NOT NULL DEFAULT ''",
+                        "parent_section_title": "TEXT NOT NULL DEFAULT ''",
+                        "exact_quote": "TEXT NOT NULL DEFAULT ''",
+                        "created_at": "TEXT NOT NULL DEFAULT ''",
+                        "company": "TEXT NOT NULL DEFAULT ''",
+                        "role": "TEXT NOT NULL DEFAULT ''",
+                        "project": "TEXT NOT NULL DEFAULT ''",
+                        "start_date": "TEXT NOT NULL DEFAULT ''",
+                        "end_date": "TEXT NOT NULL DEFAULT ''",
+                    },
+                )
+                self._ensure_columns(
+                    conn,
+                    "chunk_tombstones",
+                    {
+                        "vector_cleanup_at": "TEXT NOT NULL DEFAULT ''",
                     },
                 )
                 # Speeds batch fetch-reuse MIN(line_start) joins by document.
@@ -329,6 +672,33 @@ class MetadataStore:
                     """
                     CREATE INDEX IF NOT EXISTS idx_chunks_document_source
                     ON chunks(document_id, source_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chunk_tombstones_cleanup
+                    ON chunk_tombstones(source_id, vector_cleanup_at, recorded_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chunk_tombstones_pending
+                    ON chunk_tombstones(source_id, recorded_at, chunk_id)
+                    WHERE vector_cleanup_at = ''
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_vector_write_intents_pending
+                    ON vector_write_intents(source_id, recorded_at, chunk_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_vector_metadata_refresh_pending
+                    ON vector_metadata_refresh_intents(
+                        source_id, document_id, recorded_at, chunk_id
+                    )
                     """
                 )
             self._schema_ready = True
@@ -339,7 +709,9 @@ class MetadataStore:
         existing = self.get_source(source.source_id)
         created_at = source.created_at or (existing.created_at if existing else _now())
         updated_at = _now()
-        normalized = source.model_copy(update={"created_at": created_at, "updated_at": updated_at})
+        normalized = source.model_copy(
+            update={"created_at": created_at, "updated_at": updated_at}
+        )
         with self._connect() as conn:
             conn.execute(
                 """
@@ -438,13 +810,17 @@ class MetadataStore:
             ).fetchone()
         registered = self._source_from_row(row)
         if registered is None:
-            raise ValueError(f"Registered source has unsupported type: {source.source_id}")
+            raise ValueError(
+                f"Registered source has unsupported type: {source.source_id}"
+            )
         return registered
 
     def get_source(self, source_id: str) -> Optional[SourceModel]:
         self.ensure_schema()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM sources WHERE source_id = ?", (source_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sources WHERE source_id = ?", (source_id,)
+            ).fetchone()
         return self._source_from_row(row) if row else None
 
     def list_sources(self) -> list[SourceModel]:
@@ -851,7 +1227,9 @@ class MetadataStore:
         heartbeat_at = _now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
             if not row:
                 return None
             if row["status"] != SyncJobStatus.RUNNING.value:
@@ -869,7 +1247,9 @@ class MetadataStore:
                     heartbeat_at,
                     "Sync job is no longer active",
                 )
-                row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
                 return self._job_from_row(row)
             conn.execute(
                 """
@@ -879,10 +1259,14 @@ class MetadataStore:
                 (heartbeat_at, job_id, SyncJobStatus.RUNNING.value),
             )
             self._touch_sync_owner(conn, heartbeat_at)
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         return self._job_from_row(row) if row else None
 
-    def validate_running_job_document(self, job_id: str, document: DocumentModel) -> Optional[SyncJobModel]:
+    def validate_running_job_document(
+        self, job_id: str, document: DocumentModel
+    ) -> Optional[SyncJobModel]:
         """Preflight a document before vector writes for the owning running sync."""
         self.ensure_schema()
         heartbeat_at = _now()
@@ -917,7 +1301,9 @@ class MetadataStore:
                     heartbeat_at,
                     "Sync job is no longer active",
                 )
-                row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
                 return self._job_from_row(row)
 
             self._validate_document_owner(conn, normalized)
@@ -930,7 +1316,9 @@ class MetadataStore:
                 (heartbeat_at, job_id),
             )
             self._touch_sync_owner(conn, heartbeat_at)
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         return self._job_from_row(row)
 
     def upsert_document_and_replace_chunks_for_running_job(
@@ -960,7 +1348,9 @@ class MetadataStore:
                     f"Sync job {job_id} belongs to {job_row['source_id']}, "
                     f"not {normalized.source_id}"
                 )
-            self._validate_chunks_for_document(chunk_list, document_id, normalized.source_id)
+            self._validate_chunks_for_document(
+                chunk_list, document_id, normalized.source_id
+            )
             active_row = self._resolve_active_running_job(
                 conn,
                 normalized.source_id,
@@ -974,7 +1364,9 @@ class MetadataStore:
                     heartbeat_at,
                     "Sync job is no longer active",
                 )
-                row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
                 return None, self._job_from_row(row)
 
             self._claim_document(conn, normalized, job_id, heartbeat_at)
@@ -987,12 +1379,19 @@ class MetadataStore:
             )
             self._touch_sync_owner(conn, heartbeat_at)
             self._upsert_document(conn, normalized)
-            self._record_chunk_tombstones_for_document(conn, document_id, normalized.source_id)
+            self._record_chunk_tombstones_for_document(
+                conn, document_id, normalized.source_id
+            )
             conn.execute(
                 "DELETE FROM chunks WHERE document_id = ? AND source_id = ?",
                 (document_id, normalized.source_id),
             )
             self._insert_chunks(conn, chunk_list)
+            self._resolve_vector_state_for_active_chunks(
+                conn,
+                chunk_list,
+                normalized.source_id,
+            )
             job_row = conn.execute(
                 "SELECT * FROM sync_jobs WHERE job_id = ?",
                 (job_id,),
@@ -1003,7 +1402,10 @@ class MetadataStore:
         job = self.get_sync_job(job_id)
         if not job:
             raise ValueError(f"Unknown sync job: {job_id}")
-        if updates.get("status") in {SyncJobStatus.RUNNING, SyncJobStatus.RUNNING.value}:
+        if updates.get("status") in {
+            SyncJobStatus.RUNNING,
+            SyncJobStatus.RUNNING.value,
+        }:
             raise ValueError("Use begin_sync_job() to start a running sync job")
         if updates.get("status") in {
             SyncJobStatus.SUCCEEDED,
@@ -1033,6 +1435,10 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?, started_at = ?, finished_at = ?, total_documents = ?,
                     processed_documents = ?, indexed_chunks = ?, skipped_documents = ?,
+                    parsed_documents = ?, updated_documents = ?,
+                    created_chunks = ?, updated_chunks = ?, skipped_chunks = ?,
+                    embeddings_generated = ?, embeddings_reused = ?,
+                    parsing_failures = ?, indexing_latency_ms = ?,
                     phase = ?, upstream_total = ?, upstream_done = ?,
                     upstream_total_pages = ?, upstream_fetched_pages = ?,
                     last_progress_at = ?, status_message = ?, error_message = ?
@@ -1046,6 +1452,15 @@ class MetadataStore:
                     updated.processed_documents,
                     updated.indexed_chunks,
                     updated.skipped_documents,
+                    updated.parsed_documents,
+                    updated.updated_documents,
+                    updated.created_chunks,
+                    updated.updated_chunks,
+                    updated.skipped_chunks,
+                    updated.embeddings_generated,
+                    updated.embeddings_reused,
+                    updated.parsing_failures,
+                    updated.indexing_latency_ms,
                     updated.phase,
                     updated.upstream_total,
                     updated.upstream_done,
@@ -1059,7 +1474,9 @@ class MetadataStore:
                     SyncJobStatus.RUNNING.value,
                 ),
             )
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         if cursor.rowcount == 0:
             if not row:
                 raise ValueError(f"Unknown sync job: {job_id}")
@@ -1073,8 +1490,21 @@ class MetadataStore:
         source_id: str,
         error_message: str,
         stale_cleanup_disabled_reason: str = "",
+        total_documents: int | None = None,
+        processed_documents: int | None = None,
+        indexed_chunks: int | None = None,
+        skipped_documents: int | None = None,
+        parsed_documents: int | None = None,
+        updated_documents: int | None = None,
+        created_chunks: int | None = None,
+        updated_chunks: int | None = None,
+        skipped_chunks: int | None = None,
+        embeddings_generated: int | None = None,
+        embeddings_reused: int | None = None,
+        parsing_failures: int | None = None,
+        indexing_latency_ms: float | None = None,
     ) -> SyncJobModel:
-        """Fail a queued/running sync without clobbering another active job."""
+        """Atomically fail a sync and persist its final available metrics."""
         self.ensure_schema()
         error_message = _sanitize_lifecycle_text(error_message)
         stale_cleanup_disabled_reason = _sanitize_lifecycle_text(
@@ -1083,12 +1513,19 @@ class MetadataStore:
         finished_at = _now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
             if not row:
                 raise ValueError(f"Unknown sync job: {job_id}")
             if row["source_id"] != source_id:
-                raise ValueError(f"Sync job {job_id} belongs to {row['source_id']}, not {source_id}")
-            if row["status"] not in {SyncJobStatus.QUEUED.value, SyncJobStatus.RUNNING.value}:
+                raise ValueError(
+                    f"Sync job {job_id} belongs to {row['source_id']}, not {source_id}"
+                )
+            if row["status"] not in {
+                SyncJobStatus.QUEUED.value,
+                SyncJobStatus.RUNNING.value,
+            }:
                 return self._job_from_row(row)
 
             conn.execute(
@@ -1096,6 +1533,19 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?,
                     finished_at = ?,
+                    total_documents = ?,
+                    processed_documents = ?,
+                    indexed_chunks = ?,
+                    skipped_documents = ?,
+                    parsed_documents = ?,
+                    updated_documents = ?,
+                    created_chunks = ?,
+                    updated_chunks = ?,
+                    skipped_chunks = ?,
+                    embeddings_generated = ?,
+                    embeddings_reused = ?,
+                    parsing_failures = ?,
+                    indexing_latency_ms = ?,
                     phase = ?,
                     last_progress_at = ?,
                     status_message = ?,
@@ -1105,6 +1555,55 @@ class MetadataStore:
                 (
                     SyncJobStatus.FAILED.value,
                     finished_at,
+                    (
+                        row["total_documents"]
+                        if total_documents is None
+                        else total_documents
+                    ),
+                    (
+                        row["processed_documents"]
+                        if processed_documents is None
+                        else processed_documents
+                    ),
+                    row["indexed_chunks"] if indexed_chunks is None else indexed_chunks,
+                    (
+                        row["skipped_documents"]
+                        if skipped_documents is None
+                        else skipped_documents
+                    ),
+                    (
+                        row["parsed_documents"]
+                        if parsed_documents is None
+                        else parsed_documents
+                    ),
+                    (
+                        row["updated_documents"]
+                        if updated_documents is None
+                        else updated_documents
+                    ),
+                    row["created_chunks"] if created_chunks is None else created_chunks,
+                    row["updated_chunks"] if updated_chunks is None else updated_chunks,
+                    row["skipped_chunks"] if skipped_chunks is None else skipped_chunks,
+                    (
+                        row["embeddings_generated"]
+                        if embeddings_generated is None
+                        else embeddings_generated
+                    ),
+                    (
+                        row["embeddings_reused"]
+                        if embeddings_reused is None
+                        else embeddings_reused
+                    ),
+                    (
+                        row["parsing_failures"]
+                        if parsing_failures is None
+                        else parsing_failures
+                    ),
+                    (
+                        row["indexing_latency_ms"]
+                        if indexing_latency_ms is None
+                        else indexing_latency_ms
+                    ),
                     "failed",
                     finished_at,
                     error_message,
@@ -1135,7 +1634,9 @@ class MetadataStore:
                         source_id,
                     ),
                 )
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         return self._job_from_row(row)
 
     def recover_orphaned_running_jobs(
@@ -1171,7 +1672,10 @@ class MetadataStore:
             ).fetchall()
             scoped_source_id_set = set(scoped_source_ids)
             for row in running_rows:
-                if scoped_source_id_set and row["source_id"] not in scoped_source_id_set:
+                if (
+                    scoped_source_id_set
+                    and row["source_id"] not in scoped_source_id_set
+                ):
                     continue
                 job_started_at = self._parse_timestamp(row["started_at"])
                 if job_started_at and job_started_at >= cutoff:
@@ -1219,7 +1723,9 @@ class MetadataStore:
     def get_sync_job(self, job_id: str) -> Optional[SyncJobModel]:
         self.ensure_schema()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         return self._job_from_row(row) if row else None
 
     def get_latest_sync_job(self, source_id: str) -> Optional[SyncJobModel]:
@@ -1373,9 +1879,15 @@ class MetadataStore:
                 (source_id,),
             ).fetchone()
         return {
-            "latest_success_at": latest_success["finished_at"] if latest_success else "",
-            "latest_failure_at": latest_failure["finished_at"] if latest_failure else "",
-            "latest_failure_reason": latest_failure["error_message"] if latest_failure else "",
+            "latest_success_at": latest_success["finished_at"]
+            if latest_success
+            else "",
+            "latest_failure_at": latest_failure["finished_at"]
+            if latest_failure
+            else "",
+            "latest_failure_reason": latest_failure["error_message"]
+            if latest_failure
+            else "",
             "document_count": int(document_row["count"]) if document_row else 0,
             "chunk_count": int(chunk_row["count"]) if chunk_row else 0,
         }
@@ -1398,22 +1910,33 @@ class MetadataStore:
         normalized = self._normalize_document(document)
         chunk_list = list(chunks)
         document_id = normalized.document_id or normalized.id
-        self._validate_chunks_for_document(chunk_list, document_id, normalized.source_id)
+        self._validate_chunks_for_document(
+            chunk_list, document_id, normalized.source_id
+        )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._upsert_document(conn, normalized)
-            self._record_chunk_tombstones_for_document(conn, document_id, normalized.source_id)
+            self._record_chunk_tombstones_for_document(
+                conn, document_id, normalized.source_id
+            )
             conn.execute(
                 "DELETE FROM chunks WHERE document_id = ? AND source_id = ?",
                 (document_id, normalized.source_id),
             )
             self._insert_chunks(conn, chunk_list)
+            self._resolve_vector_state_for_active_chunks(
+                conn,
+                chunk_list,
+                normalized.source_id,
+            )
         return normalized
 
     def get_document(self, document_id: str) -> Optional[DocumentModel]:
         self.ensure_schema()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM documents WHERE document_id = ?", (document_id,)
+            ).fetchone()
         return self._document_from_row(row) if row else None
 
     def get_documents_for_fetch_reuse(
@@ -1602,9 +2125,7 @@ class MetadataStore:
             cursor_payload = self._decode_document_cursor(cursor)
             if cursor_payload.get("query") != query_shape:
                 raise ValueError("Invalid document cursor")
-            validated_cursor_key = self._validated_cursor_timestamp_key(
-                cursor_payload
-            )
+            validated_cursor_key = self._validated_cursor_timestamp_key(cursor_payload)
 
         self.ensure_schema()
         sort_column = normalized_sort_by.value
@@ -1641,9 +2162,7 @@ class MetadataStore:
             anchor_params = [*query_params, cursor_document_id]
             if cursor_payload["is_null"]:
                 anchor_clauses.append(f"{sort_value_sql} IS NULL")
-                where_clauses.append(
-                    f"({sort_value_sql} IS NULL AND document_id > ?)"
-                )
+                where_clauses.append(f"({sort_value_sql} IS NULL AND document_id > ?)")
                 query_params.append(cursor_document_id)
             else:
                 if validated_cursor_key is None:
@@ -1674,9 +2193,7 @@ class MetadataStore:
                 LIMIT 1
             """  # nosec B608
 
-        order_direction = (
-            "ASC" if normalized_sort_order == SortOrder.ASC else "DESC"
-        )
+        order_direction = "ASC" if normalized_sort_order == SortOrder.ASC else "DESC"
         where_sql = " AND ".join(where_clauses)
         query_params.append(page_size + 1)
         # Only enum/internal SQL fragments are interpolated; caller values stay parameterized.
@@ -1753,6 +2270,11 @@ class MetadataStore:
                 (document_id, source_id),
             )
             self._insert_chunks(conn, chunk_list)
+            self._resolve_vector_state_for_active_chunks(
+                conn,
+                chunk_list,
+                source_id,
+            )
 
     def get_chunk(self, chunk_id: str) -> Optional[ChunkModel]:
         self.ensure_schema()
@@ -1767,6 +2289,352 @@ class MetadataStore:
                 (chunk_id,),
             ).fetchone()
         return self._chunk_from_row(row) if row else None
+
+    def get_evidence_chunk(self, chunk_id: str) -> Optional[ChunkModel]:
+        """Return authoritative stored evidence metadata for an active chunk."""
+        return self.get_chunk(chunk_id)
+
+    def get_active_chunk_ids(
+        self,
+        chunk_ids: Sequence[str],
+        source_id: str = "",
+    ) -> set[str]:
+        """Batch-load active chunk IDs from one source-scoped SQLite snapshot."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids:
+            return set()
+        self.ensure_schema()
+        active_ids: set[str] = set()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                source_clause = " AND c.source_id = ?" if source_id else ""
+                query = "\n".join(
+                    [
+                        "SELECT c.chunk_id FROM chunks c",
+                        "JOIN documents d ON d.document_id = c.document_id",
+                        "    AND d.source_id = c.source_id",
+                        f"WHERE c.chunk_id IN ({placeholders})",
+                        "  AND COALESCE(d.deleted_at, '') = ''" + source_clause,
+                    ]
+                )
+                params = [*batch, source_id] if source_id else batch
+                active_ids.update(
+                    str(row["chunk_id"])
+                    for row in conn.execute(query, params).fetchall()
+                )
+        return active_ids
+
+    def list_pending_vector_cleanup_ids(
+        self,
+        source_id: str,
+        *,
+        limit: int = 5_000,
+    ) -> list[str]:
+        """Return inactive tombstoned chunks whose vector deletion is pending."""
+        if not source_id or limit <= 0:
+            return []
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT candidate.chunk_id, MIN(candidate.recorded_at) AS first_recorded_at
+                FROM (
+                    SELECT t.chunk_id, t.recorded_at
+                    FROM chunk_tombstones t
+                    WHERE t.source_id = ?
+                      AND t.vector_cleanup_at = ''
+                    UNION ALL
+                    SELECT i.chunk_id, i.recorded_at
+                    FROM vector_write_intents i
+                    WHERE i.source_id = ?
+                ) AS candidate
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM chunks c
+                    JOIN documents d ON d.document_id = c.document_id
+                        AND d.source_id = c.source_id
+                    WHERE c.chunk_id = candidate.chunk_id
+                      AND c.source_id = ?
+                      AND d.deleted_at = ''
+                )
+                GROUP BY candidate.chunk_id
+                ORDER BY first_recorded_at, candidate.chunk_id
+                LIMIT ?
+                """,
+                (source_id, source_id, source_id, limit),
+            ).fetchall()
+        return [str(row["chunk_id"]) for row in rows]
+
+    def record_vector_write_intents(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        source_id: str,
+        document_id: str,
+        job_id: str,
+    ) -> None:
+        """Durably record new vector IDs before the external vector mutation."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids:
+            return
+        if not source_id or not document_id or not job_id:
+            raise ValueError(
+                "Vector write intent requires source, document, and job IDs"
+            )
+        self.ensure_schema()
+        recorded_at = _now()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                conn.executemany(
+                    """
+                    INSERT INTO vector_write_intents (
+                        chunk_id, source_id, document_id, job_id, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(chunk_id, source_id) DO UPDATE SET
+                        document_id = excluded.document_id,
+                        job_id = excluded.job_id,
+                        recorded_at = excluded.recorded_at
+                    """,
+                    [
+                        (chunk_id, source_id, document_id, job_id, recorded_at)
+                        for chunk_id in batch
+                    ],
+                )
+
+    def record_vector_metadata_refresh_intents(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        source_id: str,
+        document_id: str,
+        job_id: str,
+    ) -> None:
+        """Durably mark vector metadata that may diverge before SQLite commits."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids:
+            return
+        if not source_id or not document_id or not job_id:
+            raise ValueError(
+                "Vector metadata refresh intent requires source, document, and job IDs"
+            )
+        self.ensure_schema()
+        recorded_at = _now()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                conn.executemany(
+                    """
+                    INSERT INTO vector_metadata_refresh_intents (
+                        chunk_id, source_id, document_id, job_id, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(chunk_id, source_id) DO UPDATE SET
+                        document_id = excluded.document_id,
+                        job_id = excluded.job_id,
+                        recorded_at = excluded.recorded_at
+                    """,
+                    [
+                        (chunk_id, source_id, document_id, job_id, recorded_at)
+                        for chunk_id in batch
+                    ],
+                )
+
+    def list_pending_vector_metadata_refresh_ids(
+        self,
+        source_id: str,
+        *,
+        document_id: str,
+        limit: int = 5_000,
+    ) -> list[str]:
+        """Return active authoritative chunks with unresolved vector metadata."""
+        if not source_id or not document_id or limit <= 0:
+            return []
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT i.chunk_id
+                FROM vector_metadata_refresh_intents i
+                JOIN chunks c ON c.chunk_id = i.chunk_id
+                    AND c.source_id = i.source_id
+                    AND c.document_id = i.document_id
+                JOIN documents d ON d.document_id = c.document_id
+                    AND d.source_id = c.source_id
+                WHERE i.source_id = ?
+                  AND i.document_id = ?
+                  AND COALESCE(d.deleted_at, '') = ''
+                ORDER BY i.recorded_at, i.chunk_id
+                LIMIT ?
+                """,
+                (source_id, document_id, limit),
+            ).fetchall()
+        return [str(row["chunk_id"]) for row in rows]
+
+    def mark_vector_metadata_refresh_complete(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        source_id: str,
+    ) -> None:
+        """Acknowledge vector metadata restored from authoritative SQLite."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids or not source_id:
+            return
+        self.ensure_schema()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                conn.execute(
+                    f"""
+                    DELETE FROM vector_metadata_refresh_intents
+                    WHERE source_id = ?
+                      AND chunk_id IN ({placeholders})
+                    """,  # nosec B608
+                    (source_id, *batch),
+                )
+
+    def record_pending_vector_cleanup_ids(
+        self,
+        chunk_ids: Sequence[str],
+        source_id: str = "",
+    ) -> None:
+        """Durably ledger vectors that have no active SQLite chunk."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids or not source_id:
+            return
+        self.ensure_schema()
+        recorded_at = _now()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                conn.executemany(
+                    """
+                    INSERT INTO chunk_tombstones (
+                        chunk_id, document_id, source_id, recorded_at,
+                        vector_cleanup_at
+                    ) VALUES (?, '', ?, ?, '')
+                    ON CONFLICT(chunk_id) DO UPDATE SET
+                        source_id = excluded.source_id,
+                        recorded_at = excluded.recorded_at,
+                        vector_cleanup_at = ''
+                    """,
+                    [(chunk_id, source_id, recorded_at) for chunk_id in batch],
+                )
+
+    def mark_vector_cleanup_complete(
+        self,
+        chunk_ids: Sequence[str],
+        source_id: str = "",
+    ) -> None:
+        """Acknowledge successful source-scoped vector cleanup in batches."""
+        unique_ids = list(dict.fromkeys(chunk_id for chunk_id in chunk_ids if chunk_id))
+        if not unique_ids or not source_id:
+            return
+        self.ensure_schema()
+        cleaned_at = _now()
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                query = f"""
+                    UPDATE chunk_tombstones
+                    SET vector_cleanup_at = ?
+                    WHERE source_id = ?
+                      AND chunk_id IN ({placeholders})
+                """  # nosec B608
+                conn.execute(query, (cleaned_at, source_id, *batch))
+                conn.execute(
+                    f"""
+                    DELETE FROM vector_write_intents
+                    WHERE source_id = ?
+                      AND chunk_id IN ({placeholders})
+                    """,  # nosec B608
+                    (source_id, *batch),
+                )
+                conn.execute(
+                    f"""
+                    DELETE FROM vector_metadata_refresh_intents
+                    WHERE source_id = ?
+                      AND chunk_id IN ({placeholders})
+                    """,  # nosec B608
+                    (source_id, *batch),
+                )
+
+    def get_active_evidence_snapshots(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> dict[str, tuple[ChunkModel, DocumentModel]]:
+        """Batch-load active chunk/document pairs from one SQLite snapshot."""
+        unique_ids: list[str] = []
+        seen: set[str] = set()
+        for chunk_id in chunk_ids:
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            unique_ids.append(chunk_id)
+        if not unique_ids:
+            return {}
+
+        self.ensure_schema()
+        chunk_rows = []
+        document_rows = []
+        batch_size = 800
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            for offset in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[offset : offset + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                query = "\n".join(
+                    [
+                        "SELECT c.* FROM chunks c",
+                        "JOIN documents d ON d.document_id = c.document_id",
+                        "    AND d.source_id = c.source_id",
+                        f"WHERE c.chunk_id IN ({placeholders})",
+                        "  AND COALESCE(d.deleted_at, '') = ''",
+                    ]
+                )
+                chunk_rows.extend(conn.execute(query, batch).fetchall())
+
+            document_ids = list(
+                dict.fromkeys(str(row["document_id"]) for row in chunk_rows)
+            )
+            for offset in range(0, len(document_ids), batch_size):
+                batch = document_ids[offset : offset + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                # Dynamic SQL contains generated placeholders only; IDs stay bound.
+                query = f"""
+                    SELECT * FROM documents
+                    WHERE document_id IN ({placeholders})
+                      AND COALESCE(deleted_at, '') = ''
+                """  # nosec B608
+                document_rows.extend(conn.execute(query, batch).fetchall())
+
+        chunks = {str(row["chunk_id"]): self._chunk_from_row(row) for row in chunk_rows}
+        documents = {
+            str(row["document_id"]): self._document_from_row(row)
+            for row in document_rows
+        }
+        return {
+            chunk_id: (chunk, document)
+            for chunk_id in unique_ids
+            if (chunk := chunks.get(chunk_id)) is not None
+            and (document := documents.get(chunk.document_id)) is not None
+        }
 
     def has_chunk_record(self, chunk_id: str) -> bool:
         self.ensure_schema()
@@ -1870,7 +2738,11 @@ class MetadataStore:
         params: list[str | int] = []
         for term in normalized_terms:
             term_clauses.append(
-                "(" + " OR ".join(f"INSTR(LOWER({field}), ?) > 0" for field in searchable_fields) + ")"
+                "("
+                + " OR ".join(
+                    f"INSTR(LOWER({field}), ?) > 0" for field in searchable_fields
+                )
+                + ")"
             )
             params.extend([term for _ in searchable_fields])
 
@@ -1880,7 +2752,11 @@ class MetadataStore:
             where_clauses.append("(" + term_operator.join(term_clauses) + ")")
         for term in normalized_metadata_only_terms:
             where_clauses.append(
-                "(" + " OR ".join(f"INSTR(LOWER({field}), ?) > 0" for field in metadata_fields) + ")"
+                "("
+                + " OR ".join(
+                    f"INSTR(LOWER({field}), ?) > 0" for field in metadata_fields
+                )
+                + ")"
             )
             params.extend([term for _ in metadata_fields])
         if require_document_like:
@@ -1942,7 +2818,9 @@ class MetadataStore:
                     OR LOWER(d.path) LIKE '%.txt'
                 )
             """
-            where_clauses.append(f"(c.source_id != 'source_github' OR {document_like_clause})")
+            where_clauses.append(
+                f"(c.source_id != 'source_github' OR {document_like_clause})"
+            )
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
             where_clauses.append(f"c.source_id IN ({placeholders})")
@@ -1983,6 +2861,15 @@ class MetadataStore:
         last_seen_sync_id: str = "",
         cleanup_document_id_prefixes: Iterable[str] | None = None,
         stale_cleanup_disabled_reason: str = "",
+        parsed_documents: int | None = None,
+        updated_documents: int | None = None,
+        created_chunks: int | None = None,
+        updated_chunks: int | None = None,
+        skipped_chunks: int | None = None,
+        embeddings_generated: int | None = None,
+        embeddings_reused: int | None = None,
+        parsing_failures: int | None = None,
+        indexing_latency_ms: float | None = None,
     ) -> tuple[SyncJobModel, list[str]]:
         """Atomically finalize a successful sync and optional stale cleanup."""
         self.ensure_schema()
@@ -2021,7 +2908,9 @@ class MetadataStore:
                     finished_at,
                     "Sync job is no longer active",
                 )
-                row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
                 return self._job_from_row(row), []
 
             deleted_chunk_ids = []
@@ -2040,8 +2929,13 @@ class MetadataStore:
                 UPDATE sync_jobs SET
                     status = ?, finished_at = ?, total_documents = ?,
                     processed_documents = ?, indexed_chunks = ?,
-                    skipped_documents = ?, phase = ?, last_progress_at = ?,
-                    status_message = ?, error_message = ''
+                    skipped_documents = ?, parsed_documents = ?,
+                    updated_documents = ?, created_chunks = ?,
+                    updated_chunks = ?, skipped_chunks = ?,
+                    embeddings_generated = ?, embeddings_reused = ?,
+                    parsing_failures = ?, indexing_latency_ms = ?,
+                    phase = ?, last_progress_at = ?, status_message = ?,
+                    error_message = ''
                 WHERE job_id = ?
                 """,
                 (
@@ -2051,6 +2945,51 @@ class MetadataStore:
                     processed_documents,
                     indexed_chunks,
                     skipped_documents,
+                    (
+                        current_job["parsed_documents"]
+                        if parsed_documents is None
+                        else parsed_documents
+                    ),
+                    (
+                        current_job["updated_documents"]
+                        if updated_documents is None
+                        else updated_documents
+                    ),
+                    (
+                        current_job["created_chunks"]
+                        if created_chunks is None
+                        else created_chunks
+                    ),
+                    (
+                        current_job["updated_chunks"]
+                        if updated_chunks is None
+                        else updated_chunks
+                    ),
+                    (
+                        current_job["skipped_chunks"]
+                        if skipped_chunks is None
+                        else skipped_chunks
+                    ),
+                    (
+                        current_job["embeddings_generated"]
+                        if embeddings_generated is None
+                        else embeddings_generated
+                    ),
+                    (
+                        current_job["embeddings_reused"]
+                        if embeddings_reused is None
+                        else embeddings_reused
+                    ),
+                    (
+                        current_job["parsing_failures"]
+                        if parsing_failures is None
+                        else parsing_failures
+                    ),
+                    (
+                        current_job["indexing_latency_ms"]
+                        if indexing_latency_ms is None
+                        else indexing_latency_ms
+                    ),
                     "completed",
                     finished_at,
                     (
@@ -2086,7 +3025,9 @@ class MetadataStore:
             if source_cursor.rowcount == 0:
                 raise ValueError(f"Unknown source: {source_id}")
 
-            row = conn.execute("SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sync_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
 
         return self._job_from_row(row), deleted_chunk_ids
 
@@ -2222,7 +3163,9 @@ class MetadataStore:
         )
         conn.execute("DELETE FROM document_claims WHERE job_id = ?", (job_id,))
 
-    def _claim_document(self, conn, document: DocumentModel, job_id: str, claimed_at: str):
+    def _claim_document(
+        self, conn, document: DocumentModel, job_id: str, claimed_at: str
+    ):
         document_id = document.document_id or document.id
         claim_row = conn.execute(
             "SELECT source_id, job_id FROM document_claims WHERE document_id = ?",
@@ -2233,7 +3176,9 @@ class MetadataStore:
                 "SELECT * FROM sync_jobs WHERE job_id = ?",
                 (claim_row["job_id"],),
             ).fetchone()
-            remove_claim = claim_job is None or claim_job["status"] != SyncJobStatus.RUNNING.value
+            remove_claim = (
+                claim_job is None or claim_job["status"] != SyncJobStatus.RUNNING.value
+            )
             if claim_job and claim_job["status"] == SyncJobStatus.RUNNING.value:
                 if self._is_stale_running_job(claim_job):
                     self._fail_sync_job_row(
@@ -2316,10 +3261,10 @@ class MetadataStore:
                 if owner_id == self.sync_owner_id:
                     return self._is_stale_running_job(row)
                 if not self._is_process_alive(owner_row["process_id"]):
-                    return self._dead_owner_is_definitive_in_current_scope(
-                        owner_row
-                    )
-                process_instance_matches = self._owner_process_instance_matches(owner_row)
+                    return self._dead_owner_is_definitive_in_current_scope(owner_row)
+                process_instance_matches = self._owner_process_instance_matches(
+                    owner_row
+                )
                 if process_instance_matches is False:
                     return True
                 if self._owner_pid_matches_current_process(owner_row):
@@ -2361,9 +3306,7 @@ class MetadataStore:
         if stored_identity == current_identity:
             return True
 
-        stored_linux_identity = cls._parse_linux_process_start_identity(
-            stored_identity
-        )
+        stored_linux_identity = cls._parse_linux_process_start_identity(stored_identity)
         current_linux_identity = cls._parse_linux_process_start_identity(
             current_identity
         )
@@ -2411,9 +3354,7 @@ class MetadataStore:
         current_linux_identity = cls._parse_linux_process_start_identity(
             current_identity
         )
-        stored_linux_identity = cls._parse_linux_process_start_identity(
-            stored_identity
-        )
+        stored_linux_identity = cls._parse_linux_process_start_identity(stored_identity)
         if stored_linux_identity is not None or current_linux_identity is not None:
             if stored_linux_identity is None or current_linux_identity is None:
                 return False
@@ -2479,14 +3420,9 @@ class MetadataStore:
 
     def _touch_sync_owner(self, conn, timestamp: str):
         process_id = os.getpid()
-        if (
-            self._cached_process_id != process_id
-            or not self._cached_process_start_id
-        ):
+        if self._cached_process_id != process_id or not self._cached_process_start_id:
             self._cached_process_id = process_id
-            self._cached_process_start_id = self._get_process_start_identity(
-                process_id
-            )
+            self._cached_process_start_id = self._get_process_start_identity(process_id)
         process_start_id = self._cached_process_start_id
         conn.execute(
             """
@@ -2543,9 +3479,11 @@ class MetadataStore:
             stat_fields = stat_value[closing_parenthesis + 2 :].split()
             start_ticks = stat_fields[19]
             try:
-                boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
-                    encoding="utf-8"
-                ).strip()
+                boot_id = (
+                    Path("/proc/sys/kernel/random/boot_id")
+                    .read_text(encoding="utf-8")
+                    .strip()
+                )
             except OSError:
                 boot_id = ""
             if not boot_id:
@@ -2561,9 +3499,7 @@ class MetadataStore:
                 except (IndexError, OSError, StopIteration):
                     return ""
             try:
-                pid_namespace = os.readlink(
-                    f"/proc/{normalized_process_id}/ns/pid"
-                )
+                pid_namespace = os.readlink(f"/proc/{normalized_process_id}/ns/pid")
             except OSError:
                 pid_namespace = ""
             return f"linux-v2|{boot_id}|{pid_namespace}|{start_ticks}"
@@ -2676,7 +3612,9 @@ class MetadataStore:
 
     @staticmethod
     def _encode_document_cursor(payload: dict[str, object]) -> str:
-        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
         return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
 
     @staticmethod
@@ -2749,27 +3687,38 @@ class MetadataStore:
         return cls._canonical_timestamp_key(canonical_timestamp)
 
     @staticmethod
-    def _ensure_columns(conn, table_name: str, columns: dict[str, str]):
+    def _ensure_columns(
+        conn,
+        table_name: str,
+        columns: dict[str, str],
+    ) -> set[str]:
         existing_columns = {
             row["name"]
             for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
+        added_columns: set[str] = set()
         for column_name, column_definition in columns.items():
             if column_name not in existing_columns:
                 conn.execute(
                     f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
                 )
+                added_columns.add(column_name)
+        return added_columns
 
     @staticmethod
     def _normalize_document(document: DocumentModel) -> DocumentModel:
-        content_hash = document.content_hash or ContentHasher.hash_content(document.content)
-        document_id = document.external_id or document.document_id or document.id
+        content_hash = document.content_hash or ContentHasher.hash_content(
+            document.content
+        )
+        document_id = (
+            document.document_id
+            if document.evidence_source_type and document.document_id
+            else document.external_id or document.document_id or document.id
+        )
         published_at = MetadataStore._canonical_document_timestamp(
             document.published_at
         )
-        modified_at = MetadataStore._canonical_document_timestamp(
-            document.modified_at
-        )
+        modified_at = MetadataStore._canonical_document_timestamp(document.modified_at)
         indexed_at = MetadataStore._canonical_document_timestamp(
             document.indexed_at
         ) or MetadataStore._canonical_document_timestamp(_now())
@@ -2789,6 +3738,7 @@ class MetadataStore:
                 "date_provenance": date_provenance,
                 "last_seen_sync_id": document.last_seen_sync_id,
                 "deleted_at": document.deleted_at,
+                "document_version_id": document.document_version_id,
                 "content_hash": content_hash,
             }
         )
@@ -2876,6 +3826,37 @@ class MetadataStore:
                 f"Document {document_id} already belongs to "
                 f"{existing_source}, not {document.source_id}"
             )
+        evidence_source_type = document.evidence_source_type
+        is_evidence = evidence_source_type is not None
+        conn.execute(
+            """
+            UPDATE documents SET
+                document_version_id = ?, evidence_source_type = ?,
+                experience_type = ?, file_name = ?, document_title = ?,
+                section_title = ?, parent_section_title = ?, exact_quote = ?,
+                created_at = ?, company = ?, role = ?, project = ?,
+                start_date = ?, end_date = ?
+            WHERE document_id = ? AND source_id = ?
+            """,
+            (
+                document.document_version_id if is_evidence else "",
+                evidence_source_type.value if evidence_source_type is not None else "",
+                document.experience_type.value if is_evidence else "unknown",
+                document.file_name if is_evidence else "",
+                document.document_title if is_evidence else "",
+                document.section_title if is_evidence else "",
+                document.parent_section_title if is_evidence else "",
+                document.exact_quote if is_evidence else "",
+                document.created_at if is_evidence else "",
+                document.company if is_evidence else "",
+                document.role if is_evidence else "",
+                document.project if is_evidence else "",
+                document.start_date if is_evidence else "",
+                document.end_date if is_evidence else "",
+                document_id,
+                document.source_id,
+            ),
+        )
 
     @staticmethod
     def _validate_document_owner(conn, document: DocumentModel):
@@ -2945,7 +3926,7 @@ class MetadataStore:
         # marker_column is selected from a fixed allowlist; prefix clauses are
         # generated from substr placeholders and bind prefix values separately.
         stale_chunk_lines = [
-            "SELECT c.chunk_id FROM chunks c",
+            "SELECT c.chunk_id, c.document_id, c.source_id FROM chunks c",
             "JOIN documents d ON d.document_id = c.document_id",
             "    AND d.source_id = c.source_id",
             "WHERE d.source_id = ?",
@@ -2960,6 +3941,23 @@ class MetadataStore:
             stale_chunk_query,
             (source_id, marker_value, *prefix_params),
         ).fetchall()
+        recorded_at = _now()
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO chunk_tombstones (
+                chunk_id, document_id, source_id, recorded_at, vector_cleanup_at
+            ) VALUES (?, ?, ?, ?, '')
+            """,
+            [
+                (
+                    row["chunk_id"],
+                    row["document_id"],
+                    row["source_id"],
+                    recorded_at,
+                )
+                for row in chunk_rows
+            ],
+        )
         tombstone_lines = [
             "UPDATE documents",
             "SET deleted_at = ?",
@@ -3004,6 +4002,45 @@ class MetadataStore:
                 for chunk in chunks
             ],
         )
+        conn.executemany(
+            """
+            UPDATE chunks SET
+                document_version_id = ?, evidence_source_type = ?,
+                experience_type = ?, file_name = ?, document_title = ?,
+                section_title = ?, parent_section_title = ?, exact_quote = ?,
+                created_at = ?, company = ?, role = ?, project = ?,
+                start_date = ?, end_date = ?
+            WHERE chunk_id = ?
+            """,
+            [
+                (
+                    chunk.document_version_id if chunk.evidence_source_type else "",
+                    (
+                        chunk.evidence_source_type.value
+                        if chunk.evidence_source_type
+                        else ""
+                    ),
+                    (
+                        chunk.experience_type.value
+                        if chunk.evidence_source_type
+                        else "unknown"
+                    ),
+                    chunk.file_name if chunk.evidence_source_type else "",
+                    chunk.document_title if chunk.evidence_source_type else "",
+                    chunk.section_title if chunk.evidence_source_type else "",
+                    (chunk.parent_section_title if chunk.evidence_source_type else ""),
+                    chunk.exact_quote if chunk.evidence_source_type else "",
+                    chunk.created_at if chunk.evidence_source_type else "",
+                    chunk.company if chunk.evidence_source_type else "",
+                    chunk.role if chunk.evidence_source_type else "",
+                    chunk.project if chunk.evidence_source_type else "",
+                    chunk.start_date if chunk.evidence_source_type else "",
+                    chunk.end_date if chunk.evidence_source_type else "",
+                    chunk.chunk_id,
+                )
+                for chunk in chunks
+            ],
+        )
 
     @staticmethod
     def _record_chunk_tombstones_for_document(conn, document_id: str, source_id: str):
@@ -3011,15 +4048,59 @@ class MetadataStore:
             return
         conn.execute(
             """
-            INSERT OR IGNORE INTO chunk_tombstones (
-                chunk_id, document_id, source_id, recorded_at
+            INSERT OR REPLACE INTO chunk_tombstones (
+                chunk_id, document_id, source_id, recorded_at, vector_cleanup_at
             )
-            SELECT chunk_id, document_id, source_id, ?
+            SELECT chunk_id, document_id, source_id, ?, ''
             FROM chunks
             WHERE document_id = ? AND source_id = ?
             """,
             (_now(), document_id, source_id),
         )
+
+    @staticmethod
+    def _resolve_vector_state_for_active_chunks(
+        conn,
+        chunks: Sequence[ChunkModel],
+        source_id: str,
+    ) -> None:
+        """Resolve write intents and pending history in the active-chunk commit."""
+        chunk_ids = list(
+            dict.fromkeys(chunk.chunk_id for chunk in chunks if chunk.chunk_id)
+        )
+        if not chunk_ids or not source_id:
+            return
+        resolved_at = _now()
+        batch_size = 800
+        for offset in range(0, len(chunk_ids), batch_size):
+            batch = chunk_ids[offset : offset + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            conn.execute(
+                f"""
+                UPDATE chunk_tombstones
+                SET vector_cleanup_at = ?
+                WHERE source_id = ?
+                  AND vector_cleanup_at = ''
+                  AND chunk_id IN ({placeholders})
+                """,  # nosec B608
+                (resolved_at, source_id, *batch),
+            )
+            conn.execute(
+                f"""
+                DELETE FROM vector_write_intents
+                WHERE source_id = ?
+                  AND chunk_id IN ({placeholders})
+                """,  # nosec B608
+                (source_id, *batch),
+            )
+            conn.execute(
+                f"""
+                DELETE FROM vector_metadata_refresh_intents
+                WHERE source_id = ?
+                  AND chunk_id IN ({placeholders})
+                """,  # nosec B608
+                (source_id, *batch),
+            )
 
     @staticmethod
     def _source_from_row(row) -> SourceModel | None:
@@ -3074,6 +4155,15 @@ class MetadataStore:
             processed_documents=row["processed_documents"],
             indexed_chunks=row["indexed_chunks"],
             skipped_documents=row["skipped_documents"],
+            parsed_documents=row["parsed_documents"],
+            updated_documents=row["updated_documents"],
+            created_chunks=row["created_chunks"],
+            updated_chunks=row["updated_chunks"],
+            skipped_chunks=row["skipped_chunks"],
+            embeddings_generated=row["embeddings_generated"],
+            embeddings_reused=row["embeddings_reused"],
+            parsing_failures=row["parsing_failures"],
+            indexing_latency_ms=row["indexing_latency_ms"],
             phase=normalize_sync_job_phase(row["phase"]),
             upstream_total=upstream_total,
             upstream_done=upstream_done,
@@ -3105,7 +4195,21 @@ class MetadataStore:
             last_seen_sync_id=row["last_seen_sync_id"],
             deleted_at=row["deleted_at"],
             version_id=row["version_id"],
+            document_version_id=row["document_version_id"],
             content_hash=row["content_hash"],
+            evidence_source_type=row["evidence_source_type"] or None,
+            experience_type=row["experience_type"] or "unknown",
+            file_name=row["file_name"],
+            document_title=row["document_title"],
+            section_title=row["section_title"],
+            parent_section_title=row["parent_section_title"],
+            exact_quote=row["exact_quote"],
+            created_at=row["created_at"],
+            company=row["company"],
+            role=row["role"],
+            project=row["project"],
+            start_date=row["start_date"],
+            end_date=row["end_date"],
         )
 
     @staticmethod
@@ -3139,6 +4243,20 @@ class MetadataStore:
             line_start=row["line_start"],
             line_end=row["line_end"],
             version_id=row["version_id"],
+            document_version_id=row["document_version_id"],
             content_hash=row["content_hash"],
             updated_at=row["updated_at"],
+            evidence_source_type=row["evidence_source_type"] or None,
+            experience_type=row["experience_type"] or "unknown",
+            file_name=row["file_name"],
+            document_title=row["document_title"],
+            section_title=row["section_title"],
+            parent_section_title=row["parent_section_title"],
+            exact_quote=row["exact_quote"],
+            created_at=row["created_at"],
+            company=row["company"],
+            role=row["role"],
+            project=row["project"],
+            start_date=row["start_date"],
+            end_date=row["end_date"],
         )

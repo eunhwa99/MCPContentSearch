@@ -11,10 +11,40 @@ class DocumentConverter:
         content_hash = ContentHasher.hash_content(doc.content)
         is_contextwiki_chunk = bool(doc.chunk_id and doc.document_id and doc.source_id)
         document_id = doc.external_id or doc.document_id or doc.id
+        if doc.evidence_source_type:
+            metadata = {
+                "doc_id": doc.id,
+                "chunk_id": doc.chunk_id or doc.id,
+                "document_id": document_id,
+                "source_id": doc.source_id,
+                "evidence_source_type": getattr(
+                    doc.evidence_source_type,
+                    "value",
+                    doc.evidence_source_type,
+                ),
+                "experience_type": getattr(
+                    doc.experience_type,
+                    "value",
+                    doc.experience_type,
+                ),
+                "chunk_index": doc.chunk_index if doc.chunk_index is not None else -1,
+                "line_start": doc.line_start if doc.line_start is not None else -1,
+                "line_end": doc.line_end if doc.line_end is not None else -1,
+                "version_id": doc.version_id,
+                "document_version_id": doc.document_version_id,
+                "created_at": doc.created_at,
+                "updated_at": doc.updated_at,
+                "contextwiki_managed": "true" if is_contextwiki_chunk else "false",
+                "content_hash": content_hash,
+            }
+            return Document(
+                id_=doc.chunk_id or doc.id,
+                text=doc.content,
+                metadata=metadata,
+                excluded_embed_metadata_keys=list(metadata),
+            )
         
-        return Document(
-            text=doc.content,
-            metadata={
+        metadata = {
                 "title": doc.title,
                 "platform": doc.platform,
                 "url": doc.url,
@@ -35,5 +65,11 @@ class DocumentConverter:
                 "version_id": doc.version_id,
                 "contextwiki_managed": "true" if is_contextwiki_chunk else "false",
                 "content_hash": content_hash,
-            },
-        )
+            }
+        if is_contextwiki_chunk:
+            return Document(
+                id_=doc.chunk_id or doc.id,
+                text=doc.content,
+                metadata=metadata,
+            )
+        return Document(text=doc.content, metadata=metadata)

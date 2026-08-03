@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from enum import Enum
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -18,6 +19,33 @@ class SourceType(str, Enum):
     TISTORY = "tistory"
     GITHUB = "github"
     OBSIDIAN = "obsidian"
+    CAREER = "career"
+
+
+class EvidenceSourceType(str, Enum):
+    """Career evidence category, separate from connector transport type."""
+
+    RESUME = "resume"
+    PREVIOUS_RESUME = "previous_resume"
+    PROJECT = "project"
+    GITHUB_README = "github_readme"
+    BEHAVIORAL_STORY = "behavioral_story"
+    CAREER_NOTE = "career_note"
+    SKILLS_INVENTORY = "skills_inventory"
+
+
+# Additive compatibility name used by the retrieval layer.
+CareerSourceType = EvidenceSourceType
+
+
+class ExperienceType(str, Enum):
+    """Explicit evidence provenance; never inferred from prose."""
+
+    PROFESSIONAL = "professional"
+    ACADEMIC = "academic"
+    PERSONAL_PROJECT = "personal_project"
+    PROTOTYPE = "prototype"
+    UNKNOWN = "unknown"
 
 
 class SyncStatus(str, Enum):
@@ -207,6 +235,15 @@ class SyncJobModel(BaseModel):
     processed_documents: int = Field(ge=0, default=0)
     indexed_chunks: int = Field(ge=0, default=0)
     skipped_documents: int = Field(ge=0, default=0)
+    parsed_documents: int = Field(ge=0, default=0)
+    updated_documents: int = Field(ge=0, default=0)
+    created_chunks: int = Field(ge=0, default=0)
+    updated_chunks: int = Field(ge=0, default=0)
+    skipped_chunks: int = Field(ge=0, default=0)
+    embeddings_generated: int = Field(ge=0, default=0)
+    embeddings_reused: int = Field(ge=0, default=0)
+    parsing_failures: int = Field(ge=0, default=0)
+    indexing_latency_ms: float = Field(ge=0.0, default=0.0)
     phase: str = ""
     upstream_total: int = Field(ge=0, default=0)
     upstream_done: int = Field(ge=0, default=0)
@@ -239,7 +276,21 @@ class DocumentModel(BaseModel):
     last_seen_sync_id: str = ""
     deleted_at: str = ""
     version_id: str = ""
+    document_version_id: str = ""
     content_hash: str = ""
+    evidence_source_type: Optional[EvidenceSourceType] = None
+    experience_type: ExperienceType = ExperienceType.UNKNOWN
+    file_name: str = ""
+    document_title: str = ""
+    section_title: str = ""
+    parent_section_title: str = ""
+    exact_quote: str = ""
+    created_at: str = ""
+    company: str = ""
+    role: str = ""
+    project: str = ""
+    start_date: str = ""
+    end_date: str = ""
     chunk_id: str = ""
     chunk_index: Optional[int] = None
     line_start: Optional[int] = None
@@ -266,8 +317,22 @@ class ChunkModel(BaseModel):
     line_start: Optional[int] = None
     line_end: Optional[int] = None
     version_id: str = ""
+    document_version_id: str = ""
     content_hash: str
     updated_at: str = ""
+    evidence_source_type: Optional[EvidenceSourceType] = None
+    experience_type: ExperienceType = ExperienceType.UNKNOWN
+    file_name: str = ""
+    document_title: str = ""
+    section_title: str = ""
+    parent_section_title: str = ""
+    exact_quote: str = ""
+    created_at: str = ""
+    company: str = ""
+    role: str = ""
+    project: str = ""
+    start_date: str = ""
+    end_date: str = ""
 
     model_config = ConfigDict(frozen=True)
 
@@ -290,7 +355,142 @@ class ChunkModel(BaseModel):
             line_start=self.line_start,
             line_end=self.line_end,
             version_id=self.version_id,
+            document_version_id=self.document_version_id,
+            evidence_source_type=self.evidence_source_type,
+            experience_type=self.experience_type,
+            file_name=self.file_name,
+            document_title=self.document_title,
+            section_title=self.section_title,
+            parent_section_title=self.parent_section_title,
+            exact_quote=self.exact_quote or self.text,
+            created_at=self.created_at,
+            company=self.company,
+            role=self.role,
+            project=self.project,
+            start_date=self.start_date,
+            end_date=self.end_date,
         )
+
+
+class SearchEvidenceInput(BaseModel):
+    """Validated additive MCP request for extractive career evidence."""
+
+    query: str = Field(min_length=1, max_length=4096)
+    source_types: Optional[list[EvidenceSourceType]] = Field(default=None, max_length=32)
+    experience_types: Optional[list[ExperienceType]] = Field(default=None, max_length=32)
+    document_ids: Optional[list[str]] = Field(default=None, max_length=100)
+    top_k: int = Field(default=5, ge=1, le=50, strict=True)
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def bound_request_payload(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        limits = {
+            "source_types": 32,
+            "experience_types": 32,
+            "document_ids": 100,
+        }
+        for field_name, limit in limits.items():
+            items = value.get(field_name)
+            if isinstance(items, (list, tuple, set, frozenset)) and len(items) > limit:
+                raise ValueError("evidence request exceeds collection limit")
+
+        query = value.get("query")
+        if isinstance(query, str) and len(query) > 4096:
+            raise ValueError("evidence query exceeds length limit")
+
+        request_bytes = 64
+        for field_name, item_limit in (
+            ("query", 4096),
+            ("source_types", 64),
+            ("experience_types", 64),
+            ("document_ids", 512),
+        ):
+            raw_value = value.get(field_name)
+            items = (
+                raw_value
+                if isinstance(raw_value, (list, tuple, set, frozenset))
+                else (raw_value,)
+            )
+            for item in items:
+                if isinstance(item, Enum):
+                    item = item.value
+                if not isinstance(item, str):
+                    continue
+                if len(item) > item_limit:
+                    raise ValueError("evidence request value exceeds length limit")
+                request_bytes += len(item.encode("utf-8")) + 4
+                if request_bytes > 65_536:
+                    raise ValueError("evidence request exceeds byte limit")
+        return value
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def normalize_query(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("source_types", "experience_types", mode="before")
+    @classmethod
+    def normalize_enum_filters(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return value
+        normalized = []
+        seen: set[Any] = set()
+        for item in value:
+            candidate = item.strip() if isinstance(item, str) else item
+            try:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+            except TypeError:
+                pass
+            normalized.append(candidate)
+        return normalized
+
+    @field_validator("document_ids", mode="before")
+    @classmethod
+    def normalize_document_ids(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return value
+        normalized = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("document_ids must contain strings")
+            candidate = item.strip()
+            if not candidate:
+                raise ValueError("document_ids must contain non-empty identifiers")
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
+
+
+class EvidenceChunk(BaseModel):
+    """Stored, extractive evidence returned without LLM rewriting."""
+
+    chunk_id: str
+    document_id: str
+    document_version_id: Optional[str] = None
+    source_type: EvidenceSourceType
+    document_title: Optional[str] = None
+    section_title: Optional[str] = None
+    parent_section_title: Optional[str] = None
+    exact_quote: str
+    retrieval_score: Optional[float] = Field(default=None, allow_inf_nan=False)
+    experience_type: Optional[ExperienceType] = None
+    file_name: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
 class ContextSearchResult(BaseModel):

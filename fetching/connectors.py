@@ -1,8 +1,16 @@
 from abc import ABC, abstractmethod
+import asyncio
+import inspect
+import threading
 from typing import Iterable
 
 from core.models import DocumentModel, SourceModel, SourceType, SyncStatus
 from environments.config import AppConfig
+from fetching.career_files import (
+    CareerParsingCancelled,
+    career_manifest_disabled_reason,
+    load_career_manifest,
+)
 from fetching.github import GitHubRepositoryFetcher, repository_document_id_prefix
 from fetching.notion import fetch_notion_pages
 from fetching.obsidian import (
@@ -12,6 +20,9 @@ from fetching.obsidian import (
     obsidian_disabled_reason,
 )
 from fetching.tistory import fetch_tistory_posts
+
+
+_CAREER_PARSER_CANCEL_POLL_SECONDS = 0.05
 
 
 class SourceConnector(ABC):
@@ -34,7 +45,9 @@ class SourceRegistry:
     """Runtime registry for available source connectors."""
 
     def __init__(self, connectors: Iterable[SourceConnector]):
-        self._connectors = {connector.source.source_id: connector for connector in connectors}
+        self._connectors = {
+            connector.source.source_id: connector for connector in connectors
+        }
 
     def get_connector(self, source_id: str) -> SourceConnector:
         if source_id not in self._connectors:
@@ -109,9 +122,7 @@ class NotionSourceConnector(SourceConnector):
 
 class TistorySourceConnector(SourceConnector):
     supports_stale_cleanup = False
-    stale_cleanup_disabled_reason = (
-        "Stale cleanup is disabled because this source connector does not guarantee complete snapshots."
-    )
+    stale_cleanup_disabled_reason = "Stale cleanup is disabled because this source connector does not guarantee complete snapshots."
 
     def __init__(self, blog_name: str, config: AppConfig):
         self.blog_name = blog_name
@@ -236,11 +247,11 @@ class GitHubSourceConnector(SourceConnector):
                 existing_documents_loader=self._load_existing_documents_for_page_ids,
             )
         except Exception:
-            self.stale_cleanup_disabled_reason = (
-                "Stale cleanup is disabled because the latest GitHub fetch did not complete."
-            )
+            self.stale_cleanup_disabled_reason = "Stale cleanup is disabled because the latest GitHub fetch did not complete."
             self.source = self.source.model_copy(
-                update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
+                update={
+                    "stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason
+                }
             )
             raise
         else:
@@ -256,9 +267,7 @@ class GitHubSourceConnector(SourceConnector):
             if self.supports_stale_cleanup:
                 self.stale_cleanup_disabled_reason = ""
             elif not self.fetcher.snapshot_complete:
-                self.stale_cleanup_disabled_reason = (
-                    "Stale cleanup is disabled because the latest GitHub snapshot was incomplete."
-                )
+                self.stale_cleanup_disabled_reason = "Stale cleanup is disabled because the latest GitHub snapshot was incomplete."
             elif not self.cleanup_document_id_prefixes:
                 self.stale_cleanup_disabled_reason = (
                     "Stale cleanup is disabled because the latest GitHub fetch resolved "
@@ -269,7 +278,9 @@ class GitHubSourceConnector(SourceConnector):
                     "Stale cleanup is disabled for this GitHub connector."
                 )
             self.source = self.source.model_copy(
-                update={"stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason}
+                update={
+                    "stale_cleanup_disabled_reason": self.stale_cleanup_disabled_reason
+                }
             )
             return documents
 
@@ -304,7 +315,9 @@ class ObsidianSourceConnector(SourceConnector):
             update={
                 "enabled": enabled,
                 "last_error": "" if enabled else self.disabled_reason,
-                "stale_cleanup_disabled_reason": "" if enabled else self.disabled_reason,
+                "stale_cleanup_disabled_reason": ""
+                if enabled
+                else self.disabled_reason,
             }
         )
 
@@ -339,12 +352,135 @@ class ObsidianSourceConnector(SourceConnector):
         if not snapshot.snapshot_complete:
             self.supports_stale_cleanup = False
             self.source = self.source.model_copy(
-                update={"stale_cleanup_disabled_reason": _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON}
+                update={
+                    "stale_cleanup_disabled_reason": _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON
+                }
             )
             raise RuntimeError(_OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON)
         self.supports_stale_cleanup = snapshot.snapshot_complete
-        self.source = self.source.model_copy(update={"stale_cleanup_disabled_reason": ""})
+        self.source = self.source.model_copy(
+            update={"stale_cleanup_disabled_reason": ""}
+        )
         return snapshot.documents
+
+
+class CareerSourceConnector(SourceConnector):
+    """Explicit-manifest connector for local career evidence files."""
+
+    def __init__(self, config: AppConfig):
+        self.manifest_path = config.career_manifest_path
+        self.max_file_bytes = config.career_max_file_bytes
+        self.max_files = config.career_max_files
+        self.max_total_raw_bytes = config.career_max_total_raw_bytes
+        self.max_total_extracted_text_bytes = (
+            config.career_max_total_extracted_text_bytes
+        )
+        self.progress_callback = None
+        self.progress_stop_signal = None
+        self.progress_stop_checker = None
+        self.disabled_reason = ""
+        self.supports_stale_cleanup = False
+        self.source = SourceModel(
+            source_id="source_career",
+            source_type=SourceType.CAREER,
+            name="Career files",
+            enabled=False,
+            auth_ref="env:CONTEXTWIKI_CAREER_MANIFEST_PATH",
+            sync_status=SyncStatus.IDLE,
+        )
+        self.refresh_source_state()
+
+    def refresh_source_state(self) -> None:
+        self.disabled_reason = career_manifest_disabled_reason(self.manifest_path)
+        enabled = not self.disabled_reason
+        self.supports_stale_cleanup = enabled
+        self.source = self.source.model_copy(
+            update={
+                "enabled": enabled,
+                "last_error": "" if enabled else self.disabled_reason,
+                "stale_cleanup_disabled_reason": (
+                    "" if enabled else self.disabled_reason
+                ),
+            }
+        )
+
+    async def fetch_documents(self) -> list[DocumentModel]:
+        self.refresh_source_state()
+        if not self.source.enabled or self.manifest_path is None:
+            self.supports_stale_cleanup = False
+            raise FileNotFoundError(self.disabled_reason)
+        self.supports_stale_cleanup = False
+        cancel_event = threading.Event()
+        parser_task = asyncio.create_task(
+            asyncio.to_thread(
+                load_career_manifest,
+                self.manifest_path,
+                max_file_bytes=self.max_file_bytes,
+                max_files=self.max_files,
+                max_total_raw_bytes=self.max_total_raw_bytes,
+                max_total_extracted_text_bytes=self.max_total_extracted_text_bytes,
+                cancel_check=cancel_event.is_set,
+            )
+        )
+        try:
+            documents = await self._wait_for_parser_task(parser_task)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            await self._join_parser_task(parser_task)
+            raise
+        except Exception:
+            cancel_event.set()
+            await self._join_parser_task(parser_task)
+            self.source = self.source.model_copy(
+                update={
+                    "stale_cleanup_disabled_reason": (
+                        "Stale cleanup is disabled because the latest career "
+                        "manifest snapshot did not parse completely."
+                    )
+                }
+            )
+            raise
+        self.supports_stale_cleanup = True
+        self.source = self.source.model_copy(
+            update={"stale_cleanup_disabled_reason": ""}
+        )
+        return documents
+
+    async def _wait_for_parser_task(
+        self,
+        parser_task: asyncio.Task[list[DocumentModel]],
+    ) -> list[DocumentModel]:
+        while not parser_task.done():
+            stop_checker = getattr(self, "progress_stop_checker", None)
+            if stop_checker is not None:
+                stop_requested = stop_checker()
+                if inspect.isawaitable(stop_requested):
+                    stop_requested = await stop_requested
+                if stop_requested:
+                    raise asyncio.CancelledError
+            await asyncio.wait(
+                {parser_task},
+                timeout=_CAREER_PARSER_CANCEL_POLL_SECONDS,
+            )
+        return parser_task.result()
+
+    @staticmethod
+    async def _join_parser_task(
+        parser_task: asyncio.Task[list[DocumentModel]],
+    ) -> None:
+        while not parser_task.done():
+            try:
+                await asyncio.shield(parser_task)
+            except asyncio.CancelledError:
+                continue
+            except CareerParsingCancelled:
+                return
+            except Exception:
+                return
+        try:
+            parser_task.result()
+        except (asyncio.CancelledError, CareerParsingCancelled, Exception):
+            return
 
 
 def build_source_registry(
@@ -356,16 +492,17 @@ def build_source_registry(
     github_http_client=None,
 ) -> SourceRegistry:
     """Build the production source registry with retained ContextWiki connectors."""
-    return SourceRegistry(
-        [
-            NotionSourceConnector(notion_api_key, config),
-            TistorySourceConnector(tistory_blog_name, config),
-            GitHubSourceConnector(
-                config.github_repositories,
-                config,
-                token=github_token,
-                http_client=github_http_client,
-            ),
-            ObsidianSourceConnector(config),
-        ]
-    )
+    connectors: list[SourceConnector] = [
+        NotionSourceConnector(notion_api_key, config),
+        TistorySourceConnector(tistory_blog_name, config),
+        GitHubSourceConnector(
+            config.github_repositories,
+            config,
+            token=github_token,
+            http_client=github_http_client,
+        ),
+        ObsidianSourceConnector(config),
+    ]
+    if config.career_manifest_path is not None:
+        connectors.append(CareerSourceConnector(config))
+    return SourceRegistry(connectors)
