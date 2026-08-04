@@ -63,6 +63,8 @@ SERVICE_TARGET="${DOMAIN_TARGET}/${LABEL}"
 OLD_SERVICE_TARGET="${DOMAIN_TARGET}/${OLD_LABEL}"
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   printf 'Would boot out %s and remove %s\n' "${SERVICE_TARGET}" "${PLIST_PATH}"
+  printf 'Dry run does not query loaded LaunchAgent service state; actual uninstall also stops %s if it is loaded.\n' \
+    "${OLD_SERVICE_TARGET}"
   if [[ -f "${OLD_PLIST_PATH}" ]]; then
     printf 'Would boot out %s and remove %s\n' \
       "${OLD_SERVICE_TARGET}" "${OLD_PLIST_PATH}"
@@ -78,13 +80,13 @@ sync_worker_launch_agent_acquire_lock "${LABEL}"
 if launchctl print "${SERVICE_TARGET}" >/dev/null 2>&1; then
   launchctl bootout "${SERVICE_TARGET}"
 fi
+if launchctl print "${OLD_SERVICE_TARGET}" >/dev/null 2>&1 &&
+  ! launchctl bootout "${OLD_SERVICE_TARGET}"; then
+  printf 'error: could not stop legacy LaunchAgent service; preserved legacy plist: %s\n' \
+    "${OLD_PLIST_PATH}" >&2
+  exit 1
+fi
 if [[ -f "${OLD_PLIST_PATH}" ]]; then
-  if launchctl print "${OLD_SERVICE_TARGET}" >/dev/null 2>&1 &&
-    ! launchctl bootout "${OLD_SERVICE_TARGET}"; then
-    printf 'error: could not stop legacy LaunchAgent service; preserved legacy plist: %s\n' \
-      "${OLD_PLIST_PATH}" >&2
-    exit 1
-  fi
   rm -f "${OLD_PLIST_PATH}"
 fi
 if [[ -f "${PLIST_PATH}" ]]; then

@@ -24,7 +24,7 @@ Scope:
 - Use `context-zip` for package/image/path-style external names.
 - Use `context_zip` for Python identifiers, metadata keys, generated filenames,
   and test fixture identifiers that cannot contain a hyphen.
-- Replace current public `CONTEXTZIP_*` configuration names with
+- Replace current public `CONTEXTWIKI_*` configuration names with
   `CONTEXTZIP_*` names.
 - Update docs, deploy templates, scripts, tests, eval labels, Docker metadata,
   and runtime log/debug strings that describe the project.
@@ -115,7 +115,7 @@ Non-goals:
   isolation for disk and pytest basetemp headroom.
   - Static verification: compileall, Ruff, mypy, Bandit passed.
   - Public MCP contract layer: `40 passed`.
-  - Broad non-live regression layer: `1367 passed`, coverage `87.93%`.
+  - Broad non-live regression layer: `1371 passed`, coverage `87.93%`.
   - Deterministic quality eval layer: passed; retrieval `14/14`, document sort
     `2/2`, answer `9/9`; artifacts written to `artifacts/context-zip-evals`.
   - Deterministic functional E2E layer: `58 passed`.
@@ -135,10 +135,10 @@ performance or quality improvement claim.
 | Surface | Mode | Expected | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | App composition | fake sources/temp paths | Registers retained tools and ContextZip source auth refs | passed | `tests/test_app_composition.py`; full `./scripts/verify_all.sh` public contract layer `40 passed` |
-| Config loading | monkeypatched env | Reads `CONTEXTZIP_*` names and defaults under `.context-zip` | passed | `tests/environments/test_config.py`; focused suite `237 passed`; latest full regression `1367 passed` |
+| Config loading | monkeypatched env | Reads `CONTEXTZIP_*` names and defaults under `.context-zip` | passed | `tests/environments/test_config.py`; focused suite `237 passed`; latest full regression `1371 passed` |
 | Deterministic MCP flow | fake/temp SQLite and Chroma | Sync/search/fetch/answer flow still passes | passed | `tests/e2e/test_context_zip_flow.py`; `./scripts/verify_functional_e2e.sh` -> `58 passed`; full `./scripts/verify_all.sh` functional layer -> `58 passed` |
-| Worker/deploy scripts | dry/static tests | LaunchAgent/container naming uses ContextZip/context-zip | passed | `bash -n` changed shell scripts passed; `tests/scripts/test_sync_worker_launch_agent.py`; latest full regression `1367 passed` |
-| GitHub connector fixture flow | mocked HTTP/temp SQLite | Document identity and cleanup prefixes use `context-zip` | passed | `tests/fetching/test_github.py` and retained connector E2E; latest full regression `1367 passed` |
+| Worker/deploy scripts | dry/static tests | LaunchAgent/container naming uses ContextZip/context-zip | passed | `bash -n` changed shell scripts passed; `tests/scripts/test_sync_worker_launch_agent.py`; latest full regression `1371 passed` |
+| GitHub connector fixture flow | mocked HTTP/temp SQLite | Document identity and cleanup prefixes use `context-zip` | passed | `tests/fetching/test_github.py` and retained connector E2E; latest full regression `1371 passed` |
 
 ## Worker orchestration
 
@@ -167,7 +167,7 @@ performance or quality improvement claim.
   inside Python and verify with compile/tests.
 - Renaming environment variables can break existing local `.env` users; README
   must clearly show the new names.
-- GitHub remote repo remains `eunaverse/context-zip` until the repository
+- GitHub remote repo remains `eunaverse/MCPContentSearch` until the repository
   is renamed outside this branch.
 - Rollback point: task branch can be abandoned without touching user data.
 
@@ -183,11 +183,11 @@ performance or quality improvement claim.
 | Focused unit GREEN | completed | Focused naming/config/script/eval unit coverage passed after implementation. | `uv run pytest -q tests/environments/test_config.py ... tests/evals` -> `237 passed` |
 | Focused integration GREEN | completed | App composition, source registry, worker env, LaunchAgent render, CI verification architecture, and eval-runner integration passed. | Same focused command -> `237 passed` |
 | Focused E2E GREEN | completed | Deterministic MCP flow passed with ContextZip fixtures and `context_zip_managed` metadata. | Same focused command including `tests/e2e/test_context_zip_flow.py` -> `237 passed` |
-| Full suite GREEN | completed | Full static, contract, regression, eval, and functional E2E wrapper passed. | `./scripts/verify_all.sh` -> static passed; `40 passed`; latest full regression `1367 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
+| Full suite GREEN | completed | Full static, contract, regression, eval, and functional E2E wrapper passed. | `./scripts/verify_all.sh` -> static passed; `40 passed`; latest full regression `1371 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
 | Matching eval | completed | `n/a`; no retrieval/answer quality behavior change. | Plan section |
 | Improvement after/delta | completed | `n/a`; no improvement claim. | Plan section |
 | Functional smoke | completed | Exercised app composition, config, mocked connector, deterministic MCP flow, eval runner, CI verification architecture, and LaunchAgent/script surfaces through fake/temp/dry checks. | Focused suite `237 passed`; `./scripts/verify_functional_e2e.sh` -> `58 passed`; full `./scripts/verify_all.sh` functional layer -> `58 passed` |
-| Review loop | completed | Repeated three-reviewer passes until the newest pass had no code/config actionable findings; final pass left only plan wording cleanup, which was fixed with docs-only verification. | Reviewer passes 1-5 |
+| Review loop | completed | Repeated three-reviewer passes; all actionable code/config findings through pass 8 were fixed and reverified, and the final clean pass had no actionable findings. | Final clean pass reviewer 1/2/3: no actionable findings |
 | Review pass 1 | completed | Three read-only reviewers found actionable gaps: `.env.example` old env names, active harness skills pointing to deleted eval runner, old LaunchAgent label migration risk, and legacy Chroma managed-vector cleanup gap. | Reviewer 1/2/3 findings on `.env.example`, `.agents/skills/**`, `scripts/*sync_worker_launch_agent*.sh`, `indexing/manager.py`, `indexing/indexer.py` |
 | Review pass 1 fixes | completed | Updated `.env.example` mechanically to `CONTEXTZIP_*`; refreshed active harness skill docs; added old LaunchAgent label migration/removal; added legacy Chroma managed-key cleanup compatibility with tests. | `uv run pytest -q tests/indexing/test_index_manager.py` -> RED before fix (`6 failed, 1 passed`), then GREEN `7 passed`; LaunchAgent migration tests RED (`2 failed`), then GREEN with affected checks `9 passed`; `uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py` -> `89 passed`; broader affected checks `139 passed`; active old-token scan -> 0 |
 | Post-review full suite | completed | Re-ran full verification after review fixes. An earlier attempt failed because disk was exhausted and coverage could not create its SQLite data file; after cleaning generated pytest/npm cache only, the full suite passed. | `./scripts/verify_all.sh` -> static passed; `40 passed`; broad non-live `1359 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
@@ -201,4 +201,16 @@ performance or quality improvement claim.
 | Review pass 4 | completed | Three fresh reviewers; reviewers 1/2 found no actionable findings, reviewer 3 asked for install dry-run legacy cleanup visibility and real temp-Chroma evidence for legacy-only managed metadata. | Reviewer 3 findings on `scripts/install_sync_worker_launch_agent.sh` and Chroma-backed retrieval behavior |
 | Review pass 4 fixes | completed | Added install dry-run legacy cleanup output/test; added temp Chroma E2E that rewrites a managed vector to legacy-only metadata before `search_context`; fixed fake LaunchAgent old-label matching for uninstall tests. | `bash -n scripts/install_sync_worker_launch_agent.sh && uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py::test_install_dry_run_reports_legacy_launch_agent_cleanup tests/e2e/test_context_zip_flow.py::test_context_zip_temp_chroma_e2e_sync_search_fetch_and_answer` -> `2 passed`; targeted uninstall checks -> `4 passed`; `uv run pytest -q tests/e2e/test_context_zip_flow.py tests/search/test_context_service.py tests/scripts/test_sync_worker_launch_agent.py tests/indexing/test_index_manager.py` -> `273 passed` |
 | Post-review-pass-4 full suite | completed | Re-ran full verification after pass-4 fixes. | `./scripts/verify_all.sh` -> static passed; `40 passed`; broad non-live `1367 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
-| Review pass 5 | completed | Three fresh reviewers after post-review-pass-4 full verification; reviewers 1/2 found no actionable findings, reviewer 3 found plan-only stale wording/counts. | Plan-only fix applied; `git diff --check -- docs/plan/2026-08-04-contextzip-branding-rename.md` passed |
+| Review pass 5 | completed | Three fresh reviewers after post-review-pass-4 full verification; reviewers 1/3 found no actionable findings, reviewer 2 found old-label LaunchAgent services could remain loaded when the old plist was already missing. | Reviewer 2 finding on install/uninstall legacy service cleanup |
+| Review pass 5 fixes RED | completed | Added install/uninstall regressions for a loaded old-label LaunchAgent service with no old plist present. | `uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py::test_install_stops_legacy_launch_agent_when_old_plist_is_missing tests/scripts/test_sync_worker_launch_agent.py::test_uninstall_stops_legacy_launch_agent_when_old_plist_is_missing` -> `2 failed`, exit 1 |
+| Review pass 5 fixes GREEN | completed | Made install/uninstall probe and boot out the old label independently of old plist existence; updated label-aware test fakes and changed expectations for new legacy-service safety probes. | `bash -n scripts/install_sync_worker_launch_agent.sh scripts/uninstall_sync_worker_launch_agent.sh && uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py::test_install_stops_legacy_launch_agent_when_old_plist_is_missing tests/scripts/test_sync_worker_launch_agent.py::test_uninstall_stops_legacy_launch_agent_when_old_plist_is_missing` -> `2 passed`; `TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py tests/search/test_context_service.py tests/indexing/test_index_manager.py -x` -> `259 passed` |
+| Post-review-pass-5 full suite | completed | Re-ran full verification after pass-5 fixes. | `TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp ./scripts/verify_all.sh` -> static passed; `40 passed`; broad non-live `1369 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
+| Review pass 6 | completed | Three fresh reviewers after post-review-pass-5 full verification; reviewer 2 found no actionable findings, reviewer 1 found plan-only stale wording, and reviewer 3 found dry-run under-reported loaded legacy service cleanup when the old plist was missing. | Reviewer 1/3 findings on plan wording and dry-run LaunchAgent output |
+| Review pass 6 fixes RED | completed | Added install/uninstall dry-run regressions requiring explicit live-state limitation text while preserving no-launchctl dry-run behavior. | `TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py::test_install_dry_run_warns_legacy_service_state_is_not_queried tests/scripts/test_sync_worker_launch_agent.py::test_uninstall_dry_run_warns_legacy_service_state_is_not_queried` -> `2 failed`, exit 1 |
+| Review pass 6 fixes GREEN | completed | Added dry-run output documenting that dry-run does not query loaded LaunchAgent state and actual install/uninstall also stop the loaded old label. | `bash -n scripts/install_sync_worker_launch_agent.sh scripts/uninstall_sync_worker_launch_agent.sh && TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py::test_install_dry_run_warns_legacy_service_state_is_not_queried tests/scripts/test_sync_worker_launch_agent.py::test_uninstall_dry_run_warns_legacy_service_state_is_not_queried` -> `2 passed`; `TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp uv run pytest -q tests/scripts/test_sync_worker_launch_agent.py tests/search/test_context_service.py tests/indexing/test_index_manager.py -x` -> `261 passed` |
+| Post-review-pass-6 full suite | completed | Re-ran full verification after pass-6 fixes. | `TMPDIR=/private/var/folders/18/8wsb4dlx0yx6hnj5_dnl1dq00000gn/T/contextzip-verify-tmp ./scripts/verify_all.sh` -> static passed; `40 passed`; broad non-live `1371 passed`; eval passed (`14/14`, `2/2`, `9/9`); functional E2E `58 passed` |
+| Review pass 7 | completed | Three fresh reviewers after post-review-pass-6 full verification; two reviewers found only stale plan wording and one reviewer timed out before completion. | Reviewer 1/3 plan-only findings; reviewer 2 closed while still running |
+| Review pass 7 fixes | completed | Updated review-loop summary wording; no code/config change. | `git diff --check -- docs/plan/2026-08-04-contextzip-branding-rename.md scripts/install_sync_worker_launch_agent.sh scripts/uninstall_sync_worker_launch_agent.sh tests/scripts/test_sync_worker_launch_agent.py` passed |
+| Review pass 8 | completed | Three fresh reviewers after pass-7 docs-only fixes; all three found only stale review-loop summary wording and no code/security/operability findings. | Reviewer 1/2/3 plan-only finding on review-loop summary |
+| Review pass 8 fixes | completed | Updated review-loop summary to avoid stale pass-specific wording; no code/config change. | `git diff --check` passed; stale review-loop pattern scan returned no matches |
+| Final review pass | completed | Three fresh read-only reviewers after final docs-only fix reported no actionable findings. | Reviewer 1 correctness/contracts/tests clean; reviewer 2 security/privacy/data safety clean; reviewer 3 reliability/operability clean |

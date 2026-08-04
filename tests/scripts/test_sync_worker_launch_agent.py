@@ -125,12 +125,14 @@ def _fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path]:
 def _blocking_fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path]:
     call_log = tmp_path / "serialized-launchctl-calls"
     loaded_state = tmp_path / "serialized-launchctl-loaded"
+    old_loaded_state = tmp_path / "serialized-launchctl-old-loaded"
     launchctl = fake_bin / "launchctl"
     launchctl.write_text(
         "\n".join(
             (
                 "#!/usr/bin/env sh",
                 'operation="${CONTEXTZIP_TEST_OPERATION_ID:-unknown}"',
+                f"old_label={shlex.quote(OLD_LABEL)}",
                 (
                     f"printf '%s:%s\\n' \"$operation\" \"$*\" >> "
                     f"{shlex.quote(str(call_log))}"
@@ -145,13 +147,22 @@ def _blocking_fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path
                 ),
                 "fi",
                 'case "$1" in',
-                f"  print) test -f {shlex.quote(str(loaded_state))} ;;",
+                (
+                    "  print) "
+                    'case "$2" in *"$old_label"*) '
+                    f"test -f {shlex.quote(str(old_loaded_state))} ;; "
+                    f"*) test -f {shlex.quote(str(loaded_state))} ;; "
+                    "esac ;;"
+                ),
                 (
                     "  bootstrap) "
                     f"touch {shlex.quote(str(loaded_state))} ;;"
                 ),
                 (
                     "  bootout) "
+                    'case "$2" in *"$old_label"*) '
+                    f"rm -f {shlex.quote(str(old_loaded_state))}; exit 0 ;; "
+                    "esac; "
                     f"rm -f {shlex.quote(str(loaded_state))} ;;"
                 ),
                 (
@@ -286,6 +297,7 @@ def _transaction_fake_launchctl(
 ) -> tuple[Path, Path, Path]:
     call_log = tmp_path / "transaction-launchctl-calls"
     loaded_state = tmp_path / "transaction-launchctl-loaded"
+    old_loaded_state = tmp_path / "transaction-launchctl-old-loaded"
     fail_next_bootstrap = tmp_path / "transaction-fail-next-bootstrap"
     launchctl = fake_bin / "launchctl"
     launchctl.write_text(
@@ -293,6 +305,7 @@ def _transaction_fake_launchctl(
             (
                 "#!/usr/bin/env sh",
                 'operation="${CONTEXTZIP_TEST_OPERATION_ID:-unknown}"',
+                f"old_label={shlex.quote(OLD_LABEL)}",
                 (
                     f"printf '%s:%s\\n' \"$operation\" \"$*\" >> "
                     f"{shlex.quote(str(call_log))}"
@@ -305,7 +318,13 @@ def _transaction_fake_launchctl(
                 ),
                 "fi",
                 'case "$1" in',
-                f"  print) test -f {shlex.quote(str(loaded_state))} ;;",
+                (
+                    "  print) "
+                    'case "$2" in *"$old_label"*) '
+                    f"test -f {shlex.quote(str(old_loaded_state))} ;; "
+                    f"*) test -f {shlex.quote(str(loaded_state))} ;; "
+                    "esac ;;"
+                ),
                 (
                     "  bootstrap) "
                     f"if test -f {shlex.quote(str(fail_next_bootstrap))}; then "
@@ -316,6 +335,9 @@ def _transaction_fake_launchctl(
                 ),
                 (
                     "  bootout) "
+                    'case "$2" in *"$old_label"*) '
+                    f"rm -f {shlex.quote(str(old_loaded_state))}; exit 0 ;; "
+                    "esac; "
                     f"rm -f {shlex.quote(str(loaded_state))} ;;"
                 ),
                 "  *) exit 2 ;;",
@@ -1159,10 +1181,12 @@ def test_concurrent_first_installs_serialize_state_snapshot_and_commit(
     assert plist_path.exists()
     assert loaded_state.exists()
     calls = call_log.read_text(encoding="utf-8").splitlines()
-    assert [line.split(":", 1)[0] for line in calls] == [
-        "first",
-        "first",
-        "second",
+    assert calls == [
+        f"first:print gui/{os.getuid()}/{LABEL}",
+        f"first:bootstrap gui/{os.getuid()} {plist_path}",
+        f"first:print gui/{os.getuid()}/{OLD_LABEL}",
+        f"second:print gui/{os.getuid()}/{LABEL}",
+        f"second:print gui/{os.getuid()}/{OLD_LABEL}",
     ]
 
 
@@ -1518,6 +1542,41 @@ def test_install_dry_run_reports_legacy_launch_agent_cleanup(tmp_path: Path):
     assert OLD_LABEL in result.stdout
     assert str(old_plist_path) in result.stdout
     assert old_plist_path.exists()
+
+
+def test_install_dry_run_warns_legacy_service_state_is_not_queried(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    (tmp_path / "launchctl-old-loaded").touch()
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(INSTALL_SCRIPT),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--uv-path",
+            str(fake_uv),
+            "--log-dir",
+            str(tmp_path / "logs"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert "Dry run does not query loaded LaunchAgent service state" in result.stdout
+    assert OLD_LABEL in result.stdout
+    assert not call_log.exists()
 
 
 def test_install_rejects_unsafe_existing_custom_log_dir_without_changing_mode(
@@ -2020,8 +2079,11 @@ def test_install_is_noop_when_identical_and_changed_config_requires_restart(
     subprocess.run(base_command, check=True, env=env)
 
     calls_after_noop = call_log.read_text(encoding="utf-8").splitlines()
-    assert calls_after_noop[:-1] == calls_after_first_install
-    assert calls_after_noop[-1].startswith("print ")
+    assert calls_after_noop[: len(calls_after_first_install)] == calls_after_first_install
+    assert calls_after_noop[len(calls_after_first_install) :] == [
+        f"print gui/{os.getuid()}/{LABEL}",
+        f"print gui/{os.getuid()}/{OLD_LABEL}",
+    ]
     assert sum(line.startswith("bootstrap ") for line in calls_after_noop) == 1
     assert not any(line.startswith("bootout ") for line in calls_after_noop)
     assert loaded_state.exists()
@@ -2192,6 +2254,33 @@ def test_install_preserves_legacy_launch_agent_when_old_bootout_fails(
     assert (tmp_path / "launchctl-old-loaded").exists()
 
 
+def test_install_stops_legacy_launch_agent_when_old_plist_is_missing(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    (tmp_path / "launchctl-old-loaded").touch()
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    subprocess.run(
+        _install_command(
+            fake_uv=fake_uv,
+            log_dir=tmp_path / "logs",
+            launch_agents_dir=launch_agents_dir,
+        ),
+        check=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert not (tmp_path / "launchctl-old-loaded").exists()
+
+
 @pytest.mark.parametrize(
     ("signal_number", "expected_status"),
     ((signal.SIGTERM, 128 + signal.SIGTERM), (signal.SIGINT, 128 + signal.SIGINT)),
@@ -2255,8 +2344,10 @@ def test_identical_loaded_install_does_not_report_success_after_interrupt_during
     assert loaded_state.exists()
     assert plist_path.read_bytes() == previous_plist
     calls = call_log.read_text(encoding="utf-8").splitlines()
-    assert calls[:-1] == calls_after_install
-    assert calls[-1].startswith("print ")
+    assert calls[: len(calls_after_install)] == calls_after_install
+    assert calls[len(calls_after_install) :] == [
+        f"print gui/{os.getuid()}/{LABEL}",
+    ]
     assert sum(line.startswith("bootstrap ") for line in calls) == 1
     assert not any(line.startswith("bootout ") for line in calls)
     assert not lock_root.joinpath(f"{LABEL}.lock").exists()
@@ -2414,8 +2505,10 @@ def test_identical_loaded_install_exits_after_interrupt_during_candidate_cleanup
     assert loaded_state.exists()
     assert plist_path.read_bytes() == previous_plist
     calls = call_log.read_text(encoding="utf-8").splitlines()
-    assert calls[:-1] == calls_after_install
-    assert calls[-1].startswith("print ")
+    assert calls[: len(calls_after_install)] == calls_after_install
+    assert calls[len(calls_after_install) :] == [
+        f"print gui/{os.getuid()}/{LABEL}",
+    ]
     assert sum(line.startswith("bootstrap ") for line in calls) == 1
     assert not any(line.startswith("bootout ") for line in calls)
     assert not list(launch_agents_dir.glob(f".{LABEL}.candidate.*"))
@@ -2484,8 +2577,11 @@ def test_identical_loaded_success_output_uses_default_signal_disposition(
     assert loaded_state.exists()
     assert plist_path.read_bytes() == previous_plist
     calls = call_log.read_text(encoding="utf-8").splitlines()
-    assert calls[:-1] == calls_after_install
-    assert calls[-1].startswith("print ")
+    assert calls[: len(calls_after_install)] == calls_after_install
+    assert calls[len(calls_after_install) :] == [
+        f"print gui/{os.getuid()}/{LABEL}",
+        f"print gui/{os.getuid()}/{OLD_LABEL}",
+    ]
     assert sum(line.startswith("bootstrap ") for line in calls) == 1
     assert not any(line.startswith("bootout ") for line in calls)
     assert not list(launch_agents_dir.glob(f".{LABEL}.candidate.*"))
@@ -2808,6 +2904,7 @@ def test_successful_changed_install_reports_interrupt_during_commit_cleanup(
         f"{operation}:print gui/{os.getuid()}/{LABEL}",
         f"{operation}:bootout gui/{os.getuid()}/{LABEL}",
         f"{operation}:bootstrap gui/{os.getuid()} {plist_path}",
+        f"{operation}:print gui/{os.getuid()}/{OLD_LABEL}",
     ]
     assert not lock_root.joinpath(f"{LABEL}.lock").exists()
 
@@ -2875,6 +2972,7 @@ def test_committed_install_success_output_uses_default_signal_disposition(
         f"{operation}:print gui/{os.getuid()}/{LABEL}",
         f"{operation}:bootout gui/{os.getuid()}/{LABEL}",
         f"{operation}:bootstrap gui/{os.getuid()} {plist_path}",
+        f"{operation}:print gui/{os.getuid()}/{OLD_LABEL}",
     ]
     assert not lock_root.joinpath(f"{LABEL}.lock").exists()
 
@@ -4089,6 +4187,32 @@ def test_uninstall_preserves_legacy_launch_agent_when_old_bootout_fails(
     assert (tmp_path / "launchctl-old-loaded").exists()
 
 
+def test_uninstall_stops_legacy_launch_agent_when_old_plist_is_missing(
+    tmp_path: Path,
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    (tmp_path / "launchctl-old-loaded").touch()
+    launch_agents_dir = tmp_path / "Legacy LaunchAgents"
+    launch_agents_dir.mkdir()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "uninstall_sync_worker_launch_agent.sh"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+        ],
+        check=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert not (tmp_path / "launchctl-old-loaded").exists()
+
+
 def test_uninstall_dry_run_reports_legacy_launch_agent_cleanup(tmp_path: Path):
     launch_agents_dir = tmp_path / "Legacy LaunchAgents"
     launch_agents_dir.mkdir()
@@ -4110,3 +4234,31 @@ def test_uninstall_dry_run_reports_legacy_launch_agent_cleanup(tmp_path: Path):
     assert OLD_LABEL in result.stdout
     assert str(old_plist_path) in result.stdout
     assert old_plist_path.exists()
+
+
+def test_uninstall_dry_run_warns_legacy_service_state_is_not_queried(
+    tmp_path: Path,
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    (tmp_path / "launchctl-old-loaded").touch()
+    launch_agents_dir = tmp_path / "Legacy LaunchAgents"
+    launch_agents_dir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "uninstall_sync_worker_launch_agent.sh"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert "Dry run does not query loaded LaunchAgent service state" in result.stdout
+    assert OLD_LABEL in result.stdout
+    assert not call_log.exists()

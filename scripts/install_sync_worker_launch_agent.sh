@@ -129,7 +129,6 @@ migrate_legacy_launch_agent_if_present() {
   local old_plist_path="${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist"
   local old_service_target="${DOMAIN_TARGET}/${OLD_LABEL}"
   local old_service_loaded=0
-  [[ -f "${old_plist_path}" ]] || return 0
   if run_launchctl_interrupt_safe print "${old_service_target}" >/dev/null 2>&1; then
     old_service_loaded=1
   fi
@@ -687,6 +686,8 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   printf 'uv executable: %s\n' "${UV_PATH}"
   printf 'Log directory: %s\n' "${LOG_DIR}"
   printf 'Plist destination: %s\n' "${PLIST_PATH}"
+  printf 'Dry run does not query loaded LaunchAgent service state; actual install also stops %s if it is loaded.\n' \
+    "${DOMAIN_TARGET}/${OLD_LABEL}"
   if [[ -f "${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist" ]]; then
     printf 'Would boot out %s and remove %s\n' \
       "${DOMAIN_TARGET}/${OLD_LABEL}" \
