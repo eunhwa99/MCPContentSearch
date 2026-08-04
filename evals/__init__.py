@@ -1,1 +1,1 @@
-"""Deterministic local evaluation helpers for ContextWiki."""
+"""Deterministic local evaluation helpers for ContextZip."""

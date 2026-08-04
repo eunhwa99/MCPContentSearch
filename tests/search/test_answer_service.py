@@ -71,7 +71,7 @@ def test_answer_service_returns_insufficient_evidence_without_grounding():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
+    answer = asyncio.run(service.answer_with_citations("What is ContextZip?", include_debug=True))
 
     assert answer["evidence_status"] == "insufficient"
     assert answer["citations"] == []
@@ -83,15 +83,15 @@ def test_answer_service_uses_only_returned_context_as_citations():
         document_id="doc-1",
         source_id="source_fake",
         source_type="notion",
-        title="ContextWiki",
+        title="ContextZip",
         url="https://notion.so/doc-1",
-        path="ContextWiki",
+        path="ContextZip",
         line_start=12,
         line_end=18,
         version_id="page-version-1",
         score=0.92,
-        preview="ContextWiki is an MCP knowledge backend.",
-        text="ContextWiki is an MCP knowledge backend.",
+        preview="ContextZip is an MCP knowledge backend.",
+        text="ContextZip is an MCP knowledge backend.",
     )
     service = CitationAnswerService(
         context_search=FakeContextSearch([result]),
@@ -99,16 +99,16 @@ def test_answer_service_uses_only_returned_context_as_citations():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
+    answer = asyncio.run(service.answer_with_citations("What is ContextZip?", include_debug=True))
 
     assert answer["evidence_status"] == "grounded"
-    assert answer["answer_mode"] == "contextwiki_debug"
+    assert answer["answer_mode"] == "context_zip_debug"
     assert answer["citations"] == [
         {
             "chunk_id": "chunk-1",
-            "title": "ContextWiki",
+            "title": "ContextZip",
             "url": "https://notion.so/doc-1",
-            "path": "ContextWiki",
+            "path": "ContextZip",
             "line_start": 12,
             "line_end": 18,
             "version_id": "page-version-1",
@@ -127,10 +127,10 @@ def test_answer_service_always_requests_search_debug_for_internal_grounding():
         document_id="doc-1",
         source_id="source_fake",
         source_type="notion",
-        title="ContextWiki",
+        title="ContextZip",
         score=0.92,
-        preview="ContextWiki is an MCP knowledge backend.",
-        text="ContextWiki is an MCP knowledge backend.",
+        preview="ContextZip is an MCP knowledge backend.",
+        text="ContextZip is an MCP knowledge backend.",
     )
     context_search = RecordingContextSearch([result])
     service = CitationAnswerService(
@@ -139,8 +139,8 @@ def test_answer_service_always_requests_search_debug_for_internal_grounding():
         min_results=1,
     )
 
-    asyncio.run(service.answer_with_citations("What is ContextWiki?"))
-    asyncio.run(service.answer_with_citations("What is ContextWiki?", include_debug=True))
+    asyncio.run(service.answer_with_citations("What is ContextZip?"))
+    asyncio.run(service.answer_with_citations("What is ContextZip?", include_debug=True))
 
     assert context_search.calls[0]["include_debug"] is False
     assert context_search.calls[0]["include_internal_metadata"] is True
@@ -154,15 +154,15 @@ def test_answer_service_rejects_high_score_context_without_query_terms():
         document_id="doc-1",
         source_id="source_github",
         source_type="github",
-        title="eunhwa99/MCPContentSearch/README.md",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/README.md",
+        title="eunhwa99/context-zip/README.md",
+        url="https://github.com/eunhwa99/context-zip/blob/main/README.md",
         path="README.md",
         line_start=1,
         line_end=20,
         version_id="commit-1",
         score=0.92,
-        preview="ContextWiki project overview.",
-        text="ContextWiki project overview.",
+        preview="ContextZip project overview.",
+        text="ContextZip project overview.",
     )
     service = CitationAnswerService(
         context_search=FakeContextSearch([result]),
@@ -185,7 +185,7 @@ def test_answer_service_requires_strong_anchor_for_neetcode_queries():
         source_id="source_github",
         source_type="github",
         title="Graph utilities",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/search/graph.py",
+        url="https://github.com/eunhwa99/context-zip/blob/main/search/graph.py",
         path="search/graph.py",
         line_start=1,
         line_end=20,
@@ -215,7 +215,7 @@ def test_answer_service_matches_common_korean_query_terms_to_english_context():
         source_id="source_github",
         source_type="github",
         title="Project Structure",
-        url="https://github.com/eunhwa99/MCPContentSearch#project-structure",
+        url="https://github.com/eunhwa99/context-zip#project-structure",
         path="README.md",
         line_start=1,
         line_end=20,
@@ -272,7 +272,7 @@ def test_answer_service_treats_broad_usage_terms_as_optional_hints():
         source_id="source_github",
         source_type="github",
         title="AWS Overview",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/aws-overview.md",
+        url="https://github.com/eunhwa99/context-zip/blob/main/docs/aws-overview.md",
         path="docs/aws-overview.md",
         line_start=1,
         line_end=20,
@@ -300,7 +300,7 @@ def test_answer_service_uses_effective_term_groups_from_search_debug():
         source_id="source_github",
         source_type="github",
         title="EC2 setup guide",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/ec2-guide.md",
+        url="https://github.com/eunhwa99/context-zip/blob/main/docs/ec2-guide.md",
         path="docs/ec2-guide.md",
         line_start=1,
         line_end=20,
@@ -940,15 +940,15 @@ def test_answer_service_preserves_raw_effective_term_groups_for_grounding():
         document_id="doc-debug-guide",
         source_id="source_github",
         source_type="github",
-        title="ContextWiki context-wiki-debug guide",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/contextwiki-debug-guide.md",
+        title="ContextZip context-wiki-debug guide",
+        url="https://github.com/eunhwa99/context-zip/blob/main/docs/context_zip-debug-guide.md",
         path="docs/context-wiki-debug-guide.md",
         line_start=1,
         line_end=20,
         version_id="commit-1",
         score=0.92,
-        preview="ContextWiki context-wiki-debug guide and console workflow.",
-        text="ContextWiki context-wiki-debug guide and console workflow.",
+        preview="ContextZip context-wiki-debug guide and console workflow.",
+        text="ContextZip context-wiki-debug guide and console workflow.",
     )
 
     class RedactedDisplayContextSearch(FakeContextSearch):
@@ -993,12 +993,12 @@ def test_answer_service_visible_answer_keeps_benign_repo_slugs():
         document_id="doc-debug-guide",
         source_id="source_github",
         source_type="github",
-        title="ContextWiki context-wiki-debug guide",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/contextwiki-debug-guide.md",
+        title="ContextZip context-wiki-debug guide",
+        url="https://github.com/eunhwa99/context-zip/blob/main/docs/context_zip-debug-guide.md",
         path="docs/context-wiki-debug-guide.md",
         score=0.92,
-        preview="ContextWiki context-wiki-debug guide and console workflow.",
-        text="ContextWiki context-wiki-debug guide and console workflow.",
+        preview="ContextZip context-wiki-debug guide and console workflow.",
+        text="ContextZip context-wiki-debug guide and console workflow.",
     )
     service = CitationAnswerService(
         context_search=FakeContextSearch([result]),
@@ -1019,7 +1019,7 @@ def test_answer_service_keeps_original_topical_constraint_from_grounding_state()
         source_id="source_github",
         source_type="github",
         title="Neetcode arrays docs",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/docs/neetcode-arrays.md",
+        url="https://github.com/eunhwa99/context-zip/blob/main/docs/neetcode-arrays.md",
         path="docs/neetcode-arrays.md",
         line_start=1,
         line_end=20,
@@ -1072,7 +1072,7 @@ def test_answer_service_adds_debug_markdown_for_insufficient_evidence():
     answer = asyncio.run(service.answer_with_citations("AWS에 적은 문서를 찾아줘", include_debug=True))
 
     assert answer["evidence_status"] == "insufficient"
-    assert answer["answer_mode"] == "contextwiki_debug"
+    assert answer["answer_mode"] == "context_zip_debug"
     assert "## Query" in answer["debug_markdown"]
     assert "amazon web services" in answer["debug_markdown"]
 
@@ -1164,12 +1164,12 @@ def test_answer_service_defaults_to_non_debug_payload():
         document_id="doc-1",
         source_id="source_fake",
         source_type="notion",
-        title="ContextWiki",
+        title="ContextZip",
         url="https://notion.so/doc-1",
-        path="ContextWiki",
+        path="ContextZip",
         score=0.92,
-        preview="ContextWiki is an MCP knowledge backend.",
-        text="ContextWiki is an MCP knowledge backend.",
+        preview="ContextZip is an MCP knowledge backend.",
+        text="ContextZip is an MCP knowledge backend.",
     )
     service = CitationAnswerService(
         context_search=FakeContextSearch([result]),
@@ -1177,7 +1177,7 @@ def test_answer_service_defaults_to_non_debug_payload():
         min_results=1,
     )
 
-    answer = asyncio.run(service.answer_with_citations("What is ContextWiki?"))
+    answer = asyncio.run(service.answer_with_citations("What is ContextZip?"))
 
     assert answer["evidence_status"] == "grounded"
     assert "debug" not in answer
@@ -1408,7 +1408,7 @@ def test_answer_service_does_not_redact_benign_secret_management_phrases():
 
 
 def test_answer_service_ground_neetcode_korean_query_from_github_repository_metadata(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1458,7 +1458,7 @@ def test_answer_service_ground_neetcode_korean_query_from_github_repository_meta
 
 
 def test_answer_service_treats_readme_as_document_for_neetcode_korean_query(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1508,7 +1508,7 @@ def test_answer_service_treats_readme_as_document_for_neetcode_korean_query(tmp_
 
 
 def test_answer_service_ignores_common_request_words_for_specific_repo_query(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1613,7 +1613,7 @@ def test_answer_service_rejects_github_docs_helper_code_for_document_query():
 
 
 def test_answer_service_ignores_korean_search_filler_for_specific_repo_query(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1670,7 +1670,7 @@ def test_answer_service_ignores_korean_search_filler_for_specific_repo_query(tmp
 def test_answer_service_rejects_partial_github_metadata_match_for_specific_repo_query(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1722,7 +1722,7 @@ def test_answer_service_rejects_partial_github_metadata_match_for_specific_repo_
 def test_answer_service_rejects_neetcode_docs_query_for_code_only_metadata_match(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1774,7 +1774,7 @@ def test_answer_service_rejects_neetcode_docs_query_for_code_only_metadata_match
 def test_answer_service_rejects_neetcode_docs_query_when_code_text_mentions_documentation(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1826,7 +1826,7 @@ def test_answer_service_rejects_neetcode_docs_query_when_code_text_mentions_docu
 def test_answer_service_rejects_neetcode_graph_docs_query_for_generic_readme(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1906,7 +1906,7 @@ def test_answer_service_rejects_body_only_neetcode_anchor_from_unrelated_readme(
 def test_answer_service_rejects_no_space_neetcode_graph_docs_query_for_generic_readme(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1958,7 +1958,7 @@ def test_answer_service_rejects_no_space_neetcode_graph_docs_query_for_generic_r
 def test_answer_service_accepts_neetcode_graph_docs_query_for_matching_readme(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2010,7 +2010,7 @@ def test_answer_service_accepts_neetcode_graph_docs_query_for_matching_readme(
 def test_answer_service_ignores_polite_request_words_for_neetcode_docs_query(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2060,7 +2060,7 @@ def test_answer_service_ignores_polite_request_words_for_neetcode_docs_query(
 
 
 def test_answer_service_accepts_generic_problem_term_for_strong_anchor_query(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",

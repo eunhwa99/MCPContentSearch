@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.eunaverse.contextwiki.sync-worker"
+LABEL="com.eunaverse.context-zip.sync-worker"
+OLD_LABEL="com.eunaverse.context""wiki.sync-worker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=scripts/sync_worker_launch_agent_lock.sh
 source "${SCRIPT_DIR}/sync_worker_launch_agent_lock.sh"
-USER_HOME="${CONTEXTWIKI_LAUNCH_AGENT_HOME:-${HOME:-}}"
+USER_HOME="${CONTEXTZIP_LAUNCH_AGENT_HOME:-${HOME:-}}"
 LAUNCH_AGENTS_DIR=""
 DRY_RUN=0
 
@@ -55,11 +56,17 @@ if [[ "${LAUNCH_AGENTS_DIR}" != /* ]]; then
   LAUNCH_AGENTS_DIR="$(pwd -P)/${LAUNCH_AGENTS_DIR}"
 fi
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
+OLD_PLIST_PATH="${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist"
 
 DOMAIN_TARGET="gui/$(id -u)"
 SERVICE_TARGET="${DOMAIN_TARGET}/${LABEL}"
+OLD_SERVICE_TARGET="${DOMAIN_TARGET}/${OLD_LABEL}"
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   printf 'Would boot out %s and remove %s\n' "${SERVICE_TARGET}" "${PLIST_PATH}"
+  if [[ -f "${OLD_PLIST_PATH}" ]]; then
+    printf 'Would boot out %s and remove %s\n' \
+      "${OLD_SERVICE_TARGET}" "${OLD_PLIST_PATH}"
+  fi
   exit 0
 fi
 
@@ -70,6 +77,15 @@ command -v launchctl >/dev/null 2>&1 || {
 sync_worker_launch_agent_acquire_lock "${LABEL}"
 if launchctl print "${SERVICE_TARGET}" >/dev/null 2>&1; then
   launchctl bootout "${SERVICE_TARGET}"
+fi
+if [[ -f "${OLD_PLIST_PATH}" ]]; then
+  if launchctl print "${OLD_SERVICE_TARGET}" >/dev/null 2>&1 &&
+    ! launchctl bootout "${OLD_SERVICE_TARGET}"; then
+    printf 'error: could not stop legacy LaunchAgent service; preserved legacy plist: %s\n' \
+      "${OLD_PLIST_PATH}" >&2
+    exit 1
+  fi
+  rm -f "${OLD_PLIST_PATH}"
 fi
 if [[ -f "${PLIST_PATH}" ]]; then
   rm -f "${PLIST_PATH}"

@@ -1,8 +1,8 @@
 FROM python:3.13.9-slim
 
-LABEL org.opencontainers.image.title="ContextWiki" \
+LABEL org.opencontainers.image.title="ContextZip" \
     org.opencontainers.image.description="Evidence-first MCP retrieval backend" \
-    org.opencontainers.image.source="https://github.com/eunaverse/MCPContentSearch"
+    org.opencontainers.image.source="https://github.com/eunaverse/context-zip"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,7 +18,7 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir uv==0.9.5
 RUN useradd --create-home --home-dir /home/appuser --shell /bin/bash appuser
-RUN mkdir -p /home/appuser/.mcp_content_search
+RUN mkdir -p /home/appuser/.context-zip
 
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev

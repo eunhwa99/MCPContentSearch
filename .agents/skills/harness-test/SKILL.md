@@ -1,6 +1,6 @@
 ---
 name: harness-test
-description: Test and focused verification lane for MCPContentSearch changes, including failure classification and retry routing.
+description: Test and focused verification lane for context-zip changes, including failure classification and retry routing.
 ---
 
 # Harness Test
@@ -95,7 +95,7 @@ Preferred checks by change type:
   evidence when `./scripts/verify_all.sh` already executed that matching
   surface; otherwise run the focused matching command such as
   `uv run pytest -q tests/evals` or
-  `PYTHONPATH=. python scripts/run_contextwiki_eval.py`. If no matching
+  `PYTHONPATH=. python scripts/run_context_zip_eval.py`. If no matching
   retained local eval surface exists yet, extend an existing retained eval
   surface during coverage work and satisfy the eval gate only after the
   full-suite gate, before improvement after/delta (or an explicit `n/a` rationale), smoke, or review. Features outside the current

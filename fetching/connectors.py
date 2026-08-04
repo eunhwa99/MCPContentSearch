@@ -193,7 +193,7 @@ class GitHubSourceConnector(SourceConnector):
         )
         self.disabled_reason = (
             "Source source_github is disabled because no GitHub repositories are "
-            "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+            "configured in CONTEXTZIP_GITHUB_REPOSITORIES."
             if not self.source.enabled
             else ""
         )
@@ -289,7 +289,7 @@ class ObsidianSourceConnector(SourceConnector):
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
             stale_cleanup_disabled_reason=_OBSIDIAN_DISABLED_REASON,
         )
@@ -355,7 +355,7 @@ def build_source_registry(
     github_token: str = "",
     github_http_client=None,
 ) -> SourceRegistry:
-    """Build the production source registry with retained ContextWiki connectors."""
+    """Build the production source registry with retained ContextZip connectors."""
     return SourceRegistry(
         [
             NotionSourceConnector(notion_api_key, config),

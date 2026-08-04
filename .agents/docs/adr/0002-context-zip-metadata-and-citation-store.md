@@ -1,4 +1,4 @@
-# ADR 0002: ContextWiki Metadata and Citation Store
+# ADR 0002: ContextZip Metadata and Citation Store
 
 ## Status
 
@@ -10,7 +10,7 @@ accepted
 
 ## Context
 
-ContextWiki needs more operational state than Chroma metadata alone can safely provide. The MVP must track sources, sync jobs, document hashes, chunk metadata, and citation fetch data while preserving the existing Chroma/LlamaIndex vector search path.
+ContextZip needs more operational state than Chroma metadata alone can safely provide. The MVP must track sources, sync jobs, document hashes, chunk metadata, and citation fetch data while preserving the existing Chroma/LlamaIndex vector search path.
 
 The system also needs deterministic tests that do not inspect or mutate local user Chroma data and do not require live Notion/Tistory credentials.
 
@@ -43,6 +43,6 @@ Add a SQLite metadata store beside Chroma:
 
 ## Related
 
-- `.agents/docs/adr/0001-layered-mcp-content-search-architecture.md`
-- `docs/plan/2026-05-20-contextwiki-roadmap.md`
-- `docs/plan/2026-05-20-contextwiki-mvp-a.md`
+- `.agents/docs/adr/0001-layered-context-zip-architecture.md`
+- `docs/plan/2026-05-20-context_zip-roadmap.md`
+- `docs/plan/2026-05-20-context_zip-mvp-a.md`

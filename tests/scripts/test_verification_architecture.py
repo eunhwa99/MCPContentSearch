@@ -8,8 +8,8 @@ def test_verify_all_defines_explicit_verification_layers():
     assert 'export IS_TESTING="${IS_TESTING:-1}"' in script
     assert 'uv run --locked python -m compileall "${RETAINED_PACKAGES[@]}"' in script
     assert 'tests/contracts/test_public_mcp_contracts.py' in script
-    assert "scripts/run_contextwiki_eval.py" in script
-    assert "artifacts/contextwiki-evals" in script
+    assert "scripts/run_context_zip_eval.py" in script
+    assert "artifacts/context-zip-evals" in script
 
 
 def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
@@ -19,7 +19,7 @@ def test_ci_runs_contracts_evals_and_functional_gate_with_testing_env():
     assert "Run public MCP contract tests" in workflow
     assert 'IS_TESTING: "1"' in workflow
     assert "tests/contracts/test_public_mcp_contracts.py" in workflow
-    assert "scripts/run_contextwiki_eval.py" in workflow
+    assert "scripts/run_context_zip_eval.py" in workflow
     assert "./scripts/verify_functional_e2e.sh" in workflow
 
 
@@ -27,7 +27,7 @@ def test_ci_artifact_upload_is_guarded_when_eval_output_is_missing():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "hashFiles('artifacts/contextwiki-evals/**') != ''" in workflow
+    assert "hashFiles('artifacts/context-zip-evals/**') != ''" in workflow
     assert "if-no-files-found: warn" in workflow
 
 
@@ -57,7 +57,7 @@ def test_readme_docker_worker_uses_bounded_local_log_driver():
     repo_root = Path(__file__).resolve().parents[2]
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
 
-    assert "docker run -d --name contextwiki-sync-worker" in readme
+    assert "docker run -d --name context-zip-sync-worker" in readme
     assert "--log-driver local" in readme
     assert "--log-opt max-size=5m" in readme
     assert "--log-opt max-file=3" in readme

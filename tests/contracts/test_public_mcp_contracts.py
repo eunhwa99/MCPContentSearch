@@ -41,7 +41,7 @@ class FakeSourceRegistry:
                 source_type=SourceType.OBSIDIAN,
                 name="Obsidian",
                 enabled=True,
-                auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+                auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
                 sync_status=SyncStatus.SUCCEEDED,
                 last_synced_at="2026-06-15T00:00:00+00:00",
             ),
@@ -88,8 +88,8 @@ class FakeMetadataStore:
             chunk_id="chunk-1",
             document_id="doc-1",
             source_id="source_github",
-            title="ContextWiki contracts",
-            text="ContextWiki validates MCP contracts through real call_tool paths.",
+            title="ContextZip contracts",
+            text="ContextZip validates MCP contracts through real call_tool paths.",
             url="https://example.com/contracts",
             path="docs/contracts.md",
             chunk_index=0,
@@ -100,8 +100,8 @@ class FakeMetadataStore:
             document_id="doc-1",
             external_id="doc-1",
             source_id="source_github",
-            title="ContextWiki contracts",
-            content="ContextWiki validates MCP contracts through real call_tool paths.",
+            title="ContextZip contracts",
+            content="ContextZip validates MCP contracts through real call_tool paths.",
             url="https://example.com/contracts",
             canonical_url="https://example.com/contracts",
             platform="GitHub",
@@ -265,7 +265,7 @@ class FakeContextSearchService:
         debug_payload = {}
         if include_debug:
             debug_payload = {
-                "retrieval_queries": ["ContextWiki contracts"],
+                "retrieval_queries": ["ContextZip contracts"],
                 "selected_results": ["chunk-1"],
             }
         return {
@@ -276,10 +276,10 @@ class FakeContextSearchService:
                     "document_id": "doc-1",
                     "source_id": "source_github",
                     "source_type": "github",
-                    "title": "ContextWiki contracts",
+                    "title": "ContextZip contracts",
                     "score": 0.98,
-                    "preview": "ContextWiki validates MCP contracts through real call_tool paths.",
-                    "text": "ContextWiki validates MCP contracts through real call_tool paths.",
+                    "preview": "ContextZip validates MCP contracts through real call_tool paths.",
+                    "text": "ContextZip validates MCP contracts through real call_tool paths.",
                 }
             ],
             "debug": debug_payload,
@@ -301,11 +301,11 @@ class FakeContextSearchService:
                     "chunk_id": "chunk-1",
                     "source_id": "source_github",
                     "source_type": "github",
-                    "title": "ContextWiki contracts",
+                    "title": "ContextZip contracts",
                     "url": "https://example.com/contracts",
                     "path": "docs/contracts.md",
                     "score": 0.98,
-                    "matched_context": "ContextWiki validates MCP contracts through real call_tool paths.",
+                    "matched_context": "ContextZip validates MCP contracts through real call_tool paths.",
                 }
             ],
         }
@@ -315,14 +315,14 @@ class FakeAnswerService:
     async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         payload = {
             "question": question,
-            "answer": "ContextWiki exposes retained MCP tools and validates them through real FastMCP calls.",
+            "answer": "ContextZip exposes retained MCP tools and validates them through real FastMCP calls.",
             "evidence_status": "grounded",
             "citations": [
                 {
                     "chunk_id": "chunk-1",
                     "document_id": "doc-1",
                     "source_id": "source_github",
-                    "title": "ContextWiki contracts",
+                    "title": "ContextZip contracts",
                 }
             ],
             "used_chunks": [
@@ -453,7 +453,7 @@ def test_date_filters_and_document_listing_have_typed_real_fastmcp_schemas():
 
 def test_real_fastmcp_annotations_match_metadata_store_write_behavior(tmp_path):
     source_registry = FakeSourceRegistry()
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     mcp = FastMCP("tool-annotation-contract")
     register_tools(
         mcp,
@@ -502,7 +502,7 @@ def test_typed_date_filters_and_list_documents_use_real_fastmcp_calls():
         mcp,
         "search_documents",
         {
-            "query": "ContextWiki contracts",
+            "query": "ContextZip contracts",
             "filters": {
                 "source_ids": ["source_github"],
                 "published_from": "2026-06-01T00:00:00Z",
@@ -576,7 +576,7 @@ def test_real_fastmcp_normalizes_compatible_source_filter_shapes(
         mcp,
         "search_context",
         {
-            "query": "ContextWiki contracts",
+            "query": "ContextZip contracts",
             "filters": filters,
             "top_k": 3,
         },
@@ -596,7 +596,7 @@ def test_real_fastmcp_rejects_unknown_filter_keys():
             build_contract_mcp().call_tool(
                 "search_context",
                 {
-                    "query": "ContextWiki contracts",
+                    "query": "ContextZip contracts",
                     "filters": {"tag": "docs"},
                 },
             )
@@ -612,7 +612,7 @@ def test_real_fastmcp_rejects_utc_overflow_filter_without_raw_backend_error():
             build_contract_mcp().call_tool(
                 "search_context",
                 {
-                    "query": "ContextWiki contracts",
+                    "query": "ContextZip contracts",
                     "filters": {
                         "published_from": "9999-12-31T23:59:59-01:00",
                     },
@@ -633,10 +633,10 @@ def test_real_fastmcp_hides_secret_like_invalid_filter_input():
             build_contract_mcp().call_tool(
                 "search_context",
                 {
-                    "query": "ContextWiki contracts",
+                    "query": "ContextZip contracts",
                     "filters": {
                         "published_from": (
-                            "/Users/eunhwa/private/contextwiki.sqlite3"
+                            "/Users/eunhwa/private/context_zip.sqlite3"
                             "?token=super-secret-value"
                         ),
                     },
@@ -684,7 +684,7 @@ def test_real_fastmcp_redacts_secret_like_non_string_sync_status_ids(
 
 
 def test_real_fastmcp_unions_singular_and_plural_source_filters(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     source_registry = FakeSourceRegistry()
     documents = []
     for source in source_registry.list_sources():
@@ -693,8 +693,8 @@ def test_real_fastmcp_unions_singular_and_plural_source_filters(tmp_path):
         document = DocumentModel(
             id=document_id,
             source_id=source.source_id,
-            title=f"ContextWiki {source.name}",
-            content="ContextWiki union source filtering evidence.",
+            title=f"ContextZip {source.name}",
+            content="ContextZip union source filtering evidence.",
             url=f"https://example.com/{document_id}",
             platform=source.source_type.value,
         )
@@ -726,7 +726,7 @@ def test_real_fastmcp_unions_singular_and_plural_source_filters(tmp_path):
     search_payload = call_tool_json(
         mcp,
         "search_context",
-        {"query": "ContextWiki", "filters": filters, "top_k": 5},
+        {"query": "ContextZip", "filters": filters, "top_k": 5},
     )
     list_payload = call_tool_json(
         mcp,
@@ -751,7 +751,7 @@ def test_real_fastmcp_rejects_reversed_date_filter_ranges(prefix):
             build_contract_mcp().call_tool(
                 "search_context",
                 {
-                    "query": "ContextWiki contracts",
+                    "query": "ContextZip contracts",
                     "filters": {
                         f"{prefix}_from": "2026-07-02T00:00:00Z",
                         f"{prefix}_to": "2026-07-01T00:00:00Z",
@@ -771,7 +771,7 @@ def test_real_fastmcp_rejects_unsupported_document_search_sort():
             build_contract_mcp().call_tool(
                 "search_documents",
                 {
-                    "query": "ContextWiki contracts",
+                    "query": "ContextZip contracts",
                     "sort_by": "created_at",
                 },
             )
@@ -801,7 +801,7 @@ def test_real_fastmcp_rejects_invalid_document_cursor_safely(tmp_path):
     mcp = FastMCP("invalid-document-cursor-contract")
     register_tools(
         mcp,
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
     )
 
     with pytest.raises(ToolError) as exc_info:
@@ -817,7 +817,7 @@ def test_real_fastmcp_rejects_invalid_document_cursor_safely(tmp_path):
 
 
 def test_real_fastmcp_rejects_structurally_valid_forged_cursor_anchor(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id in ("a", "b", "c"):
         store.upsert_document(
             DocumentModel(
@@ -869,7 +869,7 @@ def test_real_fastmcp_redacts_unexpected_list_documents_backend_errors():
     class FailingListMetadataStore(FakeMetadataStore):
         def list_documents(self, **_kwargs):
             raise RuntimeError(
-                "backend failed at /Users/eunhwa/private/contextwiki.sqlite3 "
+                "backend failed at /Users/eunhwa/private/context_zip.sqlite3 "
                 "with token=super-secret-value"
             )
 
@@ -894,7 +894,7 @@ def test_real_fastmcp_redacts_list_documents_source_filter_lookup_errors():
     class FailingSourceLookupMetadataStore:
         def get_source(self, _source_id):
             raise RuntimeError(
-                "source lookup failed at /Users/eunhwa/private/contextwiki.sqlite3 "
+                "source lookup failed at /Users/eunhwa/private/context_zip.sqlite3 "
                 "with token=super-secret-value"
             )
 
@@ -1179,26 +1179,26 @@ def test_search_context_contract_uses_real_fastmcp_call_tool():
     default_payload = call_tool_json(
         build_contract_mcp(),
         "search_context",
-        {"query": "ContextWiki contracts", "top_k": 3},
+        {"query": "ContextZip contracts", "top_k": 3},
     )
     payload = call_tool_json(
         build_contract_mcp(),
         "search_context",
-        {"query": "ContextWiki contracts", "top_k": 3, "include_debug": True},
+        {"query": "ContextZip contracts", "top_k": 3, "include_debug": True},
     )
 
-    assert default_payload["query"] == "ContextWiki contracts"
+    assert default_payload["query"] == "ContextZip contracts"
     assert default_payload["debug"] == {}
-    assert payload["query"] == "ContextWiki contracts"
+    assert payload["query"] == "ContextZip contracts"
     assert payload["results"][0]["chunk_id"] == "chunk-1"
-    assert payload["debug"]["retrieval_queries"] == ["ContextWiki contracts"]
+    assert payload["debug"]["retrieval_queries"] == ["ContextZip contracts"]
 
 
 def test_search_context_no_matching_sources_keeps_public_debug_contract():
     payload = call_tool_json(
         build_contract_mcp(),
         "search_context",
-        {"query": "ContextWiki contracts", "filters": {"source_id": "source_missing"}, "top_k": 3},
+        {"query": "ContextZip contracts", "filters": {"source_id": "source_missing"}, "top_k": 3},
     )
 
     assert payload["results"] == []
@@ -1212,13 +1212,13 @@ def test_search_documents_contract_uses_real_fastmcp_call_tool():
     payload = call_tool_json(
         build_contract_mcp(),
         "search_documents",
-        {"query": "ContextWiki contracts", "top_k": 3},
+        {"query": "ContextZip contracts", "top_k": 3},
     )
 
-    assert payload["query"] == "ContextWiki contracts"
+    assert payload["query"] == "ContextZip contracts"
     assert payload["results"][0]["document_id"] == "doc-1"
     assert payload["results"][0]["matched_context"] == (
-        "ContextWiki validates MCP contracts through real call_tool paths."
+        "ContextZip validates MCP contracts through real call_tool paths."
     )
     assert "preview" not in payload["results"][0]
 

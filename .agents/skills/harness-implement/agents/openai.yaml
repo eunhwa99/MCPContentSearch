@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Implement"
-  short_description: "Implement scoped MCPContentSearch changes"
+  short_description: "Implement scoped context-zip changes"
   default_prompt: "$harness-implement를 사용해 plan 또는 plan-exempt task context를 따르고, 기록된 pre-production RED 증거를 확인한 뒤 가장 작은 GREEN production change를 적용하세요."

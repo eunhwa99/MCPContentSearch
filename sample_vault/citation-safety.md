@@ -4,7 +4,7 @@ title: Citation Safety
 
 # Citation Safety
 
-ContextWiki prevents stale citations by validating retrieved chunks against
+ContextZip prevents stale citations by validating retrieved chunks against
 SQLite metadata before returning them as evidence.
 
 If an old vector remains in Chroma after source content changed, the stale

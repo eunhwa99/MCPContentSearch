@@ -99,7 +99,7 @@ embedding provider.
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
 - `.agents/docs/adr/0007-sync-source-background-launch-contract.md`
 - `.agents/docs/adr/0009-exact-sync-job-status-observation.md`

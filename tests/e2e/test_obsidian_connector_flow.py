@@ -20,9 +20,9 @@ from storage.metadata_store import MetadataStore
 pytestmark = pytest.mark.e2e
 
 OBSIDIAN_ENV_VARS = (
-    "CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
-    "CONTEXTWIKI_OBSIDIAN_MAX_FILES",
-    "CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES",
+    "CONTEXTZIP_OBSIDIAN_VAULT_PATH",
+    "CONTEXTZIP_OBSIDIAN_MAX_FILES",
+    "CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES",
 )
 
 
@@ -87,7 +87,7 @@ def _obsidian_service(tmp_path, vault, **config_overrides):
     connector = ObsidianSourceConnector(
         AppConfig(obsidian_vault_path=vault, **config_overrides)
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([connector])
     ingestion = IngestionService(
@@ -224,7 +224,7 @@ def test_obsidian_incomplete_snapshot_does_not_tombstone_active_notes(tmp_path):
         },
     )
     config = AppConfig(obsidian_vault_path=vault)
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     first_connector = ObsidianSourceConnector(config)
     first_service = IngestionService(
@@ -261,7 +261,7 @@ def test_obsidian_incomplete_snapshot_does_not_tombstone_active_notes(tmp_path):
 def test_obsidian_disabled_after_missing_vault_does_not_tombstone_active_notes(tmp_path):
     vault = _make_vault(tmp_path, {"keep.md": "This note stays active."})
     config = AppConfig(obsidian_vault_path=vault)
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     first_service = IngestionService(
         metadata_store=store,
@@ -295,7 +295,7 @@ def test_obsidian_disabled_after_missing_vault_does_not_tombstone_active_notes(t
 
 def test_obsidian_file_limit_failure_does_not_tombstone_active_notes(tmp_path):
     vault = _make_vault(tmp_path, {"keep.md": "This note stays active."})
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     first_connector = ObsidianSourceConnector(
         AppConfig(obsidian_vault_path=vault, obsidian_max_files=10)
@@ -337,7 +337,7 @@ def test_obsidian_visible_symlinked_note_failure_does_not_tombstone_active_note(
 ):
     vault = _make_vault(tmp_path, {"keep.md": "This note starts as a real file."})
     config = AppConfig(obsidian_vault_path=vault)
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     first_connector = ObsidianSourceConnector(config)
     first_service = IngestionService(

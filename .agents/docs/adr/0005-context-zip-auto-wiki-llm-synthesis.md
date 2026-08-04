@@ -1,4 +1,4 @@
-# ADR 0005: ContextWiki Auto Wiki LLM Synthesis Boundary
+# ADR 0005: ContextZip Auto Wiki LLM Synthesis Boundary
 
 ## Status
 
@@ -14,7 +14,7 @@ context for the removed Auto Wiki LLM synthesis boundary.
 
 ## Context
 
-Phase C adds Auto Wiki generation over active ContextWiki evidence. The deterministic
+Phase C adds Auto Wiki generation over active ContextZip evidence. The deterministic
 path can generate citation-backed Markdown locally, but users may want more
 natural prose and structure when an LLM provider is available.
 
@@ -26,7 +26,7 @@ retrieved chunk text and source metadata outside the local process.
 ## Decision
 
 Auto Wiki LLM synthesis is opt-in. The application only builds an external LLM
-synthesizer when `CONTEXTWIKI_WIKI_LLM_ENABLED=true`, the configured provider is
+synthesizer when `CONTEXTZIP_WIKI_LLM_ENABLED=true`, the configured provider is
 supported, and the runtime API key is available through the configured
 environment variable. The initial provider is OpenAI, implemented behind
 `wiki.synthesis.OpenAIWikiSynthesizer` and wired into `WikiGenerationService` as
@@ -74,7 +74,7 @@ that records provider, source-data, cost, and rollback scope.
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0001-layered-mcp-content-search-architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
+- `.agents/docs/adr/0001-layered-context-zip-architecture.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
 - `wiki/service.py`
 - `wiki/synthesis.py`

@@ -1,6 +1,6 @@
 ---
 name: harness-engineering
-description: Orchestrates MCPContentSearch harness work for implementation, fixes, refactors, tests, docs, planning, review gates, retry loops, and PR delivery.
+description: Orchestrates context-zip harness work for implementation, fixes, refactors, tests, docs, planning, review gates, retry loops, and PR delivery.
 ---
 
 # Harness Engineering
@@ -176,7 +176,7 @@ behavior before production code.
 
 Use the current local eval surfaces when they apply, including deterministic
 eval tests under `tests/evals` such as `uv run pytest -q tests/evals` and
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
+`PYTHONPATH=. python scripts/run_context_zip_eval.py`. Satisfy the matching
 eval gate only after `./scripts/verify_all.sh` succeeds and before improvement
 after/delta (or an explicit `n/a` rationale), functional smoke, or review; do
 not run matching eval during focused GREEN. Prefer

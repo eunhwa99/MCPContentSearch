@@ -25,7 +25,8 @@ MANAGEMENT_SCRIPTS = (
 OPERATION_LOCK_HELPER = (
     REPO_ROOT / "scripts" / "sync_worker_launch_agent_lock.sh"
 )
-LABEL = "com.eunaverse.contextwiki.sync-worker"
+LABEL = "com.eunaverse.context-zip.sync-worker"
+OLD_LABEL = "com.eunaverse.context" + "wiki.sync-worker"
 SENSITIVE_TEST_ENV_KEY_FRAGMENTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
@@ -72,15 +73,24 @@ def _fake_executable(path: Path) -> Path:
 def _fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path]:
     call_log = tmp_path / "launchctl-calls"
     loaded_state = tmp_path / "launchctl-loaded"
+    old_loaded_state = tmp_path / "launchctl-old-loaded"
     fail_next_bootstrap = tmp_path / "launchctl-fail-next-bootstrap"
+    fail_old_bootout = tmp_path / "launchctl-fail-old-bootout"
     launchctl = fake_bin / "launchctl"
     launchctl.write_text(
         "\n".join(
             (
                 "#!/usr/bin/env sh",
+                f"old_label={shlex.quote(OLD_LABEL)}",
                 f"printf '%s\\n' \"$*\" >> {shlex.quote(str(call_log))}",
                 'case "$1" in',
-                f"  print) test -f {shlex.quote(str(loaded_state))} ;;",
+                (
+                    "  print) "
+                    'case "$2" in *"$old_label"*) '
+                    f"test -f {shlex.quote(str(old_loaded_state))} ;; "
+                    f"*) test -f {shlex.quote(str(loaded_state))} ;; "
+                    "esac ;;"
+                ),
                 (
                     "  bootstrap) "
                     f"if test -f {shlex.quote(str(fail_next_bootstrap))}; then "
@@ -91,6 +101,10 @@ def _fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path]:
                 ),
                 (
                     "  bootout) "
+                    'case "$2" in *"$old_label"*) '
+                    f"if test -f {shlex.quote(str(fail_old_bootout))}; then exit 45; fi; "
+                    f"rm -f {shlex.quote(str(old_loaded_state))}; exit 0 ;; "
+                    "esac; "
                     'if test "$#" -eq 3 && test ! -f "$3"; then exit 44; fi; '
                     f"rm -f {shlex.quote(str(loaded_state))} ;;"
                 ),
@@ -116,17 +130,17 @@ def _blocking_fake_launchctl(fake_bin: Path, tmp_path: Path) -> tuple[Path, Path
         "\n".join(
             (
                 "#!/usr/bin/env sh",
-                'operation="${CONTEXTWIKI_TEST_OPERATION_ID:-unknown}"',
+                'operation="${CONTEXTZIP_TEST_OPERATION_ID:-unknown}"',
                 (
                     f"printf '%s:%s\\n' \"$operation\" \"$*\" >> "
                     f"{shlex.quote(str(call_log))}"
                 ),
                 (
-                    'if test "${CONTEXTWIKI_TEST_BLOCK_COMMAND:-}" = "$1"; then'
+                    'if test "${CONTEXTZIP_TEST_BLOCK_COMMAND:-}" = "$1"; then'
                 ),
-                '  touch "${CONTEXTWIKI_TEST_BLOCK_ENTERED}"',
+                '  touch "${CONTEXTZIP_TEST_BLOCK_ENTERED}"',
                 (
-                    '  while test ! -f "${CONTEXTWIKI_TEST_BLOCK_RELEASE}"; do '
+                    '  while test ! -f "${CONTEXTZIP_TEST_BLOCK_RELEASE}"; do '
                     "sleep 0.01; done"
                 ),
                 "fi",
@@ -164,9 +178,9 @@ def _blocking_fake_cmp(fake_bin: Path) -> None:
         "\n".join(
             (
                 "#!/usr/bin/env sh",
-                'touch "${CONTEXTWIKI_TEST_CMP_ENTERED}"',
+                'touch "${CONTEXTZIP_TEST_CMP_ENTERED}"',
                 (
-                    'while test ! -f "${CONTEXTWIKI_TEST_CMP_RELEASE}"; do '
+                    'while test ! -f "${CONTEXTZIP_TEST_CMP_RELEASE}"; do '
                     "sleep 0.01; done"
                 ),
                 'exec /usr/bin/cmp "$@"',
@@ -184,9 +198,9 @@ def _blocking_fake_plutil(fake_bin: Path) -> None:
         "\n".join(
             (
                 "#!/usr/bin/env sh",
-                'touch "${CONTEXTWIKI_TEST_PLUTIL_ENTERED}"',
+                'touch "${CONTEXTZIP_TEST_PLUTIL_ENTERED}"',
                 (
-                    'while test ! -f "${CONTEXTWIKI_TEST_PLUTIL_RELEASE}"; do '
+                    'while test ! -f "${CONTEXTZIP_TEST_PLUTIL_RELEASE}"; do '
                     "sleep 0.01; done"
                 ),
                 "exit 0",
@@ -207,20 +221,20 @@ def _blocking_fake_rm(fake_bin: Path) -> None:
             (
                 "#!/usr/bin/env sh",
                 'should_block=""',
-                'if test -n "${CONTEXTWIKI_TEST_RM_FRAGMENT:-}"; then',
+                'if test -n "${CONTEXTZIP_TEST_RM_FRAGMENT:-}"; then',
                 '  for argument in "$@"; do',
                 '    case "$argument" in',
                 (
-                    '      *"${CONTEXTWIKI_TEST_RM_FRAGMENT}"*) '
+                    '      *"${CONTEXTZIP_TEST_RM_FRAGMENT}"*) '
                     'should_block=1 ;;'
                 ),
                 "    esac",
                 "  done",
                 "fi",
                 'if test -n "$should_block"; then',
-                '  touch "${CONTEXTWIKI_TEST_RM_ENTERED}"',
+                '  touch "${CONTEXTZIP_TEST_RM_ENTERED}"',
                 (
-                    '  while test ! -f "${CONTEXTWIKI_TEST_RM_RELEASE}"; do '
+                    '  while test ! -f "${CONTEXTZIP_TEST_RM_RELEASE}"; do '
                     "sleep 0.01; done"
                 ),
                 "fi",
@@ -242,15 +256,15 @@ def _blocking_imported_printf(tmp_path: Path) -> Path:
             (
                 "printf() {",
                 (
-                    '  if [[ -n "${CONTEXTWIKI_TEST_PRINTF_FRAGMENT:-}" && '
-                    '"${1:-}" == *"${CONTEXTWIKI_TEST_PRINTF_FRAGMENT}"* ]]; then'
+                    '  if [[ -n "${CONTEXTZIP_TEST_PRINTF_FRAGMENT:-}" && '
+                    '"${1:-}" == *"${CONTEXTZIP_TEST_PRINTF_FRAGMENT}"* ]]; then'
                 ),
                 (
                     f"    command {shlex.quote(touch)} "
-                    '"${CONTEXTWIKI_TEST_PRINTF_ENTERED}"'
+                    '"${CONTEXTZIP_TEST_PRINTF_ENTERED}"'
                 ),
                 (
-                    '    while [[ ! -f "${CONTEXTWIKI_TEST_PRINTF_RELEASE}" ]]; '
+                    '    while [[ ! -f "${CONTEXTZIP_TEST_PRINTF_RELEASE}" ]]; '
                     "do"
                 ),
                 "      :",
@@ -278,15 +292,15 @@ def _transaction_fake_launchctl(
         "\n".join(
             (
                 "#!/usr/bin/env sh",
-                'operation="${CONTEXTWIKI_TEST_OPERATION_ID:-unknown}"',
+                'operation="${CONTEXTZIP_TEST_OPERATION_ID:-unknown}"',
                 (
                     f"printf '%s:%s\\n' \"$operation\" \"$*\" >> "
                     f"{shlex.quote(str(call_log))}"
                 ),
-                'if test "${CONTEXTWIKI_TEST_BLOCK_COMMAND:-}" = "$1"; then',
-                '  touch "${CONTEXTWIKI_TEST_BLOCK_ENTERED}"',
+                'if test "${CONTEXTZIP_TEST_BLOCK_COMMAND:-}" = "$1"; then',
+                '  touch "${CONTEXTZIP_TEST_BLOCK_ENTERED}"',
                 (
-                    '  while test ! -f "${CONTEXTWIKI_TEST_BLOCK_RELEASE}"; do '
+                    '  while test ! -f "${CONTEXTZIP_TEST_BLOCK_RELEASE}"; do '
                     "sleep 0.01; done"
                 ),
                 "fi",
@@ -368,9 +382,9 @@ def _prepare_changed_install_transaction(
     lock_root = tmp_path / "locks"
     common_env = _safe_test_env(
         PATH=f"{fake_bin}:{os.environ['PATH']}",
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
-        CONTEXTWIKI_TEST_OPERATION_ID="setup",
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+        CONTEXTZIP_TEST_OPERATION_ID="setup",
     )
     first_command = _install_command(
         fake_uv=fake_uv,
@@ -423,12 +437,12 @@ def _fake_stat(
 
 def test_safe_test_env_excludes_secret_shaped_parent_keys():
     safe_env = _safe_test_env(
-        CONTEXTWIKI_TEST_MARKER="retained",
-        CONTEXTWIKI_TEST_SECRET="excluded",
+        CONTEXTZIP_TEST_MARKER="retained",
+        CONTEXTZIP_TEST_SECRET="excluded",
     )
 
-    assert safe_env["CONTEXTWIKI_TEST_MARKER"] == "retained"
-    assert "CONTEXTWIKI_TEST_SECRET" not in safe_env
+    assert safe_env["CONTEXTZIP_TEST_MARKER"] == "retained"
+    assert "CONTEXTZIP_TEST_SECRET" not in safe_env
     assert all(
         not any(
             fragment in key.upper()
@@ -481,9 +495,9 @@ def test_launch_agent_operation_lock_recovers_dead_owner_and_bounds_unknown_owne
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "60",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "60",
     }
 
     recovered = subprocess.run(
@@ -535,9 +549,9 @@ def test_launch_agent_operation_lock_recovers_old_unpublished_owner(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "2",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "2",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
     }
 
     recovered = subprocess.run(
@@ -575,9 +589,9 @@ def test_launch_agent_operation_lock_never_reclaims_old_published_live_owner(
         env = {
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
         }
 
         result = subprocess.run(
@@ -675,8 +689,8 @@ def test_launch_agent_operation_lock_never_recovers_through_a_symlink(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
     }
 
     result = subprocess.run(
@@ -712,7 +726,7 @@ def test_reclaim_marker_helper_recovers_grace_expired_unpublished_state(
             "-c",
             (
                 'source "$1"; '
-                "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE=3; "
+                "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE=3; "
                 'sync_worker_launch_agent_try_recover_stale_reclaim_marker "$2"'
             ),
             "bash",
@@ -749,9 +763,9 @@ def test_launch_agent_operation_lock_recovers_old_reclaim_marker(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "2",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "2",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
     }
 
     result = subprocess.run(
@@ -780,9 +794,9 @@ def test_launch_agent_operation_lock_preserves_fresh_reclaim_marker(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
     }
 
     result = subprocess.run(
@@ -822,9 +836,9 @@ def test_launch_agent_operation_lock_preserves_live_reclaim_marker(
         env = {
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
-            "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+            "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "3",
         }
 
         result = subprocess.run(
@@ -898,8 +912,8 @@ def test_launch_agent_operation_lock_rejects_unsafe_reclaim_marker(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "1",
     }
 
     result = subprocess.run(
@@ -938,12 +952,12 @@ def test_concurrent_reclaim_marker_recovery_allows_only_one_operation_at_a_time(
     common_env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "3",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "4",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "kill",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "3",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "4",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "kill",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     processes = [
         subprocess.Popen(
@@ -953,7 +967,7 @@ def test_concurrent_reclaim_marker_recovery_allows_only_one_operation_at_a_time(
             text=True,
             env={
                 **common_env,
-                "CONTEXTWIKI_TEST_OPERATION_ID": operation_id,
+                "CONTEXTZIP_TEST_OPERATION_ID": operation_id,
             },
         )
         for operation_id in ("first", "second")
@@ -999,12 +1013,12 @@ def test_operation_lock_survives_sigkill_while_launchctl_child_is_live(
     common_env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "3",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "4",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "kill",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "3",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS": "4",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "kill",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     first = subprocess.Popen(
         [str(REPO_ROOT / "scripts" / "restart_sync_worker_launch_agent.sh")],
@@ -1012,7 +1026,7 @@ def test_operation_lock_survives_sigkill_while_launchctl_child_is_live(
         stderr=subprocess.DEVNULL,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_OPERATION_ID": "first",
+            "CONTEXTZIP_TEST_OPERATION_ID": "first",
         },
     )
     second: subprocess.Popen[str] | None = None
@@ -1041,7 +1055,7 @@ def test_operation_lock_survives_sigkill_while_launchctl_child_is_live(
             text=True,
             env={
                 **common_env,
-                "CONTEXTWIKI_TEST_OPERATION_ID": "second",
+                "CONTEXTZIP_TEST_OPERATION_ID": "second",
             },
         )
 
@@ -1089,19 +1103,19 @@ def test_concurrent_first_installs_serialize_state_snapshot_and_commit(
     common_env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "5",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "5",
     }
     first_env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": "first",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "print",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_TEST_OPERATION_ID": "first",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "print",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     second_env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": "second",
+        "CONTEXTZIP_TEST_OPERATION_ID": "second",
     }
 
     first = subprocess.Popen(
@@ -1173,19 +1187,19 @@ def test_install_and_management_mutations_are_serialized_end_to_end(
     common_env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
-        "CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "5",
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT": str(lock_root),
+        "CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS": "5",
     }
     install_env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": "install",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_TEST_OPERATION_ID": "install",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "bootstrap",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     management_env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": management_action,
+        "CONTEXTZIP_TEST_OPERATION_ID": management_action,
     }
     if management_action == "restart":
         management_command = [
@@ -1295,13 +1309,13 @@ def test_render_only_creates_valid_absolute_secret_free_plist(tmp_path: Path):
     assert payload["StandardOutPath"] == "/dev/null"
     assert payload["StandardErrorPath"] == "/dev/null"
     assert payload["EnvironmentVariables"] == {
-        "CONTEXTWIKI_SYNC_WORKER_LOG_PATH": str(log_dir / "sync-worker.log"),
-        "CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES": "5242880",
-        "CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT": "3",
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
+        "CONTEXTZIP_SYNC_WORKER_LOG_PATH": str(log_dir / "sync-worker.log"),
+        "CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES": "5242880",
+        "CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT": "3",
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
             log_dir / "sync-worker-startup.log"
         ),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1048576",
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1048576",
     }
     assert Path(payload["WorkingDirectory"]).is_absolute()
     assert all(
@@ -1309,9 +1323,9 @@ def test_render_only_creates_valid_absolute_secret_free_plist(tmp_path: Path):
         for path in (
             payload["ProgramArguments"][1],
             payload["ProgramArguments"][2],
-            payload["EnvironmentVariables"]["CONTEXTWIKI_SYNC_WORKER_LOG_PATH"],
+            payload["EnvironmentVariables"]["CONTEXTZIP_SYNC_WORKER_LOG_PATH"],
             payload["EnvironmentVariables"][
-                "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH"
+                "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH"
             ],
         )
     )
@@ -1364,8 +1378,8 @@ def test_render_only_interrupt_during_validation_preserves_target(
         text=True,
         env=_safe_test_env(
             PATH=f"{fake_bin}:{os.environ['PATH']}",
-            CONTEXTWIKI_TEST_PLUTIL_ENTERED=str(plutil_entered),
-            CONTEXTWIKI_TEST_PLUTIL_RELEASE=str(plutil_release),
+            CONTEXTZIP_TEST_PLUTIL_ENTERED=str(plutil_entered),
+            CONTEXTZIP_TEST_PLUTIL_RELEASE=str(plutil_release),
         ),
     )
 
@@ -1447,7 +1461,7 @@ def test_install_and_management_dry_runs_have_no_side_effects(tmp_path: Path):
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_HOME": str(tmp_path),
+        "CONTEXTZIP_LAUNCH_AGENT_HOME": str(tmp_path),
     }
 
     install_result = subprocess.run(
@@ -1476,13 +1490,43 @@ def test_install_and_management_dry_runs_have_no_side_effects(tmp_path: Path):
     assert not launchctl_marker.exists()
 
 
+def test_install_dry_run_reports_legacy_launch_agent_cleanup(tmp_path: Path):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(INSTALL_SCRIPT),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--uv-path",
+            str(fake_uv),
+            "--log-dir",
+            str(tmp_path / "logs"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert OLD_LABEL in result.stdout
+    assert str(old_plist_path) in result.stdout
+    assert old_plist_path.exists()
+
+
 def test_install_rejects_unsafe_existing_custom_log_dir_without_changing_mode(
     tmp_path: Path,
 ):
     fake_uv = _fake_executable(tmp_path / "uv")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
     log_dir = tmp_path / "shared-logs"
     log_dir.mkdir(mode=0o755)
     launch_agents_dir = tmp_path / "LaunchAgents"
@@ -1520,7 +1564,7 @@ def test_install_rejects_custom_log_dir_symlink_without_mutating_target(
     fake_uv = _fake_executable(tmp_path / "uv")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
     target_log_dir = tmp_path / "real-logs"
     target_log_dir.mkdir(mode=0o755)
     log_dir = tmp_path / "linked-logs"
@@ -1773,12 +1817,12 @@ def test_install_secures_existing_default_log_dir(tmp_path: Path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _fake_launchctl(fake_bin, tmp_path)
-    log_dir = tmp_path / ".mcp_content_search" / "logs"
+    log_dir = tmp_path / ".context-zip" / "logs"
     log_dir.mkdir(parents=True, mode=0o755)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_LAUNCH_AGENT_HOME": str(tmp_path),
+        "CONTEXTZIP_LAUNCH_AGENT_HOME": str(tmp_path),
     }
 
     subprocess.run(
@@ -1810,7 +1854,7 @@ def test_install_rejects_symlink_in_default_log_parent_before_mutation(
     real_log_dir.mkdir(parents=True, mode=0o755)
     retained_file = real_log_dir / "retained.log"
     retained_file.write_text("retained target\n", encoding="utf-8")
-    app_data_link = tmp_path / ".mcp_content_search"
+    app_data_link = tmp_path / ".context-zip"
     app_data_link.symlink_to(real_app_data, target_is_directory=True)
     launch_agents_dir = tmp_path / "LaunchAgents"
     original_app_data_mode = stat.S_IMODE(real_app_data.stat().st_mode)
@@ -1818,7 +1862,7 @@ def test_install_rejects_symlink_in_default_log_parent_before_mutation(
     original_content = retained_file.read_bytes()
     env = _safe_test_env(
         PATH=f"{fake_bin}:{os.environ['PATH']}",
-        CONTEXTWIKI_LAUNCH_AGENT_HOME=str(tmp_path),
+        CONTEXTZIP_LAUNCH_AGENT_HOME=str(tmp_path),
     )
 
     install_result = subprocess.run(
@@ -1850,11 +1894,11 @@ def test_install_rejects_symlink_in_default_log_parent_before_mutation(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         check=False,
         env=_safe_test_env(
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(
                 app_data_link / "logs" / "startup.log"
             ),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
         ),
         timeout=10,
     )
@@ -2014,9 +2058,138 @@ def test_install_is_noop_when_identical_and_changed_config_requires_restart(
     assert sum(line.startswith("bootout ") for line in final_calls) == 1
     with plist_path.open("rb") as plist_file:
         payload = plistlib.load(plist_file)
-    assert payload["EnvironmentVariables"]["CONTEXTWIKI_SYNC_WORKER_LOG_PATH"] == str(
+    assert payload["EnvironmentVariables"]["CONTEXTZIP_SYNC_WORKER_LOG_PATH"] == str(
         tmp_path / "logs-two" / "sync-worker.log"
     )
+
+
+def test_install_migrates_legacy_launch_agent_label_when_old_plist_exists(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    subprocess.run(
+        _install_command(
+            fake_uv=fake_uv,
+            log_dir=tmp_path / "logs",
+            launch_agents_dir=launch_agents_dir,
+        ),
+        check=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert not old_plist_path.exists()
+    assert (launch_agents_dir / f"{LABEL}.plist").exists()
+
+
+def test_install_cleans_legacy_launch_agent_when_new_service_already_loaded(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    command = _install_command(
+        fake_uv=fake_uv,
+        log_dir=tmp_path / "logs",
+        launch_agents_dir=launch_agents_dir,
+    )
+
+    subprocess.run(command, check=True, env=env)
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    loaded_state.touch()
+    call_log.write_text("", encoding="utf-8")
+    subprocess.run(command, check=True, env=env)
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert not old_plist_path.exists()
+
+
+def test_install_preserves_legacy_launch_agent_when_new_install_fails(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, _ = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-fail-next-bootstrap").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        _install_command(
+            fake_uv=fake_uv,
+            log_dir=tmp_path / "logs",
+            launch_agents_dir=launch_agents_dir,
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert result.returncode != 0
+    assert "new configuration failed to start" in result.stderr
+    assert old_plist_path.read_text(encoding="utf-8") == "legacy plist"
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" not in calls
+
+
+def test_install_preserves_legacy_launch_agent_when_old_bootout_fails(
+    tmp_path: Path,
+):
+    fake_uv = _fake_executable(tmp_path / "uv")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    (tmp_path / "launchctl-fail-old-bootout").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        _install_command(
+            fake_uv=fake_uv,
+            log_dir=tmp_path / "logs",
+            launch_agents_dir=launch_agents_dir,
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert result.returncode != 0
+    assert "could not stop legacy LaunchAgent service" in result.stderr
+    assert old_plist_path.read_text(encoding="utf-8") == "legacy plist"
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert (tmp_path / "launchctl-old-loaded").exists()
 
 
 @pytest.mark.parametrize(
@@ -2041,8 +2214,8 @@ def test_identical_loaded_install_does_not_report_success_after_interrupt_during
     )
     common_env = _safe_test_env(
         PATH=f"{fake_bin}:{os.environ['PATH']}",
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
     )
     subprocess.run(command, check=True, env=common_env)
     plist_path = launch_agents_dir / f"{LABEL}.plist"
@@ -2058,8 +2231,8 @@ def test_identical_loaded_install_does_not_report_success_after_interrupt_during
         text=True,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_CMP_ENTERED": str(cmp_entered),
-            "CONTEXTWIKI_TEST_CMP_RELEASE": str(cmp_release),
+            "CONTEXTZIP_TEST_CMP_ENTERED": str(cmp_entered),
+            "CONTEXTZIP_TEST_CMP_RELEASE": str(cmp_release),
         },
     )
 
@@ -2120,7 +2293,7 @@ def test_changed_install_interrupt_during_cmp_exits_before_restart_decision(
     cmp_entered = tmp_path / "changed-cmp-entered"
     cmp_release = tmp_path / "changed-cmp-release"
     _blocking_fake_cmp(tmp_path / "bin")
-    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    lock_root = Path(common_env["CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT"])
     operation = (
         f"changed-cmp-{'restart' if restart_changed else 'no-restart'}-"
         f"{signal_name.lower()}"
@@ -2132,9 +2305,9 @@ def test_changed_install_interrupt_during_cmp_exits_before_restart_decision(
         text=True,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
-            "CONTEXTWIKI_TEST_CMP_ENTERED": str(cmp_entered),
-            "CONTEXTWIKI_TEST_CMP_RELEASE": str(cmp_release),
+            "CONTEXTZIP_TEST_OPERATION_ID": operation,
+            "CONTEXTZIP_TEST_CMP_ENTERED": str(cmp_entered),
+            "CONTEXTZIP_TEST_CMP_RELEASE": str(cmp_release),
         },
     )
 
@@ -2195,8 +2368,8 @@ def test_identical_loaded_install_exits_after_interrupt_during_candidate_cleanup
     )
     common_env = _safe_test_env(
         PATH=f"{fake_bin}:{os.environ['PATH']}",
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
     )
     subprocess.run(command, check=True, env=common_env)
     plist_path = launch_agents_dir / f"{LABEL}.plist"
@@ -2212,9 +2385,9 @@ def test_identical_loaded_install_exits_after_interrupt_during_candidate_cleanup
         text=True,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_RM_FRAGMENT": ".candidate.",
-            "CONTEXTWIKI_TEST_RM_ENTERED": str(rm_entered),
-            "CONTEXTWIKI_TEST_RM_RELEASE": str(rm_release),
+            "CONTEXTZIP_TEST_RM_FRAGMENT": ".candidate.",
+            "CONTEXTZIP_TEST_RM_ENTERED": str(rm_entered),
+            "CONTEXTZIP_TEST_RM_RELEASE": str(rm_release),
         },
     )
 
@@ -2267,8 +2440,8 @@ def test_identical_loaded_success_output_uses_default_signal_disposition(
     )
     common_env = _safe_test_env(
         PATH=f"{fake_bin}:{os.environ['PATH']}",
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT=str(lock_root),
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS="5",
     )
     subprocess.run(command, check=True, env=common_env)
     plist_path = launch_agents_dir / f"{LABEL}.plist"
@@ -2285,9 +2458,9 @@ def test_identical_loaded_success_output_uses_default_signal_disposition(
         env={
             **common_env,
             "BASH_ENV": str(bash_env),
-            "CONTEXTWIKI_TEST_PRINTF_FRAGMENT": "Already installed",
-            "CONTEXTWIKI_TEST_PRINTF_ENTERED": str(printf_entered),
-            "CONTEXTWIKI_TEST_PRINTF_RELEASE": str(printf_release),
+            "CONTEXTZIP_TEST_PRINTF_FRAGMENT": "Already installed",
+            "CONTEXTZIP_TEST_PRINTF_ENTERED": str(printf_entered),
+            "CONTEXTZIP_TEST_PRINTF_RELEASE": str(printf_release),
         },
     )
 
@@ -2517,10 +2690,10 @@ def test_changed_install_rolls_back_after_interrupt_during_replacement_bootstrap
     release = tmp_path / "replacement-bootstrap-release"
     env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": "interrupted",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_TEST_OPERATION_ID": "interrupted",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "bootstrap",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     process = subprocess.Popen(
         changed_command,
@@ -2587,7 +2760,7 @@ def test_successful_changed_install_reports_interrupt_during_commit_cleanup(
     rm_entered = tmp_path / "commit-rm-entered"
     rm_release = tmp_path / "commit-rm-release"
     _blocking_fake_rm(tmp_path / "bin")
-    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    lock_root = Path(common_env["CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT"])
     operation = f"commit-interrupted-{signal_name.lower()}"
     process = subprocess.Popen(
         changed_command,
@@ -2596,10 +2769,10 @@ def test_successful_changed_install_reports_interrupt_during_commit_cleanup(
         text=True,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
-            "CONTEXTWIKI_TEST_RM_FRAGMENT": ".previous.",
-            "CONTEXTWIKI_TEST_RM_ENTERED": str(rm_entered),
-            "CONTEXTWIKI_TEST_RM_RELEASE": str(rm_release),
+            "CONTEXTZIP_TEST_OPERATION_ID": operation,
+            "CONTEXTZIP_TEST_RM_FRAGMENT": ".previous.",
+            "CONTEXTZIP_TEST_RM_ENTERED": str(rm_entered),
+            "CONTEXTZIP_TEST_RM_RELEASE": str(rm_release),
         },
     )
 
@@ -2658,7 +2831,7 @@ def test_committed_install_success_output_uses_default_signal_disposition(
     printf_entered = tmp_path / "committed-printf-entered"
     printf_release = tmp_path / "committed-printf-release"
     bash_env = _blocking_imported_printf(tmp_path)
-    lock_root = Path(common_env["CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT"])
+    lock_root = Path(common_env["CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT"])
     operation = f"committed-printf-{signal_number.name.lower()}"
     process = subprocess.Popen(
         changed_command,
@@ -2668,10 +2841,10 @@ def test_committed_install_success_output_uses_default_signal_disposition(
         env={
             **common_env,
             "BASH_ENV": str(bash_env),
-            "CONTEXTWIKI_TEST_OPERATION_ID": operation,
-            "CONTEXTWIKI_TEST_PRINTF_FRAGMENT": "Installed and started",
-            "CONTEXTWIKI_TEST_PRINTF_ENTERED": str(printf_entered),
-            "CONTEXTWIKI_TEST_PRINTF_RELEASE": str(printf_release),
+            "CONTEXTZIP_TEST_OPERATION_ID": operation,
+            "CONTEXTZIP_TEST_PRINTF_FRAGMENT": "Installed and started",
+            "CONTEXTZIP_TEST_PRINTF_ENTERED": str(printf_entered),
+            "CONTEXTZIP_TEST_PRINTF_RELEASE": str(printf_release),
         },
     )
 
@@ -2725,10 +2898,10 @@ def test_changed_install_waits_for_failing_bootstrap_then_rolls_back_interrupt(
     release = tmp_path / "failing-bootstrap-release"
     env = {
         **common_env,
-        "CONTEXTWIKI_TEST_OPERATION_ID": "failing",
-        "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
-        "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-        "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+        "CONTEXTZIP_TEST_OPERATION_ID": "failing",
+        "CONTEXTZIP_TEST_BLOCK_COMMAND": "bootstrap",
+        "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+        "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
     }
     process = subprocess.Popen(
         changed_command,
@@ -2784,10 +2957,10 @@ def test_interrupted_install_holds_lock_through_child_completion_and_rollback(
         text=True,
         env={
             **common_env,
-            "CONTEXTWIKI_TEST_OPERATION_ID": "first",
-            "CONTEXTWIKI_TEST_BLOCK_COMMAND": "bootstrap",
-            "CONTEXTWIKI_TEST_BLOCK_ENTERED": str(entered),
-            "CONTEXTWIKI_TEST_BLOCK_RELEASE": str(release),
+            "CONTEXTZIP_TEST_OPERATION_ID": "first",
+            "CONTEXTZIP_TEST_BLOCK_COMMAND": "bootstrap",
+            "CONTEXTZIP_TEST_BLOCK_ENTERED": str(entered),
+            "CONTEXTZIP_TEST_BLOCK_RELEASE": str(release),
         },
     )
     second: subprocess.Popen[str] | None = None
@@ -2802,7 +2975,7 @@ def test_interrupted_install_holds_lock_through_child_completion_and_rollback(
             text=True,
             env={
                 **common_env,
-                "CONTEXTWIKI_TEST_OPERATION_ID": "second",
+                "CONTEXTZIP_TEST_OPERATION_ID": "second",
             },
         )
         time.sleep(0.3)
@@ -2852,9 +3025,9 @@ def test_launch_agent_runner_preserves_and_bounds_startup_stderr(tmp_path: Path)
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -2893,9 +3066,9 @@ def test_launch_agent_runner_recreates_private_runtime_log_paths_and_temp_files(
     process = subprocess.Popen(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         env=_safe_test_env(
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
         ),
         preexec_fn=lambda: os.umask(0o022),
     )
@@ -2961,9 +3134,9 @@ def test_launch_agent_runner_rejects_unsafe_runtime_log_paths_without_mutation(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         check=False,
         env=_safe_test_env(
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=sys.executable,
         ),
         timeout=10,
     )
@@ -2989,11 +3162,11 @@ def test_launch_agent_runner_forwards_sigterm_and_waits_for_worker(tmp_path: Pat
     fake_uv.chmod(0o755)
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
             tmp_path / "logs" / "startup.log"
         ),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     process = subprocess.Popen(
@@ -3057,11 +3230,11 @@ def test_launch_agent_runner_waits_for_writer_drain_after_signal(
     diagnostic_dir = tmp_path / "logs"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
             diagnostic_dir / "startup.log"
         ),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(fake_sanitizer),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(fake_sanitizer),
     }
     process = subprocess.Popen(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
@@ -3156,9 +3329,9 @@ def test_launch_agent_runner_forces_cleanup_of_hung_writer_during_drain(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         env={
             **_safe_test_env(),
-            "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-            "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-            "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(fake_sanitizer),
+            "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+            "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+            "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(fake_sanitizer),
         },
     )
     sanitizer_pid: int | None = None
@@ -3241,7 +3414,7 @@ def test_launch_agent_runner_cleans_sanitizer_when_writer_fails_first(
     fake_dd = fake_bin / "dd"
     fake_dd.write_text(
         "#!/bin/sh\n"
-        'while test ! -f "${CONTEXTWIKI_TEST_SANITIZER_STARTED}"; do\n'
+        'while test ! -f "${CONTEXTZIP_TEST_SANITIZER_STARTED}"; do\n'
         "  /bin/sleep 0.01\n"
         "done\n"
         "exit 71\n",
@@ -3254,10 +3427,10 @@ def test_launch_agent_runner_cleans_sanitizer_when_writer_fails_first(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         env=_safe_test_env(
             PATH=f"{fake_bin}:{os.environ['PATH']}",
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
-            CONTEXTWIKI_TEST_SANITIZER_STARTED=str(sanitizer_pid_path),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+            CONTEXTZIP_TEST_SANITIZER_STARTED=str(sanitizer_pid_path),
         ),
     )
     sanitizer_pid: int | None = None
@@ -3360,9 +3533,9 @@ def test_launch_agent_runner_stops_worker_when_sanitizer_fails_first(
     process = subprocess.Popen(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         env=_safe_test_env(
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
         ),
     )
     worker_pid: int | None = None
@@ -3465,9 +3638,9 @@ def test_launch_agent_runner_fails_when_sanitizer_exits_zero_before_worker(
     process = subprocess.Popen(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
         env=_safe_test_env(
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
-            CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
-            CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH=str(diagnostic_log),
+            CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES="1024",
+            CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH=str(fake_sanitizer),
         ),
     )
     worker_pid: int | None = None
@@ -3530,17 +3703,17 @@ def test_launch_agent_runner_replays_signal_received_before_child_pid_assignment
             "\n".join(
                 (
                     pending_assignment,
-                    'touch "${CONTEXTWIKI_TEST_SIGNAL_RECORDED_MARKER}"',
+                    'touch "${CONTEXTZIP_TEST_SIGNAL_RECORDED_MARKER}"',
                 )
             ),
         ).replace(
             assignment,
             "\n".join(
                 (
-                    'touch "${CONTEXTWIKI_TEST_ASSIGNMENT_BLOCKED_MARKER}"',
+                    'touch "${CONTEXTZIP_TEST_ASSIGNMENT_BLOCKED_MARKER}"',
                     (
                         "while [[ ! -f "
-                        '"${CONTEXTWIKI_TEST_ASSIGNMENT_RELEASE_MARKER}" ]]; do'
+                        '"${CONTEXTZIP_TEST_ASSIGNMENT_RELEASE_MARKER}" ]]; do'
                     ),
                     "  sleep 0.01",
                     "done",
@@ -3608,18 +3781,18 @@ def test_launch_agent_runner_replays_signal_received_before_child_pid_assignment
     diagnostic_dir = tmp_path / "logs"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(
             diagnostic_dir / "startup.log"
         ),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
-        "CONTEXTWIKI_TEST_ASSIGNMENT_BLOCKED_MARKER": str(
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_TEST_ASSIGNMENT_BLOCKED_MARKER": str(
             assignment_blocked_marker
         ),
-        "CONTEXTWIKI_TEST_ASSIGNMENT_RELEASE_MARKER": str(
+        "CONTEXTZIP_TEST_ASSIGNMENT_RELEASE_MARKER": str(
             assignment_release_marker
         ),
-        "CONTEXTWIKI_TEST_SIGNAL_RECORDED_MARKER": str(signal_recorded_marker),
+        "CONTEXTZIP_TEST_SIGNAL_RECORDED_MARKER": str(signal_recorded_marker),
     }
 
     process = subprocess.Popen(
@@ -3703,9 +3876,9 @@ def test_launch_agent_runner_bounds_diagnostics_while_worker_is_running(
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
     process = subprocess.Popen(
         [str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
@@ -3776,9 +3949,9 @@ def test_launch_agent_runner_amortizes_startup_log_compaction(tmp_path: Path):
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -3850,3 +4023,90 @@ def test_uninstall_boots_out_loaded_service_when_plist_is_missing(tmp_path: Path
     calls = call_log.read_text(encoding="utf-8").splitlines()
     assert f"bootout gui/{os.getuid()}/{LABEL}" in calls
     assert not loaded_state.exists()
+
+
+def test_uninstall_removes_legacy_launch_agent_label_when_old_plist_exists(
+    tmp_path: Path,
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    loaded_state.touch()
+    launch_agents_dir = tmp_path / "Legacy LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "uninstall_sync_worker_launch_agent.sh"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+        ],
+        check=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert not old_plist_path.exists()
+
+
+def test_uninstall_preserves_legacy_launch_agent_when_old_bootout_fails(
+    tmp_path: Path,
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log, loaded_state = _fake_launchctl(fake_bin, tmp_path)
+    loaded_state.touch()
+    launch_agents_dir = tmp_path / "Legacy LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+    (tmp_path / "launchctl-old-loaded").touch()
+    (tmp_path / "launchctl-fail-old-bootout").touch()
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "uninstall_sync_worker_launch_agent.sh"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert result.returncode != 0
+    assert "could not stop legacy LaunchAgent service" in result.stderr
+    assert f"bootout gui/{os.getuid()}/{OLD_LABEL}" in calls
+    assert old_plist_path.read_text(encoding="utf-8") == "legacy plist"
+    assert (tmp_path / "launchctl-old-loaded").exists()
+
+
+def test_uninstall_dry_run_reports_legacy_launch_agent_cleanup(tmp_path: Path):
+    launch_agents_dir = tmp_path / "Legacy LaunchAgents"
+    launch_agents_dir.mkdir()
+    old_plist_path = launch_agents_dir / f"{OLD_LABEL}.plist"
+    old_plist_path.write_text("legacy plist", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "uninstall_sync_worker_launch_agent.sh"),
+            "--launch-agents-dir",
+            str(launch_agents_dir),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert OLD_LABEL in result.stdout
+    assert str(old_plist_path) in result.stdout
+    assert old_plist_path.exists()

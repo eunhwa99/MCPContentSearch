@@ -4,12 +4,12 @@ import subprocess
 import sys
 
 
-def test_run_contextwiki_eval_help_runs_from_repo_root_without_pythonpath():
+def test_run_context_zip_eval_help_runs_from_repo_root_without_pythonpath():
     repo_root = Path(__file__).resolve().parents[2]
     env = {"PATH": str(Path(sys.executable).parent)}
 
     result = subprocess.run(
-        [sys.executable, "scripts/run_contextwiki_eval.py", "--help"],
+        [sys.executable, "scripts/run_context_zip_eval.py", "--help"],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -18,10 +18,10 @@ def test_run_contextwiki_eval_help_runs_from_repo_root_without_pythonpath():
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Run deterministic ContextWiki evals" in result.stdout
+    assert "Run deterministic ContextZip evals" in result.stdout
 
 
-def test_run_contextwiki_eval_executes_from_repo_root_without_pythonpath(tmp_path):
+def test_run_context_zip_eval_executes_from_repo_root_without_pythonpath(tmp_path):
     repo_root = Path(__file__).resolve().parents[2]
     output_dir = tmp_path / "eval-artifacts"
     env = {"PATH": str(Path(sys.executable).parent)}
@@ -29,7 +29,7 @@ def test_run_contextwiki_eval_executes_from_repo_root_without_pythonpath(tmp_pat
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/run_contextwiki_eval.py",
+            "scripts/run_context_zip_eval.py",
             "--output-dir",
             str(output_dir),
         ],

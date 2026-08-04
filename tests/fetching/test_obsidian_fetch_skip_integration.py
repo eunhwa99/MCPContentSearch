@@ -275,7 +275,7 @@ def test_build_ingestion_runtime_wires_metadata_store_onto_obsidian_connector(
     vault.mkdir()
     config = AppConfig(
         chroma_db_path=tmp_path / "chroma",
-        metadata_db_path=tmp_path / "contextwiki.sqlite3",
+        metadata_db_path=tmp_path / "context_zip.sqlite3",
         cache_dir=str(tmp_path / "cache"),
         github_repositories=(),
         obsidian_vault_path=vault,

@@ -20,9 +20,9 @@ from storage.metadata_store import MetadataStore
 pytestmark = pytest.mark.unit
 
 OBSIDIAN_ENV_VARS = (
-    "CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
-    "CONTEXTWIKI_OBSIDIAN_MAX_FILES",
-    "CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES",
+    "CONTEXTZIP_OBSIDIAN_VAULT_PATH",
+    "CONTEXTZIP_OBSIDIAN_MAX_FILES",
+    "CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES",
 )
 
 
@@ -110,7 +110,7 @@ def test_notion_connector_passes_progress_callback(monkeypatch):
     ("connector_factory"),
     [
         lambda: GitHubSourceConnector(
-            ("eunhwa99/MCPContentSearch@main",),
+            ("eunhwa99/context-zip@main",),
             AppConfig(github_max_files=10, github_max_file_bytes=1000),
         ),
         lambda: TistorySourceConnector("devlog", AppConfig(tistory_max_post_id=1)),
@@ -308,7 +308,7 @@ def test_tistory_connector_persists_external_id(monkeypatch, tmp_path):
 
 def test_build_source_registry_includes_core_sources():
     config = AppConfig(
-        github_repositories=("eunhwa99/MCPContentSearch@main",),
+        github_repositories=("eunhwa99/context-zip@main",),
     )
 
     registry = build_source_registry(
@@ -331,9 +331,9 @@ def test_build_source_registry_includes_core_sources():
     assert sources["source_github"].auth_ref == "env:GITHUB_TOKEN"
     assert isinstance(registry.get_connector("source_obsidian"), ObsidianSourceConnector)
     assert sources["source_obsidian"].enabled is False
-    assert sources["source_obsidian"].auth_ref == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert sources["source_obsidian"].auth_ref == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert sources["source_obsidian"].last_error == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "is not set or is not an existing directory."
     )
 
@@ -341,7 +341,7 @@ def test_build_source_registry_includes_core_sources():
 def test_build_source_registry_disables_tistory_until_blog_is_configured():
     registry = build_source_registry(
         config=AppConfig(
-            github_repositories=("eunhwa99/MCPContentSearch@main",),
+            github_repositories=("eunhwa99/context-zip@main",),
         ),
         notion_api_key="notion-secret",
         tistory_blog_name="",
@@ -372,11 +372,11 @@ def test_build_source_registry_accepts_github_owner_target_for_runtime_discovery
 
 def test_github_connector_uses_validated_custom_token_env_ref():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
-        config=AppConfig(github_token_env_var="CONTEXTWIKI_GITHUB_TOKEN"),
+        repositories=("eunhwa99/context-zip@main",),
+        config=AppConfig(github_token_env_var="CONTEXTZIP_GITHUB_TOKEN"),
     )
 
-    assert connector.source.auth_ref == "env:CONTEXTWIKI_GITHUB_TOKEN"
+    assert connector.source.auth_ref == "env:CONTEXTZIP_GITHUB_TOKEN"
 
 
 def test_github_connector_exposes_public_disabled_reason_for_missing_repositories():
@@ -390,7 +390,7 @@ def test_github_connector_exposes_public_disabled_reason_for_missing_repositorie
     assert connector.source.enabled is False
     assert connector.disabled_reason == (
         "Source source_github is disabled because no GitHub repositories are "
-        "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+        "configured in CONTEXTZIP_GITHUB_REPOSITORIES."
     )
     assert "ghp_secretcredential" not in connector.disabled_reason
 
@@ -402,7 +402,7 @@ def test_obsidian_connector_is_enabled_for_temp_vault(tmp_path):
 
     assert connector.source.source_id == "source_obsidian"
     assert connector.source.enabled is True
-    assert connector.source.auth_ref == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert connector.source.auth_ref == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert connector.disabled_reason == ""
     assert connector.supports_stale_cleanup is True
 
@@ -433,7 +433,7 @@ def test_obsidian_connector_is_disabled_for_relative_vault_path():
 
     assert connector.source.enabled is False
     assert connector.disabled_reason == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "must be an absolute path."
     )
     assert connector.source.last_error == connector.disabled_reason
@@ -449,7 +449,7 @@ def test_obsidian_connector_is_disabled_for_symlinked_vault_path(tmp_path):
 
     assert connector.source.enabled is False
     assert connector.disabled_reason == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "must not be a symlink."
     )
     assert connector.source.last_error == connector.disabled_reason
@@ -468,7 +468,7 @@ def test_obsidian_connector_is_disabled_for_symlinked_vault_ancestor(tmp_path):
 
     assert connector.source.enabled is False
     assert connector.disabled_reason == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "must not be a symlink."
     )
     assert connector.source.last_error == connector.disabled_reason
@@ -489,7 +489,7 @@ def test_obsidian_connector_is_disabled_for_unreadable_vault_root(monkeypatch, t
 
     assert connector.source.enabled is False
     assert connector.disabled_reason == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "is not set or is not an existing directory."
     )
     assert connector.source.last_error == connector.disabled_reason
@@ -810,7 +810,7 @@ def test_obsidian_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
 def test_github_connector_accepts_metadata_store_for_fetch_reuse():
     store = object()
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(),
         metadata_store=store,
     )
@@ -824,7 +824,7 @@ def test_github_connector_passes_existing_documents_loader_for_fetch_reuse(tmp_p
     captured = {}
 
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         metadata_store=store,
     )
@@ -846,7 +846,7 @@ def test_github_connector_passes_existing_documents_loader_for_fetch_reuse(tmp_p
 
 def test_github_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
     store = MetadataStore(tmp_path / "metadata.sqlite3")
-    doc_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    doc_id = "github:eunhwa99/context_zip:README.md"
     store.upsert_document(
         DocumentModel(
             id=doc_id,
@@ -855,7 +855,7 @@ def test_github_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
             source_id="source_github",
             title="README",
             content="kept body",
-            url="https://github.com/eunhwa99/MCPContentSearch/blob/main/README.md",
+            url="https://github.com/eunhwa99/context-zip/blob/main/README.md",
             platform="GitHub",
             version_id="abc123",
         )
@@ -873,7 +873,7 @@ def test_github_connector_loader_uses_get_documents_for_fetch_reuse(tmp_path):
 
     store.get_documents_for_fetch_reuse = tracking_batch  # type: ignore[method-assign]
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(),
         metadata_store=store,
     )

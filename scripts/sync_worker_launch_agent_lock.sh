@@ -3,15 +3,15 @@
 # Shared by every helper that mutates the LaunchAgent service or installed
 # plist. macOS does not ship flock(1), so use an atomic directory lock.
 
-CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD=0
-CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR=""
-CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START=""
-CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE=60
-CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_PID=""
-CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_START=""
-CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID=""
-CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_START=""
-CONTEXTWIKI_LAUNCH_AGENT_LAUNCHCTL_PATH=""
+CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD=0
+CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR=""
+CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START=""
+CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE=60
+CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_PID=""
+CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_START=""
+CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID=""
+CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_START=""
+CONTEXTZIP_LAUNCH_AGENT_LAUNCHCTL_PATH=""
 
 sync_worker_launch_agent_process_start_id() {
   local process_id="$1"
@@ -45,10 +45,10 @@ sync_worker_launch_agent_read_published_lock_owner() {
     esac
     [[ "${child_pid}" -gt 0 && -n "${child_start}" ]] || return 1
   fi
-  CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_PID="${owner_pid}"
-  CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_START="${owner_start}"
-  CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID="${child_pid}"
-  CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_START="${child_start}"
+  CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_PID="${owner_pid}"
+  CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_START="${owner_start}"
+  CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID="${child_pid}"
+  CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_START="${child_start}"
 }
 
 sync_worker_launch_agent_process_identity_is_stale() {
@@ -80,19 +80,19 @@ sync_worker_launch_agent_published_owner_is_stale() {
 sync_worker_launch_agent_publish_owner() {
   local child_pid="${1:-}"
   local child_start="${2:-}"
-  local owner_path="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/owner"
+  local owner_path="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/owner"
   local temporary_owner_path="${owner_path}.$$"
 
   if [[ -n "${child_pid}" ]]; then
     printf '%s\n%s\n%s\n%s\n' \
       "$$" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" \
       "${child_pid}" \
       "${child_start}" > "${temporary_owner_path}"
   else
     printf '%s\n%s\n' \
       "$$" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" > "${temporary_owner_path}"
+      "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" > "${temporary_owner_path}"
   fi
   if ! mv -f "${temporary_owner_path}" "${owner_path}"; then
     rm -f "${temporary_owner_path}"
@@ -106,16 +106,16 @@ sync_worker_launch_agent_run_launchctl() {
   local gate_path=""
   local owner_temporary_path=""
   local owner_pid="$$"
-  local owner_start="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}"
+  local owner_start="${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}"
   local command_status=1
 
-  if [[ "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD}" -ne 1 ]]; then
+  if [[ "${CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD}" -ne 1 ]]; then
     command launchctl "$@"
     return
   fi
 
-  gate_path="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/.launchctl-ready"
-  owner_temporary_path="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/owner.$$"
+  gate_path="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/.launchctl-ready"
+  owner_temporary_path="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/owner.$$"
   rm -f "${gate_path}" "${owner_temporary_path}"
   (
     while [[ ! -f "${gate_path}" ]]; do
@@ -126,7 +126,7 @@ sync_worker_launch_agent_run_launchctl() {
       fi
       sleep 0.01
     done
-    exec "${CONTEXTWIKI_LAUNCH_AGENT_LAUNCHCTL_PATH}" "$@"
+    exec "${CONTEXTZIP_LAUNCH_AGENT_LAUNCHCTL_PATH}" "$@"
   ) &
   child_pid=$!
   child_start="$(sync_worker_launch_agent_process_start_id "${child_pid}")"
@@ -152,7 +152,7 @@ sync_worker_launch_agent_run_launchctl() {
     command_status=$?
   fi
   rm -f "${gate_path}"
-  if [[ "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]]; then
+  if [[ "${CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]]; then
     sync_worker_launch_agent_publish_owner
   fi
   return "${command_status}"
@@ -216,7 +216,7 @@ sync_worker_launch_agent_path_is_old_orphan() {
     ""|*[!0-9]*) return 1 ;;
   esac
   ((now >= directory_mtime)) || return 1
-  ((now - directory_mtime >= CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE))
+  ((now - directory_mtime >= CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE))
 }
 
 sync_worker_launch_agent_try_recover_stale_reclaim_marker() {
@@ -227,10 +227,10 @@ sync_worker_launch_agent_try_recover_stale_reclaim_marker() {
     return 1
   if sync_worker_launch_agent_read_published_lock_owner "${owner_path}"; then
     sync_worker_launch_agent_published_owner_is_stale \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_START}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_START}" ||
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_START}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_START}" ||
       return 1
   elif ! sync_worker_launch_agent_path_is_old_orphan "${reclaim_dir}"; then
     return 1
@@ -253,7 +253,7 @@ sync_worker_launch_agent_release_reclaim_marker() {
     } < "${owner_path}"
   fi
   if [[ "${owner_pid}" == "$$" &&
-    "${owner_start}" == "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" ]]; then
+    "${owner_start}" == "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" ]]; then
     rm -f "${owner_path}"
     rmdir "${reclaim_dir}" 2>/dev/null || true
   fi
@@ -270,16 +270,16 @@ sync_worker_launch_agent_try_recover_stale_lock() {
   mkdir "${reclaim_dir}" 2>/dev/null || return 1
   if ! printf '%s\n%s\n' \
     "$$" \
-    "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" > "${reclaim_owner_path}"; then
+    "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" > "${reclaim_owner_path}"; then
     rmdir "${reclaim_dir}" 2>/dev/null || true
     return 1
   fi
   if sync_worker_launch_agent_read_published_lock_owner "${owner_path}"; then
     if sync_worker_launch_agent_published_owner_is_stale \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_START}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
-      "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_START}"; then
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_START}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
+      "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_START}"; then
       rm -f "${owner_path}"
       rm -f "${lock_dir}/.launchctl-ready"
       rmdir "${lock_dir}" 2>/dev/null || true
@@ -304,11 +304,11 @@ sync_worker_launch_agent_acquire_lock() {
   local previous_umask
   local lock_created
 
-  if [[ "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]]; then
+  if [[ "${CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]]; then
     return 0
   fi
 
-  lock_root="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_ROOT:-${TMPDIR:-/tmp}/contextwiki-launch-agent-locks-$(id -u)}"
+  lock_root="${CONTEXTZIP_LAUNCH_AGENT_LOCK_ROOT:-${TMPDIR:-/tmp}/context-zip-launch-agent-locks-$(id -u)}"
   [[ "${lock_root}" = /* ]] || {
     printf 'error: LaunchAgent lock root must be absolute: %s\n' \
       "${lock_root}" >&2
@@ -340,14 +340,14 @@ sync_worker_launch_agent_acquire_lock() {
   }
   chmod 0700 "${lock_root}"
 
-  timeout_seconds="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS:-30}"
+  timeout_seconds="${CONTEXTZIP_LAUNCH_AGENT_LOCK_TIMEOUT_SECONDS:-30}"
   case "${timeout_seconds}" in
     ""|*[!0-9]*)
       printf 'error: LaunchAgent lock timeout must be whole seconds\n' >&2
       return 1
       ;;
   esac
-  orphan_grace_seconds="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS:-60}"
+  orphan_grace_seconds="${CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE_SECONDS:-60}"
   case "${orphan_grace_seconds}" in
     ""|*[!0-9]*)
       printf 'error: LaunchAgent orphan grace must be whole seconds\n' >&2
@@ -360,27 +360,27 @@ sync_worker_launch_agent_acquire_lock() {
       >&2
     return 1
   fi
-  CONTEXTWIKI_LAUNCH_AGENT_LOCK_ORPHAN_GRACE="${orphan_grace_seconds}"
+  CONTEXTZIP_LAUNCH_AGENT_LOCK_ORPHAN_GRACE="${orphan_grace_seconds}"
 
-  CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR="${lock_root}/${label}.lock"
-  reclaim_dir="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}.reclaim"
-  owner_path="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/owner"
-  CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START="$(
+  CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR="${lock_root}/${label}.lock"
+  reclaim_dir="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}.reclaim"
+  owner_path="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/owner"
+  CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START="$(
     sync_worker_launch_agent_process_start_id "$$"
   )"
-  [[ -n "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" ]] || {
+  [[ -n "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" ]] || {
     printf 'error: could not identify LaunchAgent lock owner process\n' >&2
     return 1
   }
 
   started_at="${SECONDS}"
   while true; do
-    if [[ -L "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" ||
-      (-e "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" &&
-      (! -d "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" ||
-      ! -O "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}")) ]]; then
+    if [[ -L "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" ||
+      (-e "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" &&
+      (! -d "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" ||
+      ! -O "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}")) ]]; then
       printf 'error: unsafe LaunchAgent operation lock: %s\n' \
-        "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" >&2
+        "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" >&2
       return 1
     fi
 
@@ -398,24 +398,24 @@ sync_worker_launch_agent_acquire_lock() {
     previous_umask="$(umask)"
     umask 077
     if [[ ! -d "${reclaim_dir}" ]] &&
-      mkdir "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null; then
+      mkdir "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null; then
       lock_created=1
     fi
     umask "${previous_umask}"
     if [[ "${lock_created}" -eq 1 ]]; then
       if ! printf '%s\n%s\n' \
         "$$" \
-        "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" > "${owner_path}"; then
-        rmdir "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
+        "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" > "${owner_path}"; then
+        rmdir "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
         printf 'error: could not record LaunchAgent lock owner\n' >&2
         return 1
       fi
-      CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD=1
-      CONTEXTWIKI_LAUNCH_AGENT_LAUNCHCTL_PATH="$(type -P launchctl)"
-      [[ -n "${CONTEXTWIKI_LAUNCH_AGENT_LAUNCHCTL_PATH}" ]] || {
-        CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD=0
+      CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD=1
+      CONTEXTZIP_LAUNCH_AGENT_LAUNCHCTL_PATH="$(type -P launchctl)"
+      [[ -n "${CONTEXTZIP_LAUNCH_AGENT_LAUNCHCTL_PATH}" ]] || {
+        CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD=0
         rm -f "${owner_path}"
-        rmdir "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
+        rmdir "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
         printf 'error: could not identify launchctl executable\n' >&2
         return 1
       }
@@ -424,7 +424,7 @@ sync_worker_launch_agent_acquire_lock() {
     fi
 
     sync_worker_launch_agent_try_recover_stale_lock \
-      "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" || true
+      "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" || true
     now="${SECONDS}"
     if ((now - started_at >= timeout_seconds)); then
       printf 'error: timed out waiting for LaunchAgent operation lock: %s\n' \
@@ -438,19 +438,19 @@ sync_worker_launch_agent_acquire_lock() {
 sync_worker_launch_agent_release_lock() {
   local owner_path
 
-  [[ "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]] || return 0
-  owner_path="${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/owner"
+  [[ "${CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD}" -eq 1 ]] || return 0
+  owner_path="${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/owner"
   if sync_worker_launch_agent_read_published_lock_owner "${owner_path}" &&
-    [[ "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" == "$$" &&
-    "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_OWNER_START}" == \
-    "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_OWNER_START}" ]] &&
-    { [[ -z "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" ]] ||
+    [[ "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_PID}" == "$$" &&
+    "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_OWNER_START}" == \
+    "${CONTEXTZIP_LAUNCH_AGENT_LOCK_OWNER_START}" ]] &&
+    { [[ -z "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" ]] ||
       sync_worker_launch_agent_process_identity_is_stale \
-        "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
-        "${CONTEXTWIKI_LAUNCH_AGENT_PUBLISHED_CHILD_START}"; }; then
+        "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_PID}" \
+        "${CONTEXTZIP_LAUNCH_AGENT_PUBLISHED_CHILD_START}"; }; then
     rm -f "${owner_path}"
-    rm -f "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}/.launchctl-ready"
-    rmdir "${CONTEXTWIKI_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
+    rm -f "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}/.launchctl-ready"
+    rmdir "${CONTEXTZIP_LAUNCH_AGENT_LOCK_DIR}" 2>/dev/null || true
   fi
-  CONTEXTWIKI_LAUNCH_AGENT_LOCK_HELD=0
+  CONTEXTZIP_LAUNCH_AGENT_LOCK_HELD=0
 }

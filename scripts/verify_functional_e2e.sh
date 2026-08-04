@@ -8,9 +8,9 @@ export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 export IS_TESTING="${IS_TESTING:-1}"
 DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
-unset CONTEXTWIKI_OBSIDIAN_VAULT_PATH
-unset CONTEXTWIKI_OBSIDIAN_MAX_FILES
-unset CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES
+unset CONTEXTZIP_OBSIDIAN_VAULT_PATH
+unset CONTEXTZIP_OBSIDIAN_MAX_FILES
+unset CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES
 mkdir -p "$UV_CACHE_DIR"
 
 uv_workspace_healthy() {
@@ -27,7 +27,7 @@ fi
 ALLOW_SYSTEM_PYTHON="${VERIFY_E2E_ALLOW_SYSTEM_PYTHON:-0}"
 
 RETAINED_FUNCTIONAL_TESTS=(
-  tests/e2e/test_contextwiki_flow.py
+  tests/e2e/test_context_zip_flow.py
   tests/e2e/test_durable_sync_worker_flow.py
   tests/e2e/test_obsidian_connector_flow.py
   tests/e2e/test_phase_b_connectors_flow.py

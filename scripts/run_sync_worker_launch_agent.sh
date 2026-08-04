@@ -9,12 +9,12 @@ fi
 
 UV_PATH="$1"
 REPO_ROOT="$2"
-DIAGNOSTIC_LOG_PATH="${CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH:-}"
-DIAGNOSTIC_LOG_MAX_BYTES="${CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES:-1048576}"
-SANITIZER_PYTHON_PATH="${CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH:-}"
+DIAGNOSTIC_LOG_PATH="${CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH:-}"
+DIAGNOSTIC_LOG_MAX_BYTES="${CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES:-1048576}"
+SANITIZER_PYTHON_PATH="${CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH:-}"
 
 if [[ -z "${DIAGNOSTIC_LOG_PATH}" ]]; then
-  printf 'error: CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH is required\n' >&2
+  printf 'error: CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH is required\n' >&2
   exit 2
 fi
 if [[ "${UV_PATH}" != /* ]] || [[ ! -x "${UV_PATH}" ]]; then
@@ -24,12 +24,12 @@ fi
 if [[ "${REPO_ROOT}" != /* ]] ||
   [[ ! -d "${REPO_ROOT}" ]] ||
   [[ ! -f "${REPO_ROOT}/core/error_sanitizer.py" ]]; then
-  printf 'error: absolute ContextWiki repository path is required\n' >&2
+  printf 'error: absolute ContextZip repository path is required\n' >&2
   exit 2
 fi
 if [[ ! "${DIAGNOSTIC_LOG_MAX_BYTES}" =~ ^[0-9]+$ ]] ||
   [[ "${DIAGNOSTIC_LOG_MAX_BYTES}" -lt 1024 ]]; then
-  printf 'error: CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES must be at least 1024\n' \
+  printf 'error: CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES must be at least 1024\n' \
     >&2
   exit 2
 fi

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 def test_load_repo_dotenv_uses_explicit_repo_env_path(monkeypatch, tmp_path):
     calls = []
     fake_env_path = tmp_path / ".env"
-    fake_env_path.write_text("CONTEXTWIKI_OBSIDIAN_VAULT_PATH=/tmp/vault\n")
+    fake_env_path.write_text("CONTEXTZIP_OBSIDIAN_VAULT_PATH=/tmp/vault\n")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runtime_env, "_repo_dotenv_path", lambda: fake_env_path)

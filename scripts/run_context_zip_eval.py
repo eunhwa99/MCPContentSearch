@@ -15,12 +15,12 @@ def _ensure_repo_root_on_sys_path() -> None:
 
 _ensure_repo_root_on_sys_path()
 
-from evals.contextwiki_eval import run_contextwiki_eval
+from evals.context_zip_eval import run_context_zip_eval as run_context_zip_eval
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run deterministic ContextWiki evals and optionally write JSON artifacts."
+        description="Run deterministic ContextZip evals and optionally write JSON artifacts."
     )
     parser.add_argument(
         "--output-dir",
@@ -35,7 +35,7 @@ def main() -> None:
     args = parser.parse_args()
 
     output_dir = args.output_dir or None
-    summary = run_contextwiki_eval(
+    summary = run_context_zip_eval(
         output_dir=output_dir,
         include_latency=args.include_latency,
     )

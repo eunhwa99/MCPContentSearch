@@ -76,14 +76,14 @@ def test_github_token_env_var_must_be_safe_metadata_reference(value):
 
 def test_github_source_list_parses_comma_newline_and_whitespace(monkeypatch):
     monkeypatch.setenv(
-        "CONTEXTWIKI_GITHUB_REPOSITORIES",
-        " eunhwa99/MCPContentSearch@main,\n  eunhwa99/docs@release ,, ",
+        "CONTEXTZIP_GITHUB_REPOSITORIES",
+        " eunhwa99/context-zip@main,\n  eunhwa99/docs@release ,, ",
     )
 
     config = AppConfig()
 
     assert config.github_repositories == (
-        "eunhwa99/MCPContentSearch@main",
+        "eunhwa99/context-zip@main",
         "eunhwa99/docs@release",
     )
 
@@ -91,10 +91,10 @@ def test_github_source_list_parses_comma_newline_and_whitespace(monkeypatch):
 @pytest.mark.parametrize(
     "name",
     [
-        "CONTEXTWIKI_GITHUB_MAX_FILES",
-        "CONTEXTWIKI_GITHUB_MAX_FILE_BYTES",
-        "CONTEXTWIKI_OBSIDIAN_MAX_FILES",
-        "CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES",
+        "CONTEXTZIP_GITHUB_MAX_FILES",
+        "CONTEXTZIP_GITHUB_MAX_FILE_BYTES",
+        "CONTEXTZIP_OBSIDIAN_MAX_FILES",
+        "CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES",
     ],
 )
 def test_source_limit_env_values_must_be_valid_integers(monkeypatch, name):
@@ -105,8 +105,8 @@ def test_source_limit_env_values_must_be_valid_integers(monkeypatch, name):
 
 
 def test_obsidian_limits_load_from_env(monkeypatch):
-    monkeypatch.setenv("CONTEXTWIKI_OBSIDIAN_MAX_FILES", "17")
-    monkeypatch.setenv("CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES", "4096")
+    monkeypatch.setenv("CONTEXTZIP_OBSIDIAN_MAX_FILES", "17")
+    monkeypatch.setenv("CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES", "4096")
 
     config = AppConfig()
 
@@ -115,7 +115,7 @@ def test_obsidian_limits_load_from_env(monkeypatch):
 
 
 def test_obsidian_vault_path_expands_user_home_from_env(monkeypatch):
-    monkeypatch.setenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "~/vaults/contextwiki")
+    monkeypatch.setenv("CONTEXTZIP_OBSIDIAN_VAULT_PATH", "~/vaults/context-zip")
 
     config = AppConfig()
 
@@ -125,7 +125,7 @@ def test_obsidian_vault_path_expands_user_home_from_env(monkeypatch):
 
 
 def test_obsidian_vault_path_expands_user_home_from_constructor_string():
-    config = AppConfig(obsidian_vault_path="~/vaults/contextwiki")
+    config = AppConfig(obsidian_vault_path="~/vaults/context-zip")
 
     assert config.obsidian_vault_path is not None
     assert config.obsidian_vault_path.is_absolute()
@@ -133,7 +133,7 @@ def test_obsidian_vault_path_expands_user_home_from_constructor_string():
 
 
 def test_obsidian_vault_path_expands_user_home_from_constructor_path():
-    config = AppConfig(obsidian_vault_path=Path("~/vaults/contextwiki"))
+    config = AppConfig(obsidian_vault_path=Path("~/vaults/context-zip"))
 
     assert config.obsidian_vault_path is not None
     assert config.obsidian_vault_path.is_absolute()
@@ -147,14 +147,17 @@ def test_obsidian_vault_path_invalid_tilde_user_does_not_raise():
 
 
 def test_obsidian_vault_path_invalid_tilde_user_env_does_not_raise(monkeypatch):
-    monkeypatch.setenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "~nonexistentuser/vault")
+    monkeypatch.setenv("CONTEXTZIP_OBSIDIAN_VAULT_PATH", "~nonexistentuser/vault")
 
     config = AppConfig()
 
     assert config.obsidian_vault_path == Path("~nonexistentuser/vault")
 
 
-def test_cache_dir_defaults_under_contextwiki_home():
+def test_cache_dir_defaults_under_context_zip_home():
     config = AppConfig()
 
-    assert config.cache_dir == str(Path.home() / ".mcp_content_search" / "llama_cache")
+    context_zip_home = Path.home() / ".context-zip"
+    assert config.cache_dir == str(context_zip_home / "llama_cache")
+    assert config.chroma_db_path == context_zip_home / "chroma_db"
+    assert config.metadata_db_path == context_zip_home / "context_zip_metadata.sqlite3"

@@ -112,7 +112,7 @@ The following earlier decisions remain accepted:
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
 - `.agents/docs/adr/0007-sync-source-background-launch-contract.md`
 - `.agents/docs/adr/0008-background-sync-all-and-deterministic-retrieval.md`
 - `docs/plan/2026-07-30-remove-sync-wait-timeout.md`

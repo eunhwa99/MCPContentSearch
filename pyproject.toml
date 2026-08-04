@@ -1,7 +1,7 @@
 [project]
-name = "mcp-content-search"
+name = "context-zip"
 version = "0.1.0"
-description = "FastMCP retrieval server with ContextWiki source sync and citation answers."
+description = "FastMCP retrieval server with ContextZip source sync and citation answers."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [

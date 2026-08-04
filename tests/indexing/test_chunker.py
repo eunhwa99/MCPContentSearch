@@ -42,9 +42,9 @@ def test_markdown_chunking_uses_heading_sections():
         id="readme",
         source_id="source_github",
         title="README.md",
-        content="# Intro\nContextWiki overview.\n## Install\nRun uv sync.\n",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/README.md",
-        canonical_url="https://github.com/eunhwa99/MCPContentSearch/blob/main/README.md",
+        content="# Intro\nContextZip overview.\n## Install\nRun uv sync.\n",
+        url="https://github.com/eunhwa99/context-zip/blob/main/README.md",
+        canonical_url="https://github.com/eunhwa99/context-zip/blob/main/README.md",
         platform="GitHub",
         path="README.md",
         updated_at="2026-05-22T00:00:00Z",
@@ -54,7 +54,7 @@ def test_markdown_chunking_uses_heading_sections():
 
     assert [chunk.line_start for chunk in chunks] == [1, 3]
     assert [chunk.line_end for chunk in chunks] == [2, 4]
-    assert chunks[0].text == "# Intro\nContextWiki overview."
+    assert chunks[0].text == "# Intro\nContextZip overview."
     assert chunks[1].text == "## Install\nRun uv sync."
     assert all(chunk.url == document.canonical_url for chunk in chunks)
 
@@ -64,7 +64,7 @@ def test_markdown_chunking_uses_setext_heading_sections():
         id="readme",
         source_id="source_github",
         title="README.md",
-        content="Intro\n=====\nContextWiki overview.\n\nInstall\n-------\nRun uv sync.\n",
+        content="Intro\n=====\nContextZip overview.\n\nInstall\n-------\nRun uv sync.\n",
         url="https://example.com/README.md",
         platform="GitHub",
         path="README.md",
@@ -74,7 +74,7 @@ def test_markdown_chunking_uses_setext_heading_sections():
 
     assert [chunk.line_start for chunk in chunks] == [1, 5]
     assert [chunk.line_end for chunk in chunks] == [3, 7]
-    assert chunks[0].text == "Intro\n=====\nContextWiki overview."
+    assert chunks[0].text == "Intro\n=====\nContextZip overview."
     assert chunks[1].text == "Install\n-------\nRun uv sync."
 
 
@@ -397,7 +397,7 @@ def test_code_chunking_preserves_line_ranges():
                 "    pass",
             ]
         ),
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py",
+        url="https://github.com/eunhwa99/context-zip/blob/main/api/tools.py",
         platform="GitHub",
         path="api/tools.py",
         updated_at="2026-05-22T00:00:00Z",
@@ -454,7 +454,7 @@ def test_source_aware_chunking_preserves_leading_blank_line_numbers():
         id="readme",
         source_id="source_github",
         title="README.md",
-        content="\n\n# Intro\nContextWiki overview.\n",
+        content="\n\n# Intro\nContextZip overview.\n",
         url="https://example.com/README.md",
         platform="GitHub",
         path="README.md",
@@ -497,7 +497,7 @@ def test_chunk_identity_prefers_external_id_over_document_id():
     assert chunk.chunk_id.startswith("owner/repo:api/tools.py:chunk:0:")
 
 
-def test_converter_marks_only_contextwiki_chunks_as_managed():
+def test_converter_marks_only_context_zip_chunks_as_managed():
     raw = DocumentConverter.to_llama_document(
         DocumentModel(
             id="raw_doc",
@@ -520,8 +520,8 @@ def test_converter_marks_only_contextwiki_chunks_as_managed():
         )
     )
 
-    assert raw.metadata["contextwiki_managed"] == "false"
-    assert chunk.metadata["contextwiki_managed"] == "true"
+    assert raw.metadata["context_zip_managed"] == "false"
+    assert chunk.metadata["context_zip_managed"] == "true"
 
 
 def test_converter_prefers_external_id_for_document_metadata():

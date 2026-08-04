@@ -1,4 +1,4 @@
-# ADR 0004: ContextWiki Phase B External Connectors
+# ADR 0004: ContextZip Phase B External Connectors
 
 ## Status
 
@@ -44,8 +44,8 @@ Historical superseded source id:
 
 Connector configuration is non-secret and environment-driven through `AppConfig`
 fields such as GitHub repository specs with optional `@ref`,
-`CONTEXTWIKI_GITHUB_DEFAULT_REF`, file limits, user agent, and
-`CONTEXTWIKI_OBSIDIAN_VAULT_PATH`. GitHub authentication is optional and
+`CONTEXTZIP_GITHUB_DEFAULT_REF`, file limits, user agent, and
+`CONTEXTZIP_OBSIDIAN_VAULT_PATH`. GitHub authentication is optional and
 referenced in source metadata as `env:GITHUB_TOKEN`; the raw token is read only
 at runtime and must not be stored in SQLite, docs, tests, or logs. Obsidian
 does not require a token, live app, plugin, or API server.
@@ -61,13 +61,13 @@ The GitHub connector produces `DocumentModel` records that satisfy the Phase B-0
 GitHub ingestion uses the GitHub tree/blob API or equivalent mocked client
 behavior, filters to bounded text/code/markdown files, stores blob SHA as
 `version_id`, uses GitHub blob URLs as canonical citations, and falls back to
-`CONTEXTWIKI_GITHUB_DEFAULT_REF` when a repository spec omits `@ref`.
+`CONTEXTZIP_GITHUB_DEFAULT_REF` when a repository spec omits `@ref`.
 
 Obsidian ingestion reads bounded Markdown files from the configured local vault,
 skips hidden and Obsidian metadata directories, parses frontmatter titles when
 available, and uses `obsidian://open` canonical URLs. Obsidian bounds are
-configured through positive integer `CONTEXTWIKI_OBSIDIAN_MAX_FILES` and
-`CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES` values. Verification must use temporary
+configured through positive integer `CONTEXTZIP_OBSIDIAN_MAX_FILES` and
+`CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES` values. Verification must use temporary
 vaults unless both a plan and explicit user approval authorize the real vault
 path.
 
@@ -126,8 +126,8 @@ documents.
 
 ## Related
 
-- `.agents/docs/adr/0001-layered-mcp-content-search-architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
-- `.agents/docs/adr/0003-contextwiki-phase-b0-identity-and-chunking.md`
-- `docs/plan/2026-05-20-contextwiki-roadmap.md`
-- `docs/plan/2026-05-22-contextwiki-phase-b-connectors.md`
+- `.agents/docs/adr/0001-layered-context-zip-architecture.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
+- `.agents/docs/adr/0003-context-zip-phase-b0-identity-and-chunking.md`
+- `docs/plan/2026-05-20-context_zip-roadmap.md`
+- `docs/plan/2026-05-22-context_zip-phase-b-connectors.md`

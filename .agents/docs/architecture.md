@@ -125,7 +125,7 @@ sequenceDiagram
 
 The generic worker may run up to `N` distinct-source jobs concurrently across
 Notion, Tistory, GitHub, and Obsidian. Default `N` is 2 via
-`CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`, fail-closed at
+`CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`, fail-closed at
 startup). `N=1` restores the previous global single-flight behavior. SQLite
 claim remains authoritative with a `COUNT(RUNNING) < N` gate, and enqueue still
 allows at most one active queued/running job per `source_id`. Within one

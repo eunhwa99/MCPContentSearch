@@ -106,12 +106,12 @@ class FakeCitationAnswerService:
 
 
 def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_path):
-    monkeypatch.delenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", raising=False)
-    monkeypatch.delenv("CONTEXTWIKI_OBSIDIAN_MAX_FILES", raising=False)
-    monkeypatch.delenv("CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES", raising=False)
+    monkeypatch.delenv("CONTEXTZIP_OBSIDIAN_VAULT_PATH", raising=False)
+    monkeypatch.delenv("CONTEXTZIP_OBSIDIAN_MAX_FILES", raising=False)
+    monkeypatch.delenv("CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES", raising=False)
     config = AppConfig(
         chroma_db_path=tmp_path / "chroma",
-        metadata_db_path=tmp_path / "contextwiki.sqlite3",
+        metadata_db_path=tmp_path / "context_zip.sqlite3",
         github_repositories=(),
     )
     chroma_collections = []
@@ -162,14 +162,14 @@ def test_create_app_registers_slim_mcp_tools_and_core_sources(monkeypatch, tmp_p
         "source_tistory",
     }
     assert all(source["enabled"] is False for source in sources.values())
-    assert sources["source_obsidian"]["auth_ref"] == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert sources["source_obsidian"]["auth_ref"] == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert sources["source_obsidian"]["last_error"] == (
-        "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+        "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
         "is not set or is not an existing directory."
     )
 
     metadata_store = FakeMetadataStore.instances[0]
-    assert metadata_store.db_path == tmp_path / "contextwiki.sqlite3"
+    assert metadata_store.db_path == tmp_path / "context_zip.sqlite3"
     assert metadata_store.recovered_source_ids == (
         "source_notion",
         "source_tistory",

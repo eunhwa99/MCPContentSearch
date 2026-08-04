@@ -9,7 +9,12 @@ from environments.config import AppConfig
 from core.models import DocumentModel, IndexStatusModel, IndexState
 from core.exceptions import IndexingError
 from indexing.background_tasks import safe_error_message
-from indexing.manager import IndexManager
+from indexing.manager import (
+    LEGACY_MANAGED_METADATA_KEY,
+    IndexManager,
+    _managed_not_true_filters,
+    _managed_true_filter,
+)
 from indexing.converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
@@ -165,12 +170,15 @@ class ContentIndexer:
         async with self._mutation_lock:
             for document_id in document_ids:
                 if source_id:
+                    filters = [{"doc_id": document_id}, {"source_id": source_id}]
+                    self.collection.delete(
+                        where={"$and": [*filters, _managed_true_filter()]}
+                    )
                     self.collection.delete(
                         where={
                             "$and": [
-                                {"doc_id": document_id},
-                                {"source_id": source_id},
-                                {"contextwiki_managed": "true"},
+                                *filters,
+                                _managed_true_filter(LEGACY_MANAGED_METADATA_KEY),
                             ]
                         }
                     )
@@ -181,7 +189,9 @@ class ContentIndexer:
                     )
                     continue
                 self.collection.delete(
-                    where={"$and": [{"doc_id": document_id}, {"contextwiki_managed": {"$ne": "true"}}]}
+                    where={
+                        "$and": [{"doc_id": document_id}, *_managed_not_true_filters()]
+                    }
                 )
                 logger.debug("Deleted indexed document: %s", document_id)
     

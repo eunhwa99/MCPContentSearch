@@ -5,7 +5,8 @@ set -euo pipefail
 # reintroduce @@...@@ tokens when an XML-escaped replacement contains "&".
 shopt -u patsub_replacement 2>/dev/null || true
 
-LABEL="com.eunaverse.contextwiki.sync-worker"
+LABEL="com.eunaverse.context-zip.sync-worker"
+OLD_LABEL="com.eunaverse.context""wiki.sync-worker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 # shellcheck source=scripts/sync_worker_launch_agent_lock.sh
@@ -77,13 +78,13 @@ usage() {
   cat <<'EOF'
 Usage: scripts/install_sync_worker_launch_agent.sh [options]
 
-Render and install the ContextWiki sync worker as a macOS LaunchAgent.
+Render and install the ContextZip sync worker as a macOS LaunchAgent.
 
 Options:
   --repo-root PATH          Repository working directory (default: detected)
   --uv-path PATH            uv executable (default: resolved from PATH)
   --log-dir PATH            Worker log directory
-                            (default: ~/.mcp_content_search/logs)
+                            (default: ~/.context-zip/logs)
   --launch-agents-dir PATH  LaunchAgents directory
                             (default: ~/Library/LaunchAgents)
   --render-only PATH        Render a plist to PATH without calling launchctl
@@ -122,6 +123,21 @@ run_launchctl_interrupt_safe() {
     break
   done
   return "${command_status}"
+}
+
+migrate_legacy_launch_agent_if_present() {
+  local old_plist_path="${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist"
+  local old_service_target="${DOMAIN_TARGET}/${OLD_LABEL}"
+  local old_service_loaded=0
+  [[ -f "${old_plist_path}" ]] || return 0
+  if run_launchctl_interrupt_safe print "${old_service_target}" >/dev/null 2>&1; then
+    old_service_loaded=1
+  fi
+  if [[ "${old_service_loaded}" -eq 1 ]] &&
+    ! run_launchctl_interrupt_safe bootout "${old_service_target}"; then
+    fail "could not stop legacy LaunchAgent service; preserved legacy plist: ${old_plist_path}"
+  fi
+  rm -f "${old_plist_path}"
 }
 
 exit_if_interrupted_without_transaction() {
@@ -636,13 +652,13 @@ fi
   fail "uv executable is not executable: ${UV_PATH:-<empty>}"
 UV_PATH="$(cd "$(dirname "${UV_PATH}")" && pwd -P)/$(basename "${UV_PATH}")"
 
-USER_HOME="${CONTEXTWIKI_LAUNCH_AGENT_HOME:-${HOME:-}}"
+USER_HOME="${CONTEXTZIP_LAUNCH_AGENT_HOME:-${HOME:-}}"
 if [[ -z "${LOG_DIR}" || -z "${LAUNCH_AGENTS_DIR}" ]]; then
   [[ -n "${USER_HOME}" ]] ||
     fail "home directory is unavailable; pass --log-dir and --launch-agents-dir"
 fi
 if [[ -z "${LOG_DIR}" ]]; then
-  LOG_DIR="${USER_HOME}/.mcp_content_search/logs"
+  LOG_DIR="${USER_HOME}/.context-zip/logs"
 fi
 if [[ -z "${LAUNCH_AGENTS_DIR}" ]]; then
   LAUNCH_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
@@ -671,6 +687,11 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   printf 'uv executable: %s\n' "${UV_PATH}"
   printf 'Log directory: %s\n' "${LOG_DIR}"
   printf 'Plist destination: %s\n' "${PLIST_PATH}"
+  if [[ -f "${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist" ]]; then
+    printf 'Would boot out %s and remove %s\n' \
+      "${DOMAIN_TARGET}/${OLD_LABEL}" \
+      "${LAUNCH_AGENTS_DIR}/${OLD_LABEL}.plist"
+  fi
   if [[ "${RESTART_CHANGED}" -eq 1 ]]; then
     printf 'Would render the plist and explicitly restart %s if it changed.\n' \
       "${SERVICE_TARGET}"
@@ -711,6 +732,7 @@ if [[ "${PLIST_IS_IDENTICAL}" -eq 1 ]]; then
   PLIST_CANDIDATE=""
   exit_if_interrupted_without_transaction
   if [[ "${SERVICE_LOADED}" -eq 1 ]]; then
+    migrate_legacy_launch_agent_if_present
     finalize_success_output "unchanged"
     printf 'Already installed with identical configuration; no changes made: %s\n' \
       "${LABEL}"
@@ -726,6 +748,7 @@ if [[ "${PLIST_IS_IDENTICAL}" -eq 1 ]]; then
     fi
     rollback_if_interrupted
     commit_install_transaction
+    migrate_legacy_launch_agent_if_present
     finalize_success_output "committed"
     printf 'LaunchAgent configuration is identical; started unloaded service: %s\n' \
       "${LABEL}"
@@ -757,6 +780,7 @@ else
   fi
   rollback_if_interrupted
   commit_install_transaction
+  migrate_legacy_launch_agent_if_present
   finalize_success_output "committed"
   printf 'Installed and started %s\n' "${LABEL}"
 fi

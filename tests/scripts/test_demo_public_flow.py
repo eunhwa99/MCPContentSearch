@@ -15,8 +15,8 @@ from scripts.demo_public_flow import main, parse_args, render_demo_text, run_dem
 def test_run_demo_returns_grounded_local_flow():
     result = asyncio.run(
         run_demo(
-            question="How does ContextWiki prevent stale citations?",
-            query="How does ContextWiki prevent stale citations?",
+            question="How does ContextZip prevent stale citations?",
+            query="How does ContextZip prevent stale citations?",
         )
     )
 
@@ -31,7 +31,7 @@ def test_run_demo_returns_grounded_local_flow():
 def test_run_demo_returns_insufficient_for_unrelated_question():
     result = asyncio.run(
         run_demo(
-            query="How does ContextWiki prevent stale citations?",
+            query="How does ContextZip prevent stale citations?",
             question="What is the deployment region for production?",
         )
     )
@@ -65,7 +65,7 @@ def test_run_demo_uses_temp_cache_dir_and_restores_it(monkeypatch):
     asyncio.run(
         run_demo(
             query="stale citations",
-            question="How does ContextWiki prevent stale citations?",
+            question="How does ContextZip prevent stale citations?",
         )
     )
 
@@ -86,7 +86,7 @@ def test_run_demo_does_not_require_preinitialized_embed_model():
         result = asyncio.run(
             run_demo(
                 query="stale citations",
-                question="How does ContextWiki prevent stale citations?",
+                question="How does ContextZip prevent stale citations?",
             )
         )
 
@@ -114,16 +114,16 @@ def test_render_demo_text_includes_sync_search_and_answer_sections():
             "search": {"results": [{"chunk_id": "chunk-1"}]},
             "answer": {"evidence_status": "grounded", "citations": [{"chunk_id": "chunk-1"}]},
         },
-        query="How does ContextWiki prevent stale citations?",
-        question="How does ContextWiki prevent stale citations?",
+        query="How does ContextZip prevent stale citations?",
+        question="How does ContextZip prevent stale citations?",
     )
 
-    assert "ContextWiki Local Demo" in text
+    assert "ContextZip Local Demo" in text
     assert "1. Sync retained source" in text
     assert "Retrieval and helper preview use the same input." in text
-    assert "3. Search query: How does ContextWiki prevent stale citations?" in text
+    assert "3. Search query: How does ContextZip prevent stale citations?" in text
     assert (
-        "4. Helper answer preview question: How does ContextWiki prevent stale citations?"
+        "4. Helper answer preview question: How does ContextZip prevent stale citations?"
         in text
     )
     assert "bundled vault through the local Obsidian connector" in text
@@ -150,7 +150,7 @@ def test_render_demo_text_warns_when_search_and_answer_inputs_diverge():
             "answer": {"evidence_status": "grounded", "citations": [{"chunk_id": "chunk-1"}]},
         },
         query="stale citations",
-        question="How does ContextWiki prevent stale citations?",
+        question="How does ContextZip prevent stale citations?",
     )
 
     assert "Retrieval and helper preview use different inputs; treat them as separate probes." in text
@@ -173,8 +173,8 @@ def test_demo_script_json_mode_runs_successfully():
     )
 
     payload = json.loads(completed.stdout)
-    assert payload["query"] == "How does ContextWiki prevent stale citations?"
-    assert payload["question"] == "How does ContextWiki prevent stale citations?"
+    assert payload["query"] == "How does ContextZip prevent stale citations?"
+    assert payload["question"] == "How does ContextZip prevent stale citations?"
     assert payload["same_input"] is True
     assert payload["sync"]["status"] == "queued"
     assert payload["sync"]["job_id"] == "<generated>"
@@ -202,7 +202,7 @@ def test_demo_script_default_text_mode_shows_local_workflow_scope():
         env=env,
     )
 
-    assert "ContextWiki Local Demo" in completed.stdout
+    assert "ContextZip Local Demo" in completed.stdout
     assert "Local workflow smoke" in completed.stdout
     assert "local Obsidian connector" in completed.stdout
     assert "Retrieval and helper preview use the same input." in completed.stdout
@@ -212,7 +212,7 @@ def test_demo_script_default_text_mode_shows_local_workflow_scope():
     assert "user-configured sources" in completed.stdout
     assert "public demo" not in completed.stdout.lower()
     assert "reviewer workflow" not in completed.stdout.lower()
-    assert "3. Search query: How does ContextWiki prevent stale citations?" in completed.stdout
+    assert "3. Search query: How does ContextZip prevent stale citations?" in completed.stdout
 
 
 def test_demo_script_text_mode_marks_separate_probes_when_inputs_differ():
@@ -228,7 +228,7 @@ def test_demo_script_text_mode_marks_separate_probes_when_inputs_differ():
             "--query",
             "sqlite active evidence gate",
             "--question",
-            "Why does ContextWiki validate citations through SQLite?",
+            "Why does ContextZip validate citations through SQLite?",
         ],
         cwd=repo_root,
         check=True,
@@ -239,7 +239,7 @@ def test_demo_script_text_mode_marks_separate_probes_when_inputs_differ():
 
     assert "Retrieval and helper preview use different inputs" in completed.stdout
     assert "3. Search query: sqlite active evidence gate" in completed.stdout
-    assert "4. Helper answer preview question: Why does ContextWiki validate citations through SQLite?" in completed.stdout
+    assert "4. Helper answer preview question: Why does ContextZip validate citations through SQLite?" in completed.stdout
 
 
 def test_demo_public_flow_script_runs_from_repo_root_without_pythonpath():
@@ -268,7 +268,7 @@ def test_parse_args_defaults_to_same_canonical_question(monkeypatch):
 
     args = parse_args()
 
-    assert args.query == "How does ContextWiki prevent stale citations?"
+    assert args.query == "How does ContextZip prevent stale citations?"
     assert args.question is None
 
 
@@ -286,13 +286,13 @@ def test_main_reuses_query_when_demo_question_is_omitted(monkeypatch, capsys):
             "answer": {"evidence_status": "grounded", "citations": []},
         }
 
-    monkeypatch.setattr(sys, "argv", ["demo_public_flow.py", "--query", "Why does ContextWiki validate citations through SQLite?"])
+    monkeypatch.setattr(sys, "argv", ["demo_public_flow.py", "--query", "Why does ContextZip validate citations through SQLite?"])
     monkeypatch.setattr("scripts.demo_public_flow.run_demo", stub_run_demo)
 
     main()
 
-    assert captured["query"] == "Why does ContextWiki validate citations through SQLite?"
-    assert captured["question"] == "Why does ContextWiki validate citations through SQLite?"
+    assert captured["query"] == "Why does ContextZip validate citations through SQLite?"
+    assert captured["question"] == "Why does ContextZip validate citations through SQLite?"
     assert "Retrieval and helper preview use the same input." in capsys.readouterr().out
 
 
@@ -317,7 +317,7 @@ def test_main_json_mode_marks_separate_probes_when_inputs_differ(monkeypatch, ca
             "--query",
             "stale citations",
             "--question",
-            "How does ContextWiki prevent stale citations?",
+            "How does ContextZip prevent stale citations?",
             "--json",
         ],
     )
@@ -327,7 +327,7 @@ def test_main_json_mode_marks_separate_probes_when_inputs_differ(monkeypatch, ca
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["query"] == "stale citations"
-    assert payload["question"] == "How does ContextWiki prevent stale citations?"
+    assert payload["question"] == "How does ContextZip prevent stale citations?"
     assert payload["same_input"] is False
 
 
@@ -352,7 +352,7 @@ def test_main_text_mode_marks_separate_probes_when_inputs_differ(monkeypatch, ca
             "--query",
             "stale citations",
             "--question",
-            "How does ContextWiki prevent stale citations?",
+            "How does ContextZip prevent stale citations?",
         ],
     )
     monkeypatch.setattr("scripts.demo_public_flow.run_demo", stub_run_demo)
@@ -362,7 +362,7 @@ def test_main_text_mode_marks_separate_probes_when_inputs_differ(monkeypatch, ca
     output = capsys.readouterr().out
     assert "Retrieval and helper preview use different inputs" in output
     assert "3. Search query: stale citations" in output
-    assert "4. Helper answer preview question: How does ContextWiki prevent stale citations?" in output
+    assert "4. Helper answer preview question: How does ContextZip prevent stale citations?" in output
 
 
 def test_demo_help_mentions_question_defaults_to_query():
@@ -377,7 +377,7 @@ def test_demo_help_mentions_question_defaults_to_query():
     )
 
     assert result.returncode == 0, result.stderr
-    assert "safe local ContextWiki workflow smoke" in result.stdout
+    assert "safe local ContextZip workflow smoke" in result.stdout
     assert "checks the local obsidian connector" in result.stdout.lower()
     assert "does not validate remote" in result.stdout
     assert "Notion/Tistory/GitHub connectors" in result.stdout

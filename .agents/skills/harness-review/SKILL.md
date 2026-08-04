@@ -1,6 +1,6 @@
 ---
 name: harness-review
-description: Middle and final three-reviewer gate for MCPContentSearch changes with distinct correctness, security/data-safety, and performance/reliability lenses.
+description: Middle and final three-reviewer gate for context-zip changes with distinct correctness, security/data-safety, and performance/reliability lenses.
 ---
 
 # Harness Review

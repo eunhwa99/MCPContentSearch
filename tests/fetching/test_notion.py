@@ -1160,7 +1160,7 @@ def test_notion_page_processor_populates_native_external_id():
 
 def test_parse_notion_object_id_from_page_url_and_bare_uuid():
     assert parse_notion_object_id(
-        "https://www.notion.so/ContextWiki-0123456789abcdef0123456789abcdef?pvs=4"
+        "https://www.notion.so/ContextZip-0123456789abcdef0123456789abcdef?pvs=4"
     ) == "01234567-89ab-cdef-0123-456789abcdef"
     assert parse_notion_object_id(
         "01234567-89ab-cdef-0123-456789abcdef"

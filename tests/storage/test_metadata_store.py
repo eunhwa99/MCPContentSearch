@@ -141,7 +141,7 @@ def _sensitive_lifecycle_text(source_id: str) -> str:
 
 
 def test_metadata_store_redacts_short_explicit_auth_credentials_at_rest(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "provider rejected Bearer abc123 while syncing, source_id=source_notion; "
         "fallback Basic Og== because retrying; job_id=job-123"
@@ -173,7 +173,7 @@ def test_metadata_store_redacts_short_explicit_auth_credentials_at_rest(tmp_path
 
 
 def test_metadata_store_redacts_folded_authorization_credentials_at_rest(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Authorization: Bearer\r\n"
         " folded-store-bearer-credential\r\n"
@@ -213,7 +213,7 @@ def test_metadata_store_redacts_folded_authorization_credentials_at_rest(tmp_pat
 def test_metadata_store_redacts_multistage_folded_authorization_credentials_at_rest(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Authorization:\r\n"
         " Bearer\r\n"
@@ -255,7 +255,7 @@ def test_metadata_store_redacts_multistage_folded_authorization_credentials_at_r
 def test_metadata_store_redacts_bare_name_folded_authorization_credentials_at_rest(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Authorization\r\n"
         " Bearer\r\n"
@@ -297,7 +297,7 @@ def test_metadata_store_redacts_bare_name_folded_authorization_credentials_at_re
 def test_metadata_store_preserves_lone_cr_clear_diagnostic_after_labeled_path(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     sensitive_path = "/Users/tester/private vault/observability notes.md"
     raw = (
         f"provider failure path:{sensitive_path}\r"
@@ -331,7 +331,7 @@ def test_metadata_store_preserves_lone_cr_clear_diagnostic_after_labeled_path(
 
 
 def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw_values = (
         "session=alpha",
         "theme=private",
@@ -378,7 +378,7 @@ def test_metadata_store_sanitizes_cookie_headers_and_unc_paths_at_rest(tmp_path)
 def test_metadata_store_fails_closed_for_cookie_names_that_match_diagnostic_fields(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Cookie: source_id=cookie-source-secret; job_id=cookie-job-secret; "
         "phase=cookie-phase-secret\n"
@@ -414,7 +414,7 @@ def test_metadata_store_fails_closed_for_cookie_names_that_match_diagnostic_fiel
 def test_metadata_store_redacts_name_only_cookie_header_folded_lines_at_rest(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Cookie\r"
         " source_id=folded-cookie-source-secret; "
@@ -452,7 +452,7 @@ def test_metadata_store_redacts_name_only_cookie_header_folded_lines_at_rest(
 def test_metadata_store_redacts_lone_cr_cookie_value_continuations_at_rest(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Cookie: initial-alpha-value\r"
         " folded-alpha-value, folded-delta-value\r"
@@ -497,7 +497,7 @@ def test_metadata_store_redacts_lone_cr_cookie_value_continuations_at_rest(
 def test_metadata_store_preserves_lone_cr_clear_diagnostic_without_comma(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw = (
         "Cookie: initial-alpha-value\r"
         "clear diagnostic source_id=source_notion "
@@ -529,7 +529,7 @@ def test_metadata_store_preserves_lone_cr_clear_diagnostic_without_comma(
 
 
 def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     raw_upsert = _sensitive_lifecycle_text("source_notion")
     raw_register = _sensitive_lifecycle_text("source_obsidian")
 
@@ -584,7 +584,7 @@ def test_metadata_store_sanitizes_direct_source_lifecycle_writes(tmp_path):
 
 
 def test_metadata_store_sanitizes_direct_job_status_failure_and_cleanup_writes(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     source_id = "source_notion"
     raw = _sensitive_lifecycle_text(source_id)
     store.upsert_source(
@@ -666,7 +666,7 @@ def test_metadata_store_sanitizes_direct_job_status_failure_and_cleanup_writes(t
 
 def test_metadata_store_sanitizes_direct_disabled_enqueue_and_recovery_writes(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         unowned_running_job_grace_seconds=0,
     )
     raw_disabled = _sensitive_lifecycle_text("source_obsidian")
@@ -750,7 +750,7 @@ def test_metadata_store_sanitizes_direct_disabled_enqueue_and_recovery_writes(tm
 
 
 def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.ensure_schema()
 
     source = store.upsert_source(
@@ -782,7 +782,7 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
         id="notion_page_1",
         source_id="source_notion",
         title="Architecture Note",
-        content="ContextWiki indexes knowledge with citations.",
+        content="ContextZip indexes knowledge with citations.",
         url="https://notion.so/page-1",
         platform="Notion",
         path="Architecture Note",
@@ -795,7 +795,7 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
         document_id="notion_page_1",
         source_id="source_notion",
         title="Architecture Note",
-        text="ContextWiki indexes knowledge with citations.",
+        text="ContextZip indexes knowledge with citations.",
         url="https://notion.so/page-1",
         path="Architecture Note",
         chunk_index=0,
@@ -814,7 +814,7 @@ def test_metadata_store_tracks_sources_jobs_documents_and_chunks(tmp_path):
 
 
 def test_get_latest_sync_job_breaks_started_at_ties_by_rowid(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -846,7 +846,7 @@ def test_get_latest_sync_job_breaks_started_at_ties_by_rowid(tmp_path):
 
 def test_get_latest_sync_job_prefers_newest_running_row_when_started_at_ties(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         unowned_running_job_grace_seconds=24 * 60 * 60,
     )
@@ -876,7 +876,7 @@ def test_get_latest_sync_job_prefers_newest_running_row_when_started_at_ties(tmp
 
 
 def test_source_status_snapshot_prefers_newest_finished_rows_when_timestamps_tie(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -944,7 +944,7 @@ def test_source_status_snapshot_prefers_newest_finished_rows_when_timestamps_tie
 
 
 def test_metadata_store_loads_obsidian_source_rows(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     source = store.upsert_source(
         SourceModel(
@@ -952,10 +952,10 @@ def test_metadata_store_loads_obsidian_source_rows(tmp_path):
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
             last_error=(
-                "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+                "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
                 "is not set or is not an existing directory."
             ),
         )
@@ -967,7 +967,7 @@ def test_metadata_store_loads_obsidian_source_rows(tmp_path):
     assert persisted is not None
     assert persisted.source_type == SourceType.OBSIDIAN
     assert persisted.enabled is False
-    assert persisted.auth_ref == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert persisted.auth_ref == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert store.list_sources() == [persisted]
 
 
@@ -1047,7 +1047,7 @@ def test_metadata_store_preserves_canonical_auth_refs(tmp_path, write_method):
     ],
 )
 def test_metadata_store_never_persists_noncanonical_job_phase(tmp_path, phase):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -1086,7 +1086,7 @@ def test_metadata_store_never_persists_noncanonical_job_phase(tmp_path, phase):
     ],
 )
 def test_metadata_store_preserves_canonical_job_phases(tmp_path, phase):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -1106,7 +1106,7 @@ def test_metadata_store_preserves_canonical_job_phases(tmp_path, phase):
 
 
 def test_legacy_removed_source_rows_are_skipped_without_deleting_data(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     _insert_legacy_web_source_row(store)
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -1148,7 +1148,7 @@ def test_legacy_removed_source_rows_are_skipped_without_deleting_data(tmp_path):
 
 def test_scoped_orphan_recovery_does_not_mutate_legacy_removed_sources(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=0,
         unowned_running_job_grace_seconds=0,
     )
@@ -1206,7 +1206,7 @@ def test_scoped_claim_recovers_stale_out_of_scope_legacy_source_without_mutating
     tmp_path,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         sync_owner_id="retained-worker",
         running_job_timeout_seconds=3600,
         unowned_running_job_grace_seconds=0,
@@ -1351,7 +1351,7 @@ def test_scoped_claim_preserves_live_out_of_scope_global_running_blocker(
     monkeypatch,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         sync_owner_id="retained-worker",
         running_job_timeout_seconds=3600,
     )
@@ -1412,7 +1412,7 @@ def test_scoped_claim_preserves_live_out_of_scope_global_running_blocker(
 
 
 def test_initialized_metadata_reads_do_not_wait_for_unrelated_writer(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     writer_store = MetadataStore(db_path, sync_owner_id="writer")
     writer_store.upsert_source(
         SourceModel(
@@ -1625,7 +1625,7 @@ def test_initialized_waiter_reads_while_worker_claim_transaction_is_open(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     requester.upsert_source(
         SourceModel(
@@ -1670,7 +1670,7 @@ def test_initialized_waiter_reads_while_worker_claim_transaction_is_open(
 
 
 def test_atomic_document_chunk_commit_rolls_back_when_chunk_insert_fails(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.ensure_schema()
     document = DocumentModel(
         id="doc_atomic",
@@ -1718,7 +1718,7 @@ def test_connection_context_commits_rolls_back_and_closes(tmp_path, monkeypatch)
         "storage.metadata_store.sqlite3.connect",
         tracking_connect,
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     with store._connect() as conn:
         conn.execute("CREATE TABLE transaction_probe (value TEXT NOT NULL)")
@@ -1746,7 +1746,7 @@ def test_connection_context_commits_rolls_back_and_closes(tmp_path, monkeypatch)
 
 
 def test_repeated_metadata_access_emits_no_unclosed_sqlite_resource_warning(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1774,7 +1774,7 @@ def test_repeated_metadata_access_emits_no_unclosed_sqlite_resource_warning(tmp_
 
 
 def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     store = MetadataStore(db_path)
     store.upsert_source(
         SourceModel(
@@ -1823,7 +1823,7 @@ def test_begin_sync_job_allows_one_running_job_across_connections(tmp_path):
 
 
 def test_begin_sync_job_uses_running_job_even_when_source_status_is_stale(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1851,7 +1851,7 @@ def test_begin_sync_job_uses_running_job_even_when_source_status_is_stale(tmp_pa
 
 
 def test_begin_sync_job_recovers_stale_running_job(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1885,7 +1885,7 @@ def test_begin_sync_job_recovers_stale_running_job(tmp_path):
 
 
 def test_begin_sync_job_recovers_all_stale_running_jobs(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1924,7 +1924,7 @@ def test_begin_sync_job_recovers_all_stale_running_jobs(tmp_path):
 
 
 def test_recover_orphaned_running_jobs_fails_old_job_and_allows_fresh_sync(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1980,7 +1980,7 @@ def test_recover_orphaned_running_jobs_fails_old_job_and_allows_fresh_sync(tmp_p
 
 
 def test_recover_orphaned_running_jobs_preserves_jobs_started_after_cutoff(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2014,7 +2014,7 @@ def test_recover_orphaned_running_jobs_preserves_jobs_started_after_cutoff(tmp_p
 
 
 def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_cutoff(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2047,7 +2047,7 @@ def test_recover_orphaned_running_jobs_preserves_fresh_owned_job_started_before_
 
 def test_recover_orphaned_running_jobs_recovers_dead_previous_owner(tmp_path, monkeypatch):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2092,7 +2092,7 @@ def test_recover_orphaned_running_jobs_recovers_stale_previous_owner_even_if_pid
     monkeypatch,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2144,7 +2144,7 @@ def test_recover_orphaned_running_jobs_preserves_same_pid_previous_owner_when_jo
     monkeypatch,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2211,7 +2211,7 @@ def test_begin_sync_job_preserves_same_pid_previous_owner_when_job_heartbeat_is_
     monkeypatch,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2259,7 +2259,7 @@ def test_begin_sync_job_recovers_stale_same_pid_previous_owner_and_starts_fresh_
     monkeypatch,
 ):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2303,7 +2303,7 @@ def test_begin_sync_job_recovers_stale_same_pid_previous_owner_and_starts_fresh_
 
 def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, monkeypatch):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2345,7 +2345,7 @@ def test_recover_orphaned_running_jobs_preserves_live_previous_owner(tmp_path, m
 
 def test_begin_sync_job_preserves_owned_job_after_unowned_grace(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         unowned_running_job_grace_seconds=60,
     )
@@ -2380,7 +2380,7 @@ def test_begin_sync_job_preserves_owned_job_after_unowned_grace(tmp_path):
 
 def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path, monkeypatch):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         sync_owner_id="current-owner",
     )
@@ -2430,7 +2430,7 @@ def test_begin_sync_job_recovers_previous_owner_that_dies_after_startup(tmp_path
 
 def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         unowned_running_job_grace_seconds=60,
     )
     store.upsert_source(
@@ -2463,7 +2463,7 @@ def test_recover_orphaned_running_jobs_recovers_unowned_legacy_job_after_grace(t
 
 def test_begin_sync_job_recovers_unowned_legacy_job_after_startup_grace(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=24 * 60 * 60,
         unowned_running_job_grace_seconds=60,
     )
@@ -2516,7 +2516,7 @@ def test_is_process_alive_treats_permission_error_as_alive(monkeypatch):
 
 
 def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2556,7 +2556,7 @@ def test_begin_sync_job_returns_active_running_job_after_failing_stale_duplicate
 
 
 def test_latest_sync_job_prefers_active_running_job_over_later_failed_duplicate(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2591,7 +2591,7 @@ def test_latest_sync_job_prefers_active_running_job_over_later_failed_duplicate(
 
 
 def test_latest_sync_job_recovers_stale_running_job_without_new_sync(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2617,7 +2617,7 @@ def test_latest_sync_job_recovers_stale_running_job_without_new_sync(tmp_path):
 
 
 def test_update_sync_job_cannot_start_running_job_without_guard(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2636,7 +2636,7 @@ def test_update_sync_job_cannot_start_running_job_without_guard(tmp_path):
 
 
 def test_update_sync_job_cannot_finish_job_without_guarded_completion(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2657,7 +2657,7 @@ def test_update_sync_job_cannot_finish_job_without_guarded_completion(tmp_path):
 
 
 def test_update_sync_job_does_not_clobber_terminal_job_after_completion(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2697,7 +2697,7 @@ def test_update_sync_job_does_not_clobber_terminal_job_after_completion(tmp_path
 
 
 def test_running_job_commit_rejects_cross_source_document(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2734,7 +2734,7 @@ def test_running_job_commit_rejects_cross_source_document(tmp_path):
 
 
 def test_document_upsert_rejects_cross_source_identity_collision(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     first = DocumentModel(
         id="shared-id",
         source_id="source_a",
@@ -2775,7 +2775,7 @@ def test_document_upsert_rejects_cross_source_identity_collision(tmp_path):
 
 
 def test_replace_document_chunks_rejects_source_mismatched_chunks(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="shared-id",
@@ -2803,7 +2803,7 @@ def test_replace_document_chunks_rejects_source_mismatched_chunks(tmp_path):
 
 
 def test_upsert_document_and_replace_chunks_rejects_document_mismatched_chunk(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     document = DocumentModel(
         id="doc-a",
         source_id="source_a",
@@ -2830,7 +2830,7 @@ def test_upsert_document_and_replace_chunks_rejects_document_mismatched_chunk(tm
 
 
 def test_replace_document_chunks_rejects_missing_document(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     chunk = ChunkModel(
         chunk_id="missing-doc:chunk:0:a",
         document_id="missing-doc",
@@ -2848,7 +2848,7 @@ def test_replace_document_chunks_rejects_missing_document(tmp_path):
 
 
 def test_superseded_running_job_cannot_commit_metadata(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2918,7 +2918,7 @@ def test_register_source_does_not_overwrite_running_status_from_stale_read(tmp_p
                 )
             return super().get_source(source_id)
 
-    store = StaleReadStore(tmp_path / "contextwiki.sqlite3")
+    store = StaleReadStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2952,15 +2952,15 @@ def test_register_source_does_not_overwrite_running_status_from_stale_read(tmp_p
 
 
 def test_metadata_store_persists_identity_lifecycle_fields(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     document = DocumentModel(
         id="blob-sha-1",
-        external_id="eunhwa99/MCPContentSearch:api/tools.py",
+        external_id="eunhwa99/context-zip:api/tools.py",
         source_id="source_github",
         title="api/tools.py",
         content="def sync_source():\n    pass\n",
-        url="https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py",
-        canonical_url="https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py",
+        url="https://github.com/eunhwa99/context-zip/blob/main/api/tools.py",
+        canonical_url="https://github.com/eunhwa99/context-zip/blob/main/api/tools.py",
         platform="GitHub",
         path="api/tools.py",
         updated_at="2026-05-22T00:00:00Z",
@@ -2971,11 +2971,11 @@ def test_metadata_store_persists_identity_lifecycle_fields(tmp_path):
 
     store.upsert_document(document)
 
-    persisted = store.get_document("eunhwa99/MCPContentSearch:api/tools.py")
+    persisted = store.get_document("eunhwa99/context-zip:api/tools.py")
     assert persisted is not None
     assert store.get_document("blob-sha-1") is None
-    assert persisted.external_id == "eunhwa99/MCPContentSearch:api/tools.py"
-    assert persisted.canonical_url == "https://github.com/eunhwa99/MCPContentSearch/blob/main/api/tools.py"
+    assert persisted.external_id == "eunhwa99/context-zip:api/tools.py"
+    assert persisted.canonical_url == "https://github.com/eunhwa99/context-zip/blob/main/api/tools.py"
     assert persisted.last_seen_at == "2026-05-22T00:00:01Z"
     assert persisted.last_seen_sync_id == "job-1"
     assert persisted.deleted_at == ""
@@ -3054,7 +3054,7 @@ def test_search_filters_accept_tuple_sources_and_skip_blank_entries():
 
 
 def test_search_filter_validation_errors_hide_secret_like_input():
-    secret_like_timestamp = "sk-secret-token-/private/contextwiki/token"
+    secret_like_timestamp = "sk-secret-token-/private/context_zip/token"
 
     with pytest.raises(ValidationError) as error:
         SearchFilters(published_from=secret_like_timestamp)
@@ -3062,7 +3062,7 @@ def test_search_filter_validation_errors_hide_secret_like_input():
     rendered_error = str(error.value)
     assert secret_like_timestamp not in rendered_error
     assert "sk-secret-token" not in rendered_error
-    assert "/private/contextwiki/token" not in rendered_error
+    assert "/private/context_zip/token" not in rendered_error
 
 
 @pytest.mark.parametrize("prefix", ["published", "modified", "indexed"])
@@ -3077,7 +3077,7 @@ def test_search_filters_reject_utc_conversion_overflow_deterministically(prefix)
 
 
 def test_metadata_store_persists_normalized_document_times_and_adds_legacy_columns(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     document = DocumentModel(
         id="dated-doc",
         source_id="source_notion",
@@ -3104,7 +3104,7 @@ def test_metadata_store_persists_normalized_document_times_and_adds_legacy_colum
 
 
 def test_metadata_store_canonicalizes_document_times_before_sql_keyset_pagination(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, published_at, modified_at, indexed_at, provenance in (
         (
             "zulu",
@@ -3190,7 +3190,7 @@ def test_metadata_store_canonicalizes_document_times_before_sql_keyset_paginatio
 
 
 def test_metadata_store_canonicalizes_python_date_only_timestamp(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     stored = store.upsert_document(
         DocumentModel(
@@ -3209,7 +3209,7 @@ def test_metadata_store_canonicalizes_python_date_only_timestamp(tmp_path):
 
 
 def test_metadata_store_blanks_utc_conversion_overflow_without_failing_sync(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     stored = store.upsert_document(
         DocumentModel(
@@ -3233,7 +3233,7 @@ def test_metadata_store_blanks_utc_conversion_overflow_without_failing_sync(tmp_
 
 
 def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, published_at in (
         ("z-earlier", "2026-07-01T00:00:00.000100Z"),
         ("a-later", "2026-07-01T00:00:00.000200Z"),
@@ -3289,7 +3289,7 @@ def test_list_documents_preserves_submillisecond_keyset_order_and_filter_parity(
 
 
 def test_list_documents_filters_active_rows_sorts_dates_and_paginates_with_cursor(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, published_at, deleted_at in [
         ("newest", "2026-07-03T00:00:00Z", ""),
         ("middle", "2026-07-02T00:00:00Z", ""),
@@ -3341,7 +3341,7 @@ def test_list_documents_filters_active_rows_sorts_dates_and_paginates_with_curso
 
 
 def test_document_filter_source_aliases_form_one_effective_union(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     documents = []
     for source_id in ("source_a", "source_b", "source_c"):
         document = DocumentModel(
@@ -3367,7 +3367,7 @@ def test_document_filter_source_aliases_form_one_effective_union(tmp_path):
 
 
 def test_list_documents_cursor_binds_to_canonical_source_alias_union(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, source_id in (
         ("a-1", "source_a"),
         ("a-2", "source_a"),
@@ -3406,7 +3406,7 @@ def test_list_documents_cursor_binds_to_canonical_source_alias_union(tmp_path):
     ],
 )
 def test_list_documents_keyset_keeps_ties_and_nulls_last(tmp_path, sort_order, expected):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, published_at in (
         ("a", "2026-07-01T00:00:00Z"),
         ("b", "2026-07-01T00:00:00+00:00"),
@@ -3446,7 +3446,7 @@ def test_list_documents_keyset_keeps_ties_and_nulls_last(tmp_path, sort_order, e
 
 
 def test_list_documents_limits_browse_safe_sql_rows(tmp_path, monkeypatch):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for index in range(5):
         store.upsert_document(
             DocumentModel(
@@ -3483,7 +3483,7 @@ def test_list_documents_limits_browse_safe_sql_rows(tmp_path, monkeypatch):
 
 
 def test_list_documents_rejects_noncanonical_cursor_characters(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id in ("first", "second"):
         store.upsert_document(
             DocumentModel(
@@ -3515,7 +3515,7 @@ def test_list_documents_rejects_noncanonical_cursor_timestamp_spellings(
     tmp_path,
     forged_timestamp,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, published_at in (
         ("first", "2026-07-01T00:00:00.100000Z"),
         ("second", "2026-07-01T00:00:00.200000Z"),
@@ -3572,7 +3572,7 @@ def test_list_documents_rejects_cursor_when_anchor_does_not_match_filtered_row(
     tmp_path,
     payload_override,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id in ("a", "b", "c"):
         store.upsert_document(
             DocumentModel(
@@ -3616,7 +3616,7 @@ def test_list_documents_rejects_cursor_when_anchor_does_not_match_filtered_row(
 
 
 def test_list_documents_rejects_cursor_anchor_outside_current_filter_scope(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id, source_id in (
         ("a", "source_notion"),
         ("b", "source_notion"),
@@ -3656,7 +3656,7 @@ def test_list_documents_rejects_cursor_anchor_outside_current_filter_scope(tmp_p
 
 
 def test_list_documents_rejects_cursor_anchor_that_is_no_longer_active(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id in ("a", "b"):
         store.upsert_document(
             DocumentModel(
@@ -3698,7 +3698,7 @@ def test_list_documents_rejects_cursor_anchor_that_is_no_longer_active(tmp_path)
     ],
 )
 def test_list_documents_rejects_cursor_query_shape_mismatch(tmp_path, changed_kwargs):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for document_id in ("first", "second"):
         store.upsert_document(
             DocumentModel(
@@ -3722,14 +3722,14 @@ def test_list_documents_rejects_cursor_query_shape_mismatch(tmp_path, changed_kw
 
 @pytest.mark.parametrize("page_size", [0, -1, 101, True, 1.5])
 def test_list_documents_rejects_unsafe_internal_page_sizes(tmp_path, page_size):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     with pytest.raises(ValueError, match="page_size must be between 1 and 100"):
         store.list_documents(page_size=page_size)
 
 
 def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
     with store._connect() as conn:
         conn.executescript(
@@ -3796,7 +3796,7 @@ def test_ensure_schema_adds_lifecycle_columns_to_legacy_documents_table(tmp_path
 
 
 def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
     with store._connect() as conn:
         conn.executescript(
@@ -3856,7 +3856,7 @@ def test_ensure_schema_adds_version_id_to_legacy_chunks_table(tmp_path):
 
 
 def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
     with store._connect() as conn:
         conn.executescript(
@@ -3902,7 +3902,7 @@ def test_ensure_schema_adds_owner_id_to_legacy_sync_jobs_table(tmp_path):
 
 
 def test_ensure_schema_adds_process_start_id_to_legacy_owner_table(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", sync_owner_id="current-owner")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", sync_owner_id="current-owner")
     store.db_path.parent.mkdir(parents=True, exist_ok=True)
     with store._connect() as conn:
         conn.executescript(
@@ -3955,7 +3955,7 @@ def test_ensure_schema_adds_process_start_id_to_legacy_owner_table(tmp_path):
 def test_repeated_read_only_store_initialization_does_not_register_sync_owners(
     tmp_path,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
 
     for index in range(25):
         reader = MetadataStore(db_path, sync_owner_id=f"reader-{index}")
@@ -3973,7 +3973,7 @@ def test_repeated_read_only_store_initialization_does_not_register_sync_owners(
 def test_claim_and_heartbeat_register_owner_and_prune_unreferenced_owners(
     tmp_path,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     requester.upsert_source(
         SourceModel(
@@ -4132,7 +4132,7 @@ def test_ensure_schema_serializes_concurrent_legacy_owner_migrations(
 
 
 def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4217,7 +4217,7 @@ def test_successful_sync_finalization_tombstones_documents_not_seen_at(tmp_path)
 
 
 def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4231,7 +4231,7 @@ def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path
     assert started is True
     marker = "2026-05-22T00:02:00Z"
     kept = DocumentModel(
-        id="github:eunhwa99/mcpcontentsearch:README.md",
+        id="github:eunhwa99/context-zip:README.md",
         source_id="source_github",
         title="README",
         content="current repo document",
@@ -4241,7 +4241,7 @@ def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path
         last_seen_at=marker,
     )
     stale_configured_repo = DocumentModel(
-        id="github:eunhwa99/mcpcontentsearch:old.py",
+        id="github:eunhwa99/context-zip:old.py",
         source_id="source_github",
         title="old.py",
         content="removed from configured repo",
@@ -4286,22 +4286,22 @@ def test_successful_sync_cleanup_can_be_limited_to_document_id_prefixes(tmp_path
         skipped_documents=1,
         last_seen_at=marker,
         cleanup_missing_documents=True,
-        cleanup_document_id_prefixes=("github:eunhwa99/mcpcontentsearch:",),
+        cleanup_document_id_prefixes=("github:eunhwa99/context-zip:",),
         deleted_at="2026-05-22T00:03:00Z",
     )
 
-    assert deleted_chunk_ids == ["github:eunhwa99/mcpcontentsearch:old.py:chunk:0:aaa"]
+    assert deleted_chunk_ids == ["github:eunhwa99/context-zip:old.py:chunk:0:aaa"]
     assert store.get_document(stale_configured_repo.id).deleted_at == "2026-05-22T00:03:00Z"
     assert store.get_document(stale_ad_hoc_repo.id).deleted_at == ""
     assert store.list_chunks_for_document(stale_ad_hoc_repo.id)
     assert [chunk.document_id for chunk in store.list_chunks(["source_github"])] == [
+        "github:eunhwa99/context-zip:README.md",
         "github:eunhwa99/leetcode:graph.py",
-        "github:eunhwa99/mcpcontentsearch:README.md",
     ]
 
 
 def test_successful_sync_cleanup_prefix_treats_underscore_literally(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4370,7 +4370,7 @@ def test_successful_sync_cleanup_prefix_treats_underscore_literally(tmp_path):
 
 
 def test_successful_sync_cleanup_ignores_source_mismatched_chunks(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4431,7 +4431,7 @@ def test_successful_sync_cleanup_ignores_source_mismatched_chunks(tmp_path):
 
 
 def test_successful_sync_finalization_does_not_revive_failed_job(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4493,7 +4493,7 @@ def test_successful_sync_finalization_does_not_revive_failed_job(tmp_path):
 
 
 def test_failed_sync_rejects_source_mismatch(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_a",
@@ -4528,7 +4528,7 @@ def test_failed_sync_rejects_source_mismatch(tmp_path):
 
 
 def test_self_expired_job_marks_source_failed_when_no_replacement_is_active(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=0)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4557,7 +4557,7 @@ def test_self_expired_job_marks_source_failed_when_no_replacement_is_active(tmp_
 
 
 def test_stale_cross_source_document_claim_does_not_block_new_source(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_a",
@@ -4619,7 +4619,7 @@ def test_stale_cross_source_document_claim_does_not_block_new_source(tmp_path):
 
 
 def test_superseded_running_job_cannot_finalize_stale_cleanup(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=60)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=60)
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -4689,7 +4689,7 @@ def test_superseded_running_job_cannot_finalize_stale_cleanup(tmp_path):
 
 
 def test_orphan_chunks_are_not_active(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     orphan = ChunkModel(
         chunk_id="orphan-chunk",
         document_id="missing-doc",
@@ -4711,7 +4711,7 @@ def test_orphan_chunks_are_not_active(tmp_path):
 
 
 def test_source_mismatched_chunks_are_not_active(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="shared-id",
@@ -4741,7 +4741,7 @@ def test_source_mismatched_chunks_are_not_active(tmp_path):
 
 
 def test_replace_document_chunks_preserves_source_mismatched_inactive_rows(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="shared-id",
@@ -4786,7 +4786,7 @@ def test_replace_document_chunks_preserves_source_mismatched_inactive_rows(tmp_p
 
 
 def test_enqueue_sync_job_reuses_queued_and_running_jobs(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     worker = MetadataStore(db_path, sync_owner_id="worker")
     requester.upsert_source(
@@ -4822,7 +4822,7 @@ def test_enqueue_sync_job_reuses_queued_and_running_jobs(tmp_path):
 
 
 def test_disabled_source_enqueue_and_worker_claim_race_never_claims_new_job(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     requester.upsert_source(
         SourceModel(
@@ -4869,7 +4869,7 @@ def test_disabled_source_enqueue_and_worker_claim_race_never_claims_new_job(tmp_
 
 @pytest.mark.parametrize("active_status", [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING])
 def test_disabled_source_enqueue_reuses_existing_active_job(tmp_path, active_status):
-    db_path = tmp_path / active_status.value / "contextwiki.sqlite3"
+    db_path = tmp_path / active_status.value / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     enabled_source = SourceModel(
         source_id="source_notion",
@@ -4903,7 +4903,7 @@ def test_disabled_source_enqueue_reuses_existing_active_job(tmp_path, active_sta
 
 
 def test_two_workers_racing_claim_one_queued_job_have_one_winner(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(db_path, sync_owner_id="requester")
     requester.upsert_source(
         SourceModel(
@@ -4936,7 +4936,7 @@ def test_two_workers_racing_claim_one_queued_job_have_one_winner(tmp_path):
 
 
 def test_two_requesters_racing_enqueue_reuse_one_queued_job(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     setup_store = MetadataStore(db_path, sync_owner_id="setup")
     setup_store.upsert_source(
         SourceModel(
@@ -4976,7 +4976,7 @@ def test_two_requesters_racing_enqueue_reuse_one_queued_job(tmp_path):
 
 
 def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(
         db_path,
         sync_owner_id="requester",
@@ -5048,7 +5048,7 @@ def test_two_workers_cannot_claim_different_sources_concurrently(tmp_path):
 def test_claim_allows_two_running_jobs_for_distinct_sources_when_max_concurrent_is_two(
     tmp_path,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(
         db_path,
         sync_owner_id="requester",
@@ -5086,7 +5086,7 @@ def test_claim_allows_two_running_jobs_for_distinct_sources_when_max_concurrent_
 
 
 def test_claim_blocks_third_job_while_max_concurrent_running_slots_are_full(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(
         db_path,
         sync_owner_id="requester",
@@ -5131,7 +5131,7 @@ def test_claim_blocks_third_job_while_max_concurrent_running_slots_are_full(tmp_
 
 
 def test_two_workers_can_claim_different_sources_when_max_concurrent_is_two(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester = MetadataStore(
         db_path,
         sync_owner_id="requester",
@@ -5189,7 +5189,7 @@ def test_metadata_store_rejects_invalid_max_concurrent_sync_jobs(
 ):
     with pytest.raises(ValueError, match="max_concurrent_sync_jobs"):
         MetadataStore(
-            tmp_path / "contextwiki.sqlite3",
+            tmp_path / "context_zip.sqlite3",
             max_concurrent_sync_jobs=invalid_value,
         )
 
@@ -5199,7 +5199,7 @@ def test_metadata_store_rejects_invalid_max_concurrent_sync_jobs_assignment(
     tmp_path,
     invalid_value,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     assert store.max_concurrent_sync_jobs == 1
     with pytest.raises(ValueError, match="max_concurrent_sync_jobs"):
         store.max_concurrent_sync_jobs = invalid_value
@@ -5225,7 +5225,7 @@ def test_global_claim_recovers_live_pid_with_changed_valid_process_birth_identit
     stored_identity,
     observed_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
@@ -5297,7 +5297,7 @@ def test_global_claim_preserves_fresh_owner_across_unknown_linux_scope(
     stored_identity,
     observed_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
@@ -5358,7 +5358,7 @@ def test_global_claim_preserves_fresh_linux_owner_when_pid_is_invisible_outside_
     monkeypatch,
     observer_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
@@ -5412,7 +5412,7 @@ def test_global_claim_recovers_fresh_linux_owner_when_pid_is_dead_in_same_scope(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     next_worker = MetadataStore(db_path, sync_owner_id="next-worker")
@@ -5474,7 +5474,7 @@ def test_startup_recovery_preserves_fresh_linux_owner_when_pid_scope_is_not_same
     monkeypatch,
     observer_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(
         db_path,
         sync_owner_id="previous-worker",
@@ -5539,7 +5539,7 @@ def test_global_claim_preserves_fresh_linux_owner_with_unknown_stored_scope(
     monkeypatch,
     stored_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     observer = MetadataStore(db_path, sync_owner_id="observer")
@@ -5598,7 +5598,7 @@ def test_startup_recovery_preserves_fresh_linux_owner_with_unknown_stored_scope(
     monkeypatch,
     stored_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(
         db_path,
         sync_owner_id="previous-worker",
@@ -5695,7 +5695,7 @@ def test_global_claim_preserves_fresh_owner_with_unknown_scope_on_darwin_esrch(
     monkeypatch,
     stored_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     observer = MetadataStore(db_path, sync_owner_id="observer")
@@ -5759,7 +5759,7 @@ def test_startup_recovery_preserves_fresh_owner_with_unknown_scope_on_darwin_esr
     monkeypatch,
     stored_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(
         db_path,
         sync_owner_id="previous-worker",
@@ -5898,7 +5898,7 @@ def test_global_claim_preserves_fresh_live_owner_with_malformed_recognized_ident
     stored_identity,
     observed_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(db_path, sync_owner_id="previous-worker")
     requester = MetadataStore(db_path, sync_owner_id="requester")
     observer = MetadataStore(db_path, sync_owner_id="observer")
@@ -6027,7 +6027,7 @@ def test_startup_recovery_preserves_fresh_live_owner_with_malformed_recognized_i
     stored_identity,
     observed_identity,
 ):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     previous_worker = MetadataStore(
         db_path,
         sync_owner_id="previous-worker",
@@ -6103,7 +6103,7 @@ def test_metadata_store_exposes_public_canonical_document_timestamp():
 
 def test_ensure_schema_creates_idx_chunks_document_source(tmp_path):
     """Fetch-reuse hydrate needs chunks(document_id, source_id) for MIN lookups."""
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.ensure_schema()
 
     with store._connect() as conn:
@@ -6125,7 +6125,7 @@ def test_ensure_schema_creates_idx_chunks_document_source(tmp_path):
 
 
 def test_get_documents_for_fetch_reuse_returns_empty_for_empty_ids(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
 
     assert store.get_documents_for_fetch_reuse([]) == {}
     assert store.get_documents_for_fetch_reuse(()) == {}
@@ -6134,7 +6134,7 @@ def test_get_documents_for_fetch_reuse_returns_empty_for_empty_ids(tmp_path):
 def test_get_documents_for_fetch_reuse_batches_skip_fields_for_requested_ids(
     tmp_path, monkeypatch
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     docs = [
         DocumentModel(
             id="doc-a",
@@ -6218,7 +6218,7 @@ def test_get_documents_for_fetch_reuse_batches_skip_fields_for_requested_ids(
 
 
 def test_get_documents_for_fetch_reuse_omits_missing_ids(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="doc-only",
@@ -6240,7 +6240,7 @@ def test_get_documents_for_fetch_reuse_omits_missing_ids(tmp_path):
 
 
 def test_get_documents_for_fetch_reuse_includes_version_id(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="doc-gh",
@@ -6271,7 +6271,7 @@ def test_get_documents_for_fetch_reuse_includes_version_id(tmp_path):
 
 def test_get_documents_for_fetch_reuse_returns_stored_title(tmp_path):
     """Reuse payload must carry title so Obsidian skip does not fall back to stem."""
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document(
         DocumentModel(
             id="doc-obs",
@@ -6302,7 +6302,7 @@ def test_get_documents_for_fetch_reuse_recovers_line_start_from_chunk_min(
     tmp_path,
 ):
     """Reuse maps MIN(chunk.line_start) back to body base after leading blanks."""
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     document_id = "notes/project.md"
     content = "\n# Architecture\nIndexed body without frontmatter.\n"
     store.upsert_document(
@@ -6363,7 +6363,7 @@ def test_get_documents_for_fetch_reuse_recovers_line_start_from_chunk_min(
 
 
 def test_update_sync_job_dual_writes_upstream_progress_to_legacy_page_columns(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -6405,7 +6405,7 @@ def test_sync_job_read_prefers_primary_upstream_fields_even_when_zero(
     tmp_path,
 ):
     """Primary zeros are intentional (e.g. search_completed); do not resurface legacy."""
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -6441,7 +6441,7 @@ def test_sync_job_read_prefers_primary_upstream_fields_even_when_zero(
 
 
 def test_ensure_schema_backfills_upstream_progress_from_legacy_page_columns(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     store = MetadataStore(db_path)
     store.upsert_source(
         SourceModel(

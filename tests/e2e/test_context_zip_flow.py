@@ -33,13 +33,13 @@ class FakeConnector(SourceConnector):
     async def fetch_documents(self):
         return [
             DocumentModel(
-                id="doc_contextwiki",
+                id="doc_context_zip",
                 source_id="source_fake_docs",
-                title="ContextWiki MVP",
-                content="ContextWiki syncs documents and answers with citations.",
-                url="https://example.com/contextwiki",
+                title="ContextZip MVP",
+                content="ContextZip syncs documents and answers with citations.",
+                url="https://example.com/context-zip",
                 platform="Notion",
-                path="ContextWiki MVP",
+                path="ContextZip MVP",
                 updated_at="2026-05-20T00:00:00Z",
             )
         ]
@@ -61,7 +61,7 @@ class OtherSourceConnector(SourceConnector):
                 id=f"doc_other_{index}",
                 source_id="source_other",
                 title=f"Other {index}",
-                content="ContextWiki unrelated source mentions citations.",
+                content="ContextZip unrelated source mentions citations.",
                 url=f"https://example.com/other/{index}",
                 platform="Tistory",
                 path=f"Other {index}",
@@ -87,7 +87,7 @@ class RecordingIndexer:
 
 class FakeNode:
     def __init__(self, chunk_id, score):
-        self.metadata = {"chunk_id": chunk_id, "contextwiki_managed": "true"}
+        self.metadata = {"chunk_id": chunk_id, "context_zip_managed": "true"}
         self.score = score
 
 
@@ -201,8 +201,8 @@ def _build_separate_sync_worker(
 pytestmark = pytest.mark.e2e
 
 
-def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+def test_context_zip_fake_e2e_sync_search_fetch_and_answer(tmp_path):
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([FakeConnector()])
     ingestion = IngestionService(
@@ -234,7 +234,7 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
             top_k=5,
         )
         collection_search = await mcp.tools["search_context"](
-            "ContextWiki 관련 문서 모아줘",
+            "ContextZip 관련 문서 모아줘",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
             include_debug=True,
@@ -246,9 +246,9 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
         )
         chunk_id = search_result["results"][0]["chunk_id"]
         fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
-        answer = await answer_service.answer_with_citations("How does ContextWiki answer?")
+        answer = await answer_service.answer_with_citations("How does ContextZip answer?")
         collection_answer = await answer_service.answer_with_citations(
-            "ContextWiki 관련 문서 모아줘",
+            "ContextZip 관련 문서 모아줘",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=5,
         )
@@ -281,15 +281,15 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
 
     assert sync_job["status"] == "queued"
     assert status["source"]["sync_status"] == "succeeded"
-    assert search_result["results"][0]["title"] == "ContextWiki MVP"
+    assert search_result["results"][0]["title"] == "ContextZip MVP"
     assert collection_search["debug"]["intent"]["name"] == "list"
     assert document_search["results"][0]["matched_context"] == (
-        "ContextWiki syncs documents and answers with citations."
+        "ContextZip syncs documents and answers with citations."
     )
     assert "preview" not in document_search["results"][0]
     assert "vector_score" not in document_search["results"][0]
     assert "metadata_priority" not in document_search["results"][0]
-    assert fetched["chunk"]["text"] == "ContextWiki syncs documents and answers with citations."
+    assert fetched["chunk"]["text"] == "ContextZip syncs documents and answers with citations."
     assert answer["evidence_status"] == "grounded"
     assert answer["citations"][0]["chunk_id"] == chunk_id
     assert collection_answer["evidence_status"] == "grounded"
@@ -297,7 +297,7 @@ def test_contextwiki_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     assert unsupported["evidence_status"] == "insufficient"
 
 
-def test_contextwiki_fastmcp_sync_all_queues_for_worker_then_exact_polling_reaches_terminal(
+def test_context_zip_fastmcp_sync_all_queues_for_worker_then_exact_polling_reaches_terminal(
     tmp_path,
 ):
     class BlockingE2EConnector(SourceConnector):
@@ -364,7 +364,7 @@ def test_contextwiki_fastmcp_sync_all_queues_for_worker_then_exact_polling_reach
                 ),
             ]
         )
-        store = MetadataStore(tmp_path / "sync-all-contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "sync-all-context-zip.sqlite3")
         ingestion = IngestionService(
             metadata_store=store,
             source_registry=registry,
@@ -460,7 +460,7 @@ def test_contextwiki_fastmcp_sync_all_queues_for_worker_then_exact_polling_reach
     } == exact_targets
 
 
-def test_contextwiki_fastmcp_sync_all_polling_returns_exact_terminal_jobs(tmp_path):
+def test_context_zip_fastmcp_sync_all_polling_returns_exact_terminal_jobs(tmp_path):
     async def run_flow():
         metadata_path = tmp_path / "sync-all-poll-success.sqlite3"
         registry = SourceRegistry([FakeConnector(), OtherSourceConnector()])
@@ -523,7 +523,7 @@ def test_contextwiki_fastmcp_sync_all_polling_returns_exact_terminal_jobs(tmp_pa
     }
 
 
-def test_contextwiki_fastmcp_exact_job_polling_survives_latest_job_supersession(
+def test_context_zip_fastmcp_exact_job_polling_survives_latest_job_supersession(
     tmp_path,
 ):
     class SupersedingConnector(SourceConnector):
@@ -617,7 +617,7 @@ def test_contextwiki_fastmcp_exact_job_polling_survives_latest_job_supersession(
     assert latest["latest_job"]["status"] == "running"
 
 
-def test_contextwiki_fastmcp_exact_job_status_recovers_stale_real_sqlite_job(
+def test_context_zip_fastmcp_exact_job_status_recovers_stale_real_sqlite_job(
     tmp_path,
 ):
     store = MetadataStore(
@@ -660,7 +660,7 @@ def test_contextwiki_fastmcp_exact_job_status_recovers_stale_real_sqlite_job(
     assert store.get_sync_job(stale_job.job_id).status.value == "failed"
 
 
-def test_contextwiki_fastmcp_sync_all_reuses_job_then_exact_polling_observes_it(
+def test_context_zip_fastmcp_sync_all_reuses_job_then_exact_polling_observes_it(
     tmp_path,
 ):
     class ReusableBlockingConnector(SourceConnector):
@@ -740,7 +740,7 @@ def test_contextwiki_fastmcp_sync_all_reuses_job_then_exact_polling_observes_it(
     assert launched["status"] == "queued"
 
 
-def test_contextwiki_sync_all_polling_keeps_running_job_after_source_is_disabled(
+def test_context_zip_sync_all_polling_keeps_running_job_after_source_is_disabled(
     tmp_path,
 ):
     class DisabledAfterLaunchConnector(SourceConnector):
@@ -834,7 +834,7 @@ def test_contextwiki_sync_all_polling_keeps_running_job_after_source_is_disabled
     assert launched["status"] == "queued"
 
 
-def test_contextwiki_fastmcp_sync_all_polling_reports_failure_and_disabled_skip(tmp_path):
+def test_context_zip_fastmcp_sync_all_polling_reports_failure_and_disabled_skip(tmp_path):
     class FailingE2EConnector(SourceConnector):
         source = SourceModel(
             source_id="source_poll_failing",
@@ -943,7 +943,7 @@ def test_contextwiki_fastmcp_sync_all_polling_reports_failure_and_disabled_skip(
     assert "<redacted>" in serialized_result
 
 
-def test_contextwiki_fastmcp_short_status_request_does_not_cancel_background_job(tmp_path):
+def test_context_zip_fastmcp_short_status_request_does_not_cancel_background_job(tmp_path):
     class BlockingPollingConnector(SourceConnector):
         def __init__(self, entered: asyncio.Event, release: asyncio.Event):
             self.source = SourceModel(
@@ -1042,7 +1042,7 @@ def test_contextwiki_fastmcp_short_status_request_does_not_cancel_background_job
 
 
 def test_context_search_applies_source_filter_before_result_limit(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([OtherSourceConnector(), FakeConnector()])
     ingestion = IngestionService(
@@ -1057,7 +1057,7 @@ def test_context_search_applies_source_filter_before_result_limit(tmp_path):
 
     result = asyncio.run(
         context_search.search_context(
-            "ContextWiki citations",
+            "ContextZip citations",
             filters={"source_ids": ["source_fake_docs"]},
             top_k=1,
         )
@@ -1067,8 +1067,8 @@ def test_context_search_applies_source_filter_before_result_limit(tmp_path):
     assert result["results"][0].source_id == "source_fake_docs"
 
 
-def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+def test_context_zip_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     registry = SourceRegistry([FakeConnector()])
     documents = []
     for document_id, published_at in [
@@ -1079,7 +1079,7 @@ def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
             id=document_id,
             source_id="source_fake_docs",
             title=document_id,
-            content="ContextWiki dated evidence",
+            content="ContextZip dated evidence",
             url=f"https://example.com/{document_id}",
             platform="Notion",
             published_at=published_at,
@@ -1092,7 +1092,7 @@ def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
             document_id=document_id,
             source_id="source_fake_docs",
             title=document_id,
-            text="ContextWiki dated evidence",
+            text="ContextZip dated evidence",
             url=document.url,
             chunk_index=0,
             content_hash=document_id,
@@ -1112,7 +1112,7 @@ def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
         mcp,
         "search_context",
         {
-            "query": "ContextWiki",
+            "query": "ContextZip",
             "filters": {
                 "source_ids": ["source_fake_docs"],
                 "published_from": "2026-07-03T00:00:00Z",
@@ -1125,7 +1125,7 @@ def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
         mcp,
         "search_documents",
         {
-            "query": "ContextWiki",
+            "query": "ContextZip",
             "filters": {"source_ids": ["source_fake_docs"]},
             "sort_by": "published_at",
             "sort_order": "desc",
@@ -1164,10 +1164,10 @@ def test_contextwiki_fastmcp_e2e_date_filter_sort_and_list_pagination(tmp_path):
     assert second_page["next_cursor"] is None
 
 
-def test_contextwiki_fastmcp_e2e_search_documents_preserves_date_microseconds(
+def test_context_zip_fastmcp_e2e_search_documents_preserves_date_microseconds(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     registry = SourceRegistry([FakeConnector()])
     documents = []
     for document_id, published_at, search_term in [
@@ -1196,7 +1196,7 @@ def test_contextwiki_fastmcp_e2e_search_documents_preserves_date_microseconds(
             id=document_id,
             source_id="source_fake_docs",
             title=document_id,
-            content=f"{search_term} ContextWiki evidence",
+            content=f"{search_term} ContextZip evidence",
             url=f"https://example.com/{document_id}",
             platform="Notion",
             published_at=published_at,
@@ -1258,14 +1258,14 @@ def test_contextwiki_fastmcp_e2e_search_documents_preserves_date_microseconds(
     ]
 
 
-def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
+def test_context_zip_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
     previous_embed_model = Settings.embed_model
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
         config = AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
-            collection_name="contextwiki_e2e",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
+            collection_name="context_zip_e2e",
             search_multiplier=4,
         )
         chroma_collection = setup_chroma(config)
@@ -1299,7 +1299,7 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
                     DocumentModel(
                         id="legacy_raw_doc",
                         title="Legacy raw document",
-                        content="ContextWiki citations from an unmanaged legacy document.",
+                        content="ContextZip citations from an unmanaged legacy document.",
                         url="https://example.com/legacy",
                         platform="Legacy",
                     )
@@ -1314,14 +1314,14 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
             await _wait_for_sync_completion(mcp, "source_other")
             status = await _wait_for_sync_completion(mcp, "source_fake_docs")
             search_result = await mcp.tools["search_context"](
-                "ContextWiki citations",
+                "ContextZip citations",
                 filters={"source_id": "source_fake_docs"},
                 top_k=1,
             )
             chunk_id = search_result["results"][0]["chunk_id"]
             fetched = await mcp.tools["fetch_context"](chunk_id=chunk_id)
             answer = await answer_service.answer_with_citations(
-                "How does ContextWiki answer?",
+                "How does ContextZip answer?",
                 filters={"source_id": "source_fake_docs"},
                 top_k=1,
             )
@@ -1331,22 +1331,44 @@ def test_contextwiki_temp_chroma_e2e_sync_search_fetch_and_answer(tmp_path):
             run_flow()
         )
         metadatas = chroma_collection.get(include=["metadatas"])["metadatas"]
+        target_vector = chroma_collection.get(
+            where={"chunk_id": chunk_id},
+            include=["metadatas"],
+        )
+        legacy_metadata = {
+            key: value
+            for key, value in target_vector["metadatas"][0].items()
+            if key != "context_zip_managed"
+        }
+        legacy_metadata["context" + "wiki_managed"] = "true"
+        chroma_collection.update(
+            ids=[target_vector["ids"][0]],
+            metadatas=[legacy_metadata],
+        )
+        legacy_search_result = asyncio.run(
+            mcp.tools["search_context"](
+                "ContextZip citations",
+                filters={"source_id": "source_fake_docs"},
+                top_k=1,
+            )
+        )
 
         assert other_job["status"] == "queued"
         assert target_job["status"] == "queued"
         assert status["source"]["sync_status"] == "succeeded"
         assert chroma_collection.count() >= 3
-        assert any(metadata.get("contextwiki_managed") == "false" for metadata in metadatas)
-        assert any(metadata.get("contextwiki_managed") == "true" for metadata in metadatas)
+        assert any(metadata.get("context_zip_managed") == "false" for metadata in metadatas)
+        assert any(metadata.get("context_zip_managed") == "true" for metadata in metadatas)
         assert search_result["results"][0]["source_id"] == "source_fake_docs"
-        assert fetched["chunk"]["text"] == "ContextWiki syncs documents and answers with citations."
+        assert legacy_search_result["results"][0]["chunk_id"] == chunk_id
+        assert fetched["chunk"]["text"] == "ContextZip syncs documents and answers with citations."
         assert answer["evidence_status"] == "grounded"
         assert answer["used_chunks"] == [chunk_id]
     finally:
         Settings.embed_model = previous_embed_model
 
 
-def test_contextwiki_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
+def test_context_zip_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
     class AliasConnector(SourceConnector):
         source = SourceModel(
             source_id="source_alias_docs",
@@ -1389,7 +1411,7 @@ def test_contextwiki_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
             node.metadata["source_id"] = "source_alias_docs"
             return [node]
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([AliasConnector()])
     ingestion = IngestionService(
@@ -1437,7 +1459,7 @@ def test_contextwiki_e2e_phase1_alias_expansion_recovers_aws_document(tmp_path):
     assert any("amazon web services" in query.lower() for query in retrieval_queries)
 
 
-def test_contextwiki_e2e_uses_only_deterministic_query_variants(tmp_path):
+def test_context_zip_e2e_uses_only_deterministic_query_variants(tmp_path):
     class DeterministicConnector(SourceConnector):
         source = SourceModel(
             source_id="source_deterministic_docs",
@@ -1480,7 +1502,7 @@ def test_contextwiki_e2e_uses_only_deterministic_query_variants(tmp_path):
             node.metadata["source_id"] = "source_deterministic_docs"
             return [node]
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([DeterministicConnector()])
     ingestion = IngestionService(
@@ -1530,7 +1552,7 @@ def test_contextwiki_e2e_uses_only_deterministic_query_variants(tmp_path):
     assert "aws ec2 setup" not in retrieval_queries
 
 
-def test_contextwiki_e2e_phase3_repository_lookup_prefers_docs_before_code(tmp_path):
+def test_context_zip_e2e_phase3_repository_lookup_prefers_docs_before_code(tmp_path):
     class GitHubDocsConnector(SourceConnector):
         source = SourceModel(
             source_id="source_github_docs_intent",
@@ -1616,7 +1638,7 @@ def test_contextwiki_e2e_phase3_repository_lookup_prefers_docs_before_code(tmp_p
                 returned_candidate_ids.append(chunk_id)
             return nodes
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([GitHubDocsConnector()])
     ingestion = IngestionService(

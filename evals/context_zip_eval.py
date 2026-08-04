@@ -29,9 +29,9 @@ from search.query_terms import query_term_groups
 from storage.metadata_store import MetadataStore
 
 
-FIXTURE_DOCUMENTS_PATH = Path("evals/contextwiki_fixture_documents.json")
+FIXTURE_DOCUMENTS_PATH = Path("evals/context_zip_fixture_documents.json")
 RETRIEVAL_CASES_PATH = Path("evals/retrieval_quality_cases.json")
-ANSWER_CASES_PATH = Path("evals/contextwiki_answer_quality_cases.json")
+ANSWER_CASES_PATH = Path("evals/context_zip_answer_quality_cases.json")
 DOCUMENT_SORT_CASES_PATH = Path("evals/document_sort_quality_cases.json")
 
 
@@ -49,7 +49,7 @@ class FixtureNode:
             "chunk_id": chunk.chunk_id,
             "document_id": chunk.document_id,
             "source_id": chunk.source_id,
-            "contextwiki_managed": "true",
+            "context_zip_managed": "true",
         }
         self.score = score
 
@@ -117,7 +117,7 @@ def _source_ids_from_filters(filters) -> set[str]:
         return set()
 
 
-def run_contextwiki_eval(
+def run_context_zip_eval(
     *,
     fixture_documents_path: str | Path = FIXTURE_DOCUMENTS_PATH,
     retrieval_cases_path: str | Path = RETRIEVAL_CASES_PATH,
@@ -131,8 +131,8 @@ def run_contextwiki_eval(
     answer_cases = load_answer_cases(answer_cases_path)
     document_sort_cases = load_document_sort_cases(document_sort_cases_path)
 
-    with tempfile.TemporaryDirectory(prefix="contextwiki-eval-") as temp_dir:
-        store = MetadataStore(Path(temp_dir) / "contextwiki.sqlite3")
+    with tempfile.TemporaryDirectory(prefix="context_zip-eval-") as temp_dir:
+        store = MetadataStore(Path(temp_dir) / "context_zip.sqlite3")
         _seed_fixture_documents(store, documents)
 
         search_service = ContextSearchService(

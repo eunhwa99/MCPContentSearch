@@ -1,11 +1,11 @@
 [
   {
-    "case_id": "contextwiki-grounded-answer",
-    "question": "What is ContextWiki?",
+    "case_id": "context_zip-grounded-answer",
+    "question": "What is ContextZip?",
     "expected_status": "grounded",
-    "expected_answer_terms": ["ContextWiki", "MCP", "citations"],
+    "expected_answer_terms": ["ContextZip", "MCP", "citations"],
     "forbidden_answer_terms": ["deployment region", "always production-ready"],
-    "required_citation_chunk_ids": ["chunk-contextwiki-overview"],
+    "required_citation_chunk_ids": ["chunk-context-zip-overview"],
     "min_citation_count": 1
   },
   {
