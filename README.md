@@ -1,6 +1,6 @@
 # ContextZip
 
-[![CI](https://github.com/eunaverse/context-zip/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/context-zip/actions/workflows/ci.yml)
+[![CI](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/eunaverse/MCPContentSearch/actions/workflows/ci.yml)
 
 **Self-hosted knowledge retrieval MCP server.** Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
 
