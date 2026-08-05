@@ -1,4 +1,4 @@
-from evals.contextwiki_eval import run_contextwiki_eval
+from evals.context_zip_eval import run_context_zip_eval
 from evals.document_sort_quality import (
     DocumentSortQualityCase,
     evaluate_document_sort_payload,
@@ -75,8 +75,8 @@ def test_document_sort_fixture_case_covers_timestamp_tie_and_null_last():
     assert list(cases[1].expected_document_ids) == EXPECTED_ASC_DOCUMENT_ORDER
 
 
-def test_contextwiki_eval_runner_reports_document_sort_suite():
-    summary = run_contextwiki_eval()
+def test_context_zip_eval_runner_reports_document_sort_suite():
+    summary = run_context_zip_eval()
 
     assert summary["passed"]
     suite = summary["document_sort_suite"]

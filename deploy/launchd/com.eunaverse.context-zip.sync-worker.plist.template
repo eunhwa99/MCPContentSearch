@@ -27,15 +27,15 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>CONTEXTWIKI_SYNC_WORKER_LOG_PATH</key>
+    <key>CONTEXTZIP_SYNC_WORKER_LOG_PATH</key>
     <string>@@WORKER_LOG@@</string>
-    <key>CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES</key>
+    <key>CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES</key>
     <string>5242880</string>
-    <key>CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT</key>
+    <key>CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT</key>
     <string>3</string>
-    <key>CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH</key>
+    <key>CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH</key>
     <string>@@DIAGNOSTIC_LOG@@</string>
-    <key>CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES</key>
+    <key>CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES</key>
     <string>1048576</string>
   </dict>
 

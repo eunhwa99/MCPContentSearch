@@ -9,7 +9,7 @@ class DocumentConverter:
     def to_llama_document(doc: DocumentModel) -> Document:
         """DocumentModel -> LlamaIndex Document"""
         content_hash = ContentHasher.hash_content(doc.content)
-        is_contextwiki_chunk = bool(doc.chunk_id and doc.document_id and doc.source_id)
+        is_context_zip_chunk = bool(doc.chunk_id and doc.document_id and doc.source_id)
         document_id = doc.external_id or doc.document_id or doc.id
         
         return Document(
@@ -33,7 +33,7 @@ class DocumentConverter:
                 "last_seen_at": doc.last_seen_at,
                 "last_seen_sync_id": doc.last_seen_sync_id,
                 "version_id": doc.version_id,
-                "contextwiki_managed": "true" if is_contextwiki_chunk else "false",
+                "context_zip_managed": "true" if is_context_zip_chunk else "false",
                 "content_hash": content_hash,
             },
         )

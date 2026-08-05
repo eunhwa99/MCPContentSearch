@@ -613,7 +613,7 @@ def test_retained_notion_and_tistory_sync_through_mcp_tools(
     expected_title,
 ):
     connectors = _retained_source_connectors()
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry(connectors.values())
     ingestion = IngestionService(
@@ -711,7 +711,7 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=http,
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     registry = SourceRegistry([connector])
     ingestion = IngestionService(
@@ -827,7 +827,7 @@ def test_retained_github_sync_through_mcp_tools(tmp_path):
 
 def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path):
     config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
-    metadata_path = tmp_path / "contextwiki.sqlite3"
+    metadata_path = tmp_path / "context_zip.sqlite3"
     mcp_connector = GitHubSourceConnector(
         repositories=("eunaverse",),
         config=config,
@@ -996,7 +996,7 @@ def test_retained_owner_sync_all_polls_exact_job_and_keeps_search_flow(tmp_path)
 
 def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_path):
     config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
-    metadata_path = tmp_path / "contextwiki.sqlite3"
+    metadata_path = tmp_path / "context_zip.sqlite3"
     mcp_connector = GitHubSourceConnector(
         repositories=("eunaverse",),
         config=config,
@@ -1110,11 +1110,11 @@ def test_retained_owner_sync_keeps_confirmed_empty_repo_in_cleanup_scope(tmp_pat
 
 def test_github_connector_syncs_through_ingestion_service(tmp_path):
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=FakeGitHubHTTP(),
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -1125,7 +1125,7 @@ def test_github_connector_syncs_through_ingestion_service(tmp_path):
 
     job = asyncio.run(service.sync_source("source_github"))
     chunks = store.list_chunks_for_document(
-        "github:eunhwa99/mcpcontentsearch:api/tools.py"
+        "github:eunhwa99/context-zip:api/tools.py"
     )
 
     assert job.status == SyncJobStatus.SUCCEEDED
@@ -1135,12 +1135,12 @@ def test_github_connector_syncs_through_ingestion_service(tmp_path):
     assert chunks[0].line_end == 2
     assert indexer.documents[0].source_id == "source_github"
     assert indexer.documents[0].document_id == (
-        "github:eunhwa99/mcpcontentsearch:api/tools.py"
+        "github:eunhwa99/context-zip:api/tools.py"
     )
 
 
 def test_owner_cleanup_lifecycle_is_scoped_and_incomplete_followup_is_safe(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     config = AppConfig(github_max_files=5, github_max_file_bytes=1000)
 
@@ -1222,11 +1222,11 @@ def test_owner_cleanup_lifecycle_is_scoped_and_incomplete_followup_is_safe(tmp_p
 
 
 def test_github_sync_skips_stale_cleanup_when_file_cap_is_exceeded(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=2, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("a.py", "b.py")),
     )
@@ -1238,13 +1238,13 @@ def test_github_sync_skips_stale_cleanup_when_file_cap_is_exceeded(tmp_path):
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    b_document_id = "github:eunhwa99/mcpcontentsearch:b.py"
+    b_document_id = "github:eunhwa99/context-zip:b.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(b_document_id)
     assert first_connector.supports_stale_cleanup is True
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=2, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("0.py", "a.py", "b.py")),
     )
@@ -1265,11 +1265,11 @@ def test_github_sync_skips_stale_cleanup_when_file_cap_is_exceeded(tmp_path):
 
 
 def test_github_configured_sync_preserves_ad_hoc_target_repo_documents(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_configured_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("README.md", "old.py")),
     )
@@ -1281,7 +1281,7 @@ def test_github_configured_sync_preserves_ad_hoc_target_repo_documents(tmp_path)
     )
 
     first_job = asyncio.run(first_configured_service.sync_source("source_github"))
-    stale_configured_document_id = "github:eunhwa99/mcpcontentsearch:old.py"
+    stale_configured_document_id = "github:eunhwa99/context-zip:old.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(stale_configured_document_id)
 
@@ -1306,7 +1306,7 @@ def test_github_configured_sync_preserves_ad_hoc_target_repo_documents(tmp_path)
     assert store.list_chunks_for_document(ad_hoc_document_id)
 
     second_configured_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("README.md",)),
     )
@@ -1327,7 +1327,7 @@ def test_github_configured_sync_preserves_ad_hoc_target_repo_documents(tmp_path)
 
 
 def test_github_repo_cleanup_prefix_treats_underscore_literally(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_configured_connector = GitHubSourceConnector(
@@ -1387,11 +1387,11 @@ def test_github_repo_cleanup_prefix_treats_underscore_literally(tmp_path):
 
 
 def test_github_sync_fails_without_stale_cleanup_for_missing_tree_payload(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("a.py",)),
     )
@@ -1403,12 +1403,12 @@ def test_github_sync_fails_without_stale_cleanup_for_missing_tree_payload(tmp_pa
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    document_id = "github:eunhwa99/mcpcontentsearch:a.py"
+    document_id = "github:eunhwa99/context-zip:a.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=MissingTreePayloadGitHubHTTP(),
     )
@@ -1428,11 +1428,11 @@ def test_github_sync_fails_without_stale_cleanup_for_missing_tree_payload(tmp_pa
 
 
 def test_github_sync_fails_without_deleting_chunks_for_missing_blob_content(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("a.py",)),
     )
@@ -1444,12 +1444,12 @@ def test_github_sync_fails_without_deleting_chunks_for_missing_blob_content(tmp_
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    document_id = "github:eunhwa99/mcpcontentsearch:a.py"
+    document_id = "github:eunhwa99/context-zip:a.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=MissingBlobContentGitHubHTTP(),
     )
@@ -1469,11 +1469,11 @@ def test_github_sync_fails_without_deleting_chunks_for_missing_blob_content(tmp_
 
 
 def test_github_sync_skips_stale_cleanup_for_binary_blob_content(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("a.py",)),
     )
@@ -1485,12 +1485,12 @@ def test_github_sync_skips_stale_cleanup_for_binary_blob_content(tmp_path):
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    document_id = "github:eunhwa99/mcpcontentsearch:a.py"
+    document_id = "github:eunhwa99/context-zip:a.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=BinaryBlobGitHubHTTP(),
     )
@@ -1511,11 +1511,11 @@ def test_github_sync_skips_stale_cleanup_for_binary_blob_content(tmp_path):
 
 
 def test_github_sync_skips_stale_cleanup_when_byte_cap_is_exceeded(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=SizedTreeGitHubHTTP({"a.py": 20, "large.py": 80}),
     )
@@ -1527,13 +1527,13 @@ def test_github_sync_skips_stale_cleanup_when_byte_cap_is_exceeded(tmp_path):
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    large_document_id = "github:eunhwa99/mcpcontentsearch:large.py"
+    large_document_id = "github:eunhwa99/context-zip:large.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(large_document_id)
     assert first_connector.supports_stale_cleanup is True
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=100),
         http_client=SizedTreeGitHubHTTP({"a.py": 20, "large.py": 200}),
     )
@@ -1554,11 +1554,11 @@ def test_github_sync_skips_stale_cleanup_when_byte_cap_is_exceeded(tmp_path):
 
 
 def test_github_sync_skips_stale_cleanup_when_blob_byte_cap_is_exceeded(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=TreeGitHubHTTP(("other.py",)),
     )
@@ -1570,12 +1570,12 @@ def test_github_sync_skips_stale_cleanup_when_blob_byte_cap_is_exceeded(tmp_path
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    other_document_id = "github:eunhwa99/mcpcontentsearch:other.py"
+    other_document_id = "github:eunhwa99/context-zip:other.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(other_document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=5),
         http_client=MissingSizeLargeBlobGitHubHTTP(),
     )
@@ -1598,11 +1598,11 @@ def test_github_sync_skips_stale_cleanup_when_blob_byte_cap_is_exceeded(tmp_path
 def test_github_sync_preserves_document_identity_when_configured_ref_changes(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=RefChangingGitHubHTTP("main", "blob-main-tools"),
     )
@@ -1614,12 +1614,12 @@ def test_github_sync_preserves_document_identity_when_configured_ref_changes(
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    document_id = "github:eunhwa99/mcpcontentsearch:api/tools.py"
+    document_id = "github:eunhwa99/context-zip:api/tools.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@release",),
+        repositories=("eunhwa99/context-zip@release",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=RefChangingGitHubHTTP("release", "blob-release-tools"),
     )
@@ -1643,11 +1643,11 @@ def test_github_sync_preserves_document_identity_when_configured_ref_changes(
 def test_github_sync_preserves_document_identity_when_repository_case_changes(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
 
     first_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=RefChangingGitHubHTTP("main", "blob-main-tools"),
     )
@@ -1659,12 +1659,12 @@ def test_github_sync_preserves_document_identity_when_repository_case_changes(
     )
 
     first_job = asyncio.run(first_service.sync_source("source_github"))
-    document_id = "github:eunhwa99/mcpcontentsearch:api/tools.py"
+    document_id = "github:eunhwa99/context-zip:api/tools.py"
     assert first_job.status == SyncJobStatus.SUCCEEDED
     assert store.list_chunks_for_document(document_id)
 
     second_connector = GitHubSourceConnector(
-        repositories=("EUNHWA99/mcpcontentsearch@main",),
+        repositories=("EUNHWA99/context-zip@main",),
         config=AppConfig(github_max_files=5, github_max_file_bytes=1000),
         http_client=RefChangingGitHubHTTP("main", "blob-main-tools-updated"),
     )

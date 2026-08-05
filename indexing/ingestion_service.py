@@ -368,8 +368,8 @@ class IngestionService:
             )
             return failed_job, "failed"
         self._background_sync_tasks[source_id] = task
-        setattr(task, "contextwiki_job_id", job.job_id)
-        setattr(task, "contextwiki_connector", connector)
+        setattr(task, "context_zip_job_id", job.job_id)
+        setattr(task, "context_zip_connector", connector)
 
         def _finalize(completed_task: asyncio.Task) -> None:
             self._finalize_background_sync_task(
@@ -769,8 +769,8 @@ class IngestionService:
         existing_task = self._background_sync_tasks.get(source_id)
         if existing_task is None or not existing_task.done():
             return
-        job_id = getattr(existing_task, "contextwiki_job_id", "")
-        connector = getattr(existing_task, "contextwiki_connector", None)
+        job_id = getattr(existing_task, "context_zip_job_id", "")
+        connector = getattr(existing_task, "context_zip_connector", None)
         if not job_id or connector is None:
             self._background_sync_tasks.pop(source_id, None)
             return

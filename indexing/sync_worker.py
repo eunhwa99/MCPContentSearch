@@ -170,7 +170,7 @@ class WorkerLogPrivacyFilter(logging.Filter):
 DEFAULT_MAX_CONCURRENT_JOBS = 2
 MIN_MAX_CONCURRENT_JOBS = 1
 MAX_MAX_CONCURRENT_JOBS = 8
-MAX_CONCURRENT_ENV_VAR = "CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT"
+MAX_CONCURRENT_ENV_VAR = "CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT"
 
 
 def _poll_interval(value: str | float) -> float:
@@ -449,7 +449,7 @@ async def _run_worker(worker: SyncWorker) -> None:
 def _default_poll_interval() -> float:
     return _poll_interval(
         os.getenv(
-            "CONTEXTWIKI_SYNC_WORKER_POLL_SECONDS",
+            "CONTEXTZIP_SYNC_WORKER_POLL_SECONDS",
             str(DEFAULT_POLL_INTERVAL_SECONDS),
         )
     )
@@ -504,7 +504,7 @@ def _prepare_private_log_path(log_path: Path) -> None:
 
 
 def _configure_logging() -> logging.Handler:
-    log_path_value = os.getenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", "").strip()
+    log_path_value = os.getenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", "").strip()
     if not log_path_value:
         handler: logging.Handler = logging.StreamHandler()
     else:
@@ -515,13 +515,13 @@ def _configure_logging() -> logging.Handler:
             handler = ByteBoundedRotatingFileHandler(
                 log_path,
                 maxBytes=_bounded_log_int(
-                    "CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES",
+                    "CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES",
                     DEFAULT_LOG_MAX_BYTES,
                     MIN_LOG_MAX_BYTES,
                     MAX_LOG_MAX_BYTES,
                 ),
                 backupCount=_bounded_log_int(
-                    "CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT",
+                    "CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT",
                     DEFAULT_LOG_BACKUP_COUNT,
                     1,
                     MAX_LOG_BACKUP_COUNT,
@@ -538,7 +538,7 @@ def _configure_logging() -> logging.Handler:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the durable ContextWiki sync worker."
+        description="Run the durable ContextZip sync worker."
     )
     parser.add_argument(
         "--poll-interval",

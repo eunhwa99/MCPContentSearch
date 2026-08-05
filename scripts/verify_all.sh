@@ -8,9 +8,9 @@ export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}"
 export IS_TESTING="${IS_TESTING:-1}"
 DEFAULT_UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_UV_CACHE_DIR}"
-unset CONTEXTWIKI_OBSIDIAN_VAULT_PATH
-unset CONTEXTWIKI_OBSIDIAN_MAX_FILES
-unset CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES
+unset CONTEXTZIP_OBSIDIAN_VAULT_PATH
+unset CONTEXTZIP_OBSIDIAN_MAX_FILES
+unset CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES
 mkdir -p "$UV_CACHE_DIR"
 
 RETAINED_PACKAGES=(
@@ -62,8 +62,8 @@ if uv_workspace_healthy; then
   echo "== Broad non-live regression layer =="
   uv run --locked pytest -m "not live" "${COVERAGE_TARGETS[@]}"
   echo "== Deterministic quality eval layer =="
-  uv run --locked python scripts/run_contextwiki_eval.py \
-    --output-dir artifacts/contextwiki-evals
+  uv run --locked python scripts/run_context_zip_eval.py \
+    --output-dir artifacts/context-zip-evals
 else
   echo "uv workspace dependencies are unhealthy; cannot run required ruff, mypy, bandit, or coverage gates." >&2
   echo "Running closest dependency-free pytest fallback before failing the full gate." >&2

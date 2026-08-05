@@ -1,6 +1,6 @@
 ---
 name: harness-integrate
-description: Integration verification phase for MCPContentSearch changes, final review gate, and PR delivery.
+description: Integration verification phase for context-zip changes, final review gate, and PR delivery.
 ---
 
 # Harness Integrate

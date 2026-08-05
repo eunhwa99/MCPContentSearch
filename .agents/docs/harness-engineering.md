@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the default implementation harness contract for `MCPContentSearch`. When the user asks for feature work, fixes, refactors, tests, or other file-changing work, read this document and run the phase skills in order.
+This document is the default implementation harness contract for `context-zip`. When the user asks for feature work, fixes, refactors, tests, or other file-changing work, read this document and run the phase skills in order.
 
 The harness makes planning, test-driven implementation, verification, review,
 refactoring, and integration repeatable. If verification fails, classify the
@@ -556,7 +556,7 @@ run the focused matching eval command.
 
 Before review for code-changing work, run the repo-wide functional E2E
 regression gate that exercises retained end-to-end feature workflows
-(ContextWiki MCP flows, connector E2E flows, search, citation answer, indexing,
+(ContextZip MCP flows, connector E2E flows, search, citation answer, indexing,
 and storage behavior):
 
 ```bash
@@ -584,7 +584,7 @@ the all-tests-pass gate.
 
 Current local eval paths include deterministic eval tests under
 `tests/evals` such as `uv run pytest -q tests/evals` plus the fixture runner at
-`PYTHONPATH=. python scripts/run_contextwiki_eval.py`. Satisfy the matching
+`PYTHONPATH=. python scripts/run_context_zip_eval.py`. Satisfy the matching
 eval gate only after `./scripts/verify_all.sh` succeeds and before improvement
 after/delta (or an explicit `n/a` rationale), functional smoke, or review; do
 not run matching eval during focused GREEN. Prefer

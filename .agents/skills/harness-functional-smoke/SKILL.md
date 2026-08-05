@@ -1,6 +1,6 @@
 ---
 name: harness-functional-smoke
-description: Use when MCPContentSearch changes are implemented and user-visible behavior, MCP tools, source sync, search, citation answer, storage, or PR evidence need final functional validation.
+description: Use when context-zip changes are implemented and user-visible behavior, MCP tools, source sync, search, citation answer, storage, or PR evidence need final functional validation.
 ---
 
 # Harness Functional Smoke
@@ -69,7 +69,7 @@ the check as `blocked/gated` and use a fake/temp substitute.
 
 Start from the full inventory below, then mark rows `passed`, `failed`,
 `not affected`, or `blocked/gated` rather than silently omitting them. Common
-MCPContentSearch surfaces:
+context-zip surfaces:
 
 - MCP tools: `list_sources`, `sync_source`, `sync_all`, `get_sync_status`,
   `search_context`, `search_documents`, `fetch_context`.

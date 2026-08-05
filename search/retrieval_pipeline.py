@@ -1,7 +1,12 @@
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
+from llama_index.core.vector_stores import (
+    FilterCondition,
+    FilterOperator,
+    MetadataFilter,
+    MetadataFilters,
+)
 
 from core.models import DocumentModel
 from environments.config import AppConfig
@@ -267,8 +272,15 @@ class ContextRetrievalPipeline:
         return max(base_limit, base_limit * RetrievalPolicy.MAX_RETRIEVAL_LIMIT_MULTIPLIER)
 
 
+MANAGED_METADATA_KEY = "context_zip_managed"
+LEGACY_MANAGED_METADATA_KEY = "context" + "wiki_managed"
+
+
 def managed_hit_matches_chunk(metadata: dict[str, Any], chunk) -> bool:
-    if metadata.get("contextwiki_managed") != "true":
+    if not any(
+        metadata.get(key) == "true"
+        for key in (MANAGED_METADATA_KEY, LEGACY_MANAGED_METADATA_KEY)
+    ):
         return False
     source_id = metadata.get("source_id")
     document_id = metadata.get("document_id")
@@ -280,7 +292,14 @@ def managed_hit_matches_chunk(metadata: dict[str, Any], chunk) -> bool:
 
 
 def metadata_filters(source_ids: list[str] | None):
-    filters = [MetadataFilter(key="contextwiki_managed", value="true")]
+    managed_filters = MetadataFilters(
+        filters=[
+            MetadataFilter(key=MANAGED_METADATA_KEY, value="true"),
+            MetadataFilter(key=LEGACY_MANAGED_METADATA_KEY, value="true"),
+        ],
+        condition=FilterCondition.OR,
+    )
+    filters = [managed_filters]
     if not source_ids:
         return MetadataFilters(filters=filters)
     if len(source_ids) == 1:

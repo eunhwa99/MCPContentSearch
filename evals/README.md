@@ -1,6 +1,6 @@
-# ContextWiki Local Evaluations
+# ContextZip Local Evaluations
 
-This directory contains deterministic evaluation scaffolding for ContextWiki.
+This directory contains deterministic evaluation scaffolding for ContextZip.
 Inside this deterministic quality eval layer, Phase D currently covers two
 local-first check families:
 
@@ -51,14 +51,14 @@ The fixture suites now also report:
 Run the D1 fixture runner with:
 
 ```bash
-uv run --locked python scripts/run_contextwiki_eval.py
+uv run --locked python scripts/run_context_zip_eval.py
 ```
 
 Write reviewer-visible artifacts with:
 
 ```bash
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals
-uv run --locked python scripts/run_contextwiki_eval.py --output-dir artifacts/contextwiki-evals --include-latency
+uv run --locked python scripts/run_context_zip_eval.py --output-dir artifacts/context-zip-evals
+uv run --locked python scripts/run_context_zip_eval.py --output-dir artifacts/context-zip-evals --include-latency
 ```
 
 This seeds temporary fixture documents into temp SQLite, swaps in a local

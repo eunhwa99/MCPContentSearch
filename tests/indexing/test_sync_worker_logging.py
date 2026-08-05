@@ -38,7 +38,7 @@ def test_worker_logging_recreates_private_runtime_directory_and_log(
     tmp_path: Path,
 ):
     log_path = tmp_path / "deleted-after-install" / "sync-worker.log"
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -94,7 +94,7 @@ def test_worker_logging_rejects_unsafe_runtime_log_paths_without_mutating_target
         log_path = log_dir / "sync-worker.log"
         monkeypatch.setattr(os, "getuid", lambda: target_dir.stat().st_uid + 1)
 
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -411,7 +411,7 @@ def test_worker_logger_exception_redacts_delimiter_paths_from_actual_stack_conte
         r"C:\Users\tester\private,vault;exception notes.md",
     )
     notion_token = "ntn_abcdefghijklmnopqrstuvwxyz0123456789"
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -475,9 +475,9 @@ def test_worker_rotating_logs_remove_complete_multiword_credentials(
         "Cookie: session=alpha theme=private preference=hidden",
         "api_key=first-segment second-segment third-secret",
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -522,7 +522,7 @@ def test_worker_rotating_logs_redact_formatter_appended_context(
         "/Users/tester/private vault/stack trace.py",
         r"C:\Users\tester\private vault\exception trace.py",
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -591,9 +591,9 @@ def test_worker_logger_exception_redacts_raw_context_before_truncating(
         "/Users/tester/private vault/exception notes.md",
         r"C:\Users\tester\private vault\windows exception notes.md",
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -652,9 +652,9 @@ def test_worker_rotating_logs_bound_each_oversized_record(
         "/Users/tester/private vault/oversized stack.py",
         r"C:\Users\tester\private vault\oversized exception.py",
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -725,9 +725,9 @@ def test_worker_logging_rotates_project_output_with_bounded_backups(
     tmp_path: Path,
 ):
     log_path = tmp_path / "logs" / "sync-worker.log"
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT", "2")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT", "2")
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -764,9 +764,9 @@ def test_worker_logs_suppress_dependency_info_and_redact_sensitive_context(
     sensitive_path = str(tmp_path / "private obsidian vault" / "journal.md")
     sensitive_page_id = "01234567-89ab-cdef-0123-456789abcdef"
     sensitive_block_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_BACKUP_COUNT", "3")
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -859,7 +859,7 @@ def test_worker_info_log_does_not_persist_path_bearing_document_ids(
     sensitive_document_id = str(
         tmp_path / "private obsidian vault" / "personal journal.md"
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level

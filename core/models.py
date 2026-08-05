@@ -180,7 +180,7 @@ class SearchFilters(BaseModel):
 
 
 class SourceModel(BaseModel):
-    """ContextWiki source metadata"""
+    """ContextZip source metadata"""
     source_id: str
     source_type: SourceType
     name: str
@@ -197,7 +197,7 @@ class SourceModel(BaseModel):
 
 
 class SyncJobModel(BaseModel):
-    """ContextWiki source sync job metadata"""
+    """ContextZip source sync job metadata"""
     job_id: str
     source_id: str
     status: SyncJobStatus = SyncJobStatus.QUEUED

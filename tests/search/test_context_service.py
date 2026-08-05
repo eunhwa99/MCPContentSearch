@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from llama_index.vector_stores.chroma.base import _to_chroma_filter
 
 from core.models import (
     ChunkModel,
@@ -21,7 +22,7 @@ pytestmark = pytest.mark.integration
 
 class FakeNode:
     def __init__(self, chunk_id, score):
-        self.metadata = {"chunk_id": chunk_id, "contextwiki_managed": "true"}
+        self.metadata = {"chunk_id": chunk_id, "context_zip_managed": "true"}
         self.score = score
 
 
@@ -51,7 +52,7 @@ def test_document_search_result_requires_typed_matched_context():
 
 
 def test_vector_search_tries_alias_expanded_query_variants(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -91,7 +92,7 @@ def test_vector_search_does_not_issue_external_rewrite_queries(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -135,7 +136,7 @@ def test_vector_search_uses_metadata_identity_fallback_without_query_rewrite(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -172,20 +173,20 @@ def test_vector_search_uses_metadata_identity_fallback_without_query_rewrite(
 
 
 def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
         "doc-debug",
         "debug-chunk",
         "source_target",
-        "ContextWiki debug guide",
-        "ContextWiki debug guide content.",
+        "ContextZip debug guide",
+        "ContextZip debug guide content.",
     )
 
     result = asyncio.run(
         ContextSearchService(store, retriever=list_search_documents(store)).search_context(
-            "contextwiki debug",
+            "context_zip debug",
             filters={"source_ids": ["source_target"]},
             top_k=1,
             include_debug=True,
@@ -201,20 +202,20 @@ def test_search_context_debug_includes_filters_and_result_summary(tmp_path):
 
 
 def test_search_context_defaults_to_non_debug_payload(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
         "doc-debug",
         "debug-chunk",
         "source_target",
-        "ContextWiki debug guide",
-        "ContextWiki debug guide content.",
+        "ContextZip debug guide",
+        "ContextZip debug guide content.",
     )
 
     result = asyncio.run(
         ContextSearchService(store, retriever=list_search_documents(store)).search_context(
-            "contextwiki debug",
+            "context_zip debug",
             top_k=1,
         )
     )
@@ -230,7 +231,7 @@ def test_search_context_refills_candidates_before_applying_inclusive_date_filter
 ):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     for index, published_at in enumerate(
         [
@@ -244,8 +245,8 @@ def test_search_context_refills_candidates_before_applying_inclusive_date_filter
             f"doc-{index}",
             f"chunk-{index}",
             "source_target",
-            f"ContextWiki {index}",
-            "ContextWiki date filtering evidence.",
+            f"ContextZip {index}",
+            "ContextZip date filtering evidence.",
             published_at=published_at,
         )
     lookup_counts = {
@@ -289,7 +290,7 @@ def test_search_context_refills_candidates_before_applying_inclusive_date_filter
 
     result = asyncio.run(
         ContextSearchService(store, retriever=retriever).search_context(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(
                 source_ids=["source_target"],
                 published_from="2026-07-01T00:00:00Z",
@@ -317,7 +318,7 @@ def test_search_context_refills_candidates_before_applying_inclusive_date_filter
 def test_search_documents_sorts_matching_documents_by_normalized_date(tmp_path):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     for document_id, published_at in [
         ("older", "2026-07-01T00:00:00Z"),
@@ -328,8 +329,8 @@ def test_search_documents_sorts_matching_documents_by_normalized_date(tmp_path):
             document_id,
             f"{document_id}-chunk",
             "source_target",
-            f"ContextWiki {document_id}",
-            "ContextWiki sorted evidence.",
+            f"ContextZip {document_id}",
+            "ContextZip sorted evidence.",
             published_at=published_at,
         )
 
@@ -338,7 +339,7 @@ def test_search_documents_sorts_matching_documents_by_normalized_date(tmp_path):
             store,
             retriever=list_search_documents(store),
         ).search_documents(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(source_ids=["source_target"]),
             sort_by="published_at",
             sort_order="desc",
@@ -364,7 +365,7 @@ def test_search_documents_normalizes_date_only_and_offset_aware_sort_values(
 ):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     for document_id, published_at in [
         ("date-only", "2026-07-02"),
@@ -376,8 +377,8 @@ def test_search_documents_normalizes_date_only_and_offset_aware_sort_values(
             document_id,
             f"{document_id}-chunk",
             "source_target",
-            f"ContextWiki {document_id}",
-            "ContextWiki mixed timestamp sorting evidence.",
+            f"ContextZip {document_id}",
+            "ContextZip mixed timestamp sorting evidence.",
             published_at=published_at,
         )
 
@@ -386,7 +387,7 @@ def test_search_documents_normalizes_date_only_and_offset_aware_sort_values(
             store,
             retriever=list_search_documents(store),
         ).search_documents(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(source_ids=["source_target"]),
             sort_by="published_at",
             sort_order=sort_order,
@@ -426,7 +427,7 @@ def test_search_documents_preserves_microsecond_precision_for_date_sort(
 ):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     for document_id, published_at in documents:
         seed_document_chunks(
@@ -434,8 +435,8 @@ def test_search_documents_preserves_microsecond_precision_for_date_sort(
             document_id,
             f"{document_id}-chunk",
             "source_target",
-            f"ContextWiki {document_id}",
-            "ContextWiki precision sorting evidence.",
+            f"ContextZip {document_id}",
+            "ContextZip precision sorting evidence.",
             published_at=published_at,
         )
 
@@ -444,7 +445,7 @@ def test_search_documents_preserves_microsecond_precision_for_date_sort(
             store,
             retriever=list_search_documents(store),
         ).search_documents(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(source_ids=["source_target"]),
             sort_by="published_at",
             sort_order=sort_order,
@@ -461,13 +462,13 @@ def test_search_documents_refill_hydrates_each_unique_candidate_once(
 ):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     old_document = DocumentModel(
         id="doc-old-multi",
         source_id="source_target",
         title="Old multi-chunk document",
-        content="ContextWiki old multi chunk evidence",
+        content="ContextZip old multi chunk evidence",
         url="https://example.com/doc-old-multi",
         platform="Notion",
         published_at="2026-06-01T00:00:00Z",
@@ -478,7 +479,7 @@ def test_search_documents_refill_hydrates_each_unique_candidate_once(
             document_id="doc-old-multi",
             source_id="source_target",
             title=old_document.title,
-            text=f"ContextWiki old multi chunk evidence {index}",
+            text=f"ContextZip old multi chunk evidence {index}",
             url=old_document.url,
             chunk_index=index,
             content_hash=f"old-{index}",
@@ -492,7 +493,7 @@ def test_search_documents_refill_hydrates_each_unique_candidate_once(
         "chunk-other-old",
         "source_target",
         "Other old document",
-        "ContextWiki other old evidence",
+        "ContextZip other old evidence",
         published_at="2026-06-02T00:00:00Z",
     )
     seed_document_chunks(
@@ -501,7 +502,7 @@ def test_search_documents_refill_hydrates_each_unique_candidate_once(
         "chunk-match",
         "source_target",
         "Matching document",
-        "ContextWiki matching date evidence",
+        "ContextZip matching date evidence",
         published_at="2026-07-01T00:00:00Z",
     )
     lookup_counts = {
@@ -549,7 +550,7 @@ def test_search_documents_refill_hydrates_each_unique_candidate_once(
     monkeypatch.setattr(service, "_document_search_candidate_limit", lambda _top_k: 2)
     result = asyncio.run(
         service.search_documents(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(
                 source_ids=["source_target"],
                 published_from="2026-07-01T00:00:00Z",
@@ -578,7 +579,7 @@ def test_vector_search_debug_contains_no_query_rewrite_fields(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -608,7 +609,7 @@ def test_vector_search_debug_contains_no_query_rewrite_fields(
 
 
 def test_search_context_empty_filter_result_keeps_deterministic_debug(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     result = asyncio.run(
         ContextSearchService(
@@ -633,7 +634,7 @@ def test_vector_search_uses_best_score_for_same_chunk_across_query_variants(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -675,7 +676,7 @@ def test_vector_search_keeps_single_high_confidence_exact_match_when_top_k_is_la
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -715,7 +716,7 @@ def test_vector_search_keeps_single_high_confidence_exact_match_when_top_k_is_la
 def test_context_service_exposes_no_query_rewrite_helpers(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -736,7 +737,7 @@ def test_vector_search_keeps_original_deterministic_query_results(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -744,7 +745,7 @@ def test_vector_search_keeps_original_deterministic_query_results(
         "chunk-original",
         "source_target",
         "Original guide",
-        "ContextWiki original setup guide.",
+        "ContextZip original setup guide.",
     )
     seed_document_chunks(
         store,
@@ -752,7 +753,7 @@ def test_vector_search_keeps_original_deterministic_query_results(
         "chunk-rewritten",
         "source_target",
         "Rewritten guide",
-        "ContextWiki rewritten setup guide.",
+        "ContextZip rewritten setup guide.",
     )
 
     class RewriteComparisonRetriever:
@@ -777,11 +778,11 @@ def test_vector_search_keeps_original_deterministic_query_results(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+        ).search_context("context_zip setup", top_k=1, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "chunk-original"
-    assert result["debug"]["retrieval_queries"] == ["contextwiki setup"]
+    assert result["debug"]["retrieval_queries"] == ["context_zip setup"]
     assert result["debug"]["initial_top_vector_score"] == 0.72
     assert not any("rewrite" in key for key in result["debug"])
 
@@ -790,7 +791,7 @@ def test_vector_search_does_not_probe_unrequested_alternate_queries(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -798,7 +799,7 @@ def test_vector_search_does_not_probe_unrequested_alternate_queries(
         "chunk-original",
         "source_target",
         "Original guide",
-        "ContextWiki original setup guide.",
+        "ContextZip original setup guide.",
     )
     seed_document_chunks(
         store,
@@ -806,7 +807,7 @@ def test_vector_search_does_not_probe_unrequested_alternate_queries(
         "chunk-rewritten",
         "source_target",
         "Rewritten guide",
-        "ContextWiki rewritten setup guide.",
+        "ContextZip rewritten setup guide.",
     )
 
     class RewriteComparisonRetriever:
@@ -831,15 +832,15 @@ def test_vector_search_does_not_probe_unrequested_alternate_queries(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+        ).search_context("context_zip setup", top_k=1, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "chunk-original"
-    assert result["debug"]["retrieval_queries"] == ["contextwiki setup"]
+    assert result["debug"]["retrieval_queries"] == ["context_zip setup"]
 
 
 def test_retrieval_pipeline_exposes_no_rewrite_result_comparison(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = ContextSearchService(store, indexer=FakeIndexer())
 
     assert not hasattr(service._pipeline(), "prefer_rewritten_results")
@@ -849,7 +850,7 @@ def test_vector_search_uses_metadata_promoted_candidate_without_external_rewrite
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -886,7 +887,7 @@ def test_vector_search_reports_raw_initial_vector_score_when_top_k_is_larger(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -894,7 +895,7 @@ def test_vector_search_reports_raw_initial_vector_score_when_top_k_is_larger(
         "chunk-strong-1",
         "source_target",
         "Strong guide 1",
-        "ContextWiki setup guide one.",
+        "ContextZip setup guide one.",
     )
     seed_document_chunks(
         store,
@@ -902,7 +903,7 @@ def test_vector_search_reports_raw_initial_vector_score_when_top_k_is_larger(
         "chunk-strong-2",
         "source_target",
         "Strong guide 2",
-        "ContextWiki setup guide two.",
+        "ContextZip setup guide two.",
     )
 
     class StrongVectorRetriever:
@@ -924,7 +925,7 @@ def test_vector_search_reports_raw_initial_vector_score_when_top_k_is_larger(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-        ).search_context("contextwiki setup", top_k=3, include_debug=True)
+        ).search_context("context_zip setup", top_k=3, include_debug=True)
     )
 
     assert result["debug"]["initial_top_vector_score"] == 0.93
@@ -934,27 +935,27 @@ def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
-        "github:eunhwa99/contextwiki:docs/setup.md",
-        "contextwiki-doc-chunk",
+        "github:eunhwa99/context_zip:docs/setup.md",
+        "context_zip-doc-chunk",
         "source_github",
         "Setup guide",
-        "ContextWiki setup guide.",
+        "ContextZip setup guide.",
         path="docs/setup.md",
-        url="https://github.com/eunhwa99/contextwiki/blob/main/docs/setup.md",
+        url="https://github.com/eunhwa99/context_zip/blob/main/docs/setup.md",
     )
     seed_document_chunks(
         store,
-        "github:eunhwa99/contextwiki:docs/faq.md",
-        "contextwiki-faq-chunk",
+        "github:eunhwa99/context_zip:docs/faq.md",
+        "context_zip-faq-chunk",
         "source_github",
         "FAQ guide",
-        "ContextWiki FAQ guide.",
+        "ContextZip FAQ guide.",
         path="docs/faq.md",
-        url="https://github.com/eunhwa99/contextwiki/blob/main/docs/faq.md",
+        url="https://github.com/eunhwa99/context_zip/blob/main/docs/faq.md",
     )
 
     class MixedVectorRetriever:
@@ -962,8 +963,8 @@ def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion(
             pass
 
         def retrieve(self, query):
-            node = FakeNode("contextwiki-doc-chunk", 0.91)
-            node.metadata["document_id"] = "github:eunhwa99/contextwiki:docs/setup.md"
+            node = FakeNode("context_zip-doc-chunk", 0.91)
+            node.metadata["document_id"] = "github:eunhwa99/context_zip:docs/setup.md"
             node.metadata["source_id"] = "source_github"
             return [node]
 
@@ -973,7 +974,7 @@ def test_vector_search_uses_raw_initial_vector_score_before_metadata_promotion(
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-        ).search_context("contextwiki docs", top_k=3, include_debug=True)
+        ).search_context("context_zip docs", top_k=3, include_debug=True)
     )
 
     assert result["debug"]["initial_top_vector_score"] == 0.91
@@ -983,7 +984,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -991,7 +992,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
         "chunk-valid",
         "source_target",
         "Valid guide",
-        "ContextWiki setup guide.",
+        "ContextZip setup guide.",
     )
     seed_document_chunks(
         store,
@@ -999,7 +1000,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
         "chunk-filtered",
         "source_target",
         "Filtered guide",
-        "ContextWiki setup guide but unmanaged.",
+        "ContextZip setup guide but unmanaged.",
     )
 
     class FilteredTopHitRetriever:
@@ -1010,7 +1011,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
             filtered = FakeNode("chunk-filtered", 0.96)
             filtered.metadata["document_id"] = "doc-filtered"
             filtered.metadata["source_id"] = "source_target"
-            filtered.metadata["contextwiki_managed"] = "false"
+            filtered.metadata["context_zip_managed"] = "false"
             valid = FakeNode("chunk-valid", 0.24)
             valid.metadata["document_id"] = "doc-valid"
             valid.metadata["source_id"] = "source_target"
@@ -1022,7 +1023,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
         ContextSearchService(
             store,
             indexer=FakeIndexer(),
-        ).search_context("contextwiki setup", top_k=1, include_debug=True)
+        ).search_context("context_zip setup", top_k=1, include_debug=True)
     )
 
     assert result["results"][0].chunk_id == "chunk-valid"
@@ -1030,7 +1031,7 @@ def test_vector_search_uses_raw_initial_vector_score_even_when_top_raw_hit_is_fi
 
 
 def test_search_documents_collapses_same_document_chunks_to_highest_ranked_representative(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -1106,7 +1107,7 @@ def test_search_documents_collapses_same_document_chunks_to_highest_ranked_repre
 
 
 def test_search_documents_preserves_document_metadata_and_representative_chunk_id(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -1170,7 +1171,7 @@ def test_search_documents_preserves_document_metadata_and_representative_chunk_i
 
 
 def test_search_documents_returns_full_matched_context_without_preview_truncation(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     matched_text = "Representative evidence " + ("continues beyond preview. " * 12)
     seed_document_chunks(
@@ -1202,7 +1203,7 @@ def test_search_documents_returns_full_matched_context_without_preview_truncatio
 
 
 def test_search_documents_expands_candidate_window_until_unique_document_target_is_met(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.GITHUB, "Target")
     seed_document_chunks(
         store,
@@ -1263,7 +1264,7 @@ def test_search_documents_expands_candidate_window_until_unique_document_target_
 
 
 def test_search_documents_keeps_first_reranked_chunk_as_document_representative(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.GITHUB, "Target")
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -1322,7 +1323,7 @@ def test_search_documents_keeps_first_reranked_chunk_as_document_representative(
 
 
 def test_search_documents_uses_same_deterministic_retrieval_contract(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -1356,7 +1357,7 @@ def test_search_documents_uses_same_deterministic_retrieval_contract(tmp_path):
 
 
 def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -1393,7 +1394,7 @@ def test_keyword_search_rerank_prefers_query_phrase_match_in_metadata(tmp_path):
 
 
 def test_keyword_search_rerank_prefers_matching_source_type_intent(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -1430,7 +1431,7 @@ def test_keyword_search_rerank_prefers_matching_source_type_intent(tmp_path):
 
 
 def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="team-knowledge",
@@ -1480,7 +1481,7 @@ def test_keyword_search_uses_metadata_source_type_not_source_id_naming(tmp_path)
 
 
 def test_search_context_debug_exposes_intent_for_collection_query(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -1504,7 +1505,7 @@ def test_search_context_debug_exposes_intent_for_collection_query(tmp_path):
 
 
 def test_search_context_debug_exposes_strict_lookup_intent_name(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -1531,7 +1532,7 @@ def test_search_context_debug_exposes_strict_lookup_intent_name(tmp_path):
 def test_search_context_avoids_false_github_bias_for_plain_lowercase_long_token_document_query(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -1557,7 +1558,7 @@ def test_search_context_avoids_false_github_bias_for_plain_lowercase_long_token_
 def test_search_context_prefers_non_github_match_for_plain_lowercase_long_token_document_query(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -1592,7 +1593,7 @@ def test_search_context_prefers_non_github_match_for_plain_lowercase_long_token_
 def test_search_context_prefers_mixed_language_comparison_documents_without_github_doc_bias(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_tistory", SourceType.TISTORY, "Tistory")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
@@ -1643,7 +1644,7 @@ def test_broad_topic_list_query_prefers_document_like_docs_before_code(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -1695,7 +1696,7 @@ def test_broad_topic_duplicate_document_penalty_prefers_best_sibling_not_first_s
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     shared_document_id = "github:example/repo:docs/aws-guide.md"
     seed_document_chunks(
@@ -1763,7 +1764,7 @@ def test_search_context_uses_korean_obsidian_source_intent_for_metadata_fallback
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "team-vault", SourceType.OBSIDIAN, "Team Vault")
     seed_document_chunks(
         store,
@@ -1805,7 +1806,7 @@ def test_search_context_uses_obsidian_source_intent_when_vector_results_fill_top
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "team-vault", SourceType.OBSIDIAN, "Team Vault")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -1856,7 +1857,7 @@ def test_search_context_uses_obsidian_source_intent_when_vector_results_fill_top
 
 
 def test_keyword_search_ignores_misleading_source_id_when_source_type_disagrees(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="notion-mirror",
@@ -1913,7 +1914,7 @@ def test_removed_web_source_terms_stay_ordinary_content_terms_without_source_typ
     for query in ("website auth guide", "site auth guide", "docs auth guide"):
         assert ranking.query_source_type_terms(ranking.query_term_groups(query)) == set()
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Team Notes")
     seed_legacy_web_source(store)
     seed_document_chunks(
@@ -1957,7 +1958,7 @@ def test_removed_web_source_terms_stay_ordinary_content_terms_without_source_typ
 
 
 def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -1996,15 +1997,15 @@ def test_search_context_debug_redacts_paths_and_credential_urls(monkeypatch, tmp
 
 
 def test_search_context_redacts_public_grounding_but_keeps_internal_groups(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
         "doc-debug",
         "debug-chunk",
         "source_target",
-        "ContextWiki debug guide",
-        "ContextWiki debug guide content.",
+        "ContextZip debug guide",
+        "ContextZip debug guide content.",
     )
 
     result = asyncio.run(
@@ -2020,15 +2021,15 @@ def test_search_context_redacts_public_grounding_but_keeps_internal_groups(tmp_p
 
 
 def test_search_context_public_payload_omits_internal_grounding(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
         "doc-debug",
         "debug-chunk",
         "source_target",
-        "ContextWiki debug guide",
-        "ContextWiki debug guide content.",
+        "ContextZip debug guide",
+        "ContextZip debug guide content.",
     )
 
     public_result = asyncio.run(
@@ -2041,7 +2042,7 @@ def test_search_context_public_payload_omits_internal_grounding(tmp_path):
 
 
 def test_keyword_search_treats_custom_github_source_ids_as_github_documents(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "github-team-docs", SourceType.GITHUB, "GitHub Team Docs")
     seed_document_chunks(
         store,
@@ -2073,7 +2074,7 @@ def test_keyword_search_treats_custom_github_source_ids_as_github_documents(tmp_
 
 
 def test_search_context_debug_redacts_http_paths_not_only_query_strings(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -2110,7 +2111,7 @@ def test_search_context_debug_redacts_http_paths_not_only_query_strings(monkeypa
 
 
 def test_search_context_debug_redacts_secret_like_tokens(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(
         store,
@@ -2148,7 +2149,7 @@ def test_search_context_debug_redacts_secret_like_tokens(monkeypatch, tmp_path):
 
 
 def test_vector_search_pushes_source_filter_into_retriever(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_target",
@@ -2190,14 +2191,14 @@ def test_vector_search_pushes_source_filter_into_retriever(monkeypatch, tmp_path
     result = asyncio.run(async_search(ContextSearchService(store, indexer=FakeIndexer())))
 
     assert FakeVectorIndexRetriever.captured_filters is not None
-    assert "contextwiki_managed" in str(FakeVectorIndexRetriever.captured_filters)
+    assert "context_zip_managed" in str(FakeVectorIndexRetriever.captured_filters)
     assert "source_id" in str(FakeVectorIndexRetriever.captured_filters)
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "target-chunk"
 
 
-def test_vector_search_filters_to_contextwiki_managed_chunks_by_default(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+def test_vector_search_filters_to_context_zip_managed_chunks_by_default(monkeypatch, tmp_path):
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_target",
@@ -2215,7 +2216,7 @@ def test_vector_search_filters_to_contextwiki_managed_chunks_by_default(monkeypa
             FakeVectorIndexRetriever.captured_filters = kwargs.get("filters")
 
         def retrieve(self, query):
-            if "contextwiki_managed" not in str(FakeVectorIndexRetriever.captured_filters):
+            if "context_zip_managed" not in str(FakeVectorIndexRetriever.captured_filters):
                 return [FakeNode("legacy-0", 0.99)]
             node = FakeNode("target-chunk", 0.5)
             node.metadata["document_id"] = "doc-target"
@@ -2230,11 +2231,77 @@ def test_vector_search_filters_to_contextwiki_managed_chunks_by_default(monkeypa
 
     assert len(result["results"]) == 1
     assert result["results"][0].chunk_id == "target-chunk"
-    assert "contextwiki_managed" in str(FakeVectorIndexRetriever.captured_filters)
+    assert "context_zip_managed" in str(FakeVectorIndexRetriever.captured_filters)
+
+
+def test_vector_search_accepts_legacy_managed_metadata_for_existing_chunks(
+    monkeypatch,
+    tmp_path,
+):
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
+    seed_source(store, "source_target", SourceType.NOTION, "Target")
+    seed_document_chunks(
+        store,
+        "doc-target",
+        "target-chunk",
+        "source_target",
+        "Target",
+        "target context",
+    )
+
+    class FakeVectorIndexRetriever:
+        captured_filters = None
+
+        def __init__(self, **kwargs):
+            FakeVectorIndexRetriever.captured_filters = kwargs.get("filters")
+
+        def retrieve(self, query):
+            filter_text = str(FakeVectorIndexRetriever.captured_filters)
+            if "context_zip_managed" not in filter_text:
+                return []
+            if ("context" + "wiki_managed") not in filter_text:
+                return []
+            node = FakeNode("target-chunk", 0.92)
+            node.metadata.pop("context_zip_managed")
+            node.metadata["context" + "wiki_managed"] = "true"
+            node.metadata["document_id"] = "doc-target"
+            node.metadata["source_id"] = "source_target"
+            return [node]
+
+    monkeypatch.setattr("search.context_service.VectorIndexRetriever", FakeVectorIndexRetriever)
+
+    result = asyncio.run(
+        ContextSearchService(store, indexer=FakeIndexer()).search_context("context", top_k=1)
+    )
+
+    assert len(result["results"]) == 1
+    assert result["results"][0].chunk_id == "target-chunk"
+    assert "context_zip_managed" in str(FakeVectorIndexRetriever.captured_filters)
+    assert ("context" + "wiki_managed") in str(
+        FakeVectorIndexRetriever.captured_filters
+    )
+
+
+def test_vector_search_metadata_filters_translate_to_chroma_compatible_filter():
+    from search.retrieval_pipeline import metadata_filters
+
+    chroma_filter = _to_chroma_filter(metadata_filters(["source_target"]))
+
+    assert chroma_filter == {
+        "$and": [
+            {
+                "$or": [
+                    {"context_zip_managed": {"$eq": "true"}},
+                    {("context" + "wiki_managed"): {"$eq": "true"}},
+                ]
+            },
+            {"source_id": {"$eq": "source_target"}},
+        ]
+    }
 
 
 def test_vector_search_expands_past_stale_managed_window(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(store, "doc-target", "target-chunk", "source_target", "Target", "target context")
     stale_nodes = [FakeNode(f"stale-{index}", 0.99) for index in range(16)]
@@ -2264,7 +2331,7 @@ def test_vector_search_expands_past_stale_managed_window(monkeypatch, tmp_path):
 
 
 def test_vector_search_rejects_managed_hit_with_mismatched_owner(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(store, "doc-target", "target-chunk", "source_target", "Target", "target context")
 
@@ -2288,7 +2355,7 @@ def test_vector_search_rejects_managed_hit_with_mismatched_owner(monkeypatch, tm
 
 
 def test_vector_search_rejects_managed_hit_missing_owner_metadata(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(store, "doc-target", "target-chunk", "source_target", "Target", "target context")
 
@@ -2309,7 +2376,7 @@ def test_vector_search_rejects_managed_hit_missing_owner_metadata(monkeypatch, t
 
 
 def test_vector_search_rejects_hit_missing_managed_marker(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(store, "doc-target", "target-chunk", "source_target", "Target", "target context")
 
@@ -2319,7 +2386,7 @@ def test_vector_search_rejects_hit_missing_managed_marker(monkeypatch, tmp_path)
 
         def retrieve(self, query):
             node = FakeNode("target-chunk", 0.99)
-            node.metadata.pop("contextwiki_managed")
+            node.metadata.pop("context_zip_managed")
             node.metadata["document_id"] = "doc-target"
             node.metadata["source_id"] = "source_target"
             return [node]
@@ -2334,7 +2401,7 @@ def test_vector_search_rejects_hit_missing_managed_marker(monkeypatch, tmp_path)
 
 
 def test_vector_search_keeps_looking_after_rejected_duplicate_managed_hit(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_document_chunks(store, "doc-target", "target-chunk", "source_target", "Target", "target context")
 
@@ -2362,7 +2429,7 @@ def test_vector_search_keeps_looking_after_rejected_duplicate_managed_hit(monkey
 
 
 def test_search_context_accepts_singular_source_id_filter(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_source(store, "source_other", SourceType.TISTORY, "Other")
     seed_document_chunks(
@@ -2371,7 +2438,7 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
         "target-chunk",
         "source_target",
         "Target",
-        "ContextWiki citations target",
+        "ContextZip citations target",
     )
     seed_document_chunks(
         store,
@@ -2379,7 +2446,7 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
         "other-chunk",
         "source_other",
         "Other",
-        "ContextWiki citations other",
+        "ContextZip citations other",
     )
     documents = [
         store.get_chunk("other-chunk").to_document_model(),
@@ -2388,7 +2455,7 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
 
     result = asyncio.run(
         ContextSearchService(store, retriever=documents).search_context(
-            "ContextWiki citations",
+            "ContextZip citations",
             filters={"source_id": "source_target"},
             top_k=1,
         )
@@ -2401,7 +2468,7 @@ def test_search_context_accepts_singular_source_id_filter(tmp_path):
 def test_search_context_unions_singular_and_plural_source_filters(tmp_path):
     from core.models import SearchFilters
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_source(store, "source_other", SourceType.TISTORY, "Other")
     for source_id in ("source_target", "source_other"):
@@ -2411,7 +2478,7 @@ def test_search_context_unions_singular_and_plural_source_filters(tmp_path):
             f"chunk-{source_id}",
             source_id,
             source_id,
-            "ContextWiki source union evidence",
+            "ContextZip source union evidence",
         )
     documents = [
         store.get_chunk(f"chunk-{source_id}").to_document_model()
@@ -2420,7 +2487,7 @@ def test_search_context_unions_singular_and_plural_source_filters(tmp_path):
 
     result = asyncio.run(
         ContextSearchService(store, retriever=documents).search_context(
-            "ContextWiki source union",
+            "ContextZip source union",
             filters=SearchFilters(
                 source_id="source_target",
                 source_ids=["source_other"],
@@ -2436,7 +2503,7 @@ def test_search_context_unions_singular_and_plural_source_filters(tmp_path):
 
 
 def test_search_context_returns_chunk_version_id(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -2444,14 +2511,14 @@ def test_search_context_returns_chunk_version_id(tmp_path):
         "github-chunk",
         "source_github",
         "README.md",
-        "ContextWiki citations include blob versions.",
+        "ContextZip citations include blob versions.",
         version_id="blob-version-123",
     )
     documents = [store.get_chunk("github-chunk").to_document_model()]
 
     result = asyncio.run(
         ContextSearchService(store, retriever=documents).search_context(
-            "ContextWiki citations",
+            "ContextZip citations",
             top_k=1,
         )
     )
@@ -2461,7 +2528,7 @@ def test_search_context_returns_chunk_version_id(tmp_path):
 
 
 def test_search_context_matches_github_identity_metadata_when_body_does_not(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
     store.upsert_document_and_replace_chunks(
@@ -2499,7 +2566,7 @@ def test_search_context_matches_github_identity_metadata_when_body_does_not(tmp_
 
 
 def test_no_indexer_plain_topic_uses_bounded_text_lookup(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seeded_chunk = ChunkModel(
         chunk_id="notion-typescript-body",
@@ -2558,7 +2625,7 @@ def test_no_indexer_plain_topic_uses_bounded_text_lookup(monkeypatch, tmp_path):
 
 
 def test_no_indexer_github_repo_query_uses_bounded_metadata_lookup(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
     chunk = ChunkModel(
@@ -2635,7 +2702,7 @@ def test_no_indexer_github_repo_query_uses_bounded_metadata_lookup(monkeypatch, 
 
 
 def test_no_indexer_stop_word_only_query_skips_metadata_scan(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
 
     def fail_list_chunks(source_ids=None):
@@ -2661,7 +2728,7 @@ def test_no_indexer_stop_word_only_query_skips_metadata_scan(monkeypatch, tmp_pa
 
 
 def test_search_context_metadata_match_competes_with_full_vector_window(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -2729,7 +2796,7 @@ def test_search_context_ignores_common_request_words_for_metadata_boost(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -2801,7 +2868,7 @@ def test_search_context_ignores_search_request_words_for_metadata_boost(
     tmp_path,
     query,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -2868,7 +2935,7 @@ def test_search_context_ignores_extended_request_words_for_metadata_boost(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -2935,7 +3002,7 @@ def test_search_context_matches_camelcase_repository_name_when_vector_window_is_
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3001,7 +3068,7 @@ def test_search_context_ignores_korean_search_filler_for_repository_metadata_boo
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3068,7 +3135,7 @@ def test_search_context_metadata_identity_match_wins_vector_score_tie(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3134,7 +3201,7 @@ def test_search_context_metadata_identity_match_wins_oversized_vector_score(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3200,7 +3267,7 @@ def test_search_context_metadata_priority_is_preserved_for_existing_high_score_v
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3269,7 +3336,7 @@ def test_search_context_treats_readme_as_document_for_neetcode_korean_query_with
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3335,7 +3402,7 @@ def test_search_context_treats_readme_as_document_for_neetcode_korean_query_with
 def test_search_context_rejects_neetcode_docs_query_for_code_only_metadata_match(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
     store.upsert_document_and_replace_chunks(
@@ -3381,7 +3448,7 @@ def test_search_context_rejects_neetcode_docs_query_for_code_only_vector_hit(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/neetcode-submissions-8ogaz8xl:Graph.java"
     store.upsert_document_and_replace_chunks(
@@ -3439,7 +3506,7 @@ def test_search_context_matches_neetcode_doc_with_topic_only_in_readme_body(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3509,7 +3576,7 @@ def test_search_context_matches_neetcode_doc_with_topic_only_in_readme_body(
 def test_search_context_prefers_neetcode_over_leetcode_for_korean_anchor(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     for document_id, chunk_id, title, url in (
         (
@@ -3568,7 +3635,7 @@ def test_search_context_prefers_neetcode_over_leetcode_for_korean_anchor(
 def test_search_context_prefers_neetcode_for_no_space_korean_anchor_and_document_intent(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     for document_id, chunk_id, title, url in (
         (
@@ -3628,7 +3695,7 @@ def test_search_context_ignores_broad_algorithm_term_for_neetcode_graph_metadata
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3691,7 +3758,7 @@ def test_search_context_ignores_broad_algorithm_term_for_neetcode_graph_metadata
 
 
 def test_search_context_keeps_algorithm_term_for_general_document_queries(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3723,7 +3790,7 @@ def test_search_context_keeps_algorithm_term_for_general_document_queries(tmp_pa
 
 
 def test_search_context_keeps_korean_algorithm_term_for_general_document_queries(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3755,7 +3822,7 @@ def test_search_context_keeps_korean_algorithm_term_for_general_document_queries
 
 
 def test_search_context_metadata_match_boosts_low_score_vector_hit(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
     store.upsert_document_and_replace_chunks(
@@ -3818,7 +3885,7 @@ def test_search_context_metadata_boost_survives_stale_duplicate_vector_hit(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
     store.upsert_document_and_replace_chunks(
@@ -3881,7 +3948,7 @@ def test_search_context_metadata_match_survives_stale_only_vector_hit(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     document_id = "github:eunhwa99/ImageGallery:docs/usage.md"
     store.upsert_document_and_replace_chunks(
@@ -3941,7 +4008,7 @@ def test_vector_search_stops_expanding_after_enough_active_candidates(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -3996,7 +4063,7 @@ def test_vector_search_skips_metadata_scan_when_vector_results_are_enough(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4038,7 +4105,7 @@ def test_vector_search_skips_metadata_scan_for_filtered_ordinary_query_when_vect
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4081,7 +4148,7 @@ def test_vector_search_skips_metadata_lookup_for_ordinary_long_token_when_vector
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4127,7 +4194,7 @@ def test_vector_search_skips_metadata_lookup_for_plain_long_word_when_vector_res
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -4182,7 +4249,7 @@ def test_vector_search_skips_metadata_lookup_for_unlisted_plain_long_word_when_v
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -4237,7 +4304,7 @@ def test_vector_search_skips_metadata_lookup_for_plain_language_name_when_vector
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -4292,7 +4359,7 @@ def test_vector_search_skips_metadata_lookup_for_generic_document_query_when_vec
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -4347,7 +4414,7 @@ def test_search_context_matches_lowercase_repository_name_when_vector_window_is_
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4413,7 +4480,7 @@ def test_search_context_matches_other_lowercase_repository_name_when_vector_wind
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -4480,7 +4547,7 @@ def test_lowercase_repository_probe_uses_github_metadata_when_vector_results_are
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -4524,7 +4591,7 @@ def test_explicit_lowercase_repository_lookup_prefers_docs_before_code(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4599,7 +4666,7 @@ def test_vector_search_uses_bounded_metadata_lookup_for_repo_docs_query(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4663,7 +4730,7 @@ def test_vector_search_uses_selective_terms_for_github_prefixed_repo_docs_query(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4727,7 +4794,7 @@ def test_vector_search_uses_bounded_metadata_lookup_for_short_underscore_repo_do
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4791,7 +4858,7 @@ def test_vector_search_ignores_repo_request_words_for_korean_repo_query(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4858,7 +4925,7 @@ def test_vector_search_ignores_repo_request_words_for_korean_repo_query(
 
 
 def test_github_document_lookup_filters_code_rows_before_limit(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -4930,7 +4997,7 @@ def test_github_document_lookup_filters_code_rows_before_limit(monkeypatch, tmp_
 
 
 def test_anchored_topic_document_lookup_requires_topic_before_limit(monkeypatch, tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5016,7 +5083,7 @@ def test_unfiltered_repository_docs_lookup_filters_github_code_rows_before_limit
     repo_name,
     expected_chunk_id,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5091,7 +5158,7 @@ def test_github_document_lookup_filters_code_rows_for_mixed_source_filters(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
@@ -5176,7 +5243,7 @@ def test_repository_name_lookup_prefers_docs_before_code_without_document_intent
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5251,7 +5318,7 @@ def test_github_document_lookup_filters_docs_named_code_rows_before_limit(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5326,7 +5393,7 @@ def test_github_document_lookup_filters_adocs_code_rows_before_limit(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5403,7 +5470,7 @@ def test_github_document_lookup_filters_readme_documentation_named_code_rows_bef
     tmp_path,
     code_name,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5475,7 +5542,7 @@ def test_github_document_lookup_filters_readme_documentation_named_code_rows_bef
 
 
 def test_metadata_lookup_treats_underscore_terms_as_literal_text(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5505,7 +5572,7 @@ def test_metadata_lookup_treats_underscore_terms_as_literal_text(tmp_path):
 
 
 def test_repository_lookup_uses_metadata_fields_before_chunk_text(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     for index in range(501):
         seed_document_chunks(
@@ -5553,7 +5620,7 @@ def test_repository_lookup_uses_metadata_fields_before_chunk_text(tmp_path):
 
 
 def test_strong_github_anchor_must_match_metadata_before_body_text(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5607,7 +5674,7 @@ def test_strong_github_anchor_lookup_survives_saturated_body_only_false_positive
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     for index in range(501):
         seed_document_chunks(
@@ -5671,7 +5738,7 @@ def test_vector_search_uses_bounded_metadata_lookup_for_neetcode_docs_query(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5735,7 +5802,7 @@ def test_document_intent_metadata_fallback_keeps_non_github_sources_when_unancho
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -5770,7 +5837,7 @@ def test_single_document_term_metadata_fallback_keeps_non_github_sources(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -5805,7 +5872,7 @@ def test_ordinary_long_token_metadata_fallback_keeps_non_github_sources_when_vec
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -5840,7 +5907,7 @@ def test_plain_long_token_metadata_fallback_keeps_non_github_sources_when_vector
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -5875,7 +5942,7 @@ def test_plain_long_token_metadata_fallback_matches_chunk_body_when_vector_empty
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -5910,7 +5977,7 @@ def test_search_context_preserves_raw_vector_score_when_metadata_fallback_promot
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -5964,7 +6031,7 @@ def test_korean_only_non_github_document_query_uses_bounded_original_terms(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seeded_chunk = ChunkModel(
         chunk_id="notion-korean-algorithm-doc",
@@ -6047,7 +6114,7 @@ def test_ordinary_technical_terms_keep_non_github_fallback_when_vector_empty(
     text,
     expected_chunk_id,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6122,7 +6189,7 @@ def test_plain_lowercase_topic_terms_recover_non_github_metadata_when_vector_emp
     text,
     expected_chunk_id,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_tistory", SourceType.TISTORY, "Tistory")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
@@ -6167,7 +6234,7 @@ def test_plain_lowercase_topic_merges_non_github_body_match_with_github_metadata
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6221,7 +6288,7 @@ def test_source_filtered_non_github_lookup_matches_body_only_lowercase_term(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -6257,7 +6324,7 @@ def test_plain_lowercase_topic_keeps_sufficient_lexical_vector_hit_over_github_m
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6319,7 +6386,7 @@ def test_plain_lowercase_topic_recovers_non_github_body_when_vector_window_is_ir
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6372,7 +6439,7 @@ def test_api_path_queries_recover_non_github_body_when_vector_empty(
     tmp_path,
     query,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seeded_chunk = ChunkModel(
         chunk_id="notion-api-v1-body",
@@ -6436,7 +6503,7 @@ def test_document_intent_only_queries_do_not_use_unbounded_chunk_scan(
     tmp_path,
     query,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
 
     class EmptyVectorRetriever:
@@ -6488,7 +6555,7 @@ def test_mixed_github_and_notion_filter_keeps_non_github_body_text_lookup(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     notion_chunk = ChunkModel(
@@ -6574,7 +6641,7 @@ def test_unlisted_technical_term_skips_metadata_lookup_when_vector_results_are_e
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6636,7 +6703,7 @@ def test_generic_long_word_docs_query_keeps_non_github_sources_when_vector_empty
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -6671,7 +6738,7 @@ def test_hyphenated_topic_docs_query_matches_body_when_vector_empty(
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seed_document_chunks(
         store,
@@ -6737,7 +6804,7 @@ def test_vector_empty_ordinary_queries_use_bounded_metadata_lookup(
     expected_terms,
     expected_chunk_id,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_notion", SourceType.NOTION, "Notion")
     seeded_chunk = ChunkModel(
         chunk_id=expected_chunk_id,
@@ -6809,7 +6876,7 @@ def test_hyphenated_ordinary_query_skips_metadata_scan_when_vector_results_are_e
     monkeypatch,
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
         store,
@@ -6857,7 +6924,7 @@ def test_stop_word_only_queries_skip_metadata_fallback_scan(
     tmp_path,
     query,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
 
     class EmptyVectorRetriever:
@@ -6895,7 +6962,7 @@ def test_stop_word_only_queries_skip_metadata_fallback_scan(
 
 
 def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.NOTION, "Target")
     seed_source(store, "source_other", SourceType.TISTORY, "Other")
     seed_document_chunks(
@@ -6904,7 +6971,7 @@ def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
         "target-chunk",
         "source_target",
         "Target",
-        "Target source says ContextWiki answers with citations.",
+        "Target source says ContextZip answers with citations.",
     )
     seed_document_chunks(
         store,
@@ -6912,7 +6979,7 @@ def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
         "other-chunk",
         "source_other",
         "Other",
-        "Other source also mentions ContextWiki citations.",
+        "Other source also mentions ContextZip citations.",
     )
     documents = [
         store.get_chunk("other-chunk").to_document_model(),
@@ -6923,7 +6990,7 @@ def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
 
     answer = asyncio.run(
         answer_service.answer_with_citations(
-            "How does ContextWiki answer?",
+            "How does ContextZip answer?",
             filters={"source_id": "source_target"},
             top_k=1,
         )
@@ -6935,7 +7002,7 @@ def test_answer_with_citations_respects_singular_source_id_filter(tmp_path):
 
 
 def test_search_context_default_source_ids_filter_legacy_removed_sources(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_legacy_web_source(store)
     seed_source(store, "source_github", SourceType.GITHUB, "GitHub")
     seed_document_chunks(
@@ -6976,7 +7043,7 @@ def test_search_context_default_source_ids_filter_legacy_removed_sources(tmp_pat
 
 
 def test_search_context_ignores_tombstoned_document_chunks(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     seed_source(store, "source_target", SourceType.GITHUB, "Target")
     store.upsert_document_and_replace_chunks(
         DocumentModel(
@@ -6984,7 +7051,7 @@ def test_search_context_ignores_tombstoned_document_chunks(tmp_path):
             document_id="doc-target",
             source_id="source_target",
             title="Target",
-            content="ContextWiki stale deleted content",
+            content="ContextZip stale deleted content",
             url="https://example.com/doc-target",
             platform="GitHub",
             path="doc-target.md",
@@ -6995,7 +7062,7 @@ def test_search_context_ignores_tombstoned_document_chunks(tmp_path):
                 document_id="doc-target",
                 source_id="source_target",
                 title="Target",
-                text="ContextWiki stale deleted content",
+                text="ContextZip stale deleted content",
                 chunk_index=0,
                 content_hash="target",
             )
@@ -7023,11 +7090,11 @@ def test_search_context_ignores_tombstoned_document_chunks(tmp_path):
                 document_id="doc-target",
                 source_id="source_target",
                 title="Target",
-                text="ContextWiki stale deleted content",
+                text="ContextZip stale deleted content",
                 chunk_index=0,
                 content_hash="target",
             ).to_document_model()],
-        ).search_context("ContextWiki", top_k=1)
+        ).search_context("ContextZip", top_k=1)
     )
 
     assert result["results"] == []

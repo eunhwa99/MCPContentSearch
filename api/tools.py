@@ -105,7 +105,7 @@ def register_tools(
     metadata_store: MetadataStore | None = None,
     source_registry: SourceRegistry | None = None,
 ):
-    """Register the retained slim ContextWiki MCP tool surface."""
+    """Register the retained slim ContextZip MCP tool surface."""
     allowed_source_ids = _source_registry_ids(source_registry)
 
     def _sync_all_error_payload(message: str) -> dict:
@@ -121,7 +121,7 @@ def register_tools(
 
     @mcp.tool()
     async def list_sources() -> dict:
-        """등록된 ContextWiki source 목록 조회"""
+        """등록된 ContextZip source 목록 조회"""
         try:
             configured_sources = _registry_source_snapshot(source_registry)
             if metadata_store is not None:

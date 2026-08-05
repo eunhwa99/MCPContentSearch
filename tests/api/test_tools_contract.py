@@ -34,7 +34,7 @@ RETAINED_SOURCE_IDS = (
     "source_tistory",
 )
 OBSIDIAN_DISABLED_ERROR = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "is not set or is not an existing directory."
 )
 
@@ -362,7 +362,7 @@ class RefreshingObsidianRegistry:
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
             last_error=OBSIDIAN_DISABLED_ERROR,
         )
@@ -394,7 +394,7 @@ def _enabled_obsidian_source() -> SourceModel:
         source_type=SourceType.OBSIDIAN,
         name="Obsidian",
         enabled=True,
-        auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+        auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
         sync_status=SyncStatus.IDLE,
         last_error="",
     )
@@ -416,7 +416,7 @@ class FakeMetadataStore:
             source_id="source_fake",
         )
         self.job = Dumpable({"job_id": "job-1", "status": "succeeded"})
-        self.chunk = Dumpable({"chunk_id": "chunk-1", "text": "ContextWiki evidence"})
+        self.chunk = Dumpable({"chunk_id": "chunk-1", "text": "ContextZip evidence"})
 
     def list_sources(self):
         return [self.source]
@@ -623,10 +623,10 @@ class FakeContextSearch:
                     document_id="doc-1",
                     source_id="source_github",
                     source_type="notion",
-                    title="ContextWiki",
+                    title="ContextZip",
                     score=0.9,
-                    preview="ContextWiki evidence",
-                    text="ContextWiki evidence",
+                    preview="ContextZip evidence",
+                    text="ContextZip evidence",
                 )
             ],
             "debug": debug_payload,
@@ -641,13 +641,13 @@ class FakeContextSearch:
                     "chunk_id": "chunk-1",
                     "source_id": "source_github",
                     "source_type": "notion",
-                    "title": "ContextWiki",
+                    "title": "ContextZip",
                     "score": 0.9,
                     "vector_score": 0.2,
                     "metadata_priority": 1,
-                    "matched_context": "ContextWiki evidence",
-                    "url": "https://example.com/contextwiki",
-                    "path": "ContextWiki",
+                    "matched_context": "ContextZip evidence",
+                    "url": "https://example.com/context_zip",
+                    "path": "ContextZip",
                 }
             ],
         }
@@ -663,11 +663,11 @@ class FakeDictContextSearch:
                     "document_id": "doc-1",
                     "source_id": "source_github",
                     "source_type": "notion",
-                    "title": "ContextWiki",
+                    "title": "ContextZip",
                     "score": 0.9,
                     "vector_score": 0.2,
-                    "preview": "ContextWiki evidence",
-                    "text": "ContextWiki evidence",
+                    "preview": "ContextZip evidence",
+                    "text": "ContextZip evidence",
                 }
             ],
         }
@@ -681,18 +681,18 @@ class FakeDictContextSearch:
                     "chunk_id": "chunk-1",
                     "source_id": "source_github",
                     "source_type": "notion",
-                    "title": "ContextWiki",
+                    "title": "ContextZip",
                     "score": 0.9,
                     "vector_score": 0.2,
                     "metadata_priority": 1,
-                    "preview": "ContextWiki evidence",
+                    "preview": "ContextZip evidence",
                     "text": "Chunk-level text should not leak",
                     "line_start": 10,
                     "line_end": 20,
                     "version_id": "v1",
                     "updated_at": "2026-06-12T00:00:00+00:00",
-                    "url": "https://example.com/contextwiki",
-                    "path": "ContextWiki",
+                    "url": "https://example.com/context_zip",
+                    "path": "ContextZip",
                 }
             ],
         }
@@ -744,7 +744,7 @@ class FakeAnswerService:
     async def answer_with_citations(self, question, filters=None, top_k=5, include_debug=False):
         payload = {
             "question": question,
-            "answer": "ContextWiki evidence",
+            "answer": "ContextZip evidence",
             "evidence_status": "grounded",
             "citations": [{"chunk_id": "chunk-1"}],
             "used_chunks": ["chunk-1"],
@@ -752,7 +752,7 @@ class FakeAnswerService:
         if include_debug:
             payload.update(
                 {
-                    "answer_mode": "contextwiki_debug",
+                    "answer_mode": "context_zip_debug",
                     "debug": {
                         "question": question,
                         "retrieval_queries": [question],
@@ -869,7 +869,7 @@ def test_sync_source_rejects_non_public_source_ids(tmp_path):
         async def enqueue_sync_source(self, source_id):
             raise AssertionError("non-public source should be rejected before launch")
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_private",
@@ -961,7 +961,7 @@ def test_sync_source_reports_observer_cancelled_worker_failure_before_reenqueue(
     )
     connector = ObserverCancelledOnceConnector([document])
     registry = SourceRegistry([connector])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=registry,
@@ -1174,7 +1174,7 @@ def test_sync_all_returns_structured_error_when_public_result_formatting_fails()
 
 
 def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     mcp = FakeMCP()
 
     class FakeEmptyErrorSyncAllIngestion:
@@ -1204,7 +1204,7 @@ def test_sync_all_preserves_upstream_error_status_when_no_public_results(tmp_pat
 def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_report_totals(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     mcp = FakeMCP()
 
     class FakeEmptyFailedSyncAllIngestion:
@@ -1244,7 +1244,7 @@ def test_sync_all_preserves_upstream_failed_status_when_empty_results_still_repo
 def test_get_sync_status_returns_structured_error_when_preflight_source_refresh_fails(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1273,7 +1273,7 @@ def test_get_sync_status_returns_structured_error_when_preflight_source_refresh_
 def test_get_sync_status_single_source_preserves_shape_when_preflight_source_refresh_fails(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1316,7 +1316,7 @@ def test_list_sources_returns_structured_error_when_preflight_source_refresh_fai
 
 
 def test_sync_all_redacts_returned_job_error_payload(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1396,7 +1396,7 @@ def test_sync_all_filters_non_public_sources_from_results_and_summary(tmp_path):
                 ],
             }
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1459,7 +1459,7 @@ def test_sync_all_hidden_only_sources_do_not_leak_failed_status(tmp_path):
                 ],
             }
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1495,7 +1495,7 @@ def test_sync_all_uses_legacy_noarg_when_all_registry_sources_are_public(tmp_pat
             self.called = True
             return {"status": "accepted", "summary": {}, "results": []}
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1535,7 +1535,7 @@ def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(
                 ],
             }
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for source_id in ("source_b", "source_a"):
         store.upsert_source(
             SourceModel(
@@ -1561,7 +1561,7 @@ def test_sync_all_preserves_upstream_order_when_all_registry_sources_are_public(
 
 
 def test_sync_all_passthrough_preserves_accepted_and_skipped_outcomes(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(_succeeded_obsidian_source().model_copy(update={"source_id": "source_github"}))
     store.upsert_source(
         SourceModel(
@@ -1569,7 +1569,7 @@ def test_sync_all_passthrough_preserves_accepted_and_skipped_outcomes(tmp_path):
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.FAILED,
             last_error=OBSIDIAN_DISABLED_ERROR,
             stale_cleanup_disabled_reason=OBSIDIAN_DISABLED_ERROR,
@@ -1594,7 +1594,7 @@ def test_sync_all_passthrough_preserves_accepted_and_skipped_outcomes(tmp_path):
 
 
 def test_sync_all_passthrough_preserves_partial_status(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(_succeeded_obsidian_source().model_copy(update={"source_id": "source_github"}))
     store.upsert_source(
         SourceModel(
@@ -1602,7 +1602,7 @@ def test_sync_all_passthrough_preserves_partial_status(tmp_path):
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=True,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.FAILED,
             last_error=OBSIDIAN_DISABLED_ERROR,
         )
@@ -1626,7 +1626,7 @@ def test_sync_all_passthrough_preserves_partial_status(tmp_path):
 
 
 def test_sync_all_passthrough_preserves_failed_status(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1654,7 +1654,7 @@ def test_sync_all_passthrough_preserves_failed_status(tmp_path):
 
 
 def test_status_payloads_redact_persisted_secret_fields(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1730,7 +1730,7 @@ def test_status_payloads_redact_public_error_paths_and_whitespace_secrets(tmp_pa
         "/Users/eunhwa/private,vault/source notes.md",
         r"C:\Users\eunhwa\private,vault\job notes.md",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1809,7 +1809,7 @@ def test_status_payloads_redact_semicolon_cookie_headers_and_unc_paths(tmp_path)
         rf"job_id=job-123; retry_count=2; failed reading {raw_values[7]}, "
         "source_id=source_github"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1865,7 +1865,7 @@ def test_list_and_status_redact_short_explicit_auth_credentials_from_legacy_rows
         "fallback Basic Og== because retrying; "
         "source_id=source_github; job_id=job-123"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1924,7 +1924,7 @@ def test_status_payloads_redact_folded_authorization_credentials_from_legacy_row
         "\tfolded-public-basic-credential\r"
         "job clear diagnostic phase=fetching_page_content retry_count=26"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -1987,7 +1987,7 @@ def test_status_payloads_redact_multistage_folded_authorization_from_legacy_rows
         "\tmultistage-public-basic-credential\r"
         "job clear diagnostic phase=fetching_page_content retry_count=28"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2050,7 +2050,7 @@ def test_status_payloads_redact_bare_name_folded_authorization_from_legacy_rows(
         "\tbare-name-public-basic-credential\r"
         "job clear diagnostic phase=fetching_page_content retry_count=34"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2107,7 +2107,7 @@ def test_status_payloads_preserve_lone_cr_clear_diagnostic_after_legacy_path(
         "clear diagnostic source_id=source_github "
         "job_id=job-123 retry_count=25"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2152,7 +2152,7 @@ def test_status_payloads_fail_closed_for_cookie_names_that_match_diagnostic_fiel
         "ordinary diagnostic, source_id=source_github; job_id=job-123; "
         "phase=fetching_page_content"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2200,7 +2200,7 @@ def test_status_payloads_redact_name_only_cookie_header_folded_lines(tmp_path):
         "ordinary diagnostic, source_id=source_github; job_id=job-123; "
         "phase=fetching_page_content"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2251,7 +2251,7 @@ def test_status_payloads_redact_lone_cr_cookie_value_continuations_from_legacy_r
         "\tfolded-gamma-value\r"
         "second clear diagnostic, phase=fetching_page_content"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2301,7 +2301,7 @@ def test_status_payloads_preserve_lone_cr_clear_diagnostic_from_legacy_rows(
         "clear diagnostic source_id=source_github "
         "job_id=job-123 retry_count=24"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2345,7 +2345,7 @@ def test_get_sync_status_keeps_direct_storage_failure_sanitized_at_rest(tmp_path
         r"file:C:\Users\tester\private vault\meeting notes.md; "
         "source_id=source_notion"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -2406,7 +2406,7 @@ def test_get_sync_status_keeps_direct_storage_failure_sanitized_at_rest(tmp_path
 
 
 def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -2443,7 +2443,7 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
         )
     )
@@ -2472,7 +2472,7 @@ def test_source_payload_keeps_only_valid_env_auth_refs(tmp_path):
 
     assert auth_refs["source_github"] == "env:GITHUB_TOKEN"
     assert auth_refs["source_notion"] == "<redacted>"
-    assert auth_refs["source_obsidian"] == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert auth_refs["source_obsidian"] == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert auth_refs["source_tistory"] == "<redacted>"
     assert "ghp_secretcredential" not in payload
     assert "super-secret-value" not in payload
@@ -2484,7 +2484,7 @@ def test_status_payload_drops_legacy_noncanonical_phase_and_auth_ref(tmp_path):
         "fetching /Users/tester/private vault/notes.md "
         "with secret_abcdefghijklmnopqrstuvwxyz0123456789"
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -2527,14 +2527,14 @@ def test_status_payload_drops_legacy_noncanonical_phase_and_auth_ref(tmp_path):
 
 
 def test_disabled_obsidian_source_is_visible_in_public_status_payloads(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_obsidian",
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=False,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.IDLE,
             last_error=OBSIDIAN_DISABLED_ERROR,
         )
@@ -2551,7 +2551,7 @@ def test_disabled_obsidian_source_is_visible_in_public_status_payloads(tmp_path)
 
     assert [source["source_id"] for source in sources["sources"]] == ["source_obsidian"]
     assert sources["sources"][0]["enabled"] is False
-    assert sources["sources"][0]["auth_ref"] == "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"
+    assert sources["sources"][0]["auth_ref"] == "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"
     assert sources["sources"][0]["last_error"] == OBSIDIAN_DISABLED_ERROR
     assert status["source"]["source_id"] == "source_obsidian"
     assert status["source"]["enabled"] is False
@@ -2654,7 +2654,7 @@ def test_fetch_context_hides_tombstoned_documents():
     assert result["chunks"] == []
 
 
-def test_contextwiki_mcp_tools_are_registered():
+def test_context_zip_mcp_tools_are_registered():
     mcp = FakeMCP()
     register_tools(
         mcp,
@@ -2672,7 +2672,7 @@ def test_contextwiki_mcp_tools_are_registered():
     } == set(mcp.tools)
 
 
-def test_contextwiki_mcp_tools_return_contract_shapes():
+def test_context_zip_mcp_tools_return_contract_shapes():
     mcp = FakeMCP()
     register_tools(
         mcp,
@@ -2682,19 +2682,19 @@ def test_contextwiki_mcp_tools_return_contract_shapes():
     )
 
     status = asyncio.run(mcp.tools["get_sync_status"]())
-    search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
-    document_search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+    search = asyncio.run(mcp.tools["search_context"]("ContextZip"))
+    document_search = asyncio.run(mcp.tools["search_documents"]("ContextZip"))
     fetched = asyncio.run(mcp.tools["fetch_context"](chunk_id="chunk-1"))
     assert status["sources"][0]["source"]["source_id"] == "source_fake"
     assert "document_count" in status["sources"][0]["source"]
     assert "stale_cleanup_disabled_reason" in status["sources"][0]["source"]
     assert search["results"][0]["chunk_id"] == "chunk-1"
-    assert search["results"][0]["preview"] == "ContextWiki evidence"
+    assert search["results"][0]["preview"] == "ContextZip evidence"
     assert search["debug"] == {}
     assert "vector_score" not in search["results"][0]
     assert document_search["results"][0]["document_id"] == "doc-1"
     assert document_search["results"][0]["chunk_id"] == "chunk-1"
-    assert document_search["results"][0]["matched_context"] == "ContextWiki evidence"
+    assert document_search["results"][0]["matched_context"] == "ContextZip evidence"
     assert "preview" not in document_search["results"][0]
     assert "vector_score" not in document_search["results"][0]
     assert "metadata_priority" not in document_search["results"][0]
@@ -2708,10 +2708,10 @@ def test_search_context_can_include_structured_debug_payload():
         context_search_service=FakeContextSearch(),
     )
 
-    search = asyncio.run(mcp.tools["search_context"]("ContextWiki", include_debug=True))
+    search = asyncio.run(mcp.tools["search_context"]("ContextZip", include_debug=True))
 
     assert search["results"][0]["chunk_id"] == "chunk-1"
-    assert search["debug"]["retrieval_queries"] == ["ContextWiki"]
+    assert search["debug"]["retrieval_queries"] == ["ContextZip"]
     assert search["debug"]["initial_top_vector_score"] == 0.2
     assert search["debug"]["final_top_score"] == 0.9
 
@@ -2728,7 +2728,7 @@ def test_answer_with_citations_is_not_registered_as_public_mcp_tool():
 
 def test_public_tools_filter_legacy_removed_source_rows_when_registry_is_available(tmp_path):
     store = MetadataStore(
-        tmp_path / "contextwiki.sqlite3",
+        tmp_path / "context_zip.sqlite3",
         running_job_timeout_seconds=0,
         unowned_running_job_grace_seconds=0,
     )
@@ -2940,7 +2940,7 @@ def test_search_context_contract_strips_vector_score_from_dict_results():
         context_search_service=FakeDictContextSearch(),
     )
 
-    search = asyncio.run(mcp.tools["search_context"]("ContextWiki"))
+    search = asyncio.run(mcp.tools["search_context"]("ContextZip"))
 
     assert "vector_score" not in search["results"][0]
 
@@ -2956,9 +2956,9 @@ def test_search_documents_contract_rejects_legacy_result_without_matched_context
         ValueError,
         match="missing required field 'matched_context'",
     ) as exc_info:
-        asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+        asyncio.run(mcp.tools["search_documents"]("ContextZip"))
 
-    assert "ContextWiki evidence" not in str(exc_info.value)
+    assert "ContextZip evidence" not in str(exc_info.value)
     assert "Chunk-level text should not leak" not in str(exc_info.value)
 
 
@@ -2973,7 +2973,7 @@ def test_search_documents_contract_rejects_non_string_matched_context():
         TypeError,
         match="field 'matched_context' must be a string",
     ):
-        asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+        asyncio.run(mcp.tools["search_documents"]("ContextZip"))
 
 
 def test_search_documents_contract_accepts_explicit_empty_matched_context():
@@ -2983,7 +2983,7 @@ def test_search_documents_contract_accepts_explicit_empty_matched_context():
         context_search_service=FakeEmptyMatchedContextSearch(),
     )
 
-    search = asyncio.run(mcp.tools["search_documents"]("ContextWiki"))
+    search = asyncio.run(mcp.tools["search_documents"]("ContextZip"))
 
     assert search["results"][0]["matched_context"] == ""
     assert "preview" not in search["results"][0]
@@ -3080,7 +3080,7 @@ def test_get_sync_status_exact_job_triggers_stale_running_job_recovery():
 def test_get_sync_status_exact_job_mode_is_additive_and_never_crosses_source_boundary(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     for source_id in ("source_github", "source_notion", "source_private"):
         store.upsert_source(
             SourceModel(
@@ -3253,7 +3253,7 @@ def test_get_sync_status_exposes_queued_job_without_running_progress_hints():
 
 
 def test_get_sync_status_exposes_running_phase_hints(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -3313,7 +3313,7 @@ def test_get_sync_status_exposes_running_phase_hints(tmp_path):
 
 
 def test_get_sync_status_redacts_progress_status_message(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -3351,7 +3351,7 @@ def test_get_sync_status_redacts_progress_status_message(tmp_path):
 
 
 def test_get_sync_status_hides_progress_hints_for_terminal_jobs(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_notion",
@@ -3403,7 +3403,7 @@ def test_get_sync_status_hides_progress_hints_for_terminal_jobs(tmp_path):
 
 
 def test_status_payloads_include_richer_source_fields(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_tistory",
@@ -3495,7 +3495,7 @@ def test_status_payloads_include_richer_source_fields(tmp_path):
 
 
 def test_status_payload_prefers_persisted_stale_cleanup_reason_for_disabled_github(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_github",
@@ -3504,8 +3504,8 @@ def test_status_payload_prefers_persisted_stale_cleanup_reason_for_disabled_gith
             enabled=False,
             auth_ref="env:GITHUB_TOKEN",
             sync_status=SyncStatus.FAILED,
-            last_error="Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES.",
-            stale_cleanup_disabled_reason="Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES.",
+            last_error="Source source_github is disabled because no GitHub repositories are configured in CONTEXTZIP_GITHUB_REPOSITORIES.",
+            stale_cleanup_disabled_reason="Source source_github is disabled because no GitHub repositories are configured in CONTEXTZIP_GITHUB_REPOSITORIES.",
         )
     )
     registry = FakeSourceRegistry(RETAINED_SOURCE_IDS)
@@ -3526,19 +3526,19 @@ def test_status_payload_prefers_persisted_stale_cleanup_reason_for_disabled_gith
     status = asyncio.run(mcp.tools["get_sync_status"]("source_github"))
 
     assert status["source"]["stale_cleanup_disabled_reason"] == (
-        "Source source_github is disabled because no GitHub repositories are configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+        "Source source_github is disabled because no GitHub repositories are configured in CONTEXTZIP_GITHUB_REPOSITORIES."
     )
 
 
 def test_status_payload_prefers_persisted_stale_cleanup_reason_after_incomplete_snapshot(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_source(
         SourceModel(
             source_id="source_obsidian",
             source_type=SourceType.OBSIDIAN,
             name="Obsidian",
             enabled=True,
-            auth_ref="env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH",
+            auth_ref="env:CONTEXTZIP_OBSIDIAN_VAULT_PATH",
             sync_status=SyncStatus.FAILED,
             last_error="Obsidian vault snapshot was incomplete because one or more notes could not be read.",
             stale_cleanup_disabled_reason="Obsidian vault snapshot was incomplete because one or more notes could not be read.",

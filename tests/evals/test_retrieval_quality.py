@@ -2,7 +2,7 @@ import asyncio
 import json
 
 from core.models import ChunkModel, DocumentModel, SearchFilters
-from evals.contextwiki_eval import run_contextwiki_eval
+from evals.context_zip_eval import run_context_zip_eval
 from evals.retrieval_quality import (
     RetrievalQualityCase,
     evaluate_search_payload,
@@ -46,8 +46,8 @@ def test_retained_retrieval_eval_selects_only_documents_inside_date_filter(tmp_p
             id=document_id,
             document_id=document_id,
             source_id="source_notion",
-            title=f"ContextWiki {document_id}",
-            content="ContextWiki retained date-filter evidence.",
+            title=f"ContextZip {document_id}",
+            content="ContextZip retained date-filter evidence.",
             url=f"https://example.com/{document_id}",
             platform="Notion",
             published_at=published_at,
@@ -73,7 +73,7 @@ def test_retained_retrieval_eval_selects_only_documents_inside_date_filter(tmp_p
             store,
             retriever=retriever_documents,
         ).search_context(
-            "ContextWiki",
+            "ContextZip",
             filters=SearchFilters(
                 source_ids=["source_notion"],
                 published_from="2026-07-01T00:00:00Z",
@@ -204,8 +204,8 @@ def test_retrieval_suite_fails_when_case_list_is_empty():
     assert summary["total"] == 0
 
 
-def test_contextwiki_eval_runner_passes_fixture_suites():
-    summary = run_contextwiki_eval()
+def test_context_zip_eval_runner_passes_fixture_suites():
+    summary = run_context_zip_eval()
 
     assert summary["passed"]
     assert summary["retrieval_suite"]["passed"]
@@ -224,11 +224,11 @@ def test_contextwiki_eval_runner_passes_fixture_suites():
     assert date_result["details"]["chunk_ids"] == ["release-date-inside-chunk"]
 
 
-def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
+def test_context_zip_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     output_dir = tmp_path / "eval-artifacts"
     second_output_dir = tmp_path / "eval-artifacts-second"
 
-    summary = run_contextwiki_eval(output_dir=output_dir, include_latency=True)
+    summary = run_context_zip_eval(output_dir=output_dir, include_latency=True)
 
     assert summary["passed"]
     assert summary["artifact_dir"] == str(output_dir)
@@ -270,7 +270,7 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
     assert written_answer_suite["group_breakdown"]["code-format"]["total"] >= 1
     assert written_answer_suite["group_breakdown"]["markdown-format"]["total"] >= 1
 
-    second_summary = run_contextwiki_eval(
+    second_summary = run_context_zip_eval(
         output_dir=second_output_dir,
         include_latency=True,
     )
@@ -286,42 +286,42 @@ def test_contextwiki_eval_runner_reports_group_metrics_and_artifacts(tmp_path):
         second_output_dir / "answer_suite.json"
     ).read_text(encoding="utf-8")
 
-    deterministic_rerun = run_contextwiki_eval(output_dir=output_dir)
+    deterministic_rerun = run_context_zip_eval(output_dir=output_dir)
 
     assert deterministic_rerun["passed"]
     assert "runtime_metrics" not in deterministic_rerun
     assert not (output_dir / "runtime_metrics.json").exists()
 
 
-def test_contextwiki_eval_runner_uses_deterministic_retrieval():
-    summary = run_contextwiki_eval()
+def test_context_zip_eval_runner_uses_deterministic_retrieval():
+    summary = run_context_zip_eval()
 
     assert summary["passed"]
 
 
-def test_contextwiki_eval_runner_uses_vector_index_path(monkeypatch):
+def test_context_zip_eval_runner_uses_vector_index_path(monkeypatch):
     calls = []
 
     class SpyRetriever:
         def __init__(self, **kwargs):
             calls.append(kwargs)
-            from evals.contextwiki_eval import FixtureVectorIndexRetriever
+            from evals.context_zip_eval import FixtureVectorIndexRetriever
 
             self.delegate = FixtureVectorIndexRetriever(**kwargs)
 
         def retrieve(self, query):
             return self.delegate.retrieve(query)
 
-    monkeypatch.setattr("evals.contextwiki_eval.FIXTURE_VECTOR_RETRIEVER_CLASS", SpyRetriever)
+    monkeypatch.setattr("evals.context_zip_eval.FIXTURE_VECTOR_RETRIEVER_CLASS", SpyRetriever)
 
-    summary = run_contextwiki_eval()
+    summary = run_context_zip_eval()
 
     assert summary["passed"]
     assert calls
 
 
-def test_contextwiki_eval_filter_parser_handles_in_operator_values():
-    from evals.contextwiki_eval import _source_ids_from_filters
+def test_context_zip_eval_filter_parser_handles_in_operator_values():
+    from evals.context_zip_eval import _source_ids_from_filters
 
     filters = MetadataFilters(
         filters=[

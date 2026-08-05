@@ -37,15 +37,15 @@ async def _emit_progress(progress_callback, event: dict, *, stop_signal=None) ->
 
 _OBSIDIAN_SKIP_DIRS = frozenset({".obsidian", ".trash"})
 _OBSIDIAN_DISABLED_REASON = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "is not set or is not an existing directory."
 )
 _OBSIDIAN_RELATIVE_PATH_REASON = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "must be an absolute path."
 )
 _OBSIDIAN_SYMLINK_PATH_REASON = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "must not be a symlink."
 )
 _OBSIDIAN_INCOMPLETE_SNAPSHOT_REASON = (

@@ -13,7 +13,7 @@ decision. The remaining slim MCP core scope stays accepted.
 
 ## Context
 
-`MCPContentSearch` grew from a focused MCP retrieval server into a broader demo
+`context-zip` grew from a focused MCP retrieval server into a broader demo
 surface with generic website/docs crawling, dynamic web fallback, Auto Wiki
 generation, a local Web Console, browser smokes, and extra legacy MCP tools.
 
@@ -57,15 +57,15 @@ Retain:
   are not a retained MCP tool surface and must not become one-off target sync
   APIs without a new ADR.
 - Obsidian is retained as a configured local-vault Markdown source through
-  `CONTEXTWIKI_OBSIDIAN_VAULT_PATH`, bounded by
-  `CONTEXTWIKI_OBSIDIAN_MAX_FILES` and
-  `CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES`. It does not require a live Obsidian
+  `CONTEXTZIP_OBSIDIAN_VAULT_PATH`, bounded by
+  `CONTEXTZIP_OBSIDIAN_MAX_FILES` and
+  `CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES`. It does not require a live Obsidian
   app, plugin, or API server, and verification should use temporary vaults
   unless the task has a plan and the user explicitly approves the bounded real
   vault check. Plan-exempt work must be reclassified as planned work or keep
   using a temporary vault.
 - Optional search LLM query rewrite behind `search_context`, disabled by
-  default. If explicitly enabled through `CONTEXTWIKI_SEARCH_LLM_ENABLED=true`
+  default. If explicitly enabled through `CONTEXTZIP_SEARCH_LLM_ENABLED=true`
   and a configured provider API key, the server may send the user's search
   query and normalized query terms to that external provider before
   Chroma/LlamaIndex retrieval. Internal helper-answer flows inherit that same
@@ -76,7 +76,7 @@ Retain:
 Remove from the current production scope:
 
 - Generic website/docs crawling and `source_web`.
-- Website/docs configuration such as `CONTEXTWIKI_WEB_*`.
+- Website/docs configuration such as `CONTEXTZIP_WEB_*`.
 - Auto Wiki generation, `generate_wiki_page`, wiki LLM synthesis, and wiki
   smoke scripts.
 - Local Web Console, HTTP/browser reviewer UI, Web Console tests, and
@@ -129,11 +129,11 @@ This ADR supersedes the website/docs portion of ADR 0004 for current scope. ADR
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0001-layered-mcp-content-search-architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
-- `.agents/docs/adr/0003-contextwiki-phase-b0-identity-and-chunking.md`
-- `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
-- `.agents/docs/adr/0005-contextwiki-auto-wiki-llm-synthesis.md`
+- `.agents/docs/adr/0001-layered-context-zip-architecture.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
+- `.agents/docs/adr/0003-context-zip-phase-b0-identity-and-chunking.md`
+- `.agents/docs/adr/0004-context-zip-phase-b-connectors.md`
+- `.agents/docs/adr/0005-context-zip-auto-wiki-llm-synthesis.md`
 - `.agents/docs/adr/0008-background-sync-all-and-deterministic-retrieval.md`
 - `docs/plan/2026-06-10-slim-mcp-core.md`
 - `docs/plan/2026-06-11-restore-obsidian-pr25.md`

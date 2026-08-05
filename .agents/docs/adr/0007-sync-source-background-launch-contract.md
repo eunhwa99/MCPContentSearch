@@ -17,7 +17,7 @@ reconciliation decisions remain accepted.
 
 ## Context
 
-`MCPContentSearch` originally treated `sync_source(source_id)` as a blocking
+`context-zip` originally treated `sync_source(source_id)` as a blocking
 end-to-end sync call. That worked for short source fetches, but it breaks down
 for larger configured sources such as Notion when the MCP client, transport, or
 caller timeout cancels the request before the sync finishes. In the observed
@@ -98,10 +98,10 @@ newer foreign retry must override the stale local cancelled handoff.
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
-- `.agents/docs/adr/0004-contextwiki-phase-b-connectors.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
+- `.agents/docs/adr/0004-context-zip-phase-b-connectors.md`
 - `.agents/docs/adr/0006-slim-mcp-core-scope.md`
 - `.agents/docs/adr/0009-exact-sync-job-status-observation.md`
 - `.agents/docs/adr/0010-durable-all-source-sync-worker.md`
-- `docs/contextwiki-core-understanding.md`
+- `docs/context_zip-core-understanding.md`
 - `docs/plan/2026-06-15-notion-cancel-sync-stuck.md`

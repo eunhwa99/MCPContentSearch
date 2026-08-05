@@ -1,1 +1,1 @@
-"""Persistence adapters for ContextWiki metadata."""
+"""Persistence adapters for ContextZip metadata."""

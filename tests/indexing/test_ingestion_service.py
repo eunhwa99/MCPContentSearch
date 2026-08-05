@@ -40,7 +40,7 @@ class PartialSnapshotConnector(FakeConnector):
 
 
 class ScopedCleanupConnector(FakeConnector):
-    cleanup_document_id_prefixes = ("github:eunhwa99/mcpcontentsearch:",)
+    cleanup_document_id_prefixes = ("github:eunhwa99/context-zip:",)
 
 
 class ProgressRecordingMetadataStore(MetadataStore):
@@ -485,15 +485,15 @@ def test_ingestion_indexes_changed_documents_and_skips_unchanged(tmp_path):
     document = DocumentModel(
         id="notion_page_1",
         source_id="source_fake",
-        title="ContextWiki",
-        content="ContextWiki stores citation chunks.",
+        title="ContextZip",
+        content="ContextZip stores citation chunks.",
         url="https://notion.so/page-1",
         platform="Notion",
-        path="ContextWiki",
+        path="ContextZip",
         updated_at="2026-05-20T00:00:00Z",
     )
     connector = FakeConnector([document])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -516,7 +516,7 @@ def test_ingestion_indexes_changed_documents_and_skips_unchanged(tmp_path):
 
 def test_ingestion_records_failed_sync_for_retry(tmp_path):
     connector = FakeConnector(error=RuntimeError("boom"))
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -543,7 +543,7 @@ def test_ingestion_redacts_secret_failed_sync_for_retry(tmp_path, caplog):
             "path /Users/eunhwa/private/vault.md, token supersecretvalue123456"
         )
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -601,7 +601,7 @@ def test_ingestion_persists_strongly_sanitized_failure_with_structured_fields(
             f"tokens={notion_tokens[0]} {notion_tokens[1]}"
         )
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -641,7 +641,7 @@ def test_ingestion_can_skip_source_config_registration_for_ad_hoc_sync(tmp_path)
         path="doc-1.md",
     )
     connector = FakeConnector([document])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.register_source(
         FakeConnector.source.model_copy(update={"enabled": False, "name": "Configured Fake"})
     )
@@ -676,7 +676,7 @@ def test_overlapping_source_sync_reuses_running_job_without_second_fetch(tmp_pat
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -716,7 +716,7 @@ def test_start_sync_source_returns_running_job_and_completes_in_background(tmp_p
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -770,7 +770,7 @@ def test_start_sync_source_reuses_existing_running_job_without_second_fetch(tmp_
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -823,7 +823,7 @@ def test_sync_source_can_start_fresh_run_after_local_background_completion(tmp_p
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -865,7 +865,7 @@ def test_sync_source_starts_fresh_run_after_successful_background_completion(tmp
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -908,7 +908,7 @@ def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled(
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -950,7 +950,7 @@ def test_sync_source_can_start_new_job_when_joined_background_task_is_cancelled_
 
     async def run_blocking_join_prestart_cancel():
         connector = FakeConnector([document])
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -989,7 +989,7 @@ def test_cancelled_background_sync_task_marks_job_failed(tmp_path):
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1033,7 +1033,7 @@ def test_start_sync_source_retries_immediately_after_generic_background_cancella
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1089,7 +1089,7 @@ def test_sync_source_can_start_new_job_after_cancelled_background_callback_final
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1133,7 +1133,7 @@ def test_sync_source_ignores_cancelled_background_cache_when_newer_foreign_job_i
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1176,7 +1176,7 @@ def test_background_sync_missing_initial_job_marks_job_failed(tmp_path, monkeypa
 
     async def run_missing_job_flow():
         connector = FakeConnector([document])
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1231,7 +1231,7 @@ def test_cancelled_source_sync_marks_job_failed_and_allows_retry(tmp_path):
         started = asyncio.Event()
         release = asyncio.Event()
         connector = BlockingConnector([document], started, release)
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = RecordingIndexer()
         service = IngestionService(
             metadata_store=store,
@@ -1267,7 +1267,7 @@ def test_cancelled_source_sync_marks_job_failed_and_allows_retry(tmp_path):
 
 
 def test_source_registration_preserves_existing_sync_status(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = FakeConnector()
     IngestionService(
         metadata_store=store,
@@ -1306,7 +1306,7 @@ def test_failed_indexing_does_not_mark_document_as_indexed_for_retry(tmp_path):
         path="Retry Safety",
         updated_at="2026-05-20T00:00:00Z",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = FailingOnceIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -1335,7 +1335,7 @@ def test_stale_sync_does_not_commit_metadata_after_losing_lease_during_indexing(
         platform="GitHub",
         path="lease-lost.md",
     )
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     store = MetadataStore(db_path, running_job_timeout_seconds=60)
     indexer = ReplacementDuringIndexingIndexer(db_path)
     service = IngestionService(
@@ -1367,7 +1367,7 @@ def test_sync_source_returns_failed_job_when_lease_is_lost_during_fetch(tmp_path
         platform="GitHub",
         path="lease-lost-fetch.md",
     )
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     store = MetadataStore(db_path, running_job_timeout_seconds=60)
     connector = LeaseLostDuringFetchConnector(db_path, [document])
     service = IngestionService(
@@ -1395,7 +1395,7 @@ def test_stale_sync_does_not_delete_replacement_active_vector_after_losing_lease
         platform="GitHub",
         path="lease-lost.md",
     )
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     store = MetadataStore(db_path, running_job_timeout_seconds=60)
     chunker = DocumentChunker(max_chars=120, overlap_chars=0)
     normalized = IngestionService._normalize_document(
@@ -1451,7 +1451,7 @@ def test_ingestion_uses_canonical_document_id_for_hash_and_chunks(tmp_path):
         path="Canonical Identity",
         updated_at="2026-05-20T00:00:00Z",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -1489,7 +1489,7 @@ def test_ingestion_rejects_cross_source_document_identity_collision(tmp_path):
         url="https://example.com/b",
         platform="GitHub",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -1535,7 +1535,7 @@ def test_sync_all_runs_multiple_sources_and_returns_aggregate_summary(tmp_path):
         platform="GitHub",
         path="b.md",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([
@@ -1576,7 +1576,7 @@ def test_sync_all_counts_disabled_source_as_skipped(tmp_path):
         platform="GitHub",
         path="a.md",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([
@@ -1623,7 +1623,7 @@ def test_sync_all_returns_before_new_background_connector_completes(tmp_path):
         connector = BlockingConnector([document], started, release)
         connector.source = SourceAConnector.source
         service = IngestionService(
-            metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+            metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
             source_registry=SourceRegistry([connector]),
             chunker=DocumentChunker(max_chars=120, overlap_chars=0),
             indexer=RecordingIndexer(),
@@ -1656,7 +1656,7 @@ def test_sync_all_empty_selection_is_a_no_op(tmp_path):
     )
     indexer = RecordingIndexer()
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([SourceAConnector([document])]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=indexer,
@@ -1689,7 +1689,7 @@ def test_sync_all_reports_already_running_source_without_waiting(tmp_path):
     async def run_sync_all_while_one_source_is_running():
         started = asyncio.Event()
         release = asyncio.Event()
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         service = IngestionService(
             metadata_store=store,
             source_registry=SourceRegistry([
@@ -1741,7 +1741,7 @@ def test_sync_all_reuses_local_background_sync_without_waiting(tmp_path):
     async def run_sync_all_while_background_sync_is_running():
         started = asyncio.Event()
         release = asyncio.Event()
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         blocking_a = BlockingConnector([document], started, release)
         blocking_a.source = SourceAConnector.source
         service = IngestionService(
@@ -1788,7 +1788,7 @@ def test_sync_all_accepts_when_all_selected_sources_are_already_running(tmp_path
     async def run_sync_all_while_source_is_running():
         started = asyncio.Event()
         release = asyncio.Event()
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         service = IngestionService(
             metadata_store=store,
             source_registry=SourceRegistry([SourceAConnector([document])]),
@@ -1829,7 +1829,7 @@ def test_sync_all_launch_acceptance_does_not_claim_connector_completion(tmp_path
         platform="GitHub",
         path="a.md",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([
@@ -1863,7 +1863,7 @@ def test_sync_all_launch_acceptance_does_not_claim_connector_completion(tmp_path
 
 def test_sync_all_reports_failed_when_source_launch_cannot_start(tmp_path):
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([FakeConnector()]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
@@ -1904,7 +1904,7 @@ def test_concurrent_cross_source_collision_is_rejected_before_vector_write(tmp_p
     async def run_collision():
         started = asyncio.Event()
         release = asyncio.Event()
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         indexer = BlockingFirstIndexIndexer(started, release)
         service = IngestionService(
             metadata_store=store,
@@ -1943,7 +1943,7 @@ def test_self_expired_fetch_does_not_finalize_or_tombstone(tmp_path):
         path="existing.md",
         last_seen_at="2026-05-22T00:00:00Z",
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", running_job_timeout_seconds=0)
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", running_job_timeout_seconds=0)
     store.upsert_document_and_replace_chunks(
         existing,
         [
@@ -1987,7 +1987,7 @@ def test_partial_update_deletes_only_stale_chunk_vectors(tmp_path):
     )
     second_document = first_document.model_copy(update={"content": ("A" * 30) + ("C" * 30)})
     connector = FakeConnector([first_document])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -2011,7 +2011,7 @@ def test_partial_update_deletes_only_stale_chunk_vectors(tmp_path):
 
 def test_disabled_source_records_failed_job_without_fetching(tmp_path):
     connector = DisabledConnector()
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -2032,7 +2032,7 @@ def test_durable_disabled_source_is_failed_atomically_without_completion_handoff
     monkeypatch,
 ):
     connector = DisabledConnector()
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -2065,7 +2065,7 @@ def test_disabled_github_source_records_public_missing_repository_config_error(t
         token="ghp_secretcredential",
         http_client=object(),
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([connector]),
@@ -2079,15 +2079,15 @@ def test_disabled_github_source_records_public_missing_repository_config_error(t
     assert job.status == SyncJobStatus.FAILED
     assert job.error_message == (
         "Source source_github is disabled because no GitHub repositories are "
-        "configured in CONTEXTWIKI_GITHUB_REPOSITORIES."
+        "configured in CONTEXTZIP_GITHUB_REPOSITORIES."
     )
-    assert "CONTEXTWIKI_GITHUB_REPOSITORIES" in source.last_error
+    assert "CONTEXTZIP_GITHUB_REPOSITORIES" in source.last_error
     assert "ghp_secretcredential" not in job.error_message
     assert "ghp_secretcredential" not in source.last_error
 
 
 def test_disabled_source_request_returns_existing_running_job_without_clobbering(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.register_source(FakeConnector.source)
     running_job, started = store.begin_sync_job("source_fake")
     assert started is True
@@ -2125,7 +2125,7 @@ def test_metadata_commit_failure_does_not_make_retry_skip_document(tmp_path):
         path="Atomic Metadata",
         updated_at="2026-05-20T00:00:00Z",
     )
-    store = FailingOnceMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = FailingOnceMetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -2165,7 +2165,7 @@ def test_successful_full_sync_tombstones_missing_documents_and_deletes_vectors(t
         path="removed.md",
     )
     connector = FakeConnector([kept, removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -2206,7 +2206,7 @@ def test_running_sync_records_document_progress(tmp_path):
         platform="GitHub",
         path="second.md",
     )
-    store = ProgressRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = ProgressRecordingMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([first, second])]),
@@ -2233,7 +2233,7 @@ def test_running_sync_progress_update_failure_logs_redacted_error(tmp_path, capl
         platform="GitHub",
         path="first.md",
     )
-    store = FailingProgressMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = FailingProgressMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([document])]),
@@ -2270,7 +2270,7 @@ def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, capl
         platform="Notion",
         path="second.md",
     )
-    store = TouchRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = TouchRecordingMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([ProgressAwareConnector([first, second])]),
@@ -2302,7 +2302,7 @@ def test_running_sync_fetch_progress_refreshes_heartbeat_and_logs(tmp_path, capl
 def test_handle_source_fetch_progress_page_fetch_skipped_advances_upstream_done(
     tmp_path,
 ):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([])]),
@@ -2353,7 +2353,7 @@ def test_handle_source_fetch_progress_status_message_is_source_neutral_for_githu
             "name": "GitHub",
         }
     )
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([github_connector]),
@@ -2381,7 +2381,7 @@ def test_handle_source_fetch_progress_status_message_is_source_neutral_for_githu
 
 
 def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([DiscoveryProgressConnector([])]),
@@ -2418,7 +2418,7 @@ def test_running_sync_discovery_progress_exposes_numeric_discovery_count(tmp_pat
 def test_refresh_running_job_for_progress_updates_heartbeat_without_hint_write(
     tmp_path,
 ):
-    store = TouchRecordingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = TouchRecordingMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([])]),
@@ -2466,7 +2466,7 @@ def test_page_fetch_hint_persistence_is_throttled(tmp_path, monkeypatch):
             "name": "Obsidian",
         }
     )
-    store = HintCountingStore(tmp_path / "contextwiki.sqlite3")
+    store = HintCountingStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([obsidian_connector]),
@@ -2531,7 +2531,7 @@ def test_page_fetch_liveness_updates_last_progress_at_more_often_than_hints(
                 self.hint_counter_writes += 1
             return super().update_sync_job(job_id, **updates)
 
-    store = ProgressTimestampStore(tmp_path / "contextwiki.sqlite3")
+    store = ProgressTimestampStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([])]),
@@ -2593,7 +2593,7 @@ def test_page_fetch_coalesces_touch_sync_job_below_per_event(tmp_path, monkeypat
             self.get_sync_job_calls += 1
             return super().get_sync_job(job_id)
 
-    store = ReadCountingStore(tmp_path / "contextwiki.sqlite3")
+    store = ReadCountingStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([FakeConnector([])]),
@@ -2648,7 +2648,7 @@ def test_running_sync_fails_when_existing_observer_requests_stop(tmp_path):
     connector = ExistingObserverStopConnector([document])
     indexer = RecordingIndexer()
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=indexer,
@@ -2677,7 +2677,7 @@ def test_running_sync_fails_when_awaitable_observer_requests_stop(tmp_path):
     )
     connector = AwaitableObserverStopConnector([document])
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
@@ -2703,7 +2703,7 @@ def test_running_sync_fails_when_callback_only_observer_requests_stop(tmp_path):
     )
     connector = CallbackOnlyObserverStopConnector([document])
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
@@ -2729,7 +2729,7 @@ def test_running_sync_fails_when_observer_raises_stop_requested(tmp_path):
     )
     connector = ExceptionObserverStopConnector([document])
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
@@ -2755,7 +2755,7 @@ def test_running_sync_fails_when_nested_stop_checker_raises_stop_requested(tmp_p
     )
     connector = RaisingStopCheckerConnector([document])
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=RecordingIndexer(),
@@ -2781,7 +2781,7 @@ def test_sync_source_replays_observer_cancelled_background_failure_once(tmp_path
 
     async def run_background_then_direct_sync():
         connector = ExistingObserverStopConnector([document])
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         service = IngestionService(
             metadata_store=store,
             source_registry=SourceRegistry([connector]),
@@ -2821,7 +2821,7 @@ def test_start_sync_source_replays_observer_cancelled_background_failure_once(tm
 
     async def run_background_then_restart():
         connector = ExistingObserverStopConnector([document])
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         service = IngestionService(
             metadata_store=store,
             source_registry=SourceRegistry([connector]),
@@ -2861,7 +2861,7 @@ def test_sync_all_replays_observer_cancelled_background_failure_once(tmp_path):
 
     async def run_background_then_bulk_sync():
         connector = ObserverCancelledOnceConnector([document])
-        store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+        store = MetadataStore(tmp_path / "context_zip.sqlite3")
         service = IngestionService(
             metadata_store=store,
             source_registry=SourceRegistry([connector]),
@@ -2905,7 +2905,7 @@ def test_running_sync_supports_async_nested_stop_checker_without_false_stop(tmp_
     connector = AsyncFalseStopCheckerConnector([document])
     indexer = RecordingIndexer()
     service = IngestionService(
-        metadata_store=MetadataStore(tmp_path / "contextwiki.sqlite3"),
+        metadata_store=MetadataStore(tmp_path / "context_zip.sqlite3"),
         source_registry=SourceRegistry([connector]),
         chunker=DocumentChunker(max_chars=120, overlap_chars=0),
         indexer=indexer,
@@ -2933,7 +2933,7 @@ def test_running_sync_fetch_progress_hint_failure_logs_redacted_error_and_sync_s
         platform="Notion",
         path="first.md",
     )
-    store = HintFailingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = HintFailingMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([ProgressAwareConnector([document])]),
@@ -2963,7 +2963,7 @@ def test_running_sync_fetch_progress_heartbeat_failure_logs_redacted_error_and_s
         platform="Notion",
         path="first.md",
     )
-    store = SecondTouchFailingMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = SecondTouchFailingMetadataStore(tmp_path / "context_zip.sqlite3")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([ProgressAwareConnector([document])]),
@@ -3004,7 +3004,7 @@ def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repe
         path="removed.md",
     )
     connector = FakeConnector([kept, removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3029,7 +3029,7 @@ def test_successful_full_sync_cleanup_uses_unique_job_marker_when_timestamp_repe
 
 def test_successful_full_sync_only_tombstones_scoped_documents(tmp_path):
     kept = DocumentModel(
-        id="github:eunhwa99/mcpcontentsearch:README.md",
+        id="github:eunhwa99/context-zip:README.md",
         source_id="source_fake",
         title="README",
         content="This configured repo document remains.",
@@ -3038,7 +3038,7 @@ def test_successful_full_sync_only_tombstones_scoped_documents(tmp_path):
         path="README.md",
     )
     removed = DocumentModel(
-        id="github:eunhwa99/mcpcontentsearch:old.py",
+        id="github:eunhwa99/context-zip:old.py",
         source_id="source_fake",
         title="Old",
         content="This configured repo document disappears.",
@@ -3056,7 +3056,7 @@ def test_successful_full_sync_only_tombstones_scoped_documents(tmp_path):
         path="graph.py",
     )
     connector = ScopedCleanupConnector([kept, removed, ad_hoc])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3088,7 +3088,7 @@ def test_failed_sync_does_not_tombstone_previous_documents(tmp_path):
         path="survivor.md",
     )
     connector = FakeConnector([document])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3118,7 +3118,7 @@ def test_reappearing_tombstoned_document_reindexes_even_when_hash_matches(tmp_pa
         path="reappears.md",
     )
     connector = FakeConnector([document])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3158,7 +3158,7 @@ def test_reappearing_document_preserves_old_chunk_id_for_raw_suppression(tmp_pat
         }
     )
     connector = FakeConnector([first])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = FailingDeleteIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3204,7 +3204,7 @@ def test_partial_snapshot_connector_does_not_tombstone_missing_documents(tmp_pat
         path="maybe-missing",
     )
     connector = PartialSnapshotConnector([kept, maybe_missing])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3243,7 +3243,7 @@ def test_metadata_only_citation_change_refreshes_chunks_without_vector_reindex(t
         }
     )
     connector = FakeConnector([first])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3265,7 +3265,7 @@ def test_metadata_only_citation_change_refreshes_chunks_without_vector_reindex(t
 
 
 def test_unchanged_content_reindexes_when_chunk_strategy_changes(tmp_path):
-    content = "# Intro\nContextWiki overview.\n## Install\nRun uv sync.\n"
+    content = "# Intro\nContextZip overview.\n## Install\nRun uv sync.\n"
     existing = DocumentModel(
         id="readme",
         source_id="source_fake",
@@ -3296,7 +3296,7 @@ def test_unchanged_content_reindexes_when_chunk_strategy_changes(tmp_path):
         }
     )
     connector = FakeConnector([fetched])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     store.upsert_document_and_replace_chunks(existing, [old_chunk])
     indexer = RecordingIndexer()
     service = IngestionService(
@@ -3329,7 +3329,7 @@ def test_changed_document_metadata_failure_does_not_delete_old_vectors(tmp_path)
         path="Multi Chunk",
     )
     second = first.model_copy(update={"content": ("A" * 30) + ("C" * 30)})
-    store = FailingOnceMetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = FailingOnceMetadataStore(tmp_path / "context_zip.sqlite3")
     old_chunks = DocumentChunker(max_chars=30, overlap_chars=0).chunk_document(first)
     MetadataStore.upsert_document_and_replace_chunks(store, first, old_chunks)
     indexer = RecordingIndexer()
@@ -3366,7 +3366,7 @@ def test_vector_delete_failure_after_tombstone_does_not_fail_sync_or_restore_chu
         path="removed.md",
     )
     connector = FakeConnector([removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = FailingDeleteIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3395,7 +3395,7 @@ def test_vector_delete_failure_logs_redacted_error(tmp_path, caplog):
         path="removed.md",
     )
     connector = FakeConnector([removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = FailingDeleteIndexer(
         "delete failed at /Users/eunhwa/private/vector.db "
         "credential=privatevalue token=secret-value token supersecretvalue123456"
@@ -3441,7 +3441,7 @@ def test_success_finalization_failure_rolls_back_stale_cleanup(tmp_path):
         path="removed.md",
     )
     connector = FakeConnector([kept, removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,
@@ -3492,7 +3492,7 @@ def test_successful_sync_cleanup_uses_seen_marker_not_large_seen_id_list(tmp_pat
         path="removed.md",
     )
     connector = FakeConnector([kept, removed])
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     indexer = RecordingIndexer()
     service = IngestionService(
         metadata_store=store,

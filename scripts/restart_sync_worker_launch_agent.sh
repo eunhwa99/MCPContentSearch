@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.eunaverse.contextwiki.sync-worker"
+LABEL="com.eunaverse.context-zip.sync-worker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=scripts/sync_worker_launch_agent_lock.sh
 source "${SCRIPT_DIR}/sync_worker_launch_agent_lock.sh"

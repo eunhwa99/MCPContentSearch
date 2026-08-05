@@ -1,4 +1,4 @@
-# ADR 0003: ContextWiki Phase B-0 Identity Lifecycle and Source-Aware Chunking
+# ADR 0003: ContextZip Phase B-0 Identity Lifecycle and Source-Aware Chunking
 
 ## Status
 
@@ -29,7 +29,7 @@ ADR 0002 established SQLite as the metadata and citation store. Phase B-0 extend
 
 ## Decision
 
-Extend the ContextWiki metadata contract with document identity lifecycle fields:
+Extend the ContextZip metadata contract with document identity lifecycle fields:
 
 - `external_id`: connector-native stable identity across content revisions, such as `owner/repo:path` for GitHub.
 - `canonical_url`: stable citation URL for the source document or file.
@@ -85,7 +85,7 @@ Function/class-aware code chunking, fingerprint deduplication, worker queues, re
 
 ## Related
 
-- `.agents/docs/adr/0001-layered-mcp-content-search-architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
-- `docs/plan/2026-05-20-contextwiki-roadmap.md`
-- `docs/plan/2026-05-22-contextwiki-phase-b0-readiness.md`
+- `.agents/docs/adr/0001-layered-context-zip-architecture.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
+- `docs/plan/2026-05-20-context_zip-roadmap.md`
+- `docs/plan/2026-05-22-context_zip-phase-b0-readiness.md`

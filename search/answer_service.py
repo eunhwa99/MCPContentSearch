@@ -196,7 +196,7 @@ class CitationAnswerService:
             if include_debug:
                 payload.update(
                     {
-                        "answer_mode": "contextwiki_debug",
+                        "answer_mode": "context_zip_debug",
                         "debug": debug_payload,
                         "debug_markdown": self._render_debug_markdown(
                             question,
@@ -223,7 +223,7 @@ class CitationAnswerService:
         if include_debug:
             payload.update(
                 {
-                    "answer_mode": "contextwiki_debug",
+                    "answer_mode": "context_zip_debug",
                     "debug": debug_payload,
                     "debug_markdown": self._render_debug_markdown(
                         question,

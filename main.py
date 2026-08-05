@@ -81,7 +81,7 @@ def create_app() -> FastMCP:
         source_registry=source_registry,
     )
 
-    logger.info("✅ Application initialized with slim ContextWiki MCP tools")
+    logger.info("✅ Application initialized with slim ContextZip MCP tools")
 
     return mcp
 
@@ -92,5 +92,5 @@ def create_app() -> FastMCP:
 if __name__ == "__main__":
     mcp = create_app()
 
-    logger.info("🚀 Starting slim ContextWiki MCP server...")
+    logger.info("🚀 Starting slim ContextZip MCP server...")
     mcp.run()

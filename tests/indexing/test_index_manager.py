@@ -9,6 +9,7 @@ from indexing.manager import IndexManager
 
 
 pytestmark = pytest.mark.unit
+LEGACY_MANAGED_KEY = "context" + "wiki_managed"
 
 
 class FakeCollection:
@@ -70,7 +71,8 @@ def test_index_manager_deletes_outdated_document_with_source_filter():
             "$and": [
                 {"doc_id": "shared-chunk"},
                 {"source_id": "source_b"},
-                {"contextwiki_managed": {"$ne": "true"}},
+                {"context_zip_managed": {"$ne": "true"}},
+                {LEGACY_MANAGED_KEY: {"$ne": "true"}},
             ]
         }
     ]
@@ -86,7 +88,8 @@ def test_index_manager_no_source_raw_delete_does_not_match_managed_vectors():
         {
             "$and": [
                 {"doc_id": "shared-chunk"},
-                {"contextwiki_managed": {"$ne": "true"}},
+                {"context_zip_managed": {"$ne": "true"}},
+                {LEGACY_MANAGED_KEY: {"$ne": "true"}},
             ]
         }
     ]
@@ -99,7 +102,7 @@ def test_index_manager_separates_managed_chunks_from_legacy_vectors():
             {
                 "doc_id": "shared-chunk",
                 "source_id": "source_a",
-                "contextwiki_managed": "false",
+                "context_zip_managed": "false",
                 "content_hash": ContentHasher.hash_content(existing_content),
             }
         ]
@@ -126,10 +129,55 @@ def test_index_manager_separates_managed_chunks_from_legacy_vectors():
             "$and": [
                 {"doc_id": "shared-chunk"},
                 {"source_id": "source_a"},
-                {"contextwiki_managed": "true"},
+                {"context_zip_managed": "true"},
+            ]
+        },
+        {
+            "$and": [
+                {"doc_id": "shared-chunk"},
+                {"source_id": "source_a"},
+                {LEGACY_MANAGED_KEY: "true"},
             ]
         }
     ]
+
+
+def test_index_manager_recognizes_legacy_managed_metadata_key_for_cleanup():
+    existing_content = "same id, same content"
+    collection = FakeCollection(
+        [
+            {
+                "doc_id": "shared-chunk",
+                "source_id": "source_a",
+                LEGACY_MANAGED_KEY: "true",
+                "content_hash": ContentHasher.hash_content(existing_content),
+            }
+        ]
+    )
+    manager = IndexManager(collection)
+    managed_chunk = DocumentModel(
+        id="shared-chunk",
+        chunk_id="shared-chunk",
+        document_id="doc-1",
+        source_id="source_a",
+        title="Shared",
+        content=existing_content,
+        url="https://example.com/a",
+        platform="GitHub",
+    )
+
+    assert manager.is_new(managed_chunk) is False
+    assert manager.is_updated(managed_chunk) is False
+
+    manager.delete_document(managed_chunk)
+
+    assert collection.deleted_where[-1] == {
+        "$and": [
+            {"doc_id": "shared-chunk"},
+            {"source_id": "source_a"},
+            {LEGACY_MANAGED_KEY: "true"},
+        ]
+    }
 
 
 def test_content_indexer_source_scopes_managed_vector_cleanup():
@@ -143,7 +191,14 @@ def test_content_indexer_source_scopes_managed_vector_cleanup():
             "$and": [
                 {"doc_id": "shared-chunk"},
                 {"source_id": "source_b"},
-                {"contextwiki_managed": "true"},
+                {"context_zip_managed": "true"},
+            ]
+        },
+        {
+            "$and": [
+                {"doc_id": "shared-chunk"},
+                {"source_id": "source_b"},
+                {LEGACY_MANAGED_KEY: "true"},
             ]
         }
     ]
@@ -159,7 +214,8 @@ def test_content_indexer_raw_cleanup_does_not_match_managed_vectors_without_sour
         {
             "$and": [
                 {"doc_id": "shared-chunk"},
-                {"contextwiki_managed": {"$ne": "true"}},
+                {"context_zip_managed": {"$ne": "true"}},
+                {LEGACY_MANAGED_KEY: {"$ne": "true"}},
             ]
         }
     ]

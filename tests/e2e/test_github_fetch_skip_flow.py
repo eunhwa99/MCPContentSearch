@@ -96,14 +96,14 @@ def _blob_fetch_urls(client: TrackingGitHubHTTP) -> list[str]:
 def test_second_github_sync_skips_blob_fetch_for_unchanged_files(tmp_path):
     client = TrackingGitHubHTTP()
     client.remote_paths = ["README.md"]
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             cache_dir=str(tmp_path / "cache"),
             github_max_files=10,
             github_max_file_bytes=1000,
@@ -135,12 +135,12 @@ def test_second_github_sync_skips_blob_fetch_for_unchanged_files(tmp_path):
 
 def test_skipped_unchanged_github_blob_is_not_tombstoned_when_peer_disappears(tmp_path):
     client = TrackingGitHubHTTP()
-    kept_id = "github:eunhwa99/mcpcontentsearch:README.md"
-    removed_id = "github:eunhwa99/mcpcontentsearch:docs/peer.md"
+    kept_id = "github:eunhwa99/context-zip:README.md"
+    removed_id = "github:eunhwa99/context-zip:docs/peer.md"
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
         metadata_store=store,

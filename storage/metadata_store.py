@@ -65,11 +65,11 @@ class _DarwinProcBSDInfo(ctypes.Structure):
 
 
 OBSIDIAN_REFRESH_CLEARABLE_ERRORS = (
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "is not set or is not an existing directory.",
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "must be an absolute path.",
-    "Source source_obsidian is disabled because CONTEXTWIKI_OBSIDIAN_VAULT_PATH "
+    "Source source_obsidian is disabled because CONTEXTZIP_OBSIDIAN_VAULT_PATH "
     "must not be a symlink.",
 )
 OBSIDIAN_INCOMPLETE_SNAPSHOT_PUBLIC_ERROR = (
@@ -100,7 +100,7 @@ def _sanitize_source_lifecycle(source: SourceModel) -> SourceModel:
 
 
 class MetadataStore:
-    """SQLite-backed metadata store for ContextWiki sources, jobs, docs, and chunks."""
+    """SQLite-backed metadata store for ContextZip sources, jobs, docs, and chunks."""
 
     def __init__(
         self,
@@ -111,7 +111,7 @@ class MetadataStore:
         max_concurrent_sync_jobs: int = 1,
     ):
         # Default stays single-flight for non-worker MetadataStore callers.
-        # The durable sync worker raises this to CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT
+        # The durable sync worker raises this to CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT
         # (default 2) in create_worker.
         self.db_path = Path(db_path)
         self.running_job_timeout_seconds = running_job_timeout_seconds

@@ -92,7 +92,7 @@ def _max_concurrent_parse():
     parse = getattr(sync_worker_module, "_max_concurrent_jobs", None)
     assert callable(parse), (
         "indexing.sync_worker must expose _max_concurrent_jobs for "
-        "CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT parsing"
+        "CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT parsing"
     )
     return parse
 
@@ -111,7 +111,7 @@ async def _wait_for_terminal_job(store, job_id: str, *, timeout: float = 2.0):
 
 
 def test_worker_claims_and_completes_exact_queued_job(tmp_path):
-    db_path = tmp_path / "contextwiki.sqlite3"
+    db_path = tmp_path / "context_zip.sqlite3"
     requester, requester_service = _service(
         db_path,
         EmptyConnector(),
@@ -142,7 +142,7 @@ def test_worker_claims_and_completes_exact_queued_job(tmp_path):
 
 def test_graceful_worker_stop_fails_in_flight_job(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         requester, requester_service = _service(
             db_path,
             EmptyConnector(),
@@ -182,7 +182,7 @@ def test_graceful_worker_stop_fails_in_flight_job(tmp_path):
 
 def test_worker_runs_two_claimed_jobs_concurrently_when_max_concurrent_is_two(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}
@@ -243,7 +243,7 @@ def test_graceful_worker_stop_fails_all_in_flight_jobs_when_max_concurrent_is_tw
     tmp_path,
 ):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}
@@ -306,7 +306,7 @@ def test_max_concurrent_jobs_parse_fails_closed_for_invalid_values(value):
 
 
 def test_max_concurrent_jobs_env_default_is_two(monkeypatch):
-    monkeypatch.delenv("CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT", raising=False)
+    monkeypatch.delenv("CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT", raising=False)
     default_parse = getattr(sync_worker_module, "_default_max_concurrent_jobs", None)
     assert callable(default_parse), (
         "indexing.sync_worker must expose _default_max_concurrent_jobs"
@@ -315,7 +315,7 @@ def test_max_concurrent_jobs_env_default_is_two(monkeypatch):
 
 
 def test_sync_worker_rejects_invalid_max_concurrent_jobs(tmp_path):
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", sync_owner_id="worker")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", sync_owner_id="worker")
     service = IngestionService(
         metadata_store=store,
         source_registry=SourceRegistry([EmptyConnector()]),
@@ -338,7 +338,7 @@ def test_cancelled_claimed_jobs_finalize_failed_when_ingestion_never_finalizes(
     """Cancel before ingestion finalize must not leave claimed jobs RUNNING."""
 
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = asyncio.Event()
@@ -397,7 +397,7 @@ def test_cancelled_claimed_jobs_finalize_failed_when_ingestion_never_finalizes(
 
 def test_sync_worker_aligns_store_claim_budget_when_store_defaults_to_one(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}
@@ -472,8 +472,8 @@ def test_create_worker_wires_env_max_concurrent_to_worker_and_store(
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT", "3")
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3", sync_owner_id="runtime")
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT", "3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3", sync_owner_id="runtime")
     assert store.max_concurrent_sync_jobs == 1
 
     class FakeConfig:
@@ -508,7 +508,7 @@ def test_create_worker_wires_env_max_concurrent_to_worker_and_store(
 
 def test_worker_reclaims_when_slot_frees_with_three_sources_and_max_two(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b", "source_c")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}
@@ -580,7 +580,7 @@ def test_worker_reclaims_when_slot_frees_with_three_sources_and_max_two(tmp_path
 
 def test_unexpected_task_cancel_drains_sibling_in_flight_jobs(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}
@@ -653,7 +653,7 @@ def test_unexpected_task_cancel_drains_sibling_in_flight_jobs(tmp_path):
 
 def test_cancelling_one_in_flight_child_drains_sibling_jobs(tmp_path):
     async def scenario():
-        db_path = tmp_path / "contextwiki.sqlite3"
+        db_path = tmp_path / "context_zip.sqlite3"
         source_ids = ("source_a", "source_b")
         started = {source_id: asyncio.Event() for source_id in source_ids}
         release = {source_id: asyncio.Event() for source_id in source_ids}

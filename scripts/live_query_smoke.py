@@ -217,7 +217,7 @@ def format_smoke_summary(
     redacted_query = debug_redaction.redact_debug_query_text(query)
     redacted_question = debug_redaction.redact_debug_query_text(question)
     result_lines = [
-        "ContextWiki Live Query Smoke",
+        "ContextZip Live Query Smoke",
         "============================",
         f"search query: {redacted_query}",
         f"answer question: {redacted_question}",
@@ -265,7 +265,7 @@ def format_smoke_summary(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a live local retrieval and helper-answer smoke against the configured ContextWiki environment."
+        description="Run a live local retrieval and helper-answer smoke against the configured ContextZip environment."
     )
     parser.add_argument("--query", required=True, help="Search query for search_context.")
     parser.add_argument(

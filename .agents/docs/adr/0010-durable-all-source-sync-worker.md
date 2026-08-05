@@ -35,7 +35,7 @@ Separate source-sync acceptance from execution:
 - One worker handles every retained source: Notion, Tistory, GitHub, and
   Obsidian. Source-specific behavior remains in connectors.
 - The worker may run up to `N` distinct-source jobs concurrently. Default
-  `N` is 2 via `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`,
+  `N` is 2 via `CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT` (integer `1..8`,
   fail-closed at startup). `N=1` restores global single-flight. Per-source
   queued/running guards remain. `N` bounds SQLite `RUNNING` claims; within
   one worker process, connector fetch may overlap while the in-process
@@ -78,7 +78,7 @@ first version. A valid queued job remains queued when no worker is available.
   job under the concurrency budget; callers must inspect the terminal or
   recovered failure and explicitly request a fresh sync.
 - Bounded concurrency defaults to two concurrent RUNNING jobs for distinct
-  sources. Invalid `CONTEXTWIKI_SYNC_WORKER_MAX_CONCURRENT` values outside
+  sources. Invalid `CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT` values outside
   `1..8` fail closed at worker startup. Setting `N=1` preserves the earlier
   one-at-a-time claim behavior for operators who prefer it. Operators should
   run a single sync_worker process per store; extra worker PIDs are outside
@@ -88,7 +88,7 @@ first version. A valid queued job remains queued when no worker is available.
 - Public `started` launch vocabulary means accepted into the durable queue, not
   that connector I/O has begun.
 - Installation, status, restart, and removal use the stable LaunchAgent label
-  `com.eunaverse.contextwiki.sync-worker`.
+  `com.eunaverse.context-zip.sync-worker`.
 - Removal boots out the stable service target, so it still works if the plist
   was removed while the service remained loaded.
 - Persistent INFO logs avoid document/chunk identifiers because they can
@@ -172,7 +172,7 @@ execution ownership, not completion observation.
 ## Related
 
 - `.agents/docs/architecture.md`
-- `.agents/docs/adr/0002-contextwiki-metadata-and-citation-store.md`
+- `.agents/docs/adr/0002-context-zip-metadata-and-citation-store.md`
 - `.agents/docs/adr/0007-sync-source-background-launch-contract.md`
 - `.agents/docs/adr/0008-background-sync-all-and-deterministic-retrieval.md`
 - `.agents/docs/adr/0009-exact-sync-job-status-observation.md`

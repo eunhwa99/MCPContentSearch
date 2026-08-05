@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines branch, commit, push, PR, and PR-watch policy for `MCPContentSearch`.
+This document defines branch, commit, push, PR, and PR-watch policy for `context-zip`.
 
 ## Branch Policy
 
@@ -31,7 +31,7 @@ git worktree list
 
 # Dirty worktree path: fetch, then create an isolated fresh feature branch; otherwise ask before switching/pulling/deleting.
 git fetch origin main
-git worktree add -b feature/short-description ../MCPContentSearch-short origin/main
+git worktree add -b feature/short-description ../context-zip-short origin/main
 
 # Clean worktree path:
 git switch main

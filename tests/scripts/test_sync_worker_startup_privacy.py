@@ -62,9 +62,9 @@ def test_launch_agent_runner_sanitizes_startup_stderr_before_persisting(
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -126,9 +126,9 @@ def test_launch_agent_runner_redacts_folded_authorization_credentials(
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -184,9 +184,9 @@ def test_launch_agent_runner_redacts_multistage_folded_authorization_credentials
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -242,9 +242,9 @@ def test_launch_agent_runner_redacts_bare_name_folded_authorization_credentials(
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -299,9 +299,9 @@ def test_launch_agent_runner_redacts_oversized_cookie_header_and_folded_continua
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -354,9 +354,9 @@ def test_launch_agent_runner_redacts_cookie_separator_split_across_oversized_chu
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -412,9 +412,9 @@ def test_launch_agent_runner_redacts_folded_credentials_when_indent_and_body_spl
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -469,9 +469,9 @@ def test_launch_agent_runner_redacts_folded_credentials_when_crlf_is_split_at_pr
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -519,9 +519,9 @@ def test_launch_agent_runner_redacts_name_only_cookie_header_and_folded_value(
     diagnostic_log = tmp_path / "logs" / "startup.log"
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "4096",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": sys.executable,
     }
 
     result = subprocess.run(
@@ -572,10 +572,10 @@ def test_launch_agent_runner_uses_uv_managed_sanitizer_without_path_python(
     env = {
         **os.environ,
         "PATH": str(fake_bin),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
     }
-    env.pop("CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH", None)
+    env.pop("CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH", None)
 
     result = subprocess.run(
         ["/bin/bash", str(RUN_SCRIPT), str(fake_uv), str(REPO_ROOT)],
@@ -615,9 +615,9 @@ def test_launch_agent_runner_reports_safe_bounded_error_when_sanitizer_fails(
     diagnostic_log.chmod(0o600)
     env = {
         **os.environ,
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
-        "CONTEXTWIKI_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
-        "CONTEXTWIKI_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(failing_sanitizer),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_PATH": str(diagnostic_log),
+        "CONTEXTZIP_SYNC_WORKER_DIAGNOSTIC_LOG_MAX_BYTES": "1024",
+        "CONTEXTZIP_SYNC_WORKER_SANITIZER_PYTHON_PATH": str(failing_sanitizer),
     }
 
     result = subprocess.run(

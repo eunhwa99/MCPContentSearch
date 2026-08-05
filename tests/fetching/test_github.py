@@ -79,12 +79,12 @@ def test_github_http_client_streams_blob_json_with_byte_limit():
 
 def test_github_connector_exposes_repository_cleanup_prefixes():
     connector = GitHubSourceConnector(
-        ("EUNHWA99/MCPContentSearch@main", "eunhwa99/LeetCode@master"),
+        ("EUNHWA99/context-zip@main", "eunhwa99/LeetCode@master"),
         AppConfig(),
     )
 
     assert connector.cleanup_document_id_prefixes == (
-        "github:eunhwa99/mcpcontentsearch:",
+        "github:eunhwa99/context-zip:",
         "github:eunhwa99/leetcode:",
     )
 
@@ -174,7 +174,7 @@ class FakeGitHubHTTP:
                         "path": "README.md",
                         "type": "blob",
                         "sha": _sha('blob-readme'),
-                        "size": 29,
+                        "size":  28,
                     },
                     {
                         "path": "assets/logo.png",
@@ -193,7 +193,7 @@ class FakeGitHubHTTP:
         if "/git/blobs/blob-tools" in url:
             return _blob_payload(b"def register_tools():\n    return 'ok'\n")
         if "/git/blobs/blob-readme" in url:
-            return _blob_payload(b"# ContextWiki\n\nPhase B docs.\n")
+            return _blob_payload(b"# ContextZip\n\nPhase B docs.\n")
         raise AssertionError(f"unexpected GitHub API URL: {url}")
 
     async def get_text(self, url, headers=None):
@@ -201,7 +201,7 @@ class FakeGitHubHTTP:
         if url.endswith("/api/tools.py"):
             return "def register_tools():\n    return 'ok'\n"
         if url.endswith("/README.md"):
-            return "# ContextWiki\n\nPhase B docs.\n"
+            return "# ContextZip\n\nPhase B docs.\n"
         raise AssertionError(f"unexpected raw fetch: {url}")
 
 
@@ -268,7 +268,7 @@ class MalformedBlobGitHubHTTP(FakeGitHubHTTP):
                         "path": "README.md",
                         "type": "blob",
                         "sha": _sha('blob-readme'),
-                        "size": 29,
+                        "size":  28,
                     }
                 ]
             }
@@ -322,7 +322,7 @@ class ControlPathGitHubHTTP(FakeGitHubHTTP):
                         "path": "README.md",
                         "type": "blob",
                         "sha": _sha('blob-readme'),
-                        "size": 29,
+                        "size":  28,
                     },
                 ]
             }
@@ -856,7 +856,7 @@ class RefChangingGitHubHTTP:
 def test_github_connector_fetches_text_files_with_stable_identity_and_citations():
     client = FakeGitHubHTTP()
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         token="secret-token",
         http_client=client,
@@ -872,10 +872,10 @@ def test_github_connector_fetches_text_files_with_stable_identity_and_citations(
     assert [document.path for document in documents] == ["README.md", "api/tools.py"]
 
     tools_doc = next(document for document in documents if document.path == "api/tools.py")
-    assert tools_doc.document_id == "github:eunhwa99/mcpcontentsearch:api/tools.py"
+    assert tools_doc.document_id == "github:eunhwa99/context-zip:api/tools.py"
     assert tools_doc.external_id == tools_doc.document_id
     assert tools_doc.canonical_url == (
-        f"https://github.com/eunhwa99/MCPContentSearch/blob/{_sha('commit-main')}/api/tools.py"
+        f"https://github.com/eunhwa99/context-zip/blob/{_sha('commit-main')}/api/tools.py"
     )
     assert tools_doc.url == tools_doc.canonical_url
     assert tools_doc.version_id == _sha("blob-tools")
@@ -900,29 +900,29 @@ def test_github_connector_fetches_text_files_with_stable_identity_and_citations(
 
 def test_github_document_identity_does_not_include_configured_ref():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@release",),
+        repositories=("eunhwa99/context-zip@release",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=RefChangingGitHubHTTP(),
     )
 
     documents = asyncio.run(connector.fetch_documents())
 
-    assert documents[0].document_id == "github:eunhwa99/mcpcontentsearch:api/tools.py"
+    assert documents[0].document_id == "github:eunhwa99/context-zip:api/tools.py"
     assert documents[0].external_id == documents[0].document_id
     assert documents[0].canonical_url == (
-        f"https://github.com/eunhwa99/MCPContentSearch/blob/{_sha('commit-release')}/api/tools.py"
+        f"https://github.com/eunhwa99/context-zip/blob/{_sha('commit-release')}/api/tools.py"
     )
     assert documents[0].version_id == _sha("blob-release-tools")
 
 
 def test_github_document_identity_normalizes_owner_repo_case():
     lower_connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=FakeGitHubHTTP(),
     )
     upper_connector = GitHubSourceConnector(
-        repositories=("EUNHWA99/mcpcontentsearch@main",),
+        repositories=("EUNHWA99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=FakeGitHubHTTP(),
     )
@@ -938,14 +938,14 @@ def test_github_document_identity_normalizes_owner_repo_case():
     assert {
         document.document_id for document in lower_documents
     } == {
-        "github:eunhwa99/mcpcontentsearch:README.md",
-        "github:eunhwa99/mcpcontentsearch:api/tools.py",
+        "github:eunhwa99/context-zip:README.md",
+        "github:eunhwa99/context-zip:api/tools.py",
     }
 
 
 def test_github_connector_fails_required_blob_errors_so_sync_can_skip_tombstones():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=FailingGitHubHTTP(),
     )
@@ -956,7 +956,7 @@ def test_github_connector_fails_required_blob_errors_so_sync_can_skip_tombstones
 
 def test_github_connector_fails_truncated_tree_so_sync_can_skip_tombstones():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=TruncatedGitHubHTTP(),
     )
@@ -967,7 +967,7 @@ def test_github_connector_fails_truncated_tree_so_sync_can_skip_tombstones():
 
 def test_github_connector_fails_missing_tree_payload_so_sync_can_skip_tombstones():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=MissingTreePayloadGitHubHTTP(),
     )
@@ -990,7 +990,7 @@ def test_github_connector_fails_missing_tree_payload_so_sync_can_skip_tombstones
 )
 def test_github_connector_fails_malformed_blob_payloads(payload):
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=MalformedBlobGitHubHTTP(payload),
     )
@@ -1001,7 +1001,7 @@ def test_github_connector_fails_malformed_blob_payloads(payload):
 
 def test_github_connector_skips_binary_blob_content_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=BinaryBlobGitHubHTTP(),
     )
@@ -1014,7 +1014,7 @@ def test_github_connector_skips_binary_blob_content_for_stale_cleanup():
 
 def test_github_connector_skips_control_character_paths_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=ControlPathGitHubHTTP(),
     )
@@ -1028,7 +1028,7 @@ def test_github_connector_skips_control_character_paths_for_stale_cleanup():
 
 def test_github_connector_skips_late_control_blob_content_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=2000),
         http_client=LateControlBlobGitHubHTTP(),
     )
@@ -1041,7 +1041,7 @@ def test_github_connector_skips_late_control_blob_content_for_stale_cleanup():
 
 def test_github_connector_fails_invalid_commit_sha_before_persisting_metadata():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=InvalidSnapshotShaGitHubHTTP(),
     )
@@ -1052,7 +1052,7 @@ def test_github_connector_fails_invalid_commit_sha_before_persisting_metadata():
 
 def test_github_connector_fails_slug_commit_sha_before_persisting_metadata():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=SlugSnapshotShaGitHubHTTP(),
     )
@@ -1063,7 +1063,7 @@ def test_github_connector_fails_slug_commit_sha_before_persisting_metadata():
 
 def test_github_connector_fails_missing_tree_sha_before_fetching_tree():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=MissingSnapshotTreeShaGitHubHTTP(),
     )
@@ -1074,7 +1074,7 @@ def test_github_connector_fails_missing_tree_sha_before_fetching_tree():
 
 def test_github_connector_skips_invalid_tree_entry_sha_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=InvalidEntryShaGitHubHTTP(),
     )
@@ -1087,7 +1087,7 @@ def test_github_connector_skips_invalid_tree_entry_sha_for_stale_cleanup():
 
 def test_github_connector_skips_malformed_tree_entries_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=MalformedTreeEntriesGitHubHTTP(),
     )
@@ -1100,7 +1100,7 @@ def test_github_connector_skips_malformed_tree_entries_for_stale_cleanup():
 
 def test_github_connector_accepts_explicit_empty_text_blob():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=EmptyBlobGitHubHTTP(),
     )
@@ -1131,7 +1131,7 @@ def test_github_file_cap_marks_snapshot_incomplete_per_repository():
 
 def test_github_blob_byte_cap_marks_snapshot_incomplete_when_tree_size_is_missing():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=5),
         http_client=MissingTreeSizeLargeBlobGitHubHTTP(),
     )
@@ -1144,7 +1144,7 @@ def test_github_blob_byte_cap_marks_snapshot_incomplete_when_tree_size_is_missin
 
 def test_github_connector_skips_token_like_tree_paths_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=CredentialPathGitHubHTTP(),
     )
@@ -1186,7 +1186,7 @@ def test_github_connector_keeps_security_topic_documentation_paths():
 
 def test_github_connector_skips_session_cookie_jwt_tree_paths_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=SessionPathGitHubHTTP(),
     )
@@ -1214,7 +1214,7 @@ def test_github_connector_skips_session_cookie_jwt_tree_paths_for_stale_cleanup(
 
 def test_github_connector_skips_token_shaped_tree_paths_for_stale_cleanup():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=TokenShapedPathGitHubHTTP(),
     )
@@ -1231,7 +1231,7 @@ def test_github_connector_skips_token_shaped_tree_paths_for_stale_cleanup():
 
 def test_github_byte_cap_marks_snapshot_incomplete_for_supported_file():
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=FakeGitHubHTTP(),
     )
@@ -1250,10 +1250,10 @@ def test_github_connector_is_disabled_without_configured_repositories():
 
 
 def test_parse_repository_spec_supports_clone_url_with_git_suffix_and_ref():
-    spec = parse_repository_spec("https://github.com/eunhwa99/MCPContentSearch.git@main")
+    spec = parse_repository_spec("https://github.com/eunhwa99/context-zip.git@main")
 
     assert spec.owner == "eunhwa99"
-    assert spec.repo == "MCPContentSearch"
+    assert spec.repo == "context-zip"
     assert spec.ref == "main"
 
 
@@ -2446,7 +2446,7 @@ def test_github_connector_incomplete_owner_fetch_disables_cleanup():
 def test_parse_repository_spec_rejects_credentialed_clone_url_without_leaking_secret():
     with pytest.raises(ValueError) as exc_info:
         parse_repository_spec(
-            "https://ghp_secret@github.com/eunhwa99/MCPContentSearch.git@main"
+            "https://ghp_secret@github.com/eunhwa99/context-zip.git@main"
         )
 
     assert "ghp_secret" not in str(exc_info.value)
@@ -2455,14 +2455,14 @@ def test_parse_repository_spec_rejects_credentialed_clone_url_without_leaking_se
 @pytest.mark.parametrize(
     "value",
     [
-        "ssh://ghp_secret@github.com/eunhwa99/MCPContentSearch.git",
-        "git+https://ghp_secret@github.com/eunhwa99/MCPContentSearch.git",
-        "https://example.com/eunhwa99/MCPContentSearch.git?token=secret",
-        "https://github.com/eunhwa99/MCPContentSearch?token=secret",
-        "https://github.com/eunhwa99/MCPContentSearch?foo=ghp_secret",
-        "https://github.com/eunhwa99/MCPContentSearch#token=secret",
-        "eunhwa99/MCPContentSearch?token=secret",
-        "token@github.com/eunhwa99/MCPContentSearch",
+        "ssh://ghp_secret@github.com/eunhwa99/context-zip.git",
+        "git+https://ghp_secret@github.com/eunhwa99/context-zip.git",
+        "https://example.com/eunhwa99/context-zip.git?token=secret",
+        "https://github.com/eunhwa99/context-zip?token=secret",
+        "https://github.com/eunhwa99/context-zip?foo=ghp_secret",
+        "https://github.com/eunhwa99/context-zip#token=secret",
+        "eunhwa99/context-zip?token=secret",
+        "token@github.com/eunhwa99/context-zip",
         "ghp_secret",
         "github_pat_secret",
         "eunhwa99/ghp_secret123@main",
@@ -2507,7 +2507,7 @@ def test_parse_repository_spec_rejects_invalid_default_ref_without_leaking_secre
     default_ref,
 ):
     with pytest.raises(ValueError) as exc_info:
-        parse_repository_spec("eunhwa99/MCPContentSearch", default_ref)
+        parse_repository_spec("eunhwa99/context-zip", default_ref)
 
     message = str(exc_info.value)
     assert "secret" not in message
@@ -2517,18 +2517,18 @@ def test_parse_repository_spec_rejects_invalid_default_ref_without_leaking_secre
 @pytest.mark.parametrize(
     "value",
     [
-        "eunhwa99/MCPContentSearch@main#token=secret",
-        "eunhwa99/MCPContentSearch@main\x01",
-        "eunhwa99/MCPContentSearch@ghp_secret",
-        "eunhwa99/MCPContentSearch@ghp%5Fsecret",
-        "eunhwa99/MCPContentSearch@%67%68%70%5Fsecret",
-        "eunhwa99/MCPContentSearch@release(token=secret)",
-        "eunhwa99/MCPContentSearch@release%28token=secret%29",
-        "eunhwa99/MCPContentSearch@release%20token=secret",
-        "eunhwa99/MCPContentSearch@@",
-        "eunhwa99/MCPContentSearch@.hidden",
-        "eunhwa99/MCPContentSearch@feature/.hidden",
-        "eunhwa99/MCPContentSearch@foo.lock/bar",
+        "eunhwa99/context-zip@main#token=secret",
+        "eunhwa99/context-zip@main\x01",
+        "eunhwa99/context-zip@ghp_secret",
+        "eunhwa99/context-zip@ghp%5Fsecret",
+        "eunhwa99/context-zip@%67%68%70%5Fsecret",
+        "eunhwa99/context-zip@release(token=secret)",
+        "eunhwa99/context-zip@release%28token=secret%29",
+        "eunhwa99/context-zip@release%20token=secret",
+        "eunhwa99/context-zip@@",
+        "eunhwa99/context-zip@.hidden",
+        "eunhwa99/context-zip@feature/.hidden",
+        "eunhwa99/context-zip@foo.lock/bar",
     ],
 )
 def test_parse_repository_spec_rejects_invalid_explicit_ref_without_leaking_secret(
@@ -2547,8 +2547,8 @@ def test_github_connector_rejects_duplicate_repository_refs():
     with pytest.raises(ValueError, match="Duplicate GitHub repository spec"):
         GitHubSourceConnector(
             repositories=(
-                "eunhwa99/MCPContentSearch@main",
-                "eunhwa99/MCPContentSearch@release",
+                "eunhwa99/context-zip@main",
+                "eunhwa99/context-zip@release",
             ),
             config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         )
@@ -2561,7 +2561,7 @@ def test_github_connector_emits_list_total_and_per_item_upstream_progress():
         events.append(event)
 
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         token="secret-token",
         http_client=FakeGitHubHTTP(),
@@ -2597,7 +2597,7 @@ def test_github_connector_emits_search_started_during_resolve_and_planning():
         events.append(event)
 
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         token="secret-token",
         http_client=FakeGitHubHTTP(),
@@ -2660,7 +2660,7 @@ def test_github_fetch_aborts_when_progress_stop_signal_returned():
         pass
 
     connector = GitHubSourceConnector(
-        repositories=("eunhwa99/MCPContentSearch@main",),
+        repositories=("eunhwa99/context-zip@main",),
         config=AppConfig(github_max_files=10, github_max_file_bytes=1000),
         token="secret-token",
         http_client=StoppingFetcher(),
@@ -2824,7 +2824,7 @@ def _progress_advanced_for_github_page(
 
 
 class SingleBlobGitHubHTTP:
-    """Minimal fake: one text blob under eunhwa99/MCPContentSearch@main."""
+    """Minimal fake: one text blob under eunhwa99/context-zip@main."""
 
     def __init__(self, *, path="README.md", body=b"# Stored\n", sha_label="blob-readme"):
         self.json_urls = []
@@ -2861,7 +2861,7 @@ def test_fetch_github_skip_unchanged_blob_reuses_stored_content():
     from fetching.github import GitHubRepositoryFetcher
 
     client = SingleBlobGitHubHTTP()
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     stored_body = "# Stored reused body\n"
     existing = {
         document_id: _existing_github_document(
@@ -2877,7 +2877,7 @@ def test_fetch_github_skip_unchanged_blob_reuses_stored_content():
         events.append(event)
 
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -2901,7 +2901,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_version_id_differs():
     from fetching.github import GitHubRepositoryFetcher
 
     client = SingleBlobGitHubHTTP(body=b"# Fresh\n")
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     existing = {
         document_id: _existing_github_document(
             document_id,
@@ -2911,7 +2911,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_version_id_differs():
         )
     }
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -2932,7 +2932,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_existing_missing():
 
     client = SingleBlobGitHubHTTP(body=b"# New\n")
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -2947,7 +2947,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_tombstoned():
     from fetching.github import GitHubRepositoryFetcher
 
     client = SingleBlobGitHubHTTP(body=b"# Revived\n")
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     existing = {
         document_id: _existing_github_document(
             document_id,
@@ -2958,7 +2958,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_tombstoned():
         )
     }
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -2975,7 +2975,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_content_empty():
     from fetching.github import GitHubRepositoryFetcher
 
     client = SingleBlobGitHubHTTP(body=b"# Nonempty\n")
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     existing = {
         document_id: _existing_github_document(
             document_id,
@@ -2986,7 +2986,7 @@ def test_fetch_github_fetch_skip_still_fetches_when_content_empty():
         )
     }
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -3003,7 +3003,7 @@ def test_fetch_github_fetch_reuse_loader_after_tree_planning(monkeypatch):
     from fetching.github import GitHubRepositoryFetcher
 
     client = SingleBlobGitHubHTTP(body=b"# Keep\n")
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     existing = {
         document_id: _existing_github_document(
             document_id,
@@ -3027,7 +3027,7 @@ def test_fetch_github_fetch_reuse_loader_after_tree_planning(monkeypatch):
     monkeypatch.setattr(GitHubRepositoryFetcher, "_fetch_tree", tracking_fetch_tree)
 
     fetcher = GitHubRepositoryFetcher(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
     )
@@ -3046,7 +3046,7 @@ def test_fetch_github_fetch_reuse_loader_after_tree_planning(monkeypatch):
 def test_should_skip_github_blob_fetch_reuse_helper():
     from fetching.github import _should_skip_github_blob_fetch
 
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     sha = _sha("blob-readme")
     existing = _existing_github_document(
         document_id,

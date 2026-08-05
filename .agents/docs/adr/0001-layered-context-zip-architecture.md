@@ -7,7 +7,7 @@ accepted
 Status note: ADR 0006 supersedes the historical dynamic fallback and broader
 crawler wording in this ADR for current work. ADR 0008 supersedes its
 query-rewrite wording. The layered boundary remains accepted; `search/`
-currently owns deterministic ContextWiki retrieval, ranking, metadata fallback,
+currently owns deterministic ContextZip retrieval, ranking, metadata fallback,
 citation answer support, and SQLite-gated evidence hydration.
 
 ## Date
@@ -16,7 +16,7 @@ citation answer support, and SQLite-gated evidence hydration.
 
 ## Context
 
-`MCPContentSearch` exposes MCP tools over FastMCP. The current slim MCP core
+`context-zip` exposes MCP tools over FastMCP. The current slim MCP core
 retains configured GitHub, Notion, Tistory, and Obsidian source fetching plus
 local vector retrieval, citation answers, and background source sync/indexing.
 The existing repository already has clear module directories: `api`, `search`,
@@ -30,7 +30,7 @@ Keep a layered MCP content search architecture:
 
 - `main.py` composes dependencies and starts FastMCP.
 - `api/tools.py` owns MCP tool registration, parameters, caller-visible formatting, and delegation.
-- `search/` owns local ContextWiki retrieval, ranking, optional
+- `search/` owns local ContextZip retrieval, ranking, optional
   default-disabled query rewrite, metadata fallback, and citation answer
   support.
 - `indexing/` owns document conversion, dedup/update checks, status, and Chroma/LlamaIndex writes.

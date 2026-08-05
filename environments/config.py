@@ -33,7 +33,7 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _obsidian_vault_path_default() -> Path | None:
-    raw_value = os.getenv("CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "").strip()
+    raw_value = os.getenv("CONTEXTZIP_OBSIDIAN_VAULT_PATH", "").strip()
     if not raw_value:
         return None
     return _expanduser_safe(raw_value)
@@ -73,7 +73,7 @@ class AppConfig:
 
     # LlamaIndex
     cache_dir: str = field(
-        default_factory=lambda: str(Path.home() / ".mcp_content_search" / "llama_cache")
+        default_factory=lambda: str(Path.home() / ".context-zip" / "llama_cache")
     )
 
     # 인덱싱
@@ -100,22 +100,22 @@ class AppConfig:
 
     # GitHub connector
     github_repositories: tuple[str, ...] = field(
-        default_factory=lambda: _split_env("CONTEXTWIKI_GITHUB_REPOSITORIES")
+        default_factory=lambda: _split_env("CONTEXTZIP_GITHUB_REPOSITORIES")
     )
     github_default_ref: str = field(
-        default_factory=lambda: os.getenv("CONTEXTWIKI_GITHUB_DEFAULT_REF", "main")
+        default_factory=lambda: os.getenv("CONTEXTZIP_GITHUB_DEFAULT_REF", "main")
     )
     github_token_env_var: str = "GITHUB_TOKEN"
     github_max_files: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_GITHUB_MAX_FILES", 200)
+        default_factory=lambda: _int_env("CONTEXTZIP_GITHUB_MAX_FILES", 200)
     )
     github_max_file_bytes: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_GITHUB_MAX_FILE_BYTES", 512_000)
+        default_factory=lambda: _int_env("CONTEXTZIP_GITHUB_MAX_FILE_BYTES", 512_000)
     )
     github_user_agent: str = field(
         default_factory=lambda: os.getenv(
-            "CONTEXTWIKI_GITHUB_USER_AGENT",
-            "ContextWikiBot/0.1 (+https://github.com/eunaverse/MCPContentSearch)",
+            "CONTEXTZIP_GITHUB_USER_AGENT",
+            "ContextZipBot/0.1 (+https://github.com/eunaverse/context-zip)",
         )
     )
 
@@ -124,11 +124,11 @@ class AppConfig:
         default_factory=_obsidian_vault_path_default
     )
     obsidian_max_files: int = field(
-        default_factory=lambda: _int_env("CONTEXTWIKI_OBSIDIAN_MAX_FILES", 2_000)
+        default_factory=lambda: _int_env("CONTEXTZIP_OBSIDIAN_MAX_FILES", 2_000)
     )
     obsidian_max_file_bytes: int = field(
         default_factory=lambda: _int_env(
-            "CONTEXTWIKI_OBSIDIAN_MAX_FILE_BYTES",
+            "CONTEXTZIP_OBSIDIAN_MAX_FILE_BYTES",
             512_000,
         )
     )
@@ -155,13 +155,13 @@ class AppConfig:
             object.__setattr__(
                 self,
                 'chroma_db_path',
-                Path.home() / ".mcp_content_search" / "chroma_db"
+                Path.home() / ".context-zip" / "chroma_db"
             )
         if self.metadata_db_path is None:
             object.__setattr__(
                 self,
                 'metadata_db_path',
-                Path.home() / ".mcp_content_search" / "contextwiki_metadata.sqlite3"
+                Path.home() / ".context-zip" / "context_zip_metadata.sqlite3"
             )
 
 

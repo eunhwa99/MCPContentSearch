@@ -76,17 +76,17 @@ jobs:
             --cov=storage \
             --cov-report=term-missing
 
-      - name: Run deterministic ContextWiki evals
+      - name: Run deterministic ContextZip evals
         run: |
-          uv run --locked python scripts/run_contextwiki_eval.py \
-            --output-dir artifacts/contextwiki-evals
+          uv run --locked python scripts/run_context_zip_eval.py \
+            --output-dir artifacts/context-zip-evals
 
-      - name: Upload ContextWiki eval artifacts
-        if: ${{ always() && hashFiles('artifacts/contextwiki-evals/**') != '' }}
+      - name: Upload ContextZip eval artifacts
+        if: ${{ always() && hashFiles('artifacts/context-zip-evals/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: contextwiki-evals
-          path: artifacts/contextwiki-evals
+          name: context-zip-evals
+          path: artifacts/context-zip-evals
           if-no-files-found: warn
 
       - name: Run functional E2E gate

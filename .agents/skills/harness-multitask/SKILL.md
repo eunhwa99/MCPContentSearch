@@ -1,6 +1,6 @@
 ---
 name: harness-multitask
-description: Multi-task orchestration phase for splitting independent MCPContentSearch work into safe ownership, branches/worktrees, review gates, and PR boundaries.
+description: Multi-task orchestration phase for splitting independent context-zip work into safe ownership, branches/worktrees, review gates, and PR boundaries.
 ---
 
 # Harness Multitask

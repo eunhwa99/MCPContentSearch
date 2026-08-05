@@ -18,7 +18,7 @@ class Dumpable:
     ("auth_ref", "expected"),
     [
         ("env:NOTION_API_KEY", "env:NOTION_API_KEY"),
-        ("env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH", "env:CONTEXTWIKI_OBSIDIAN_VAULT_PATH"),
+        ("env:CONTEXTZIP_OBSIDIAN_VAULT_PATH", "env:CONTEXTZIP_OBSIDIAN_VAULT_PATH"),
         ("ntn_abcdefghijklmnopqrstuvwxyz0123456789", "<redacted>"),
         ("secret_abcdefghijklmnopqrstuvwxyz0123456789", "<redacted>"),
         ("env:lowercase_secret", "<redacted>"),

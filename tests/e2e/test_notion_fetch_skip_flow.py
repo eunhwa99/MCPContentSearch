@@ -81,12 +81,12 @@ def test_second_notion_sync_skips_block_fetch_for_unchanged_pages(monkeypatch, t
     monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
     monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = NotionSourceConnector(
         "secret",
         AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             cache_dir=str(tmp_path / "cache"),
         ),
         metadata_store=store,
@@ -179,12 +179,12 @@ def test_skipped_unchanged_notion_page_is_not_tombstoned_when_peer_disappears(
     monkeypatch.setattr(NotionAPIClient, "search_pages", fake_search_pages)
     monkeypatch.setattr(NotionAPIClient, "fetch_block_content", fake_fetch_block_content)
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = NotionSourceConnector(
         "secret",
         AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             cache_dir=str(tmp_path / "cache"),
         ),
         metadata_store=store,

@@ -18,14 +18,14 @@ pytestmark = pytest.mark.unit
 def test_grounded_answer_payload_passes_required_grounding_checks():
     case = AnswerQualityCase(
         case_id="grounded",
-        question="What is ContextWiki?",
-        expected_answer_terms=("ContextWiki", "MCP", "citations"),
+        question="What is ContextZip?",
+        expected_answer_terms=("ContextZip", "MCP", "citations"),
         forbidden_answer_terms=("deployment region",),
         required_citation_chunk_ids=("chunk-1",),
     )
     payload = {
-        "question": "What is ContextWiki?",
-        "answer": "ContextWiki is an MCP knowledge backend with citations.",
+        "question": "What is ContextZip?",
+        "answer": "ContextZip is an MCP knowledge backend with citations.",
         "evidence_status": "grounded",
         "citations": [{"chunk_id": "chunk-1", "title": "Overview"}],
         "used_chunks": ["chunk-1"],
@@ -40,12 +40,12 @@ def test_grounded_answer_payload_passes_required_grounding_checks():
 def test_missing_required_citation_fails_even_when_answer_text_matches():
     case = AnswerQualityCase(
         case_id="missing-citation",
-        question="What is ContextWiki?",
-        expected_answer_terms=("ContextWiki",),
+        question="What is ContextZip?",
+        expected_answer_terms=("ContextZip",),
         required_citation_chunk_ids=("chunk-required",),
     )
     payload = {
-        "answer": "ContextWiki answers from indexed evidence.",
+        "answer": "ContextZip answers from indexed evidence.",
         "evidence_status": "grounded",
         "citations": [{"chunk_id": "chunk-other"}],
         "used_chunks": ["chunk-other"],
@@ -60,12 +60,12 @@ def test_missing_required_citation_fails_even_when_answer_text_matches():
 def test_malformed_citation_without_chunk_id_fails_minimum_citation_count():
     case = AnswerQualityCase(
         case_id="malformed-citation",
-        question="What is ContextWiki?",
-        expected_answer_terms=("ContextWiki",),
+        question="What is ContextZip?",
+        expected_answer_terms=("ContextZip",),
         min_citation_count=1,
     )
     payload = {
-        "answer": "ContextWiki answers from indexed evidence.",
+        "answer": "ContextZip answers from indexed evidence.",
         "evidence_status": "grounded",
         "citations": [{"title": "Missing chunk id"}],
         "used_chunks": [],
@@ -81,12 +81,12 @@ def test_forbidden_unsupported_claim_fails_answer_quality():
     case = AnswerQualityCase(
         case_id="forbidden-claim",
         question="What is the deployment region?",
-        expected_answer_terms=("ContextWiki",),
+        expected_answer_terms=("ContextZip",),
         forbidden_answer_terms=("us-east-1",),
         required_citation_chunk_ids=("chunk-1",),
     )
     payload = {
-        "answer": "ContextWiki runs in us-east-1.",
+        "answer": "ContextZip runs in us-east-1.",
         "evidence_status": "grounded",
         "citations": [{"chunk_id": "chunk-1"}],
         "used_chunks": ["chunk-1"],
@@ -121,12 +121,12 @@ def test_insufficient_case_accepts_empty_citations_when_expected():
 def test_secret_like_output_fails_local_eval():
     case = AnswerQualityCase(
         case_id="secret-leak",
-        question="What is ContextWiki?",
-        expected_answer_terms=("ContextWiki",),
+        question="What is ContextZip?",
+        expected_answer_terms=("ContextZip",),
         required_citation_chunk_ids=("chunk-1",),
     )
     payload = {
-        "answer": "ContextWiki evidence. api_key=abc123456789",
+        "answer": "ContextZip evidence. api_key=abc123456789",
         "evidence_status": "grounded",
         "citations": [{"chunk_id": "chunk-1"}],
         "used_chunks": ["chunk-1"],
@@ -139,10 +139,10 @@ def test_secret_like_output_fails_local_eval():
 
 
 def test_fixture_cases_load_and_suite_summarizes_results():
-    cases = load_cases(Path("evals/contextwiki_answer_quality_cases.json"))
+    cases = load_cases(Path("evals/context_zip_answer_quality_cases.json"))
     payloads = {
         "github-sync-docs-answer": {
-            "answer": "GitHub sync guide explains how ContextWiki answers with citations.",
+            "answer": "GitHub sync guide explains how ContextZip answers with citations.",
             "evidence_status": "grounded",
             "citations": [{"chunk_id": "github-sync-doc-chunk"}],
             "used_chunks": ["github-sync-doc-chunk"],
@@ -215,14 +215,14 @@ def test_answer_suite_fails_when_case_list_is_empty():
 
 
 def test_eval_runner_cli_exits_nonzero_when_summary_fails(monkeypatch, capsys):
-    from scripts import run_contextwiki_eval as runner
+    from scripts import run_context_zip_eval as runner
 
     monkeypatch.setattr(
         runner,
-        "run_contextwiki_eval",
+        "run_context_zip_eval",
         lambda **kwargs: {"passed": False, "retrieval_suite": {}, "answer_suite": {}},
     )
-    monkeypatch.setattr("sys.argv", ["run_contextwiki_eval.py"])
+    monkeypatch.setattr("sys.argv", ["run_context_zip_eval.py"])
 
     with pytest.raises(SystemExit) as exc_info:
         runner.main()

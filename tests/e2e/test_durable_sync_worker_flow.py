@@ -402,7 +402,7 @@ def test_mcp_enqueued_job_failure_does_not_persist_delimiter_paths_in_worker_log
         source_ids=("source_notion",),
         poll_interval_seconds=0.1,
     )
-    monkeypatch.setenv("CONTEXTWIKI_SYNC_WORKER_LOG_PATH", str(log_path))
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
@@ -970,7 +970,7 @@ def test_queued_exact_job_can_be_observed_then_completed_by_separate_worker(tmp_
 def test_durable_worker_completes_exact_jobs_after_mcp_request_owner_is_cancelled(
     tmp_path,
 ):
-    metadata_path = tmp_path / "shared-contextwiki.sqlite3"
+    metadata_path = tmp_path / "shared-context_zip.sqlite3"
     mcp_registry, _ = _registry()
     mcp_store = MetadataStore(metadata_path)
     mcp_ingestion = IngestionService(
@@ -1086,7 +1086,7 @@ def test_separate_worker_chroma_client_updates_already_running_mcp_search_runtim
     try:
         config = AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             collection_name="durable_worker_visibility",
             search_multiplier=4,
         )

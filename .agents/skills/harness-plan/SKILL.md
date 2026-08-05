@@ -1,6 +1,6 @@
 ---
 name: harness-plan
-description: Planning phase for MCPContentSearch harness work; converts a request into acceptance criteria, module boundaries, verification, risks, and retryable steps.
+description: Planning phase for context-zip harness work; converts a request into acceptance criteria, module boundaries, verification, risks, and retryable steps.
 ---
 
 # Harness Plan

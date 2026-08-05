@@ -1,6 +1,6 @@
 ---
 name: harness-implement
-description: Implementation lane for scoped MCPContentSearch changes after planning, including retry fixes from verification or review.
+description: Implementation lane for scoped context-zip changes after planning, including retry fixes from verification or review.
 ---
 
 # Harness Implement

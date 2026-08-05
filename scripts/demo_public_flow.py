@@ -77,8 +77,8 @@ def _repo_root() -> Path:
 def build_demo_components(sample_vault: Path, temp_root: Path) -> DemoMCP:
     config = AppConfig(
         chroma_db_path=temp_root / "chroma",
-        metadata_db_path=temp_root / "contextwiki.sqlite3",
-        collection_name="contextwiki_demo",
+        metadata_db_path=temp_root / "context-zip.sqlite3",
+        collection_name="context-zip_demo",
         obsidian_vault_path=sample_vault,
         search_multiplier=4,
     )
@@ -156,7 +156,7 @@ async def run_demo(query: str, question: str) -> dict:
     previous_cache_dir = getattr(Settings, "cache_dir", missing)
     Settings.embed_model = MockEmbedding(embed_dim=8)
     try:
-        with tempfile.TemporaryDirectory(prefix="contextwiki-demo-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="context-zip-demo-") as temp_dir:
             Settings.cache_dir = str(Path(temp_dir) / "llama_cache")
             repo_root = _repo_root()
             sample_vault = repo_root / "sample_vault"
@@ -235,7 +235,7 @@ def normalize_demo_result(result: dict) -> dict:
 
 def render_demo_text(result: dict, query: str, question: str) -> str:
     lines = [
-        "ContextWiki Local Demo",
+        "ContextZip Local Demo",
         "======================",
         f"Sample vault: {result['sample_vault']}",
         (
@@ -277,7 +277,7 @@ def render_demo_text(result: dict, query: str, question: str) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a safe local ContextWiki workflow smoke against the bundled sample vault. "
+            "Run a safe local ContextZip workflow smoke against the bundled sample vault. "
             "It checks the local Obsidian connector, sync, status, search, and citation "
             "wiring with temporary stores and MockEmbedding; it does not validate remote "
             "Notion/Tistory/GitHub connectors, user-configured sources, real MCP-client "
@@ -286,7 +286,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--query",
-        default="How does ContextWiki prevent stale citations?",
+        default="How does ContextZip prevent stale citations?",
         help="Search query for the demo search_context step.",
     )
     parser.add_argument(

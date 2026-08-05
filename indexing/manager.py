@@ -4,6 +4,19 @@ from core.models import DocumentModel
 from core.utils import ContentHasher
 
 logger = logging.getLogger(__name__)
+MANAGED_METADATA_KEY = "context_zip_managed"
+LEGACY_MANAGED_METADATA_KEY = "context" + "wiki_managed"
+
+
+def _managed_true_filter(key: str = MANAGED_METADATA_KEY) -> dict:
+    return {key: "true"}
+
+
+def _managed_not_true_filters() -> list[dict]:
+    return [
+        {MANAGED_METADATA_KEY: {"$ne": "true"}},
+        {LEGACY_MANAGED_METADATA_KEY: {"$ne": "true"}},
+    ]
 
 
 class IndexManager:
@@ -35,13 +48,16 @@ class IndexManager:
     def delete_document(self, doc: DocumentModel | str, source_id: str = ""):
         doc_id = doc.id if isinstance(doc, DocumentModel) else doc
         resolved_source_id = doc.source_id if isinstance(doc, DocumentModel) else source_id
-        managed = self._is_contextwiki_managed(doc) if isinstance(doc, DocumentModel) else False
+        managed = self._is_context_zip_managed(doc) if isinstance(doc, DocumentModel) else False
         if resolved_source_id:
             filters = [{"doc_id": doc_id}, {"source_id": resolved_source_id}]
-            filters.append(
-                {"contextwiki_managed": "true" if managed else {"$ne": "true"}}
-            )
-            self.collection.delete(where={"$and": filters})
+            if managed:
+                self.collection.delete(where={"$and": [*filters, _managed_true_filter()]})
+                self.collection.delete(
+                    where={"$and": [*filters, _managed_true_filter(LEGACY_MANAGED_METADATA_KEY)]}
+                )
+            else:
+                self.collection.delete(where={"$and": [*filters, *_managed_not_true_filters()]})
             logger.debug(
                 "Deleted outdated document: %s from %s",
                 doc_id,
@@ -49,7 +65,7 @@ class IndexManager:
             )
             return
         self.collection.delete(
-            where={"$and": [{"doc_id": doc_id}, {"contextwiki_managed": {"$ne": "true"}}]}
+            where={"$and": [{"doc_id": doc_id}, *_managed_not_true_filters()]}
         )
         logger.debug("Deleted outdated document: %s", doc_id)
 
@@ -58,7 +74,7 @@ class IndexManager:
         return IndexManager._key(
             doc.id,
             doc.source_id,
-            IndexManager._is_contextwiki_managed(doc),
+            IndexManager._is_context_zip_managed(doc),
         )
 
     @staticmethod
@@ -66,7 +82,13 @@ class IndexManager:
         return IndexManager._key(
             metadata.get("doc_id", ""),
             metadata.get("source_id", ""),
-            str(metadata.get("contextwiki_managed", "false")).lower() == "true",
+            str(
+                metadata.get(
+                    MANAGED_METADATA_KEY,
+                    metadata.get(LEGACY_MANAGED_METADATA_KEY, "false"),
+                )
+            ).lower()
+            == "true",
         )
 
     @staticmethod
@@ -75,5 +97,5 @@ class IndexManager:
         return f"{managed_key}:{source_id}:{doc_id}" if source_id else f"{managed_key}:{doc_id}"
 
     @staticmethod
-    def _is_contextwiki_managed(doc: DocumentModel) -> bool:
+    def _is_context_zip_managed(doc: DocumentModel) -> bool:
         return bool(doc.chunk_id and doc.document_id and doc.source_id)

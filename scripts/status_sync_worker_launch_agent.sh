@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.eunaverse.contextwiki.sync-worker"
+LABEL="com.eunaverse.context-zip.sync-worker"
 DRY_RUN=0
 
 if [[ "${1:-}" == "--dry-run" ]]; then

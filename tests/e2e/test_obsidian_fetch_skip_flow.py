@@ -64,11 +64,11 @@ def test_second_obsidian_sync_skips_note_byte_read_for_unchanged_notes(
     vault = _make_vault(tmp_path, {note_path: note_body})
     read_calls = _track_note_byte_reads(monkeypatch)
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = ObsidianSourceConnector(
         AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             cache_dir=str(tmp_path / "cache"),
             obsidian_vault_path=vault,
         ),
@@ -116,11 +116,11 @@ def test_second_obsidian_sync_skip_preserves_frontmatter_title_and_line_start(
     vault = _make_vault(tmp_path, {note_path: note_file})
     read_calls = _track_note_byte_reads(monkeypatch)
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = ObsidianSourceConnector(
         AppConfig(
             chroma_db_path=tmp_path / "chroma",
-            metadata_db_path=tmp_path / "contextwiki.sqlite3",
+            metadata_db_path=tmp_path / "context_zip.sqlite3",
             cache_dir=str(tmp_path / "cache"),
             obsidian_vault_path=vault,
         ),
@@ -179,7 +179,7 @@ def test_skipped_unchanged_obsidian_note_is_not_tombstoned_when_peer_disappears(
     )
     read_calls = _track_note_byte_reads(monkeypatch)
 
-    store = MetadataStore(tmp_path / "contextwiki.sqlite3")
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
     connector = ObsidianSourceConnector(
         AppConfig(obsidian_vault_path=vault),
         metadata_store=store,

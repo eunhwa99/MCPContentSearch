@@ -78,8 +78,8 @@ def _stored_github_document(
         source_id="source_github",
         title="Stored GitHub File",
         content=content,
-        url=f"https://github.com/eunhwa99/MCPContentSearch/blob/main/{path}",
-        canonical_url=f"https://github.com/eunhwa99/MCPContentSearch/blob/main/{path}",
+        url=f"https://github.com/eunhwa99/context-zip/blob/main/{path}",
+        canonical_url=f"https://github.com/eunhwa99/context-zip/blob/main/{path}",
         platform="GitHub",
         path=path,
         version_id=version_id,
@@ -96,7 +96,7 @@ def test_github_connector_skips_blob_fetch_for_unchanged_stored_document(
     monkeypatch, tmp_path
 ):
     client = SingleBlobGitHubHTTP()
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     stored_content = "already indexed github body"
     store = MetadataStore(tmp_path / "metadata.sqlite3")
     store.upsert_document(
@@ -145,7 +145,7 @@ def test_github_connector_skips_blob_fetch_for_unchanged_stored_document(
     monkeypatch.setattr(GitHubRepositoryFetcher, "fetch_documents", spy_fetch_documents)
 
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
         metadata_store=store,
@@ -170,7 +170,7 @@ def test_github_connector_skips_blob_fetch_for_unchanged_stored_document(
 @pytest.mark.integration
 def test_github_connector_fetches_when_stored_version_id_differs(tmp_path):
     client = SingleBlobGitHubHTTP(body=b"# Fresh body\n")
-    document_id = "github:eunhwa99/mcpcontentsearch:README.md"
+    document_id = "github:eunhwa99/context-zip:README.md"
     store = MetadataStore(tmp_path / "metadata.sqlite3")
     store.upsert_document(
         _stored_github_document(
@@ -181,7 +181,7 @@ def test_github_connector_fetches_when_stored_version_id_differs(tmp_path):
     )
 
     connector = GitHubSourceConnector(
-        ("eunhwa99/MCPContentSearch@main",),
+        ("eunhwa99/context-zip@main",),
         AppConfig(github_max_files=10, github_max_file_bytes=1000),
         http_client=client,
         metadata_store=store,
@@ -198,9 +198,9 @@ def test_build_ingestion_runtime_wires_metadata_store_onto_github_connector(tmp_
 
     config = AppConfig(
         chroma_db_path=tmp_path / "chroma",
-        metadata_db_path=tmp_path / "contextwiki.sqlite3",
+        metadata_db_path=tmp_path / "context_zip.sqlite3",
         cache_dir=str(tmp_path / "cache"),
-        github_repositories=("eunhwa99/MCPContentSearch@main",),
+        github_repositories=("eunhwa99/context-zip@main",),
     )
 
     class FakeCollection:
