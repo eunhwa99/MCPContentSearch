@@ -113,4 +113,4 @@ Result: passed.
 | Review finding fix | completed | Worker-level diagnostics now mark already-logged exceptions so outer `IndexingError` wrapping preserves status without duplicate error logs. | Focused `3 passed in 0.86s`; latest affected file `8 passed in 1.18s`; compileall passed |
 | Post-fix full suite | completed | Required full verification rerun after behavior-changing review fix passed. | `./scripts/verify_all.sh`: `1378 passed`, coverage `87.96%`, quality eval passed, functional E2E `59 passed in 3.94s` |
 | Harness review pass 2 | completed | Reviewer 1 and 2 reported no actionable findings; Reviewer 3 performance/reliability/operability pass found no actionable findings after duplicate-log fix. | Read-only review evidence; no live Chroma/SQLite or user-data access |
-| Delivery | pending | Commit, push, PR after clean review unless blocked. | Pending |
+| Delivery | completed | Committed, pushed, and opened PR #99 after clean review. | Commit `d217ad8`; PR `https://github.com/eunaverse/MCPContentSearch/pull/99` |
