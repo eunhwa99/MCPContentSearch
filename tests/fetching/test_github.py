@@ -2823,6 +2823,106 @@ def _progress_advanced_for_github_page(
     return False
 
 
+class DelayedMultiBlobGitHubHTTP:
+    def __init__(
+        self,
+        *,
+        count: int = 12,
+        delay_seconds: float = 0.01,
+    ):
+        self.count = count
+        self.delay_seconds = delay_seconds
+        self.json_urls: list[tuple[str, dict]] = []
+        self.commit_sha = _sha("parallel-commit")
+        self.tree_sha = _sha("parallel-tree")
+        self.blob_shas = [
+            _sha(f"parallel-blob-{index}") for index in range(count)
+        ]
+        self.inflight_blob_fetches = 0
+        self.max_inflight_blob_fetches = 0
+
+    async def get_json(self, url, headers=None):
+        self.json_urls.append((url, headers or {}))
+        if "/commits/main" in url:
+            return {
+                "sha": self.commit_sha,
+                "commit": {"tree": {"sha": self.tree_sha}},
+            }
+        if f"/git/trees/{self.tree_sha}" in url:
+            return {
+                "tree": [
+                    {
+                        "path": f"file_{index:02d}.md",
+                        "type": "blob",
+                        "sha": blob_sha,
+                        "size": 32,
+                    }
+                    for index, blob_sha in enumerate(self.blob_shas)
+                ]
+            }
+        if any(f"/git/blobs/{sha_value}" in url for sha_value in self.blob_shas):
+            self.inflight_blob_fetches += 1
+            self.max_inflight_blob_fetches = max(
+                self.max_inflight_blob_fetches, self.inflight_blob_fetches
+            )
+            try:
+                await asyncio.sleep(self.delay_seconds)
+                return _blob_payload(b"x" * 32)
+            finally:
+                self.inflight_blob_fetches -= 1
+        raise AssertionError(f"unexpected GitHub API URL: {url}")
+
+
+def test_fetch_github_fetcher_fetches_blob_content_with_bounded_concurrency():
+    from fetching.github import GitHubRepositoryFetcher
+
+    client = DelayedMultiBlobGitHubHTTP(count=12, delay_seconds=0.05)
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/context-zip@main",),
+        AppConfig(
+            github_max_files=20,
+            github_max_file_bytes=1000,
+            connection_limit=4,
+        ),
+        http_client=client,
+    )
+
+    documents = asyncio.run(fetcher.fetch_documents())
+
+    assert len(documents) == 12
+    assert client.max_inflight_blob_fetches > 1
+    assert client.max_inflight_blob_fetches <= 4
+
+
+def test_fetch_github_fetcher_keeps_progress_order_with_concurrent_blob_fetches():
+    from fetching.github import GitHubRepositoryFetcher
+
+    events: list[dict] = []
+
+    async def capture(event: dict):
+        events.append(event)
+
+    client = DelayedMultiBlobGitHubHTTP(count=10, delay_seconds=0.01)
+    fetcher = GitHubRepositoryFetcher(
+        ("eunhwa99/context-zip@main",),
+        AppConfig(github_max_files=20, github_max_file_bytes=1000, connection_limit=8),
+        http_client=client,
+    )
+    fetcher.progress_callback = capture
+
+    documents = asyncio.run(fetcher.fetch_documents())
+
+    page_events = [
+        event
+        for event in events
+        if event.get("event") in {"page_fetch_skipped", "page_fetch_completed"}
+    ]
+    assert len(page_events) == 10
+    assert [event["current_page"] for event in page_events] == list(range(1, 11))
+    assert [event["total_pages"] for event in page_events] == [10] * 10
+    assert len(documents) == 10
+
+
 class SingleBlobGitHubHTTP:
     """Minimal fake: one text blob under eunhwa99/context-zip@main."""
 
