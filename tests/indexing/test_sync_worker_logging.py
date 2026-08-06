@@ -14,7 +14,11 @@ from fetching.notion import NotionAPIClient
 from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
 from indexing.manager import IndexManager
-from indexing.sync_worker import _configure_logging, _redact_worker_log_message
+from indexing.sync_worker import (
+    _configure_logging,
+    WorkerLogPrivacyFilter,
+    _redact_worker_log_message,
+)
 
 
 class _RecordingCollection:
@@ -141,6 +145,34 @@ def test_worker_log_filter_ignores_boolean_exc_info(
             handler.close()
         root_logger.handlers[:] = previous_handlers
         root_logger.setLevel(previous_level)
+
+
+def test_worker_log_filter_ignores_malformed_exc_info_objects():
+    filter_ = WorkerLogPrivacyFilter()
+    record = logging.LogRecord(
+        "indexing.sync_worker",
+        logging.WARNING,
+        __file__,
+        0,
+        "malformed exception shape",
+        args=(),
+        exc_info=(TypeError(),),
+    )
+
+    assert filter_.filter(record)
+    assert record.msg == "malformed exception shape"
+
+    record = logging.LogRecord(
+        "indexing.sync_worker",
+        logging.WARNING,
+        __file__,
+        0,
+        "malformed list",
+        args=(),
+        exc_info=[ValueError("list-shape")],
+    )
+    assert filter_.filter(record)
+    assert record.msg == "malformed list"
 
 
 def test_worker_log_redactor_removes_complete_multiword_credentials():

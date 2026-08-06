@@ -134,16 +134,24 @@ class WorkerLogPrivacyFilter(logging.Filter):
 
     @staticmethod
     def _extract_exception(record_exc_info: object) -> BaseException | None:
-        if isinstance(record_exc_info, tuple):
-            if len(record_exc_info) < 2:
-                return None
-            exception = record_exc_info[1]
-            return exception if isinstance(exception, BaseException) else None
-        if isinstance(record_exc_info, BaseException):
-            return record_exc_info
-        if record_exc_info is True:
-            _, exception, _ = sys.exc_info()
-            return exception
+        try:
+            if isinstance(record_exc_info, tuple):
+                if len(record_exc_info) < 2:
+                    return None
+                exception = record_exc_info[1]
+                return exception if isinstance(exception, BaseException) else None
+            if isinstance(record_exc_info, list):
+                if len(record_exc_info) < 2:
+                    return None
+                exception = record_exc_info[1]
+                return exception if isinstance(exception, BaseException) else None
+            if isinstance(record_exc_info, BaseException):
+                return record_exc_info
+            if record_exc_info is True:
+                _, exception, _ = sys.exc_info()
+                return exception
+        except Exception:
+            return None
         return None
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -157,14 +165,16 @@ class WorkerLogPrivacyFilter(logging.Filter):
 
         message = record.getMessage()
         if record.exc_info is not None:
-            exception = self._extract_exception(record.exc_info)
-            if exception is not None:
-                exception_message = _redact_worker_log_message(
-                    str(exception) or type(exception).__name__
-                )
-                message = f"{message} ({type(exception).__name__}: {exception_message})"
-            record.exc_info = None
-            record.exc_text = None
+            try:
+                exception = self._extract_exception(record.exc_info)
+                if exception is not None:
+                    exception_message = _redact_worker_log_message(
+                        str(exception) or type(exception).__name__
+                    )
+                    message = f"{message} ({type(exception).__name__}: {exception_message})"
+            finally:
+                record.exc_info = None
+                record.exc_text = None
         record.msg = _truncate_utf8(
             _redact_worker_log_message(message),
             MAX_PERSISTED_LOG_MESSAGE_BYTES,
