@@ -5,6 +5,7 @@ import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import sys
 from pathlib import Path
 import re
 import signal
@@ -131,6 +132,20 @@ class ByteBoundedRotatingFileHandler(RotatingFileHandler):
 class WorkerLogPrivacyFilter(logging.Filter):
     """Keep project lifecycle logs while suppressing or redacting noisy context."""
 
+    @staticmethod
+    def _extract_exception(record_exc_info: object) -> BaseException | None:
+        if isinstance(record_exc_info, tuple):
+            if len(record_exc_info) < 2:
+                return None
+            exception = record_exc_info[1]
+            return exception if isinstance(exception, BaseException) else None
+        if isinstance(record_exc_info, BaseException):
+            return record_exc_info
+        if record_exc_info is True:
+            _, exception, _ = sys.exc_info()
+            return exception
+        return None
+
     def filter(self, record: logging.LogRecord) -> bool:
         is_project_logger = any(
             record.name == prefix or record.name.startswith(f"{prefix}.")
@@ -142,11 +157,12 @@ class WorkerLogPrivacyFilter(logging.Filter):
 
         message = record.getMessage()
         if record.exc_info is not None:
-            exception = record.exc_info[1]
-            exception_message = _redact_worker_log_message(
-                str(exception) or type(exception).__name__
-            )
-            message = f"{message} ({type(exception).__name__}: {exception_message})"
+            exception = self._extract_exception(record.exc_info)
+            if exception is not None:
+                exception_message = _redact_worker_log_message(
+                    str(exception) or type(exception).__name__
+                )
+                message = f"{message} ({type(exception).__name__}: {exception_message})"
             record.exc_info = None
             record.exc_text = None
         record.msg = _truncate_utf8(
