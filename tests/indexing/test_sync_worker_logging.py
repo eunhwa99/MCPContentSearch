@@ -111,6 +111,38 @@ def test_worker_logging_rejects_unsafe_runtime_log_paths_without_mutating_target
     assert stat.S_IMODE(target_file.stat().st_mode) == expected_file_mode
 
 
+def test_worker_log_filter_ignores_boolean_exc_info(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    log_path = tmp_path / "logs" / "sync-worker.log"
+    monkeypatch.setenv("CONTEXTZIP_SYNC_WORKER_LOG_PATH", str(log_path))
+    root_logger = logging.getLogger()
+    previous_handlers = list(root_logger.handlers)
+    previous_level = root_logger.level
+
+    try:
+        handler = _configure_logging()
+        project_logger = logging.getLogger("indexing.sync_worker")
+        project_logger.warning("Retrying with boolean exc_info", exc_info=False)
+        handler.flush()
+
+        captured = capsys.readouterr()
+        assert "Logging error" not in captured.err
+
+        combined_log = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(log_path.parent.glob("sync-worker.log*"))
+        )
+        assert "Retrying with boolean exc_info" in combined_log
+    finally:
+        for handler in list(root_logger.handlers):
+            handler.close()
+        root_logger.handlers[:] = previous_handlers
+        root_logger.setLevel(previous_level)
+
+
 def test_worker_log_redactor_removes_complete_multiword_credentials():
     cases = (
         (
