@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import traceback
+from pathlib import Path
 from typing import List, Optional
 
 from llama_index.core import VectorStoreIndex, Document, StorageContext
@@ -18,6 +20,44 @@ from indexing.manager import (
 from indexing.converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
+_TRACEBACK_FRAME_LIMIT = 8
+
+
+def _safe_traceback_frames(exc: BaseException) -> str:
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "none"
+    cwd = Path.cwd().resolve()
+    summaries = []
+    for frame in frames[-_TRACEBACK_FRAME_LIMIT:]:
+        frame_path = Path(frame.filename)
+        try:
+            display_path = str(frame_path.resolve().relative_to(cwd))
+        except (OSError, ValueError):
+            display_path = frame_path.name
+        summaries.append(f"{display_path}:{frame.lineno}:{frame.name}")
+    return " -> ".join(summaries)
+
+
+def _log_indexing_failure(
+    exc: BaseException,
+    *,
+    stage: str = "",
+    operation: str = "",
+) -> None:
+    context = []
+    if stage:
+        context.append(f"indexing_stage={stage}")
+    if operation:
+        context.append(f"indexing_operation={operation}")
+    context.append(f"exception_type={type(exc).__name__}")
+    context.append(f"trace_frames={_safe_traceback_frames(exc)}")
+    logger.error(
+        "Indexing error: %s; %s",
+        safe_error_message(exc),
+        "; ".join(context),
+    )
+
 
 class ContentIndexer:
     def __init__(
@@ -42,26 +82,33 @@ class ContentIndexer:
                 total_docs=len(documents)
             )
 
+            stage = "starting"
             try:
                 if not documents:
+                    stage = "empty_input"
                     self._complete_indexing("No documents to index")
                     return
 
+                stage = "filter_documents"
                 filtered = await self._filter_documents(documents)
 
                 if not filtered["documents"]:
+                    stage = "complete_no_changes"
                     self._complete_indexing("No new or updated documents")
                     return
 
+                stage = "batch_index"
                 await self._batch_index(filtered["documents"])
 
+                stage = "complete"
                 self._complete_indexing(
                     f"Complete: {filtered['new']} new, {filtered['updated']} updated"
                 )
 
             except Exception as e:
                 error_message = safe_error_message(e)
-                logger.error("Indexing error: %s", error_message)
+                if not getattr(e, "_indexing_diagnostic_logged", False):
+                    _log_indexing_failure(e, stage=stage)
                 self._update_status(
                     state=IndexState.ERROR,
                     message=f"Error: {error_message}",
@@ -108,7 +155,14 @@ class ContentIndexer:
                 )
                 continue
 
-    async def _run_chroma_in_thread(self, func, /, *args, **kwargs):
+    async def _run_chroma_in_thread(
+        self,
+        func,
+        /,
+        *args,
+        operation: str = "chroma_worker",
+        **kwargs,
+    ):
         """Run blocking Chroma work off-loop without releasing the mutation lock.
 
         ``asyncio.shield`` alone still raises ``CancelledError`` immediately,
@@ -122,7 +176,7 @@ class ContentIndexer:
         except asyncio.CancelledError:
             await self._join_thread_task_preserving_cancel(task)
             raise
-        except Exception:
+        except Exception as exc:
             if current is not None and current.cancelling():
                 if not task.done():
                     await self._join_thread_task_preserving_cancel(task)
@@ -132,6 +186,11 @@ class ContentIndexer:
                         safe_error_message(task.exception()),
                     )
                 raise asyncio.CancelledError from None
+            _log_indexing_failure(exc, operation=operation)
+            try:
+                exc._indexing_diagnostic_logged = True
+            except AttributeError:
+                pass
             raise
 
     async def _batch_index(self, documents: List[Document]):
@@ -146,10 +205,15 @@ class ContentIndexer:
                     batch,
                     storage_context=self.storage_context,
                     show_progress=True,
+                    operation="vector_store_from_documents",
                 )
             else:
                 for doc in batch:
-                    await self._run_chroma_in_thread(self.index.insert, doc)
+                    await self._run_chroma_in_thread(
+                        self.index.insert,
+                        doc,
+                        operation="vector_store_insert",
+                    )
             
             processed = min(total, i + self.config.batch_size)
             self._update_progress(processed, total)

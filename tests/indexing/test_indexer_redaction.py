@@ -66,6 +66,123 @@ def test_content_indexer_redacts_failure_status_logs_and_exception(caplog):
     assert "Basic dXNlcjpwYXNzd29yZA==" not in caplog.text
 
 
+def test_content_indexer_logs_sanitized_failure_stage_and_trace_frames(caplog):
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1),
+        chroma_collection=None,
+        storage_context=None,
+    )
+
+    def nested_failure():
+        raise RuntimeError("filter failed token=super-secret-value")
+
+    async def fail_filter(documents):
+        nested_failure()
+
+    indexer._filter_documents = fail_filter
+    documents = [
+        DocumentModel(
+            id="doc-1",
+            title="Doc",
+            content="private document body must not be logged",
+            url="https://example.com",
+            platform="web",
+        )
+    ]
+
+    with caplog.at_level("ERROR", logger="indexing.indexer"):
+        with pytest.raises(IndexingError):
+            asyncio.run(indexer.index_documents(documents))
+
+    assert "indexing_stage=filter_documents" in caplog.text
+    assert "trace_frames=" in caplog.text
+    assert "nested_failure" in caplog.text
+    assert "token=<redacted>" in caplog.text
+    assert "super-secret-value" not in caplog.text
+    assert "private document body" not in caplog.text
+    assert "/Users/eunhwa" not in caplog.text
+
+
+def test_chroma_worker_logs_sanitized_operation_and_trace_frames(caplog):
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+
+    def fail_from_documents(batch, storage_context=None, show_progress=True):
+        raise RuntimeError("embedding failed token=super-secret-value")
+
+    with caplog.at_level("ERROR", logger="indexing.indexer"):
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                indexer._run_chroma_in_thread(
+                    fail_from_documents,
+                    [SimpleNamespace(text="private document body must not be logged")],
+                    operation="vector_store_from_documents",
+                )
+            )
+
+    assert "indexing_operation=vector_store_from_documents" in caplog.text
+    assert "trace_frames=" in caplog.text
+    assert "fail_from_documents" in caplog.text
+    assert "token=<redacted>" in caplog.text
+    assert "super-secret-value" not in caplog.text
+    assert "private document body" not in caplog.text
+    assert "/Users/eunhwa" not in caplog.text
+
+
+def test_batch_index_failure_logs_single_sanitized_diagnostic(caplog):
+    indexer = ContentIndexer(
+        config=SimpleNamespace(progress_log_interval=1, batch_size=10),
+        chroma_collection=None,
+        storage_context=None,
+    )
+
+    def fail_from_documents(batch, storage_context=None, show_progress=True):
+        raise RuntimeError("embedding failed token=super-secret-value")
+
+    async def fake_filter(documents):
+        return {
+            "documents": [SimpleNamespace(text="private document body must not be logged")],
+            "new": 1,
+            "updated": 0,
+        }
+
+    import indexing.indexer as indexer_module
+
+    indexer._filter_documents = fake_filter
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(indexer_module.VectorStoreIndex, "from_documents", fail_from_documents)
+    try:
+        with caplog.at_level("ERROR", logger="indexing.indexer"):
+            with pytest.raises(IndexingError):
+                asyncio.run(
+                    indexer.index_documents(
+                        [
+                            DocumentModel(
+                                id="doc-1",
+                                title="Doc",
+                                content="private document body must not be logged",
+                                url="https://example.com",
+                                platform="web",
+                            )
+                        ]
+                    )
+                )
+    finally:
+        monkeypatch.undo()
+
+    indexing_errors = [
+        record for record in caplog.records if record.message.startswith("Indexing error:")
+    ]
+    assert len(indexing_errors) == 1
+    assert "indexing_operation=vector_store_from_documents" in caplog.text
+    assert "token=<redacted>" in caplog.text
+    assert "super-secret-value" not in caplog.text
+    assert "private document body" not in caplog.text
+
+
 def test_content_indexer_serializes_concurrent_index_documents_calls():
     indexer = ContentIndexer(
         config=SimpleNamespace(progress_log_interval=1, batch_size=10),
