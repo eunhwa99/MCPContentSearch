@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 from typing import Dict
 from core.models import DocumentModel
 from core.utils import ContentHasher
@@ -27,10 +28,21 @@ class IndexManager:
 
     def _load_existing(self):
         data = self.collection.get(include=["metadatas"])
+        if not isinstance(data, Mapping):
+            logger.debug("Ignoring malformed Chroma get() payload: %s", type(data).__name__)
+            self._existing_docs = {}
+            return
+        metadatas = data.get("metadatas") or []
+        if not isinstance(metadatas, list):
+            logger.debug(
+                "Ignoring malformed Chroma metadatas payload: %s",
+                type(metadatas).__name__,
+            )
+            metadatas = []
         self._existing_docs = {
             self._metadata_key(meta): meta.get("content_hash", "")
-            for meta in data["metadatas"]
-            if meta and meta.get("doc_id")
+            for meta in metadatas
+            if isinstance(meta, Mapping) and meta.get("doc_id")
         }
         logger.info(f"Loaded {len(self._existing_docs)} existing documents")
 

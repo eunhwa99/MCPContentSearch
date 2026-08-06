@@ -8,7 +8,14 @@ from llama_index.core.embeddings import MockEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from api.tools import register_tools
-from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, SyncStatus
+from core.models import (
+    ChunkModel,
+    DocumentModel,
+    SourceModel,
+    SourceType,
+    SyncJobStatus,
+    SyncStatus,
+)
 from environments.config import AppConfig, setup_chroma
 from fetching.connectors import SourceConnector, SourceRegistry
 from indexing.chunker import DocumentChunker
@@ -80,6 +87,29 @@ class RecordingIndexer:
 
     def delete_documents_by_ids(self, document_ids, source_id=""):
         return None
+
+    def get_or_create_index(self):
+        return object()
+
+
+class BoolMetadataCollection:
+    def __init__(self):
+        self.deleted_where = []
+
+    def get(self, include=None):
+        return True
+
+    def delete(self, where):
+        self.deleted_where.append(where)
+
+
+class RecordingContentIndexer(ContentIndexer):
+    def __init__(self, config, chroma_collection):
+        super().__init__(config, chroma_collection, storage_context=None)
+        self.indexed_batches = []
+
+    async def _batch_index(self, documents):
+        self.indexed_batches.append(list(documents))
 
     def get_or_create_index(self):
         return object()
@@ -295,6 +325,39 @@ def test_context_zip_fake_e2e_sync_search_fetch_and_answer(tmp_path):
     assert collection_answer["evidence_status"] == "grounded"
     assert "## Grounded List" in collection_answer["answer"]
     assert unsupported["evidence_status"] == "insufficient"
+
+
+def test_context_zip_fake_e2e_sync_survives_bool_existing_chroma_metadata(tmp_path):
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
+    config = AppConfig(batch_size=10)
+    indexer = RecordingContentIndexer(config, BoolMetadataCollection())
+    registry = SourceRegistry([FakeConnector()])
+    ingestion = IngestionService(
+        metadata_store=store,
+        source_registry=registry,
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+    mcp = FakeMCP()
+    register_tools(
+        mcp,
+        ingestion_service=ingestion,
+        metadata_store=store,
+        source_registry=registry,
+    )
+
+    async def run_flow():
+        launched = await mcp.tools["sync_source"]("source_fake_docs")
+        finished = await _run_next_queued_sync(ingestion)
+        status = await mcp.tools["get_sync_status"]("source_fake_docs")
+        return launched, finished, status
+
+    launched, finished, status = asyncio.run(run_flow())
+
+    assert launched["status"] == "queued"
+    assert finished.status == SyncJobStatus.SUCCEEDED
+    assert status["latest_job"]["status"] == "succeeded"
+    assert len(indexer.indexed_batches) == 1
 
 
 def test_context_zip_fastmcp_sync_all_queues_for_worker_then_exact_polling_reaches_terminal(

@@ -9,6 +9,7 @@ from core.models import ChunkModel, DocumentModel, SourceModel, SourceType, Sync
 from core.utils import ContentHasher
 from environments.config import AppConfig
 from indexing.chunker import DocumentChunker
+from indexing.indexer import ContentIndexer
 from indexing.ingestion_service import IngestionService
 from fetching.connectors import GitHubSourceConnector, SourceConnector, SourceRegistry
 from storage.metadata_store import MetadataStore
@@ -408,6 +409,26 @@ class RecordingIndexer:
         self.deleted_ids.extend(document_ids)
 
 
+class BoolMetadataCollection:
+    def __init__(self):
+        self.deleted_where = []
+
+    def get(self, include=None):
+        return True
+
+    def delete(self, where):
+        self.deleted_where.append(where)
+
+
+class RecordingContentIndexer(ContentIndexer):
+    def __init__(self, config, chroma_collection):
+        super().__init__(config, chroma_collection, storage_context=None)
+        self.indexed_batches = []
+
+    async def _batch_index(self, documents):
+        self.indexed_batches.append(list(documents))
+
+
 class FailingDeleteIndexer(RecordingIndexer):
     def __init__(self, message="vector delete failed"):
         super().__init__()
@@ -510,6 +531,36 @@ def test_ingestion_indexes_changed_documents_and_skips_unchanged(tmp_path):
     assert first_job.indexed_chunks == 1
     assert second_job.status == SyncJobStatus.SUCCEEDED
     assert second_job.skipped_documents == 1
+    assert len(indexer.indexed_batches) == 1
+    assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
+
+
+def test_ingestion_sync_succeeds_when_existing_chroma_metadata_payload_is_bool(tmp_path):
+    document = DocumentModel(
+        id="notion_page_bool_metadata",
+        source_id="source_fake",
+        title="Bool metadata regression",
+        content="ContextZip should index despite malformed existing Chroma metadata.",
+        url="https://notion.so/bool-metadata",
+        platform="Notion",
+        path="Bool metadata regression",
+        updated_at="2026-08-06T00:00:00Z",
+    )
+    connector = FakeConnector([document])
+    store = MetadataStore(tmp_path / "context_zip.sqlite3")
+    indexer = RecordingContentIndexer(AppConfig(batch_size=10), BoolMetadataCollection())
+    service = IngestionService(
+        metadata_store=store,
+        source_registry=SourceRegistry([connector]),
+        chunker=DocumentChunker(max_chars=120, overlap_chars=0),
+        indexer=indexer,
+    )
+
+    job = asyncio.run(service.sync_source("source_fake"))
+
+    assert job.status == SyncJobStatus.SUCCEEDED
+    assert job.processed_documents == 1
+    assert job.indexed_chunks == 1
     assert len(indexer.indexed_batches) == 1
     assert store.get_latest_sync_job("source_fake").status == SyncJobStatus.SUCCEEDED
 

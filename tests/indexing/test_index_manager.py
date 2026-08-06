@@ -24,6 +24,62 @@ class FakeCollection:
         self.deleted_where.append(where)
 
 
+class FakeMalformedCollection(FakeCollection):
+    def __init__(self, payload):
+        super().__init__([])
+        self.payload = payload
+
+    def get(self, include=None):
+        return self.payload
+
+
+def test_index_manager_treats_non_mapping_chroma_get_payload_as_empty():
+    collection = FakeMalformedCollection(True)
+
+    manager = IndexManager(collection)
+
+    document = DocumentModel(
+        id="new-chunk",
+        source_id="source_a",
+        title="New",
+        content="new content",
+        url="https://example.com/new",
+        platform="Notion",
+    )
+    assert manager.is_new(document) is True
+    assert manager.is_updated(document) is False
+
+
+def test_index_manager_ignores_non_mapping_metadata_entries():
+    existing_content = "same id, same content"
+    collection = FakeMalformedCollection(
+        {
+            "metadatas": [
+                True,
+                None,
+                {
+                    "doc_id": "kept",
+                    "source_id": "source_a",
+                    "content_hash": ContentHasher.hash_content(existing_content),
+                },
+            ]
+        }
+    )
+
+    manager = IndexManager(collection)
+
+    kept = DocumentModel(
+        id="kept",
+        source_id="source_a",
+        title="Kept",
+        content=existing_content,
+        url="https://example.com/kept",
+        platform="Notion",
+    )
+    assert manager.is_new(kept) is False
+    assert manager.is_updated(kept) is False
+
+
 def test_index_manager_keys_existing_documents_by_source_id():
     existing_content = "same id, same content"
     collection = FakeCollection(
