@@ -4,6 +4,15 @@
 
 **Self-hosted knowledge retrieval MCP server.** Syncs Notion · Tistory · GitHub · Obsidian into vector + metadata stores and returns citation-backed context.
 
+## Demo
+- Demo with Claude
+
+
+https://github.com/user-attachments/assets/f284ed0f-7679-4d08-8af0-790b32ac90c0
+
+
+
+
 ---
 
 ## Architecture
@@ -180,13 +189,6 @@ Add the same local uv block to `.cursor/mcp.json`.
 2. Poll `get_sync_status` with the returned `source_id` + `job_id` until it finishes.
 3. Search or browse with `search_context`, `search_documents`, or `list_documents`.
 
-**Example prompt:**
-```text
-find my projects about DynamoDB and organize it with STAR method. Answer in English
-```
-
-![Claude Desktop using ContextZip MCP as a retrieval backend before Claude composes the final STAR-style response](docs/images/claude-desktop-dynamodb-star-example.png)
-
 ---
 
 ## Durable sync worker
@@ -221,32 +223,14 @@ With Docker, the Quick Start `context-zip-sync-worker` container is this worker.
 The worker may run up to `N` distinct-source jobs at once. Set
 `CONTEXTZIP_SYNC_WORKER_MAX_CONCURRENT` in the repository-local `.env`
 (integer `1`–`8`; default `2`). Invalid values fail closed at worker startup.
-`1` restores global single-flight. `N` bounds SQLite `RUNNING` claims;
+
 connector fetch can overlap inside one worker, and Chroma mutations are
 serialized within that process only. Run one LaunchAgent sync_worker process
 per store — extra worker PIDs can oversubscribe writes. Restart the LaunchAgent
 worker after changing the value.
 
-Closing the MCP client does not stop an in-flight sync if the worker is still up. Stopping the worker fails every in-flight claimed job; request a fresh sync afterward.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| MCP not discovered | Recheck config path; fully restart the client |
-| Only works after manual start | Run `command` + `args` in a terminal to see errors |
-| Invalid / duplicate GitHub target | Use `owner`, `owner/repo`, or `owner/repo@ref`; no overlapping owner+repo |
-| Sync stays `queued` | LaunchAgent: `./scripts/status_sync_worker_launch_agent.sh` then install/restart. Docker: `docker start` (or recreate if `.env` changed) |
-| Worker exits repeatedly | LaunchAgent: check `sync-worker-startup.log`, then `sync-worker.log`; `--dry-run` paths. Docker: `docker logs context-zip-sync-worker` |
-| MCP stopped but sync still `running` | Expected — LaunchAgent/Docker worker owns it |
-| Source still disabled after `.env` change | Restart MCP client **and** worker. LaunchAgent: restart script. Docker: recreate the worker with the same `docker run ... --env-file` (not `docker restart`) |
-| Worker stopped mid-sync | Restart/recreate worker; wait until orphaned job is `failed`; enqueue a fresh sync |
-| Sync failed | Exact-job `get_sync_status(source_id, job_id)` for retained IDs; else latest by `source_id` |
-| Obsidian in Docker | Mount vault **and** set `CONTEXTZIP_OBSIDIAN_VAULT_PATH=/vault` |
-
-Do not paste `.env`, tokens, or indexed content into diagnostics.
+Closing the MCP client does not stop an in-flight sync if the worker is still up. 
+Stopping the worker fails every in-flight claimed job. Request a fresh sync afterward.
 
 ---
 
