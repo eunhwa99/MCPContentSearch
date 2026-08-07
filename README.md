@@ -7,8 +7,9 @@
 ## Demo
 - Demo with Claude
 
+<img src="https://github.com/user-attachments/assets/f284ed0f-7679-4d08-8af0-790b32ac90c0" width="600">
 
-https://github.com/user-attachments/assets/f284ed0f-7679-4d08-8af0-790b32ac90c0
+
 
 
 
