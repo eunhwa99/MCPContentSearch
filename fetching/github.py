@@ -289,64 +289,117 @@ class GitHubRepositoryFetcher:
                 )
                 known_documents.update(dict(loaded or {}))
 
+            planned_entries: list[
+                tuple[int, GitHubRepositorySpec, GitHubRepositorySnapshot, dict[str, Any]]
+            ] = []
             current_page = 0
+            fetch_entries: list[
+                tuple[
+                    int,
+                    GitHubRepositorySpec,
+                    GitHubRepositorySnapshot,
+                    dict[str, Any],
+                ]
+            ] = []
             for spec, snapshot, entries in planned:
                 for entry in entries:
                     current_page += 1
-                    document_id = self._document_id_for_entry(spec, entry)
-                    existing = known_documents.get(document_id)
-                    if _should_skip_github_blob_fetch(existing, entry.get("sha", "")):
-                        assert existing is not None
-                        documents.append(
-                            self._to_document(
-                                spec,
-                                snapshot,
-                                entry,
-                                existing.content,
-                                content_hash=existing.content_hash or "",
-                            )
-                        )
-                        if await _emit_progress(
-                            progress_callback,
-                            {
-                                "event": "page_fetch_skipped",
-                                "current_page": current_page,
-                                "total_pages": total_pages,
-                                "page_id": document_id,
-                            },
-                            stop_signal=progress_stop_signal,
-                        ):
-                            raise _StopRequested
-                        continue
-                    content = await self._fetch_blob_text(
-                        spec, entry["sha"], entry["size"]
-                    )
-                    if content is None:
-                        self.snapshot_complete = False
-                        if await _emit_progress(
-                            progress_callback,
-                            {
-                                "event": "page_fetch_completed",
-                                "current_page": current_page,
-                                "total_pages": total_pages,
-                            },
-                            stop_signal=progress_stop_signal,
-                        ):
-                            raise _StopRequested
-                        continue
+                    planned_entries.append((current_page, spec, snapshot, entry))
+
+            async def _fetch_entry(
+                spec_: GitHubRepositorySpec,
+                entry_: dict[str, Any],
+            ) -> str | None:
+                await _raise_if_stop_requested(progress_stop_checker)
+                return await self._fetch_blob_text(
+                    spec_,
+                    entry_["sha"],
+                    entry_["size"],
+                )
+
+            # Bound concurrent blob fetches to keep network pressure in check.
+            semaphore = asyncio.Semaphore(self.config.connection_limit)
+
+            async def _fetch_entry_with_limit(
+                spec_: GitHubRepositorySpec,
+                entry_: dict[str, Any],
+            ) -> str | None:
+                async with semaphore:
+                    return await _fetch_entry(spec_, entry_)
+
+            for current_page_index, spec, snapshot, entry in planned_entries:
+                document_id = self._document_id_for_entry(spec, entry)
+                existing = known_documents.get(document_id)
+                if _should_skip_github_blob_fetch(existing, entry.get("sha", "")):
+                    assert existing is not None
                     documents.append(
-                        self._to_document(spec, snapshot, entry, content)
+                        self._to_document(
+                            spec,
+                            snapshot,
+                            entry,
+                            existing.content,
+                            content_hash=existing.content_hash or "",
+                        )
                     )
                     if await _emit_progress(
                         progress_callback,
                         {
+                            "event": "page_fetch_skipped",
+                            "current_page": current_page_index,
+                            "total_pages": total_pages,
+                            "page_id": document_id,
+                        },
+                        stop_signal=progress_stop_signal,
+                    ):
+                        raise _StopRequested
+                    continue
+                fetch_entries.append(
+                    (
+                        current_page_index,
+                        spec,
+                        snapshot,
+                        entry,
+                        asyncio.create_task(
+                            _fetch_entry_with_limit(spec, entry)
+                        ),
+                    )
+                )
+
+            try:
+                for (
+                    current_page_index,
+                    spec,
+                    snapshot,
+                    entry,
+                    task,
+                ) in fetch_entries:
+                    content = await task
+                    if content is None:
+                        self.snapshot_complete = False
+                    else:
+                        documents.append(
+                            self._to_document(spec, snapshot, entry, content)
+                        )
+                    if await _emit_progress(
+                        progress_callback,
+                        {
                             "event": "page_fetch_completed",
-                            "current_page": current_page,
+                            "current_page": current_page_index,
                             "total_pages": total_pages,
                         },
                         stop_signal=progress_stop_signal,
                     ):
                         raise _StopRequested
+            except Exception:
+                for _, _, _, _, task in fetch_entries:
+                    if not task.done():
+                        task.cancel()
+                if fetch_entries:
+                    await asyncio.gather(
+                        *[task for _, _, _, _, task in fetch_entries],
+                        return_exceptions=True,
+                    )
+                raise
         except _StopRequested:
             self.snapshot_complete = False
             raise
